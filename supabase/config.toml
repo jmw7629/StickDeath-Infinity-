@@ -1,0 +1,79 @@
+# StickDeath Infinity — Supabase Configuration
+# https://supabase.com/docs/guides/cli/config
+
+project_id = "stickdeath-infinity"
+
+[api]
+enabled = true
+port = 54321
+schemas = ["public", "graphql_public"]
+extra_search_path = ["public", "extensions"]
+max_rows = 1000
+
+[db]
+port = 54322
+shadow_port = 54320
+major_version = 17
+
+[studio]
+enabled = true
+port = 54323
+
+[auth]
+enabled = true
+site_url = "stickdeathinfinity://"
+additional_redirect_urls = [
+  "stickdeathinfinity://login-callback",
+  "exp://localhost:19000/--/login-callback",
+  "http://localhost:19006/login-callback"
+]
+jwt_expiry = 3600
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.email]
+enable_signup = true
+double_confirm_changes = true
+enable_confirmations = false
+
+[auth.external.apple]
+enabled = false
+client_id = "env(APPLE_CLIENT_ID)"
+secret = "env(APPLE_SECRET)"
+
+[auth.external.google]
+enabled = false
+client_id = "env(GOOGLE_CLIENT_ID)"
+secret = "env(GOOGLE_SECRET)"
+redirect_uri = ""
+
+[storage]
+enabled = true
+file_size_limit = "100MB"
+
+[realtime]
+enabled = true
+
+[analytics]
+enabled = false
+
+[functions.publish-video]
+verify_jwt = true
+
+[functions.render-video]
+verify_jwt = true
+
+[functions.ai-assist]
+verify_jwt = true
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.create-checkout]
+verify_jwt = true
+
+[functions.admin-actions]
+verify_jwt = true
+
+[functions.social-connect]
+verify_jwt = true
