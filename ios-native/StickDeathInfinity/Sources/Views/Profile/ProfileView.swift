@@ -1,5 +1,5 @@
 // ProfileView.swift
-// User profile — settings, subscription, published work
+// User profile — settings, subscription, help center, connected accounts
 
 import SwiftUI
 
@@ -7,6 +7,9 @@ struct ProfileView: View {
     @EnvironmentObject var auth: AuthManager
     @State private var showSettings = false
     @State private var showSubscription = false
+    @State private var showConnectedAccounts = false
+    @State private var showHelp = false
+    @State private var showNotifications = false
 
     var body: some View {
         NavigationStack {
@@ -77,9 +80,24 @@ struct ProfileView: View {
                             SettingsRow(icon: "star.circle", title: "Subscription") {
                                 showSubscription = true
                             }
-                            SettingsRow(icon: "link.circle", title: "Connected Accounts") {}
-                            SettingsRow(icon: "bell.circle", title: "Notifications") {}
-                            SettingsRow(icon: "questionmark.circle", title: "Help & Support") {}
+                            SettingsRow(icon: "link.circle", title: "Connected Accounts") {
+                                showConnectedAccounts = true
+                            }
+                            SettingsRow(icon: "bell.circle", title: "Notifications") {
+                                showNotifications = true
+                            }
+
+                            // ── Help & Instructions (permanent access) ──
+                            SettingsRow(icon: "questionmark.circle", title: "Help & Instructions", tint: .cyan) {
+                                showHelp = true
+                            }
+
+                            // Replay walkthrough
+                            SettingsRow(icon: "play.circle", title: "Replay Tutorial", tint: .green) {
+                                UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
+                                // Force re-render of RootView
+                                NotificationCenter.default.post(name: .replayOnboarding, object: nil)
+                            }
 
                             // Admin access
                             if auth.isAdmin {
@@ -102,6 +120,12 @@ struct ProfileView: View {
                             }
                         }
                         .padding(.horizontal)
+
+                        // Version
+                        Text("StickDeath Infinity v1.0")
+                            .font(.caption2)
+                            .foregroundStyle(.gray)
+                            .padding(.top, 8)
                     }
                 }
             }
@@ -112,8 +136,19 @@ struct ProfileView: View {
             .sheet(isPresented: $showSubscription) {
                 SubscriptionView()
             }
+            .sheet(isPresented: $showConnectedAccounts) {
+                ConnectedAccountsView()
+            }
+            .sheet(isPresented: $showHelp) {
+                HelpCenterView()
+            }
         }
     }
+}
+
+// MARK: - Notification for replaying onboarding
+extension Notification.Name {
+    static let replayOnboarding = Notification.Name("replayOnboarding")
 }
 
 struct StatItem: View {
@@ -224,7 +259,8 @@ struct SubscriptionView: View {
                         ProFeature(text: "HD Export (1080p+)")
                         ProFeature(text: "Custom Stick Figures")
                         ProFeature(text: "Priority Publishing")
-                        ProFeature(text: "No Watermark")
+                        ProFeature(text: "Remove Watermark (personal exports)")
+                        ProFeature(text: "Premium Templates")
                     }
 
                     Text("$4.99 / month")
@@ -273,7 +309,6 @@ struct SubscriptionView: View {
         error = nil
         do {
             let checkoutURL = try await StripeService.shared.createCheckoutSession()
-            // Open Stripe checkout in Safari
             await MainActor.run {
                 UIApplication.shared.open(checkoutURL)
             }

@@ -124,7 +124,6 @@ class EditorViewModel: ObservableObject {
         let newFrame = AnimationFrame(
             id: UUID(),
             figureStates: figures.map { fig in
-                // Copy current frame's state
                 let currentState = frames[safe: currentFrameIndex]?.figureStates.first { $0.figureId == fig.id }
                 return FigureState(
                     id: UUID(),
@@ -198,6 +197,71 @@ class EditorViewModel: ObservableObject {
         } catch {
             aiSuggestion = "Error: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Apply Template
+    func applyTemplate(_ template: AnimationTemplate) {
+        pushUndo()
+
+        // Create the right number of figures
+        figures = (0..<template.figureCount).map { i in
+            StickFigure.newFigure(
+                name: "Figure \(i + 1)",
+                color: figureColor(i)
+            )
+        }
+        selectedFigureId = figures.first?.id
+
+        // Create frames with default poses (templates pre-fill basic structure)
+        let fps = Double(project.fps ?? 24)
+        frames = (0..<template.frameCount).map { frameIdx in
+            AnimationFrame(
+                id: UUID(),
+                figureStates: figures.map { fig in
+                    // Generate slightly varied poses per frame for natural motion
+                    var joints = StickFigure.defaultJoints
+                    let progress = Double(frameIdx) / Double(template.frameCount)
+                    let sway = sin(progress * .pi * 2)
+
+                    // Apply template-specific basic motion
+                    switch template.category {
+                    case "Action":
+                        // Action: wider stance, arm movement
+                        joints["leftHand"] = CGPoint(
+                            x: -50 + sway * 20,
+                            y: 5 - abs(sway) * 15
+                        )
+                        joints["rightHand"] = CGPoint(
+                            x: 50 - sway * 20,
+                            y: 5 - abs(sway) * 15
+                        )
+                        joints["leftFoot"] = CGPoint(x: -20 + sway * 10, y: 60)
+                        joints["rightFoot"] = CGPoint(x: 20 - sway * 10, y: 60)
+                    case "Dance":
+                        // Dance: rhythmic movement
+                        joints["leftHand"] = CGPoint(x: -50 + sway * 25, y: -10 + sway * 20)
+                        joints["rightHand"] = CGPoint(x: 50 - sway * 25, y: -10 - sway * 20)
+                        joints["hip"] = CGPoint(x: sway * 5, y: 0)
+                    default:
+                        // Walk/general: basic step cycle
+                        joints["leftFoot"] = CGPoint(x: -20 + sway * 15, y: 60)
+                        joints["rightFoot"] = CGPoint(x: 20 - sway * 15, y: 60)
+                        joints["leftHand"] = CGPoint(x: -50 - sway * 10, y: 5)
+                        joints["rightHand"] = CGPoint(x: 50 + sway * 10, y: 5)
+                    }
+
+                    return FigureState(
+                        id: UUID(),
+                        figureId: fig.id,
+                        joints: joints,
+                        visible: true
+                    )
+                },
+                duration: 1.0 / fps
+            )
+        }
+
+        currentFrameIndex = 0
     }
 }
 

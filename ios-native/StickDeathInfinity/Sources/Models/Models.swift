@@ -4,6 +4,21 @@
 import Foundation
 import SwiftUI
 
+// MARK: - App Errors
+enum AppError: LocalizedError {
+    case notAuthenticated
+    case serverError(String)
+    case networkError(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .notAuthenticated: return "Not logged in"
+        case .serverError(let msg): return msg
+        case .networkError(let msg): return msg
+        }
+    }
+}
+
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
     let id: String
