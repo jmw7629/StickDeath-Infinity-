@@ -1,7 +1,7 @@
 // MainTabView.swift
 // Adaptive navigation — tabs on iPhone, sidebar on iPad/Mac
 // Responds to size class changes (rotation, multitasking)
-// v4.3: Uses Tab type (iOS 18+ required API, .tabItem is removed)
+// v4.4: Uses .tabItem (compatible with iOS 17+ / Xcode 15+)
 
 import SwiftUI
 
@@ -29,20 +29,31 @@ struct MainTabView: View {
                 }
                 .tint(.orange)
             } else {
-                // iPhone compact — Tab type (iOS 18+)
+                // iPhone compact — standard TabView
                 TabView(selection: $selectedTab) {
-                    Tab("Studio", systemImage: "paintbrush.pointed", value: 0) {
-                        ProjectsGalleryView()
-                    }
-                    Tab("Feed", systemImage: "play.rectangle.fill", value: 1) {
-                        FeedView()
-                    }
-                    Tab("Messages", systemImage: "bubble.left.and.bubble.right", value: 2) {
-                        MessagesListView()
-                    }
-                    Tab("Profile", systemImage: "person.crop.circle", value: 3) {
-                        ProfileView()
-                    }
+                    ProjectsGalleryView()
+                        .tabItem {
+                            Label("Studio", systemImage: "paintbrush.pointed")
+                        }
+                        .tag(0)
+
+                    FeedView()
+                        .tabItem {
+                            Label("Feed", systemImage: "play.rectangle.fill")
+                        }
+                        .tag(1)
+
+                    MessagesListView()
+                        .tabItem {
+                            Label("Messages", systemImage: "bubble.left.and.bubble.right")
+                        }
+                        .tag(2)
+
+                    ProfileView()
+                        .tabItem {
+                            Label("Profile", systemImage: "person.crop.circle")
+                        }
+                        .tag(3)
                 }
                 .tint(.orange)
             }
