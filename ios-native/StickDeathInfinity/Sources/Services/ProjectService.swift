@@ -9,10 +9,10 @@ class ProjectService {
 
     // MARK: - Fetch user's projects (with offline fallback)
     func fetchMyProjects() async throws -> [StudioProject] {
-        guard let userId = AuthManager.shared.session?.user.id else { return [] }
+        guard let userId = await AuthManager.shared.session?.user.id else { return [] }
 
         // Try Supabase
-        if OfflineManager.shared.isOnline {
+        if await OfflineManager.shared.isOnline {
             let projects: [StudioProject] = try await supabase
                 .from("studio_projects")
                 .select()
@@ -23,19 +23,19 @@ class ProjectService {
 
             // Cache for offline
             if let data = try? JSONEncoder().encode(projects) {
-                OfflineManager.shared.cacheProjectList(data)
+                await OfflineManager.shared.cacheProjectList(data)
             }
             return projects
         } else {
             // Offline: load from cache
-            guard let data = OfflineManager.shared.loadCachedProjectList() else { return [] }
+            guard let data = await OfflineManager.shared.loadCachedProjectList() else { return [] }
             return (try? JSONDecoder().decode([StudioProject].self, from: data)) ?? []
         }
     }
 
     // MARK: - Create project
     func createProject(title: String, width: Int = 1920, height: Int = 1080, fps: Int = 24) async throws -> StudioProject {
-        guard let userId = AuthManager.shared.session?.user.id else {
+        guard let userId = await AuthManager.shared.session?.user.id else {
             throw AppError.notAuthenticated
         }
         let newProject = StudioProjectInsert(
@@ -135,7 +135,7 @@ class ProjectService {
 
     // MARK: - Toggle like
     func toggleLike(projectId: Int) async throws -> Bool {
-        guard let userId = AuthManager.shared.session?.user.id else { throw AppError.notAuthenticated }
+        guard let userId = await AuthManager.shared.session?.user.id else { throw AppError.notAuthenticated }
 
         struct LikeRow: Decodable { let id: Int }
         let existing: [LikeRow] = try await supabase

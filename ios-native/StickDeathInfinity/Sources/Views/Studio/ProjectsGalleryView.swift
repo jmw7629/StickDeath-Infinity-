@@ -172,7 +172,7 @@ struct ProjectCard: View {
     }
 }
 
-extension StudioProject: @retroactive Hashable {
+extension StudioProject: Hashable {
     public func hash(into hasher: inout Hasher) { hasher.combine(id) }
     public static func == (lhs: StudioProject, rhs: StudioProject) -> Bool { lhs.id == rhs.id }
 }

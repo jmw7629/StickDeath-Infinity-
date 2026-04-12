@@ -57,7 +57,7 @@ class SocialAccountsManager: ObservableObject {
 
     /// Fetch user's connected accounts from Supabase
     func fetchUserAccounts() async {
-        guard let userId = AuthManager.shared.session?.user.id else { return }
+        guard let userId = await AuthManager.shared.session?.user.id else { return }
         isLoading = true
         do {
             let tokens: [SocialTokenRow] = try await supabase
@@ -87,7 +87,7 @@ class SocialAccountsManager: ObservableObject {
 
     /// Connect a new platform via OAuth
     func connectPlatform(_ platformId: String) async throws -> URL {
-        guard let accessToken = AuthManager.shared.session?.accessToken else {
+        guard let accessToken = await AuthManager.shared.session?.accessToken else {
             throw AppError.notAuthenticated
         }
 
@@ -109,7 +109,7 @@ class SocialAccountsManager: ObservableObject {
 
     /// Disconnect a platform
     func disconnectPlatform(_ platformId: String) async throws {
-        guard let userId = AuthManager.shared.session?.user.id else { return }
+        guard let userId = await AuthManager.shared.session?.user.id else { return }
         try await supabase
             .from("social_tokens")
             .delete()

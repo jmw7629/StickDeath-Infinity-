@@ -170,7 +170,7 @@ class OfflineManager: ObservableObject {
                 return true
 
             case .sendMessage:
-                let msg = try JSONSerialization.jsonObject(with: action.payload) as? [String: Any] ?? [:]
+                let msg = try JSONDecoder().decode([String: String].self, from: action.payload)
                 try await supabase.from("messages").insert(msg).execute()
                 return true
             }

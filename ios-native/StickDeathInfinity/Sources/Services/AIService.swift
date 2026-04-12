@@ -27,11 +27,11 @@ class AIService {
     static let shared = AIService()
 
     func getAssist(prompt: String, context: String? = nil) async throws -> String {
-        guard let accessToken = AuthManager.shared.session?.accessToken else {
+        guard let accessToken = await AuthManager.shared.session?.accessToken else {
             throw AppError.notAuthenticated
         }
 
-        guard AuthManager.shared.isPro else {
+        guard await AuthManager.shared.isPro else {
             throw AppError.serverError("AI Assist requires a Pro subscription")
         }
 

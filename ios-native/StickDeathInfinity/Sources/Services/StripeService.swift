@@ -9,7 +9,7 @@ class StripeService {
     // Creates a checkout session via your create-checkout edge function
     // Returns the Stripe checkout URL to open in a browser/webview
     func createCheckoutSession() async throws -> URL {
-        guard let accessToken = AuthManager.shared.session?.accessToken else {
+        guard let accessToken = await AuthManager.shared.session?.accessToken else {
             throw AppError.notAuthenticated
         }
 

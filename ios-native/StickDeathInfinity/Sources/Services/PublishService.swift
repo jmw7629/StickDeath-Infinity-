@@ -11,7 +11,7 @@ class PublishService {
     // MARK: - Render Video (server-side)
     /// Triggers server to render animation frames into an MP4
     func renderVideo(projectId: Int, watermark: Bool = true) async throws -> String {
-        guard let accessToken = AuthManager.shared.session?.accessToken else {
+        guard let accessToken = await AuthManager.shared.session?.accessToken else {
             throw AppError.notAuthenticated
         }
 
@@ -54,7 +54,7 @@ class PublishService {
         watermark: Bool = true,
         accountType: String = "official"
     ) async throws {
-        guard let accessToken = AuthManager.shared.session?.accessToken else {
+        guard let accessToken = await AuthManager.shared.session?.accessToken else {
             throw AppError.notAuthenticated
         }
 
