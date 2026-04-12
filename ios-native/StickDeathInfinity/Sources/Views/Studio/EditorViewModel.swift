@@ -124,7 +124,7 @@ class EditorViewModel: ObservableObject {
 
         // Try server save
         if OfflineManager.shared.isOnline {
-            try? await ProjectService.shared.saveVersion(projectId: project.id, data: data)
+            _ = try? await ProjectService.shared.saveVersion(projectId: project.id, data: data)
         } else {
             // Queue for later sync
             if let payload = try? JSONEncoder().encode(["projectId": project.id]) {

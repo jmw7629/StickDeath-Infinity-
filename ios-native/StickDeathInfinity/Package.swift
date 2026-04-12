@@ -4,9 +4,9 @@ import PackageDescription
 let package = Package(
     name: "StickDeathInfinity",
     platforms: [
-        .iOS(.v16),
-        .macOS(.v13),       // Mac Catalyst / native macOS
-        .macCatalyst(.v16),  // Mac Catalyst support
+        .iOS(.v18),          // Tab type requires iOS 18+
+        .macOS(.v14),        // macOS Sonoma+
+        .macCatalyst(.v18),  // Mac Catalyst with iOS 18 features
     ],
     dependencies: [
         .package(url: "https://github.com/supabase/supabase-swift.git", from: "2.0.0"),

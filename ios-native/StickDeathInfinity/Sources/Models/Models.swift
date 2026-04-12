@@ -27,10 +27,12 @@ struct UserProfile: Codable, Identifiable {
 }
 
 // MARK: - Studio Project (from DB)
+// v4.3: CodingKeys map 'title' ↔ DB column 'name'
 struct StudioProject: Codable, Identifiable {
     let id: Int
     let user_id: String
-    var title: String
+    var title: String        // Maps to DB column "name"
+    var description: String?
     var canvas_width: Int?
     var canvas_height: Int?
     var fps: Int?
@@ -38,8 +40,16 @@ struct StudioProject: Codable, Identifiable {
     var created_at: String?
     var updated_at: String?
     var thumbnail_url: String?
-    var view_count: Int?
-    var like_count: Int?
+    var background_type: String?
+    var background_value: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, user_id
+        case title = "name"  // DB column is "name", Swift uses "title"
+        case description, canvas_width, canvas_height, fps
+        case status, created_at, updated_at, thumbnail_url
+        case background_type, background_value
+    }
 }
 
 struct StudioProjectInsert: Encodable {
@@ -51,7 +61,7 @@ struct StudioProjectInsert: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case userId = "user_id"
-        case title
+        case title = "name"  // DB column is "name"
         case canvasWidth = "canvas_width"
         case canvasHeight = "canvas_height"
         case fps
@@ -59,15 +69,20 @@ struct StudioProjectInsert: Encodable {
 }
 
 // MARK: - Feed Item (project + user info)
+// v4.3: CodingKeys map 'title' ↔ DB column 'name' (queries studio_projects)
 struct FeedItem: Codable, Identifiable {
     let id: Int
     let title: String
     let status: String?
     let created_at: String?
     let thumbnail_url: String?
-    let view_count: Int?
-    let like_count: Int?
     let users: FeedUser?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case title = "name"  // DB column is "name"
+        case status, created_at, thumbnail_url, users
+    }
 }
 
 struct FeedUser: Codable {

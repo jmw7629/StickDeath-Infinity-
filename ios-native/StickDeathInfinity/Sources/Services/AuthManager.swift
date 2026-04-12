@@ -91,7 +91,7 @@ class AuthManager: ObservableObject {
 
     // MARK: - Logout
     func logout() async {
-        try? await supabase.auth.signOut()
+        _ = try? await supabase.auth.signOut()
         session = nil
         currentUser = nil
         isLoggedIn = false

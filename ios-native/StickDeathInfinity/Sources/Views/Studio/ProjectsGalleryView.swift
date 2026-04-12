@@ -132,7 +132,7 @@ struct ProjectsGalleryView: View {
     }
 
     func deleteProject(_ project: StudioProject) async {
-        try? await ProjectService.shared.deleteProject(projectId: project.id)
+        _ = try? await ProjectService.shared.deleteProject(projectId: project.id)
         projects.removeAll { $0.id == project.id }
     }
 }

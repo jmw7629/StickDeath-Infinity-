@@ -69,7 +69,7 @@ class ProjectService {
             .execute()
 
         // Update project's updated_at timestamp
-        try? await supabase
+        _ = try? await supabase
             .from("studio_projects")
             .update(["updated_at": ISO8601DateFormatter().string(from: Date())])
             .eq("id", value: projectId)
@@ -130,7 +130,7 @@ class ProjectService {
     // MARK: - Increment views
     func incrementViews(projectId: Int) async {
         // Uses Supabase RPC to atomically increment
-        try? await supabase.rpc("increment_view_count", params: ["p_id": projectId]).execute()
+        _ = try? await supabase.rpc("increment_view_count", params: ["p_id": projectId]).execute()
     }
 
     // MARK: - Toggle like

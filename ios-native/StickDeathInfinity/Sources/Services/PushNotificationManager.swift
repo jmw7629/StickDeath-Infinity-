@@ -141,7 +141,7 @@ class PushNotificationManager: NSObject, ObservableObject {
     func setBadgeCount(_ count: Int) {
         Task { @MainActor in
             if #available(iOS 16.0, *) {
-                try? await UNUserNotificationCenter.current().setBadgeCount(count)
+                _ = try? await UNUserNotificationCenter.current().setBadgeCount(count)
             } else {
                 UIApplication.shared.applicationIconBadgeNumber = count
             }

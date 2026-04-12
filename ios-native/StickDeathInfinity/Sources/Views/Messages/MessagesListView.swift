@@ -186,7 +186,7 @@ struct ChatView: View {
         guard let userId = AuthManager.shared.session?.user.id else { return }
         let text = newMessage
         newMessage = ""
-        try? await supabase
+        _ = try? await supabase
             .from("messages")
             .insert([
                 "conversation_id": "\(conversationId)",

@@ -2,7 +2,7 @@
 // Renders "StickDeath Infinity" watermark on exported videos
 // Pro users can opt out; free users always have it
 
-import SwiftUI
+import UIKit
 import AVFoundation
 import CoreImage
 
@@ -105,7 +105,7 @@ class WatermarkService {
 
         // Head
         let headR = size * 0.18
-        ctx.strokeEllipseIn(CGRect(x: cx - headR, y: top, width: headR * 2, height: headR * 2))
+        ctx.strokeEllipse(in: CGRect(x: cx - headR, y: top, width: headR * 2, height: headR * 2))
 
         // Body
         let neckY = top + headR * 2

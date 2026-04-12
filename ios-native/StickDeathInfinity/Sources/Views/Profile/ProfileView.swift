@@ -428,10 +428,10 @@ struct PersonalizationSheet: View {
     func save() async {
         saving = true
         // Save to Supabase user_preferences
-        try? await auth.updateProfile(username: nil, bio: nil, avatarURL: nil)
+        _ = try? await auth.updateProfile(username: nil, bio: nil, avatarURL: nil)
         // Additional preferences update
         guard let userId = auth.session?.user.id else { saving = false; return }
-        try? await supabase.from("users").update([
+        _ = try? await supabase.from("users").update([
             "skill_level": skillLevel,
             "interests": selectedInterests.sorted().joined(separator: ","),
             "theme_accent": accentHex,
@@ -598,7 +598,7 @@ struct EditProfileSheet: View {
                     Button("Save") {
                         Task {
                             saving = true
-                            try? await auth.updateProfile(username: username, bio: bio)
+                            _ = try? await auth.updateProfile(username: username, bio: bio)
                             saving = false
                             dismiss()
                         }

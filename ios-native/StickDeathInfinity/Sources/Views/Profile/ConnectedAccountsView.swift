@@ -73,7 +73,7 @@ struct ConnectedAccountsView: View {
                                     // Disconnect button
                                     Button {
                                         Task {
-                                            try? await manager.disconnectPlatform(platform.id)
+                                            _ = try? await manager.disconnectPlatform(platform.id)
                                         }
                                     } label: {
                                         Text("Disconnect")

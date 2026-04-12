@@ -127,22 +127,29 @@ class AssetLibrary: ObservableObject {
     static var totalSoundCount: Int { soundCategories.reduce(0) { $0 + $1.count } }
 
     // MARK: - Fetch from Supabase (paginated)
+    // v4.3 FIX: All .eq()/.ilike() filters MUST come before .range()/.order()
+    // because .range()/.order() return PostgrestTransformBuilder which has no filter methods
     func fetchObjects(category: String? = nil, reset: Bool = false) async {
         if reset { objectPage = 0; objects = []; hasMoreObjects = true }
         guard hasMoreObjects, !isLoading else { return }
         isLoading = true
 
         do {
+            // Build filter chain first (returns PostgrestFilterBuilder)
             var query = supabase.from("studio_assets")
                 .select()
                 .eq("type", value: "object")
-                .range(from: objectPage * pageSize, to: (objectPage + 1) * pageSize - 1)
-                .order("name")
 
             if let cat = category { query = query.eq("category", value: cat) }
             if !searchQuery.isEmpty { query = query.ilike("name", pattern: "%\(searchQuery)%") }
 
-            let results: [StudioAsset] = try await query.execute().value
+            // Then apply transforms last (returns PostgrestTransformBuilder)
+            let results: [StudioAsset] = try await query
+                .order("name")
+                .range(from: objectPage * pageSize, to: (objectPage + 1) * pageSize - 1)
+                .execute()
+                .value
+
             objects.append(contentsOf: results)
             hasMoreObjects = results.count == pageSize
             objectPage += 1
@@ -159,16 +166,21 @@ class AssetLibrary: ObservableObject {
         isLoading = true
 
         do {
+            // Build filter chain first (PostgrestFilterBuilder)
             var query = supabase.from("studio_assets")
                 .select()
                 .eq("type", value: "sound")
-                .range(from: soundPage * pageSize, to: (soundPage + 1) * pageSize - 1)
-                .order("name")
 
             if let cat = category { query = query.eq("category", value: cat) }
             if !searchQuery.isEmpty { query = query.ilike("name", pattern: "%\(searchQuery)%") }
 
-            let results: [StudioAsset] = try await query.execute().value
+            // Then apply transforms last (PostgrestTransformBuilder)
+            let results: [StudioAsset] = try await query
+                .order("name")
+                .range(from: soundPage * pageSize, to: (soundPage + 1) * pageSize - 1)
+                .execute()
+                .value
+
             sounds.append(contentsOf: results)
             hasMoreSounds = results.count == pageSize
             soundPage += 1
