@@ -203,6 +203,7 @@ class EditorViewModel: ObservableObject {
         )
         frames.insert(newFrame, at: currentFrameIndex + 1)
         currentFrameIndex += 1
+        HapticManager.shared.frameSwitched()
     }
 
     func duplicateFrame() {
@@ -222,6 +223,7 @@ class EditorViewModel: ObservableObject {
         )
         frames.insert(dup, at: currentFrameIndex + 1)
         currentFrameIndex += 1
+        HapticManager.shared.frameSwitched()
     }
 
     func deleteFrame() {
@@ -229,6 +231,7 @@ class EditorViewModel: ObservableObject {
         pushUndo()
         frames.remove(at: currentFrameIndex)
         currentFrameIndex = min(currentFrameIndex, frames.count - 1)
+        HapticManager.shared.frameSwitched()
     }
 
     // MARK: - Joint Dragging (minimal state mutation for zero-lag)
@@ -236,6 +239,7 @@ class EditorViewModel: ObservableObject {
         guard frames.indices.contains(currentFrameIndex),
               let stateIdx = frames[currentFrameIndex].figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
         frames[currentFrameIndex].figureStates[stateIdx].joints[joint] = point
+        HapticManager.shared.jointDrag()
     }
 
     // MARK: - Placed Objects (from Asset Library)
@@ -256,6 +260,7 @@ class EditorViewModel: ObservableObject {
             locked: false
         )
         frames[currentFrameIndex].placedObjects.append(obj)
+        HapticManager.shared.objectPlaced()
     }
 
     func removePlacedObject(_ id: UUID) {

@@ -17,7 +17,10 @@ struct StickDeathInfinityApp: App {
                 .environmentObject(offlineManager)
                 .preferredColorScheme(.dark)
                 .tint(Color("AccentColor"))
-                .onAppear { offlineManager.startMonitoring() }
+                .onAppear {
+                    offlineManager.startMonitoring()
+                    PushNotificationManager.shared.requestPermission()
+                }
         }
         #if os(macOS) || targetEnvironment(macCatalyst)
         .defaultSize(width: 1200, height: 800)

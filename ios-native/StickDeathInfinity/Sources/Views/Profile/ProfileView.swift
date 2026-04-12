@@ -14,6 +14,7 @@ struct ProfileView: View {
     @State private var showHelp = false
     @State private var showAchievements = false
     @State private var showPersonalization = false
+    @State private var showReferral = false
 
     var body: some View {
         NavigationStack {
@@ -52,6 +53,7 @@ struct ProfileView: View {
             .sheet(isPresented: $showHelp) { HelpCenterView() }
             .sheet(isPresented: $showAchievements) { AchievementsView() }
             .sheet(isPresented: $showPersonalization) { PersonalizationSheet() }
+            .sheet(isPresented: $showReferral) { ReferralView() }
         }
     }
 
@@ -204,6 +206,7 @@ struct ProfileView: View {
             SettingsRow(icon: "star.circle", title: "Subscription") { showSubscription = true }
             SettingsRow(icon: "link.circle", title: "Connected Accounts") { showConnectedAccounts = true }
             SettingsRow(icon: "trophy.circle", title: "Achievements", tint: .yellow) { showAchievements = true }
+            SettingsRow(icon: "gift.circle", title: "Invite Friends", tint: .green) { showReferral = true }
             SettingsRow(icon: "questionmark.circle", title: "Help & Instructions", tint: .cyan) { showHelp = true }
             SettingsRow(icon: "play.circle", title: "Replay Tutorial", tint: .green) {
                 UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")

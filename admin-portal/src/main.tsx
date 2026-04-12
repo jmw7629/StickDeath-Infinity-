@@ -9,6 +9,7 @@ import UsersPage from './pages/UsersPage';
 import ReportsPage from './pages/ReportsPage';
 import ProjectsPage from './pages/ProjectsPage';
 import AuditPage from './pages/AuditPage';
+import AnalyticsPage from './pages/AnalyticsPage';
 import Layout from './components/Layout';
 
 function ProtectedRoutes() {
@@ -28,6 +29,7 @@ function ProtectedRoutes() {
     <Layout>
       <Routes>
         <Route path="/" element={<DashboardPage />} />
+        <Route path="/analytics" element={<AnalyticsPage />} />
         <Route path="/users" element={<UsersPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/projects" element={<ProjectsPage />} />
