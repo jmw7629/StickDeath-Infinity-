@@ -1,22 +1,12 @@
 // TemplatesView.swift
-// Starter animation templates to help new users get going fast
+// Starter animation templates — adaptive grid on iPad/Mac
+// v3: Removed duplicate model (AnimationTemplate now in Models.swift), adaptive columns
 
 import SwiftUI
 
-struct AnimationTemplate: Identifiable {
-    let id = UUID()
-    let name: String
-    let icon: String
-    let description: String
-    let frameCount: Int
-    let figureCount: Int
-    let category: String
-    let isPro: Bool
-    let color: Color
-}
-
 struct TemplatesView: View {
     @Environment(\.dismiss) var dismiss
+    @Environment(\.deviceContext) var ctx
     @EnvironmentObject var auth: AuthManager
     let onSelect: (AnimationTemplate) -> Void
 
@@ -26,25 +16,37 @@ struct TemplatesView: View {
 
     private let templates: [AnimationTemplate] = [
         // Free templates
-        AnimationTemplate(name: "Walk Cycle", icon: "figure.walk", description: "Basic 8-frame walking animation", frameCount: 8, figureCount: 1, category: "Tutorial", isPro: false, color: .cyan),
-        AnimationTemplate(name: "Idle Stand", icon: "figure.stand", description: "Subtle idle breathing animation", frameCount: 6, figureCount: 1, category: "Tutorial", isPro: false, color: .green),
-        AnimationTemplate(name: "Jump", icon: "figure.jumprope", description: "Full jump arc with landing", frameCount: 10, figureCount: 1, category: "Action", isPro: false, color: .orange),
-        AnimationTemplate(name: "Wave Hello", icon: "hand.wave.fill", description: "Friendly waving gesture", frameCount: 6, figureCount: 1, category: "Comedy", isPro: false, color: .yellow),
-        AnimationTemplate(name: "Simple Fight", icon: "figure.boxing", description: "Two figures, punch exchange", frameCount: 12, figureCount: 2, category: "Action", isPro: false, color: .red),
-
+        AnimationTemplate(id: "walk", name: "Walk Cycle", icon: "figure.walk", category: "Tutorial", description: "Basic 8-frame walking animation", figureCount: 1, frameCount: 8, isPro: false),
+        AnimationTemplate(id: "idle", name: "Idle Stand", icon: "figure.stand", category: "Tutorial", description: "Subtle idle breathing animation", figureCount: 1, frameCount: 6, isPro: false),
+        AnimationTemplate(id: "jump", name: "Jump", icon: "figure.jumprope", category: "Action", description: "Full jump arc with landing", figureCount: 1, frameCount: 10, isPro: false),
+        AnimationTemplate(id: "wave", name: "Wave Hello", icon: "hand.wave.fill", category: "Comedy", description: "Friendly waving gesture", figureCount: 1, frameCount: 6, isPro: false),
+        AnimationTemplate(id: "fight", name: "Simple Fight", icon: "figure.boxing", category: "Action", description: "Two figures, punch exchange", figureCount: 2, frameCount: 12, isPro: false),
         // Pro templates
-        AnimationTemplate(name: "Epic Sword Fight", icon: "figure.fencing", description: "Dynamic 2-figure sword duel", frameCount: 24, figureCount: 2, category: "Action", isPro: true, color: .red),
-        AnimationTemplate(name: "Dance Party", icon: "figure.dance", description: "3 figures dancing in sync", frameCount: 16, figureCount: 3, category: "Dance", isPro: true, color: .purple),
-        AnimationTemplate(name: "Running Chase", icon: "figure.run", description: "Fast-paced chase scene", frameCount: 20, figureCount: 2, category: "Action", isPro: true, color: .orange),
-        AnimationTemplate(name: "Backflip", icon: "figure.gymnastics", description: "Complete backflip rotation", frameCount: 14, figureCount: 1, category: "Effects", isPro: true, color: .cyan),
-        AnimationTemplate(name: "Comedy Skit", icon: "theatermasks.fill", description: "Slap comedy with 2 characters", frameCount: 18, figureCount: 2, category: "Comedy", isPro: true, color: .yellow),
-        AnimationTemplate(name: "Group Battle", icon: "figure.martial.arts", description: "4-figure battle royale", frameCount: 30, figureCount: 4, category: "Action", isPro: true, color: .red),
-        AnimationTemplate(name: "Breakdance", icon: "figure.cooldown", description: "Floor spin and freeze combo", frameCount: 20, figureCount: 1, category: "Dance", isPro: true, color: .purple),
+        AnimationTemplate(id: "sword", name: "Epic Sword Fight", icon: "figure.fencing", category: "Action", description: "Dynamic 2-figure sword duel", figureCount: 2, frameCount: 24, isPro: true),
+        AnimationTemplate(id: "dance", name: "Dance Party", icon: "figure.dance", category: "Dance", description: "3 figures dancing in sync", figureCount: 3, frameCount: 16, isPro: true),
+        AnimationTemplate(id: "chase", name: "Running Chase", icon: "figure.run", category: "Action", description: "Fast-paced chase scene", figureCount: 2, frameCount: 20, isPro: true),
+        AnimationTemplate(id: "flip", name: "Backflip", icon: "figure.gymnastics", category: "Effects", description: "Complete backflip rotation", figureCount: 1, frameCount: 14, isPro: true),
+        AnimationTemplate(id: "skit", name: "Comedy Skit", icon: "theatermasks.fill", category: "Comedy", description: "Slap comedy with 2 characters", figureCount: 2, frameCount: 18, isPro: true),
+        AnimationTemplate(id: "battle", name: "Group Battle", icon: "figure.martial.arts", category: "Action", description: "4-figure battle royale", figureCount: 4, frameCount: 30, isPro: true),
+        AnimationTemplate(id: "break", name: "Breakdance", icon: "figure.cooldown", category: "Dance", description: "Floor spin and freeze combo", figureCount: 1, frameCount: 20, isPro: true),
     ]
 
     var filtered: [AnimationTemplate] {
         if selectedCategory == "All" { return templates }
         return templates.filter { $0.category == selectedCategory }
+    }
+
+    /// Adaptive columns: 2 on phone, 3 on iPad, 4 on Mac
+    var columns: [GridItem] {
+        let count: Int = {
+            switch ctx.current {
+            case .phoneCompact: return 2
+            case .phoneRegular: return 2
+            case .pad: return 3
+            case .desktop: return 4
+            }
+        }()
+        return Array(repeating: GridItem(.flexible(), spacing: 14), count: count)
     }
 
     var body: some View {
@@ -64,8 +66,7 @@ struct TemplatesView: View {
                                         Text(cat)
                                             .font(.caption.bold())
                                             .foregroundStyle(selectedCategory == cat ? .black : .white)
-                                            .padding(.horizontal, 14)
-                                            .padding(.vertical, 8)
+                                            .padding(.horizontal, 14).padding(.vertical, 8)
                                             .background(selectedCategory == cat ? Color.orange : ThemeManager.surface)
                                             .clipShape(Capsule())
                                     }
@@ -74,8 +75,8 @@ struct TemplatesView: View {
                             .padding(.horizontal, 16)
                         }
 
-                        // Template grid
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                        // Template grid (adaptive)
+                        LazyVGrid(columns: columns, spacing: 14) {
                             ForEach(filtered) { template in
                                 TemplateCard(template: template, isPro: auth.isPro) {
                                     if !template.isPro || auth.isPro {
@@ -86,6 +87,7 @@ struct TemplatesView: View {
                             }
                         }
                         .padding(.horizontal, 16)
+                        .frame(maxWidth: ctx.maxContentWidth)
                     }
                     .padding(.vertical, 12)
                 }
@@ -93,9 +95,7 @@ struct TemplatesView: View {
             .navigationTitle("Templates")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             }
         }
     }
@@ -106,29 +106,36 @@ struct TemplateCard: View {
     let isPro: Bool
     let action: () -> Void
 
+    private var templateColor: Color {
+        switch template.category {
+        case "Action": return .red
+        case "Comedy": return .yellow
+        case "Dance": return .purple
+        case "Effects": return .cyan
+        case "Tutorial": return .green
+        default: return .orange
+        }
+    }
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 10) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 12)
-                        .fill(template.color.opacity(0.1))
+                        .fill(templateColor.opacity(0.1))
                         .frame(height: 80)
 
                     Image(systemName: template.icon)
                         .font(.system(size: 32))
-                        .foregroundStyle(template.color)
+                        .foregroundStyle(templateColor)
 
-                    // Pro badge
                     if template.isPro && !isPro {
                         VStack {
                             HStack {
                                 Spacer()
                                 Image(systemName: "lock.fill")
-                                    .font(.caption2)
-                                    .foregroundStyle(.black)
-                                    .padding(4)
-                                    .background(.orange)
-                                    .clipShape(Circle())
+                                    .font(.caption2).foregroundStyle(.black)
+                                    .padding(4).background(.orange).clipShape(Circle())
                                     .padding(6)
                             }
                             Spacer()
@@ -137,12 +144,9 @@ struct TemplateCard: View {
                 }
 
                 VStack(spacing: 2) {
-                    Text(template.name)
-                        .font(.caption.bold())
-                        .lineLimit(1)
+                    Text(template.name).font(.caption.bold()).lineLimit(1)
                     Text("\(template.frameCount)f · \(template.figureCount) fig")
-                        .font(.caption2)
-                        .foregroundStyle(.gray)
+                        .font(.caption2).foregroundStyle(.gray)
                 }
             }
             .padding(10)

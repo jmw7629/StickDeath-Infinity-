@@ -1,5 +1,6 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
+// v3: Offline profile caching, subscription_tier/status support
 
 import Foundation
 import SwiftUI
@@ -14,8 +15,26 @@ class AuthManager: ObservableObject {
     @Published var currentUser: UserProfile?
     @Published var session: Session?
 
+    private let profileCacheKey = "cached_user_profile"
+
     private init() {
+        // Load cached profile for instant display (5-second rule)
+        loadCachedProfile()
         Task { await checkSession() }
+    }
+
+    // MARK: - Offline Profile Cache
+    private func loadCachedProfile() {
+        guard let data = UserDefaults.standard.data(forKey: profileCacheKey),
+              let profile = try? JSONDecoder().decode(UserProfile.self, from: data) else { return }
+        currentUser = profile
+        isLoggedIn = true
+    }
+
+    private func cacheProfile(_ profile: UserProfile) {
+        if let data = try? JSONEncoder().encode(profile) {
+            UserDefaults.standard.set(data, forKey: profileCacheKey)
+        }
     }
 
     // MARK: - Session
@@ -25,7 +44,12 @@ class AuthManager: ObservableObject {
             isLoggedIn = true
             await fetchProfile()
         } catch {
-            isLoggedIn = false
+            // If offline but have cached profile, stay "logged in"
+            if currentUser != nil && !OfflineManager.shared.isOnline {
+                isLoggedIn = true
+            } else {
+                isLoggedIn = false
+            }
         }
         isLoading = false
     }
@@ -71,6 +95,7 @@ class AuthManager: ObservableObject {
         session = nil
         currentUser = nil
         isLoggedIn = false
+        UserDefaults.standard.removeObject(forKey: profileCacheKey)
     }
 
     // MARK: - Profile
@@ -85,8 +110,10 @@ class AuthManager: ObservableObject {
                 .execute()
                 .value
             currentUser = profile
+            cacheProfile(profile)
         } catch {
             print("⚠️ Failed to fetch profile: \(error)")
+            // Keep cached profile for offline use
         }
     }
 
@@ -97,17 +124,31 @@ class AuthManager: ObservableObject {
         if let bio { updates["bio"] = bio }
         if let avatarURL { updates["avatar_url"] = avatarURL }
 
-        try await supabase
-            .from("users")
-            .update(updates)
-            .eq("id", value: userId.uuidString)
-            .execute()
-
-        await fetchProfile()
+        if OfflineManager.shared.isOnline {
+            try await supabase
+                .from("users")
+                .update(updates)
+                .eq("id", value: userId.uuidString)
+                .execute()
+            await fetchProfile()
+        } else {
+            // Queue for sync when online
+            if let payload = try? JSONEncoder().encode(updates) {
+                OfflineManager.shared.enqueue(type: .updateProfile, payload: payload)
+            }
+            // Optimistically update local
+            if let username { currentUser?.username = username }
+            if let bio { currentUser?.bio = bio }
+            if let avatarURL { currentUser?.avatar_url = avatarURL }
+            if let profile = currentUser { cacheProfile(profile) }
+        }
     }
 
     var isPro: Bool {
-        currentUser?.role == "pro" || currentUser?.role == "admin" || currentUser?.role == "superadmin"
+        currentUser?.subscription_tier == "pro" ||
+        currentUser?.role == "pro" ||
+        currentUser?.role == "admin" ||
+        currentUser?.role == "superadmin"
     }
 
     var isAdmin: Bool {

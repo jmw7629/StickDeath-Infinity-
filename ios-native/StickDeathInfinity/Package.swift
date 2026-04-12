@@ -3,7 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "StickDeathInfinity",
-    platforms: [.iOS(.v16)],
+    platforms: [
+        .iOS(.v16),
+        .macOS(.v13),       // Mac Catalyst / native macOS
+        .macCatalyst(.v16),  // Mac Catalyst support
+    ],
     dependencies: [
         .package(url: "https://github.com/supabase/supabase-swift.git", from: "2.0.0"),
         .package(url: "https://github.com/stripe/stripe-ios.git", from: "23.0.0"),
