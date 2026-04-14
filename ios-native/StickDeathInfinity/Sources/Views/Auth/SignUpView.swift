@@ -1,4 +1,5 @@
 // SignUpView.swift
+// v2: High-contrast fields, visible cursor, prominent back button, bold colors
 
 import SwiftUI
 
@@ -31,41 +32,29 @@ struct SignUpView: View {
                                 .font(.system(size: 48))
                                 .foregroundStyle(.orange)
                             Text("Create Account")
-                                .font(.title.bold())
+                                .font(ThemeManager.headline(size: 32))
                             Text("Join the StickDeath community")
                                 .font(.subheadline)
-                                .foregroundStyle(.gray)
+                                .foregroundStyle(ThemeManager.textSecondary)
                         }
                         .padding(.top, 40)
 
                         VStack(spacing: 16) {
                             TextField("Username", text: $username)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
                                 .autocapitalization(.none)
 
                             TextField("Email", text: $email)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
                                 .textContentType(.emailAddress)
                                 .keyboardType(.emailAddress)
                                 .autocapitalization(.none)
 
                             SecureField("Password (8+ characters)", text: $password)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
 
                             SecureField("Confirm Password", text: $confirmPassword)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
 
                             if !password.isEmpty && !confirmPassword.isEmpty && password != confirmPassword {
                                 Text("Passwords don't match")
@@ -79,8 +68,9 @@ struct SignUpView: View {
                         Toggle(isOn: $agreedToTerms) {
                             Text("I agree to the Terms of Service & Privacy Policy")
                                 .font(.caption)
-                                .foregroundStyle(.gray)
+                                .foregroundStyle(ThemeManager.textSecondary)
                         }
+                        .tint(.orange)
                         .toggleStyle(.automatic)
                         .padding(.horizontal, 24)
 
@@ -106,7 +96,7 @@ struct SignUpView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(isValid ? Color.orange : Color.gray)
+                        .background(isValid ? Color.orange : Color.gray.opacity(0.5))
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .padding(.horizontal, 24)
                         .disabled(!isValid || loading)
@@ -124,7 +114,17 @@ struct SignUpView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button {
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.body.weight(.semibold))
+                            Text("Back")
+                                .font(.body.weight(.medium))
+                        }
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
         }

@@ -1,12 +1,12 @@
 // MainTabView.swift
 // Adaptive navigation — tabs on iPhone, sidebar on iPad/Mac
 // Responds to size class changes (rotation, multitasking)
-// v4.4: Uses .tabItem (compatible with iOS 17+ / Xcode 15+)
+// v4.5: Fixed List(selection:) — requires Optional binding on iOS
 
 import SwiftUI
 
 struct MainTabView: View {
-    @State private var selectedTab = 0
+    @State private var selectedTab: Int? = 0
     @EnvironmentObject var auth: AuthManager
     @Environment(\.horizontalSizeClass) var hSize
 
@@ -30,7 +30,10 @@ struct MainTabView: View {
                 .tint(.orange)
             } else {
                 // iPhone compact — standard TabView
-                TabView(selection: $selectedTab) {
+                TabView(selection: Binding(
+                    get: { selectedTab ?? 0 },
+                    set: { selectedTab = $0 }
+                )) {
                     ProjectsGalleryView()
                         .tabItem {
                             Label("Studio", systemImage: "paintbrush.pointed")

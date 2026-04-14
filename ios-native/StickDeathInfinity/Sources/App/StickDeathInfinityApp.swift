@@ -45,4 +45,5 @@ struct StickDeathInfinityApp: App {
 extension Notification.Name {
     static let newProject = Notification.Name("newProject")
     static let toggleSidebar = Notification.Name("toggleSidebar")
+    static let switchToTab = Notification.Name("switchToTab")
 }

@@ -1,5 +1,6 @@
 // WelcomeView.swift
 // First screen users see — sign up or log in
+// v2: Bebas Neue font, "Create. Animate. Annihilate." tagline, bolder styling
 
 import SwiftUI
 
@@ -23,15 +24,18 @@ struct WelcomeView: View {
                     Image(systemName: "figure.run")
                         .font(.system(size: 80))
                         .foregroundStyle(.orange)
+
                     Text("StickDeath")
-                        .font(.system(size: 40, weight: .black))
+                        .font(ThemeManager.headline(size: 48))
                         .foregroundStyle(.white)
+
                     Text("INFINITY")
-                        .font(.system(size: 18, weight: .medium))
+                        .font(ThemeManager.headline(size: 22))
                         .tracking(8)
                         .foregroundStyle(.orange)
-                    Text("Create. Animate. Share.")
-                        .font(.subheadline)
+
+                    Text("Create. Animate. Annihilate.")
+                        .font(.subheadline.weight(.medium))
                         .foregroundStyle(.gray)
                 }
 
@@ -59,7 +63,7 @@ struct WelcomeView: View {
                             .foregroundStyle(.orange)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(Color.orange.opacity(0.1))
+                            .background(Color.orange.opacity(0.15))
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                 }

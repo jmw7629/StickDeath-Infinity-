@@ -18,6 +18,9 @@ struct DeviceContext {
     let screenWidth: CGFloat
     let screenHeight: CGFloat
 
+    /// Alias so views can use either `ctx.type` or `ctx.current`
+    var current: DeviceType { type }
+
     var isWide: Bool { type == .pad || type == .desktop || isLandscape }
     var useSidebar: Bool { type == .pad || type == .desktop }
     var maxContentWidth: CGFloat {

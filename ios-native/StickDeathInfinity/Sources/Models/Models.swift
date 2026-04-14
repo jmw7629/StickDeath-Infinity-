@@ -1,6 +1,6 @@
 // Models.swift
 // All data models matching the Supabase database schema
-// v3: Added PlacedObject, SoundClip, user personalization, achievement models
+// v4.4: Added view_count/like_count to FeedItem, conversations/messages fields
 
 import Foundation
 import SwiftUI
@@ -69,19 +69,23 @@ struct StudioProjectInsert: Encodable {
 }
 
 // MARK: - Feed Item (project + user info)
-// v4.3: CodingKeys map 'title' ↔ DB column 'name' (queries studio_projects)
+// v4.4: Added view_count and like_count (from studio_projects DB columns)
 struct FeedItem: Codable, Identifiable {
     let id: Int
     let title: String
     let status: String?
     let created_at: String?
     let thumbnail_url: String?
+    let view_count: Int?
+    let like_count: Int?
     let users: FeedUser?
 
     enum CodingKeys: String, CodingKey {
         case id
         case title = "name"  // DB column is "name"
-        case status, created_at, thumbnail_url, users
+        case status, created_at, thumbnail_url
+        case view_count, like_count
+        case users
     }
 }
 

@@ -1,6 +1,6 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
-// v3: Offline profile caching, subscription_tier/status support
+// v4: 5-second session timeout so app never gets stuck on splash
 
 import Foundation
 import SwiftUI
@@ -37,20 +37,40 @@ class AuthManager: ObservableObject {
         }
     }
 
-    // MARK: - Session
+    // MARK: - Session (with timeout so splash never freezes)
     func checkSession() async {
-        do {
-            session = try await supabase.auth.session
-            isLoggedIn = true
-            await fetchProfile()
-        } catch {
-            // If offline but have cached profile, stay "logged in"
-            if currentUser != nil && !OfflineManager.shared.isOnline {
-                isLoggedIn = true
-            } else {
-                isLoggedIn = false
+        // Race: session refresh vs 5-second timeout
+        // If Supabase hangs (bad network, expired token), we move on
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { @MainActor in
+                do {
+                    self.session = try await supabase.auth.session
+                    self.isLoggedIn = true
+                    await self.fetchProfile()
+                    return true
+                } catch {
+                    // If offline but have cached profile, stay "logged in"
+                    if self.currentUser != nil {
+                        self.isLoggedIn = true
+                    } else {
+                        self.isLoggedIn = false
+                    }
+                    return false
+                }
+            }
+
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                return false
+            }
+
+            // First one to finish wins
+            if let _ = await group.next() {
+                group.cancelAll()
             }
         }
+
+        // No matter what happened above, stop showing splash
         isLoading = false
     }
 

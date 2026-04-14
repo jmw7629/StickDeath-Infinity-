@@ -1,4 +1,5 @@
 // LoginView.swift
+// v2: High-contrast fields, visible cursor, prominent back button
 
 import SwiftUI
 
@@ -24,26 +25,20 @@ struct LoginView: View {
                                 .font(.system(size: 48))
                                 .foregroundStyle(.orange)
                             Text("Welcome Back")
-                                .font(.title.bold())
+                                .font(ThemeManager.headline(size: 32))
                         }
                         .padding(.top, 40)
 
                         // Form
                         VStack(spacing: 16) {
                             TextField("Email", text: $email)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
                                 .textContentType(.emailAddress)
                                 .keyboardType(.emailAddress)
                                 .autocapitalization(.none)
 
                             SecureField("Password", text: $password)
-                                .textFieldStyle(.plain)
-                                .padding()
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .stickDeathTextField()
                                 .textContentType(.password)
                         }
                         .padding(.horizontal, 24)
@@ -70,7 +65,7 @@ struct LoginView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(.orange)
+                        .background(email.isEmpty || password.isEmpty ? Color.gray.opacity(0.5) : .orange)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .padding(.horizontal, 24)
                         .disabled(loading || email.isEmpty || password.isEmpty)
@@ -80,7 +75,17 @@ struct LoginView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button {
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.body.weight(.semibold))
+                            Text("Back")
+                                .font(.body.weight(.medium))
+                        }
+                        .foregroundStyle(.orange)
+                    }
                 }
             }
         }

@@ -1,7 +1,6 @@
 // RootView.swift
 // Routes: Splash → Onboarding → Auth → Main
-// Wrapped in ResponsiveContainer for universal device support
-// 5-second rule: animated splash hooks users instantly
+// v2: Smooth fade transitions, updated tagline, Bebas Neue font
 
 import SwiftUI
 
@@ -24,8 +23,10 @@ struct RootView: View {
                         WelcomeView()
                     }
                 }
-                .animation(.easeInOut(duration: 0.3), value: auth.isLoggedIn)
-                .animation(.easeInOut(duration: 0.3), value: hasCompletedOnboarding)
+                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                .animation(.easeInOut(duration: 0.4), value: auth.isLoading)
+                .animation(.easeInOut(duration: 0.4), value: auth.isLoggedIn)
+                .animation(.easeInOut(duration: 0.4), value: hasCompletedOnboarding)
 
                 // Offline banner
                 if !offline.isOnline {
@@ -80,7 +81,7 @@ struct OfflineBanner: View {
     }
 }
 
-// MARK: - Splash Screen (5-second rule: instant visual hook)
+// MARK: - Splash Screen
 struct SplashView: View {
     @State private var pulse = false
     @State private var textOpacity = 0.0
@@ -121,12 +122,12 @@ struct SplashView: View {
                 }
 
                 Text("StickDeath ∞")
-                    .font(.system(size: 32, weight: .black, design: .rounded))
+                    .font(ThemeManager.headline(size: 36))
                     .foregroundStyle(.white)
                     .opacity(textOpacity)
 
-                Text("Create. Animate. Share.")
-                    .font(.subheadline)
+                Text("Create. Animate. Annihilate.")
+                    .font(.subheadline.weight(.medium))
                     .foregroundStyle(.orange.opacity(0.8))
                     .offset(y: taglineOffset)
                     .opacity(textOpacity)

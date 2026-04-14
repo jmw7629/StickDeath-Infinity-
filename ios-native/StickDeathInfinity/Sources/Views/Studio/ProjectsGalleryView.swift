@@ -1,6 +1,6 @@
 // ProjectsGalleryView.swift
 // Studio tab — user's animation projects
-// v3: Adaptive grid columns for iPad/Mac, pull-to-refresh, offline project list
+// v4: Removed redundant + button, Bebas Neue headers, better contrast
 
 import SwiftUI
 
@@ -81,13 +81,7 @@ struct ProjectsGalleryView: View {
                 }
             }
             .navigationTitle("My Studio")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showNewProject = true } label: {
-                        Image(systemName: "plus.circle.fill").foregroundStyle(.orange)
-                    }
-                }
-            }
+            // Removed the redundant + toolbar button — the New Animation card is enough
             .alert("New Animation", isPresented: $showNewProject) {
                 TextField("Project name", text: $newTitle)
                 Button("Create") { Task { await createProject() } }
@@ -103,10 +97,11 @@ struct ProjectsGalleryView: View {
     var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 48)).foregroundStyle(.gray)
-            Text("No projects yet").font(.title3.bold())
+                .font(.system(size: 48)).foregroundStyle(.orange.opacity(0.6))
+            Text("No projects yet")
+                .font(ThemeManager.headline(size: 28))
             Text("Create your first stick figure animation")
-                .font(.subheadline).foregroundStyle(.gray)
+                .font(.subheadline).foregroundStyle(ThemeManager.textSecondary)
             Button { showNewProject = true } label: {
                 Label("New Animation", systemImage: "plus")
                     .font(.headline).foregroundStyle(.black)
