@@ -83,10 +83,10 @@ struct SpatterStudioPanel: View {
 
                 Button(action: sendMessage) {
                     if loading {
-                        ProgressView().tint(.orange).scaleEffect(0.8)
+                        ProgressView().tint(.red).scaleEffect(0.8)
                     } else {
                         Image(systemName: "paperplane.fill")
-                            .foregroundStyle(prompt.isEmpty ? .gray : .orange)
+                            .foregroundStyle(prompt.isEmpty ? .gray : .red)
                     }
                 }
                 .disabled(prompt.isEmpty || loading)
@@ -100,7 +100,7 @@ struct SpatterStudioPanel: View {
     var quickActions: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                QuickChip(icon: "figure.stand", text: "Suggest a pose", color: .orange) {
+                QuickChip(icon: "figure.stand", text: "Suggest a pose", color: .red) {
                     sendQuick("Suggest a cool pose for my stick figure. Something dynamic!")
                 }
                 QuickChip(icon: "hand.thumbsup.fill", text: "Review my work", color: .green) {
@@ -130,8 +130,8 @@ struct SpatterStudioPanel: View {
             Text(text)
                 .font(.subheadline)
                 .padding(10)
-                .background(isSpatter ? ThemeManager.surface : Color.orange.opacity(0.15))
-                .foregroundStyle(isSpatter ? .white : .orange)
+                .background(isSpatter ? ThemeManager.surface : Color.red.opacity(0.15))
+                .foregroundStyle(isSpatter ? .white : .red)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .frame(maxWidth: 260, alignment: isSpatter ? .leading : .trailing)
 
@@ -143,7 +143,7 @@ struct SpatterStudioPanel: View {
 
     var spatterAvatar: some View {
         ZStack {
-            Circle().fill(Color.orange.opacity(0.2)).frame(width: 24, height: 24)
+            Circle().fill(Color.red.opacity(0.2)).frame(width: 24, height: 24)
             Text("🎨").font(.system(size: 12))
         }
     }
@@ -257,7 +257,7 @@ struct TypingIndicator: View {
         HStack(spacing: 4) {
             ForEach(0..<3, id: \.self) { i in
                 Circle()
-                    .fill(Color.orange.opacity(i == dotIndex ? 1.0 : 0.3))
+                    .fill(Color.red.opacity(i == dotIndex ? 1.0 : 0.3))
                     .frame(width: 6, height: 6)
             }
         }
