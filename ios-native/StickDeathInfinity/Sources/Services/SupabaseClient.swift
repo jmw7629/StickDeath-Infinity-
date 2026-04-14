@@ -21,5 +21,11 @@ enum AppConfig {
 
 let supabase = SupabaseClient(
     supabaseURL: AppConfig.supabaseURL,
-    supabaseKey: AppConfig.supabaseAnonKey
+    supabaseKey: AppConfig.supabaseAnonKey,
+    options: .init(
+        auth: .init(
+            autoRefreshToken: true,
+            emitLocalSessionAsInitialSession: true
+        )
+    )
 )
