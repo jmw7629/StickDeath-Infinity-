@@ -41,6 +41,10 @@ class EditorViewModel: ObservableObject {
     @Published var redoStack: [AnimationData] = []
     private let maxUndoSteps = 50
 
+    // Drawing
+    @Published var drawState = DrawingState()
+    @Published var showBrushSizePopover = false
+
     // AI
     @Published var aiSuggestion: String?
     @Published var showAIPanel = false

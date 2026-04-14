@@ -117,7 +117,7 @@ struct DrawingToolsView: View {
                 Button { drawState.undoLastElement() } label: {
                     Image(systemName: "arrow.uturn.backward")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.red)
                         .frame(width: 28, height: 28)
                 }
                 .disabled(drawState.drawnElements.isEmpty)
@@ -164,9 +164,9 @@ struct DrawingToolsView: View {
                 Text(tool.label)
                     .font(.system(size: 8, weight: .medium))
             }
-            .foregroundStyle(drawState.tool == tool ? .orange : .white.opacity(0.6))
+            .foregroundStyle(drawState.tool == tool ? .red : .white.opacity(0.6))
             .frame(width: 36, height: 36)
-            .background(drawState.tool == tool ? Color.orange.opacity(0.15) : .clear)
+            .background(drawState.tool == tool ? Color.red.opacity(0.15) : .clear)
             .clipShape(RoundedRectangle(cornerRadius: 6))
         }
     }
@@ -199,7 +199,7 @@ struct DrawingToolsView: View {
                     Text("Fill").font(.caption2)
                 }
                 .toggleStyle(.switch)
-                .tint(.orange)
+                .tint(.red)
                 .scaleEffect(0.8)
 
                 if drawState.fillEnabled {
@@ -224,7 +224,7 @@ struct DrawingToolsView: View {
                 .frame(width: 40, height: max(1, drawState.strokeWidth))
 
             Slider(value: $drawState.strokeWidth, in: 1...20, step: 0.5)
-                .tint(.orange)
+                .tint(.red)
 
             Text("\(drawState.strokeWidth, specifier: "%.1f")pt")
                 .font(.system(size: 10).monospacedDigit())
