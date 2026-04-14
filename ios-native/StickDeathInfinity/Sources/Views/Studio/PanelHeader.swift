@@ -17,7 +17,7 @@ func panelHeader<Trailing: View>(
             .foregroundStyle(ThemeManager.brand)
 
         Text(title)
-            .font(ThemeManager.headlineBold(size: 14))
+            .font(.system(size: 14, weight: .bold))
             .foregroundStyle(.white)
 
         trailing()
