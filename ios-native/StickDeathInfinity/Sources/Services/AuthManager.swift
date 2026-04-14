@@ -1,6 +1,6 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
-// v4: 5-second session timeout so app never gets stuck on splash
+// v5: Proper 5-second timeout using unstructured Task (not withTaskGroup)
 
 import Foundation
 import SwiftUI
@@ -18,7 +18,6 @@ class AuthManager: ObservableObject {
     private let profileCacheKey = "cached_user_profile"
 
     private init() {
-        // Load cached profile for instant display (5-second rule)
         loadCachedProfile()
         Task { await checkSession() }
     }
@@ -37,41 +36,44 @@ class AuthManager: ObservableObject {
         }
     }
 
-    // MARK: - Session (with timeout so splash never freezes)
+    // MARK: - Session (with bulletproof timeout)
     func checkSession() async {
-        // Race: session refresh vs 5-second timeout
-        // If Supabase hangs (bad network, expired token), we move on
-        await withTaskGroup(of: Bool.self) { group in
-            group.addTask { @MainActor in
-                do {
-                    self.session = try await supabase.auth.session
+        // Fire off session check as a SEPARATE unstructured task
+        // so we can timeout independently even if Supabase SDK hangs
+        let sessionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let sess = try await supabase.auth.session
+                // Only update if we haven't been cancelled/timed out
+                guard !Task.isCancelled else { return }
+                self.session = sess
+                self.isLoggedIn = true
+                await self.fetchProfile()
+            } catch {
+                guard !Task.isCancelled else { return }
+                if self.currentUser != nil {
                     self.isLoggedIn = true
-                    await self.fetchProfile()
-                    return true
-                } catch {
-                    // If offline but have cached profile, stay "logged in"
-                    if self.currentUser != nil {
-                        self.isLoggedIn = true
-                    } else {
-                        self.isLoggedIn = false
-                    }
-                    return false
+                } else {
+                    self.isLoggedIn = false
                 }
             }
-
-            group.addTask {
-                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
-                return false
-            }
-
-            // First one to finish wins
-            if let _ = await group.next() {
-                group.cancelAll()
+            // Mark loading done if still loading
+            if self.isLoading {
+                self.isLoading = false
             }
         }
 
-        // No matter what happened above, stop showing splash
-        isLoading = false
+        // Wait 5 seconds — if session check hasn't finished, force-unblock
+        try? await Task.sleep(nanoseconds: 5_000_000_000)
+
+        if isLoading {
+            print("⏱️ AuthManager: Session check timed out after 5s — moving to Welcome screen")
+            sessionTask.cancel()
+            isLoading = false
+            if currentUser == nil {
+                isLoggedIn = false
+            }
+        }
     }
 
     // MARK: - Sign Up
@@ -133,7 +135,6 @@ class AuthManager: ObservableObject {
             cacheProfile(profile)
         } catch {
             print("⚠️ Failed to fetch profile: \(error)")
-            // Keep cached profile for offline use
         }
     }
 
@@ -152,11 +153,9 @@ class AuthManager: ObservableObject {
                 .execute()
             await fetchProfile()
         } else {
-            // Queue for sync when online
             if let payload = try? JSONEncoder().encode(updates) {
                 OfflineManager.shared.enqueue(type: .updateProfile, payload: payload)
             }
-            // Optimistically update local
             if let username { currentUser?.username = username }
             if let bio { currentUser?.bio = bio }
             if let avatarURL { currentUser?.avatar_url = avatarURL }
