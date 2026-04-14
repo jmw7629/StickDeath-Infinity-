@@ -19,7 +19,10 @@ let package = Package(
                 .product(name: "Supabase", package: "supabase-swift"),
                 .product(name: "StripePaymentSheet", package: "stripe-ios"),
             ],
-            path: "Sources"
+            path: "Sources",
+            resources: [
+                .copy("Info.plist")
+            ]
         )
     ]
 )
