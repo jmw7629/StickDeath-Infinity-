@@ -90,7 +90,7 @@ struct SplashView: View {
         ZStack {
             // Dark gradient background
             RadialGradient(
-                colors: [Color(hex: "#1a0800"), .black],
+                colors: [Color(hex: "#1a0005"), .black],
                 center: .center, startRadius: 50, endRadius: 400
             ).ignoresSafeArea()
 
@@ -120,12 +120,12 @@ struct SplashView: View {
                         .shadow(color: .red.opacity(0.5), radius: 20)
                 }
 
-                Text("StickDeath ∞")
+                Text("STICKDEATH INFINITY")
                     .font(.system(size: 32, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
                     .opacity(textOpacity)
 
-                Text("Create. Animate. Share.")
+                Text("Create. Animate. Annihilate.")
                     .font(.subheadline)
                     .foregroundStyle(.red.opacity(0.8))
                     .offset(y: taglineOffset)

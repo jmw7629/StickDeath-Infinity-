@@ -1,6 +1,6 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
-// v5: Proper 5-second timeout using unstructured Task (not withTaskGroup)
+// v4: 3-second timeout on session check so app never gets stuck on splash
 
 import Foundation
 import SwiftUI
@@ -19,7 +19,27 @@ class AuthManager: ObservableObject {
 
     private init() {
         loadCachedProfile()
-        Task { await checkSession() }
+        Task { await checkSessionWithTimeout() }
+    }
+
+    // MARK: - Timeout wrapper — never stuck on splash
+    private func checkSessionWithTimeout() async {
+        // Race: session check vs 3-second timeout
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await self.checkSession() }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                if await self.isLoading {
+                    await MainActor.run {
+                        // Timeout hit — show WelcomeView (or cached profile)
+                        self.isLoading = false
+                    }
+                }
+            }
+            // Wait for session check to finish (or timeout already flipped isLoading)
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: - Offline Profile Cache
@@ -36,44 +56,20 @@ class AuthManager: ObservableObject {
         }
     }
 
-    // MARK: - Session (with bulletproof timeout)
+    // MARK: - Session
     func checkSession() async {
-        // Fire off session check as a SEPARATE unstructured task
-        // so we can timeout independently even if Supabase SDK hangs
-        let sessionTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                let sess = try await supabase.auth.session
-                // Only update if we haven't been cancelled/timed out
-                guard !Task.isCancelled else { return }
-                self.session = sess
-                self.isLoggedIn = true
-                await self.fetchProfile()
-            } catch {
-                guard !Task.isCancelled else { return }
-                if self.currentUser != nil {
-                    self.isLoggedIn = true
-                } else {
-                    self.isLoggedIn = false
-                }
-            }
-            // Mark loading done if still loading
-            if self.isLoading {
-                self.isLoading = false
-            }
-        }
-
-        // Wait 5 seconds — if session check hasn't finished, force-unblock
-        try? await Task.sleep(nanoseconds: 5_000_000_000)
-
-        if isLoading {
-            print("⏱️ AuthManager: Session check timed out after 5s — moving to Welcome screen")
-            sessionTask.cancel()
-            isLoading = false
-            if currentUser == nil {
+        do {
+            session = try await supabase.auth.session
+            isLoggedIn = true
+            await fetchProfile()
+        } catch {
+            if currentUser != nil && !OfflineManager.shared.isOnline {
+                isLoggedIn = true
+            } else {
                 isLoggedIn = false
             }
         }
+        isLoading = false
     }
 
     // MARK: - Sign Up
