@@ -60,7 +60,7 @@ struct ReferralView: View {
         VStack(spacing: 12) {
             Image(systemName: "gift.fill")
                 .font(.system(size: 48))
-                .foregroundStyle(.orange)
+                .foregroundStyle(.red)
                 .padding(.top, 20)
 
             Text("Give Pro, Get Pro")
@@ -94,7 +94,7 @@ struct ReferralView: View {
                     } label: {
                         Image(systemName: copied ? "checkmark.circle.fill" : "doc.on.doc")
                             .font(.title3)
-                            .foregroundStyle(copied ? .green : .orange)
+                            .foregroundStyle(copied ? .green : .red)
                     }
                 }
                 .padding(.vertical, 16)
@@ -112,13 +112,13 @@ struct ReferralView: View {
                         .foregroundStyle(.black)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(.orange)
+                        .background(.red)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding(.horizontal, 24)
             } else {
                 ProgressView()
-                    .tint(.orange)
+                    .tint(.red)
                     .padding()
             }
         }
@@ -131,7 +131,7 @@ struct ReferralView: View {
             VStack(spacing: 4) {
                 Text("\(referralService.stats.totalInvited)")
                     .font(.title2.bold())
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.red)
                 Text("Friends Invited")
                     .font(.caption2)
                     .foregroundStyle(ThemeManager.textSecondary)
@@ -187,12 +187,12 @@ struct ReferralView: View {
             ForEach(referralService.referredUsers) { friend in
                 HStack(spacing: 12) {
                     Circle()
-                        .fill(.orange.opacity(0.2))
+                        .fill(.red.opacity(0.2))
                         .frame(width: 36, height: 36)
                         .overlay(
                             Image(systemName: "person.fill")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.red)
                         )
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -268,7 +268,7 @@ struct ReferralView: View {
                             .foregroundStyle(.black)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
-                            .background(redeemCode.count >= 6 ? .orange : .gray)
+                            .background(redeemCode.count >= 6 ? .red : .gray)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .disabled(redeemCode.count < 6)
@@ -321,7 +321,7 @@ private struct StepRow: View {
                 .font(.caption.bold())
                 .foregroundStyle(.black)
                 .frame(width: 24, height: 24)
-                .background(.orange)
+                .background(.red)
                 .clipShape(Circle())
 
             Text(text)

@@ -28,7 +28,7 @@ struct HelpCenterView: View {
         HelpSection(
             icon: "hand.draw.fill",
             title: "Getting Started",
-            color: .orange,
+            color: .red,
             articles: [
                 HelpArticle(
                     title: "Creating your first animation",
@@ -329,7 +329,7 @@ struct HelpCenterView: View {
 
                         // Quick actions
                         HStack(spacing: 12) {
-                            QuickHelpButton(icon: "play.fill", label: "Watch\nTutorial", color: .orange) {
+                            QuickHelpButton(icon: "play.fill", label: "Watch\nTutorial", color: .red) {
                                 // Replay onboarding
                                 UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
                             }

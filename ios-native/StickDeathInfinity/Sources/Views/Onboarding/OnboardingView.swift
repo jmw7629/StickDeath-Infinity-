@@ -35,7 +35,7 @@ struct OnboardingView: View {
                     HStack(spacing: 6) {
                         ForEach(0..<pageCount, id: \.self) { i in
                             Capsule()
-                                .fill(i == currentPage ? Color.orange : Color.gray.opacity(0.3))
+                                .fill(i == currentPage ? Color.red : Color.gray.opacity(0.3))
                                 .frame(width: i == currentPage ? 20 : 6, height: 6)
                                 .animation(.spring(response: 0.3), value: currentPage)
                         }
@@ -59,7 +59,7 @@ struct OnboardingView: View {
                             Text(currentPage < pageCount - 1 ? "Next" : "Let's Go!")
                                 .font(.headline).foregroundStyle(.black)
                                 .frame(maxWidth: .infinity).padding(.vertical, 16)
-                                .background(.orange).clipShape(RoundedRectangle(cornerRadius: 14))
+                                .background(.red).clipShape(RoundedRectangle(cornerRadius: 14))
                         }
                     }
                     .frame(maxWidth: ctx.maxContentWidth)
@@ -87,7 +87,7 @@ struct OnboardingView: View {
                     // Outer glow rings
                     ForEach(0..<3, id: \.self) { i in
                         Circle()
-                            .stroke(.orange.opacity(0.1 - Double(i) * 0.03), lineWidth: 2)
+                            .stroke(.red.opacity(0.1 - Double(i) * 0.03), lineWidth: 2)
                             .frame(width: CGFloat(120 + i * 40), height: CGFloat(120 + i * 40))
                             .scaleEffect(animateHero ? 1.0 : 0.7)
                             .animation(
@@ -100,7 +100,7 @@ struct OnboardingView: View {
                     // Icon
                     ZStack {
                         Circle()
-                            .fill(RadialGradient(colors: [.orange, .red.opacity(0.6)], center: .center, startRadius: 0, endRadius: 50))
+                            .fill(RadialGradient(colors: [.red, .red.opacity(0.6)], center: .center, startRadius: 0, endRadius: 50))
                             .frame(width: 100, height: 100)
                         Image(systemName: "figure.run")
                             .font(.system(size: 44, weight: .bold))
@@ -119,7 +119,7 @@ struct OnboardingView: View {
                         .animation(.easeOut(duration: 0.8).delay(0.2), value: animateHero)
                     Text("Infinity ∞")
                         .font(.system(size: ctx.current == .phoneCompact ? 28 : 36, weight: .bold))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.red)
                         .offset(y: animateHero ? 0 : 20)
                         .opacity(animateHero ? 1 : 0)
                         .animation(.easeOut(duration: 0.8).delay(0.5), value: animateHero)
@@ -188,7 +188,7 @@ struct OnboardingView: View {
                                 y: center.y + pos.y - dotSize / 2,
                                 width: dotSize, height: dotSize
                             )
-                            context.fill(Path(ellipseIn: dotRect), with: .color(.orange))
+                            context.fill(Path(ellipseIn: dotRect), with: .color(.red))
                         }
                     }
                     .frame(height: ctx.current == .phoneCompact ? 280 : 360)
@@ -232,7 +232,7 @@ struct OnboardingView: View {
                                 Text("Drag the orange dots")
                                     .font(.caption)
                             }
-                            .foregroundStyle(.orange.opacity(0.6))
+                            .foregroundStyle(.red.opacity(0.6))
                             .padding(8)
                             .background(.ultraThinMaterial)
                             .clipShape(Capsule())
@@ -272,7 +272,7 @@ struct OnboardingView: View {
                     platformRow("Instagram", icon: "camera.fill", color: .purple)
                     platformRow("Facebook", icon: "person.2.fill", color: .blue)
                     platformRow("Discord", icon: "bubble.left.and.bubble.right.fill", color: .indigo)
-                    platformRow("+ Your Own Accounts", icon: "person.circle", color: .orange)
+                    platformRow("+ Your Own Accounts", icon: "person.circle", color: .red)
                 }
                 .padding(.horizontal, 40)
 
@@ -301,7 +301,7 @@ struct OnboardingView: View {
 
                 Image(systemName: "star.circle.fill")
                     .font(.system(size: 60))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.red)
 
                 Text("Ready to Create?")
                     .font(.system(size: ctx.current == .phoneCompact ? 26 : 32, weight: .bold))

@@ -22,7 +22,7 @@ struct TimelinePanel: View {
                 Button { vm.togglePlay() } label: {
                     Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
                         .font(.title3)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.red)
                 }
                 Button { vm.currentFrameIndex = min(vm.frames.count - 1, vm.currentFrameIndex + 1) } label: {
                     Image(systemName: "forward.fill").font(.caption)
@@ -85,20 +85,20 @@ struct FrameThumbnail: View {
     var body: some View {
         VStack(spacing: 2) {
             RoundedRectangle(cornerRadius: 6)
-                .fill(isSelected ? Color.orange.opacity(0.2) : ThemeManager.surface)
+                .fill(isSelected ? Color.red.opacity(0.2) : ThemeManager.surface)
                 .frame(width: 48, height: 48)
                 .overlay(
                     Image(systemName: "figure.stand")
                         .font(.system(size: 16))
-                        .foregroundStyle(isSelected ? .orange : .gray)
+                        .foregroundStyle(isSelected ? .red : .gray)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(isSelected ? Color.orange : Color.clear, lineWidth: 2)
+                        .stroke(isSelected ? Color.red : Color.clear, lineWidth: 2)
                 )
             Text("\(index + 1)")
                 .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(isSelected ? .orange : .gray)
+                .foregroundStyle(isSelected ? .red : .gray)
         }
     }
 }

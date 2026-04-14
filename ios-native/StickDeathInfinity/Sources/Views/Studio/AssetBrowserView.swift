@@ -188,7 +188,7 @@ struct ObjectTile: View {
                                     .font(.system(size: 8))
                                     .foregroundStyle(.black)
                                     .padding(3)
-                                    .background(.orange)
+                                    .background(.red)
                                     .clipShape(Circle())
                                     .padding(3)
                             }
@@ -305,7 +305,7 @@ struct SoundRow: View {
             Button(action: onPreview) {
                 Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle.fill")
                     .font(.title3)
-                    .foregroundStyle(isPlaying ? .orange : .white.opacity(0.5))
+                    .foregroundStyle(isPlaying ? .red : .white.opacity(0.5))
             }
 
             // Info
@@ -315,7 +315,7 @@ struct SoundRow: View {
                     if asset.isPro && !isPro {
                         Image(systemName: "lock.fill")
                             .font(.system(size: 8))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                     }
                 }
                 Text(asset.category.capitalized).font(.caption2).foregroundStyle(.gray)
@@ -328,7 +328,7 @@ struct SoundRow: View {
                 HStack(spacing: 2) {
                     ForEach(0..<4, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(.orange)
+                            .fill(.red)
                             .frame(width: 2, height: CGFloat.random(in: 4...16))
                     }
                 }
@@ -338,7 +338,7 @@ struct SoundRow: View {
             // Add to timeline
             Button(action: onAdd) {
                 Image(systemName: "plus.circle")
-                    .foregroundStyle(asset.isPro && !isPro ? .gray : .orange)
+                    .foregroundStyle(asset.isPro && !isPro ? .gray : .red)
             }
             .disabled(asset.isPro && !isPro)
         }

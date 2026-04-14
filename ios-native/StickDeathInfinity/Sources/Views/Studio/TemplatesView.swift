@@ -67,7 +67,7 @@ struct TemplatesView: View {
                                             .font(.caption.bold())
                                             .foregroundStyle(selectedCategory == cat ? .black : .white)
                                             .padding(.horizontal, 14).padding(.vertical, 8)
-                                            .background(selectedCategory == cat ? Color.orange : ThemeManager.surface)
+                                            .background(selectedCategory == cat ? Color.red : ThemeManager.surface)
                                             .clipShape(Capsule())
                                     }
                                 }
@@ -113,7 +113,7 @@ struct TemplateCard: View {
         case "Dance": return .purple
         case "Effects": return .cyan
         case "Tutorial": return .green
-        default: return .orange
+        default: return .red
         }
     }
 
@@ -135,7 +135,7 @@ struct TemplateCard: View {
                                 Spacer()
                                 Image(systemName: "lock.fill")
                                     .font(.caption2).foregroundStyle(.black)
-                                    .padding(4).background(.orange).clipShape(Circle())
+                                    .padding(4).background(.red).clipShape(Circle())
                                     .padding(6)
                             }
                             Spacer()
@@ -154,7 +154,7 @@ struct TemplateCard: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(
                 RoundedRectangle(cornerRadius: 14)
-                    .stroke(template.isPro && !isPro ? Color.orange.opacity(0.3) : .clear, lineWidth: 1)
+                    .stroke(template.isPro && !isPro ? Color.red.opacity(0.3) : .clear, lineWidth: 1)
             )
         }
         .opacity(template.isPro && !isPro ? 0.7 : 1.0)

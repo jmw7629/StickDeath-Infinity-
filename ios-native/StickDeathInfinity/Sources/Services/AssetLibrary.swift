@@ -66,7 +66,7 @@ class AssetLibrary: ObservableObject {
         AssetCategory(id: "effects", name: "Effects", icon: "sparkles", color: .yellow, count: 100, subcategories: [
             "Explosions", "Fire", "Smoke", "Lightning", "Rain", "Snow", "Wind", "Dust", "Blood Splatter", "Impact Stars", "Speed Lines", "Energy Beams"
         ]),
-        AssetCategory(id: "furniture", name: "Furniture", icon: "sofa.fill", color: .orange, count: 80, subcategories: [
+        AssetCategory(id: "furniture", name: "Furniture", icon: "sofa.fill", color: .red, count: 80, subcategories: [
             "Chairs", "Tables", "Desks", "Beds", "Shelves", "Couches", "Lamps", "Boxes", "Barrels", "Crates"
         ]),
         AssetCategory(id: "clothing", name: "Clothing", icon: "tshirt.fill", color: .purple, count: 90, subcategories: [
@@ -97,7 +97,7 @@ class AssetLibrary: ObservableObject {
         AssetCategory(id: "movement", name: "Movement", icon: "figure.walk", color: .cyan, count: 120, subcategories: [
             "Footsteps", "Running", "Jumping", "Landing", "Sliding", "Rolling", "Climbing", "Swimming", "Flying", "Whoosh"
         ]),
-        AssetCategory(id: "voices", name: "Voices", icon: "waveform", color: .orange, count: 150, subcategories: [
+        AssetCategory(id: "voices", name: "Voices", icon: "waveform", color: .red, count: 150, subcategories: [
             "Grunts", "Screams", "Laughs", "Battle Cries", "Pain", "Death", "Surprise", "Cheering", "Booing", "Whispers", "Countdown"
         ]),
         AssetCategory(id: "environment_sfx", name: "Environment", icon: "leaf.fill", color: .green, count: 100, subcategories: [

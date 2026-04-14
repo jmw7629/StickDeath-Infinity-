@@ -1,6 +1,5 @@
 // WelcomeView.swift
 // First screen users see — sign up or log in
-// v2: Bebas Neue font, "Create. Animate. Annihilate." tagline, bolder styling
 
 import SwiftUI
 
@@ -23,19 +22,16 @@ struct WelcomeView: View {
                 VStack(spacing: 12) {
                     Image(systemName: "figure.run")
                         .font(.system(size: 80))
-                        .foregroundStyle(.orange)
-
+                        .foregroundStyle(.red)
                     Text("StickDeath")
-                        .font(ThemeManager.headline(size: 48))
+                        .font(.system(size: 40, weight: .black))
                         .foregroundStyle(.white)
-
                     Text("INFINITY")
-                        .font(ThemeManager.headline(size: 22))
+                        .font(.system(size: 18, weight: .medium))
                         .tracking(8)
-                        .foregroundStyle(.orange)
-
-                    Text("Create. Animate. Annihilate.")
-                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.red)
+                    Text("Create. Animate. Share.")
+                        .font(.subheadline)
                         .foregroundStyle(.gray)
                 }
 
@@ -51,7 +47,7 @@ struct WelcomeView: View {
                             .foregroundStyle(.black)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(.orange)
+                            .background(.red)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
 
@@ -60,10 +56,10 @@ struct WelcomeView: View {
                     } label: {
                         Text("I already have an account")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 16)
-                            .background(Color.orange.opacity(0.15))
+                            .background(Color.red.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
                 }

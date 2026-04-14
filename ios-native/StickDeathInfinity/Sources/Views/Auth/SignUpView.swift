@@ -1,5 +1,4 @@
 // SignUpView.swift
-// v3: Explicit back button (not relying on toolbar in sheet), high-contrast, bold colors
 
 import SwiftUI
 
@@ -21,112 +20,113 @@ struct SignUpView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            ThemeManager.background.ignoresSafeArea()
+        NavigationStack {
+            ZStack {
+                ThemeManager.background.ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 24) {
-                    // Spacer for the back button
-                    Color.clear.frame(height: 20)
+                ScrollView {
+                    VStack(spacing: 24) {
+                        VStack(spacing: 8) {
+                            Image(systemName: "figure.run")
+                                .font(.system(size: 48))
+                                .foregroundStyle(.red)
+                            Text("Create Account")
+                                .font(.title.bold())
+                            Text("Join the StickDeath community")
+                                .font(.subheadline)
+                                .foregroundStyle(.gray)
+                        }
+                        .padding(.top, 40)
 
-                    VStack(spacing: 8) {
-                        Image(systemName: "figure.run")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.orange)
-                        Text("Create Account")
-                            .font(ThemeManager.headline(size: 32))
-                        Text("Join the StickDeath community")
-                            .font(.subheadline)
-                            .foregroundStyle(ThemeManager.textSecondary)
-                    }
+                        VStack(spacing: 16) {
+                            TextField("Username", text: $username)
+                                .textFieldStyle(.plain)
+                                .padding()
+                                .background(ThemeManager.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .autocapitalization(.none)
 
-                    VStack(spacing: 16) {
-                        TextField("Username", text: $username)
-                            .stickDeathTextField()
-                            .autocapitalization(.none)
+                            TextField("Email", text: $email)
+                                .textFieldStyle(.plain)
+                                .padding()
+                                .background(ThemeManager.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .textContentType(.emailAddress)
+                                .keyboardType(.emailAddress)
+                                .autocapitalization(.none)
 
-                        TextField("Email", text: $email)
-                            .stickDeathTextField()
-                            .textContentType(.emailAddress)
-                            .keyboardType(.emailAddress)
-                            .autocapitalization(.none)
+                            SecureField("Password (8+ characters)", text: $password)
+                                .textFieldStyle(.plain)
+                                .padding()
+                                .background(ThemeManager.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                        SecureField("Password (8+ characters)", text: $password)
-                            .stickDeathTextField()
+                            SecureField("Confirm Password", text: $confirmPassword)
+                                .textFieldStyle(.plain)
+                                .padding()
+                                .background(ThemeManager.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                        SecureField("Confirm Password", text: $confirmPassword)
-                            .stickDeathTextField()
+                            if !password.isEmpty && !confirmPassword.isEmpty && password != confirmPassword {
+                                Text("Passwords don't match")
+                                    .font(.caption)
+                                    .foregroundStyle(.red)
+                            }
+                        }
+                        .padding(.horizontal, 24)
 
-                        if !password.isEmpty && !confirmPassword.isEmpty && password != confirmPassword {
-                            Text("Passwords don't match")
+                        // Terms
+                        Toggle(isOn: $agreedToTerms) {
+                            Text("I agree to the Terms of Service & Privacy Policy")
+                                .font(.caption)
+                                .foregroundStyle(.gray)
+                        }
+                        .toggleStyle(.automatic)
+                        .padding(.horizontal, 24)
+
+                        // Error
+                        if let error {
+                            Text(error)
                                 .font(.caption)
                                 .foregroundStyle(.red)
+                                .padding(.horizontal, 24)
                         }
-                    }
-                    .padding(.horizontal, 24)
 
-                    // Terms
-                    Toggle(isOn: $agreedToTerms) {
-                        Text("I agree to the Terms of Service & Privacy Policy")
-                            .font(.caption)
-                            .foregroundStyle(ThemeManager.textSecondary)
-                    }
-                    .tint(.orange)
-                    .toggleStyle(.automatic)
-                    .padding(.horizontal, 24)
-
-                    // Error
-                    if let error {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.horizontal, 24)
-                    }
-
-                    // Sign Up button
-                    Button {
-                        Task { await signUp() }
-                    } label: {
-                        if loading {
-                            ProgressView().tint(.black)
-                        } else {
-                            Text("Create Account")
-                                .font(.headline)
-                                .foregroundStyle(.black)
+                        // Sign Up button
+                        Button {
+                            Task { await signUp() }
+                        } label: {
+                            if loading {
+                                ProgressView().tint(.black)
+                            } else {
+                                Text("Create Account")
+                                    .font(.headline)
+                                    .foregroundStyle(.black)
+                            }
                         }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(isValid ? Color.red : Color.gray)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 24)
+                        .disabled(!isValid || loading)
+
+                        // Upload agreement
+                        Text("By creating content, you agree to share animations on StickDeath channels to help build the community.")
+                            .font(.caption2)
+                            .foregroundStyle(.gray)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 32)
                     }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(isValid ? Color.orange : Color.gray.opacity(0.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .disabled(!isValid || loading)
-                    .padding(.horizontal, 24)
-
-                    Text("By creating content, you agree to share animations on StickDeath channels to help build the community.")
-                        .font(.caption2)
-                        .foregroundStyle(.gray)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
+                    .padding(.bottom, 40)
                 }
-                .padding(.bottom, 40)
             }
-
-            // ── Explicit Back Button (always visible, high contrast) ──
-            Button { dismiss() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.body.bold())
-                    Text("Back")
-                        .font(.subheadline.bold())
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
                 }
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 8)
-                .background(Color.orange.opacity(0.15))
-                .clipShape(Capsule())
             }
-            .padding(.top, 12)
-            .padding(.leading, 16)
         }
     }
 

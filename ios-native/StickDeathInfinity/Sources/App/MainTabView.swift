@@ -1,91 +1,74 @@
-// MainTabView.swift — Four-pillar navigation
-// Create • Community • Messages • Profile
-// Bold orange-on-dark, custom tab bar
+// MainTabView.swift
+// Adaptive navigation — tabs on iPhone, sidebar on iPad/Mac
+// Responds to size class changes (rotation, multitasking)
+// v4.4: Uses .tabItem (compatible with iOS 17+ / Xcode 15+)
 
 import SwiftUI
 
-enum AppTab: Int, CaseIterable {
-    case create = 0
-    case community = 1
-    case messages = 2
-    case profile = 3
-
-    var label: String {
-        switch self {
-        case .create: "Create"
-        case .community: "Community"
-        case .messages: "Messages"
-        case .profile: "Profile"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .create: "paintbrush.pointed.fill"
-        case .community: "play.rectangle.fill"
-        case .messages: "bubble.left.and.bubble.right.fill"
-        case .profile: "person.crop.circle.fill"
-        }
-    }
-}
-
 struct MainTabView: View {
+    @State private var selectedTab = 0
     @EnvironmentObject var auth: AuthManager
-    @State private var selectedTab: AppTab = .create
+    @Environment(\.horizontalSizeClass) var hSize
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // Tab content
-            Group {
-                switch selectedTab {
-                case .create:
-                    ProjectsGalleryView()
-                case .community:
-                    FeedView()
-                case .messages:
-                    MessagesListView()
-                case .profile:
-                    ProfileView()
+        Group {
+            if hSize == .regular {
+                // iPad / Mac / landscape Plus — use sidebar navigation
+                NavigationSplitView {
+                    List(selection: $selectedTab) {
+                        Label("Studio", systemImage: "paintbrush.pointed").tag(0)
+                        Label("Feed", systemImage: "play.rectangle.fill").tag(1)
+                        Label("Messages", systemImage: "bubble.left.and.bubble.right").tag(2)
+                        Label("Profile", systemImage: "person.crop.circle").tag(3)
+                    }
+                    .listStyle(.sidebar)
+                    .navigationTitle("StickDeath ∞")
+                    .tint(.red)
+                } detail: {
+                    detailView
                 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .tint(.red)
+            } else {
+                // iPhone compact — standard TabView
+                TabView(selection: $selectedTab) {
+                    ProjectsGalleryView()
+                        .tabItem {
+                            Label("Studio", systemImage: "paintbrush.pointed")
+                        }
+                        .tag(0)
 
-            // Custom tab bar
-            tabBar
+                    FeedView()
+                        .tabItem {
+                            Label("Feed", systemImage: "play.rectangle.fill")
+                        }
+                        .tag(1)
+
+                    MessagesListView()
+                        .tabItem {
+                            Label("Messages", systemImage: "bubble.left.and.bubble.right")
+                        }
+                        .tag(2)
+
+                    ProfileView()
+                        .tabItem {
+                            Label("Profile", systemImage: "person.crop.circle")
+                        }
+                        .tag(3)
+                }
+                .tint(.red)
+            }
         }
-        .ignoresSafeArea(.keyboard)
+        .animation(.easeInOut(duration: 0.2), value: hSize)
     }
 
-    // MARK: - Custom Tab Bar
-    var tabBar: some View {
-        HStack(spacing: 0) {
-            ForEach(AppTab.allCases, id: \.rawValue) { tab in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        selectedTab = tab
-                    }
-                } label: {
-                    VStack(spacing: 4) {
-                        Image(systemName: tab.icon)
-                            .font(.system(size: 20))
-                            .symbolRenderingMode(.monochrome)
-
-                        Text(tab.label.uppercased())
-                            .font(.system(size: 9, weight: .bold))
-                    }
-                    .foregroundStyle(selectedTab == tab ? .orange : Color(white: 0.4))
-                    .frame(maxWidth: .infinity)
-                    .padding(.top, 8)
-                    .padding(.bottom, 4)
-                }
-            }
+    @ViewBuilder
+    var detailView: some View {
+        switch selectedTab {
+        case 0: ProjectsGalleryView()
+        case 1: FeedView()
+        case 2: MessagesListView()
+        case 3: ProfileView()
+        default: ProjectsGalleryView()
         }
-        .padding(.bottom, 16) // Safe area padding
-        .background(
-            Rectangle()
-                .fill(Color(white: 0.04))
-                .shadow(color: .black.opacity(0.5), radius: 8, y: -2)
-                .ignoresSafeArea()
-        )
     }
 }

@@ -1,6 +1,7 @@
 // RootView.swift
 // Routes: Splash → Onboarding → Auth → Main
-// v2: Smooth fade transitions, updated tagline, Bebas Neue font
+// Wrapped in ResponsiveContainer for universal device support
+// 5-second rule: animated splash hooks users instantly
 
 import SwiftUI
 
@@ -23,10 +24,8 @@ struct RootView: View {
                         WelcomeView()
                     }
                 }
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
-                .animation(.easeInOut(duration: 0.4), value: auth.isLoading)
-                .animation(.easeInOut(duration: 0.4), value: auth.isLoggedIn)
-                .animation(.easeInOut(duration: 0.4), value: hasCompletedOnboarding)
+                .animation(.easeInOut(duration: 0.3), value: auth.isLoggedIn)
+                .animation(.easeInOut(duration: 0.3), value: hasCompletedOnboarding)
 
                 // Offline banner
                 if !offline.isOnline {
@@ -81,7 +80,7 @@ struct OfflineBanner: View {
     }
 }
 
-// MARK: - Splash Screen
+// MARK: - Splash Screen (5-second rule: instant visual hook)
 struct SplashView: View {
     @State private var pulse = false
     @State private var textOpacity = 0.0
@@ -100,7 +99,7 @@ struct SplashView: View {
                     // Outer glow rings
                     ForEach(0..<3, id: \.self) { i in
                         Circle()
-                            .stroke(.orange.opacity(0.15 - Double(i) * 0.04), lineWidth: 1.5)
+                            .stroke(.red.opacity(0.15 - Double(i) * 0.04), lineWidth: 1.5)
                             .frame(width: CGFloat(100 + i * 40), height: CGFloat(100 + i * 40))
                             .scaleEffect(pulse ? 1.2 : 0.9)
                             .opacity(pulse ? 0 : 0.6)
@@ -116,24 +115,24 @@ struct SplashView: View {
                     Image(systemName: "figure.run")
                         .font(.system(size: 56, weight: .medium))
                         .foregroundStyle(
-                            LinearGradient(colors: [.orange, .red], startPoint: .topLeading, endPoint: .bottomTrailing)
+                            LinearGradient(colors: [.red, .red], startPoint: .topLeading, endPoint: .bottomTrailing)
                         )
-                        .shadow(color: .orange.opacity(0.5), radius: 20)
+                        .shadow(color: .red.opacity(0.5), radius: 20)
                 }
 
                 Text("StickDeath ∞")
-                    .font(ThemeManager.headline(size: 36))
+                    .font(.system(size: 32, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
                     .opacity(textOpacity)
 
-                Text("Create. Animate. Annihilate.")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.orange.opacity(0.8))
+                Text("Create. Animate. Share.")
+                    .font(.subheadline)
+                    .foregroundStyle(.red.opacity(0.8))
                     .offset(y: taglineOffset)
                     .opacity(textOpacity)
 
                 ProgressView()
-                    .tint(.orange)
+                    .tint(.red)
                     .padding(.top, 24)
             }
         }

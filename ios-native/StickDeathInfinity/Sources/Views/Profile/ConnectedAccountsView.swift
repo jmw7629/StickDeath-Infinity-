@@ -20,7 +20,7 @@ struct ConnectedAccountsView: View {
                         VStack(spacing: 8) {
                             Image(systemName: "link.circle.fill")
                                 .font(.system(size: 40))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.red)
                             Text("Connect your social accounts to publish videos to your own channels alongside StickDeath's.")
                                 .font(.caption)
                                 .foregroundStyle(.gray)

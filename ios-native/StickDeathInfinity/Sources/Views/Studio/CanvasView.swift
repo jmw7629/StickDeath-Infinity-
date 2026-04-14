@@ -99,7 +99,7 @@ struct CanvasView: View {
             var selPath = Path()
             selPath.addRoundedRect(in: CGRect(x: minX - 10, y: minY - 10, width: maxX - minX + 20, height: maxY - minY + 20),
                                     cornerSize: CGSize(width: 8, height: 8))
-            context.stroke(selPath, with: .color(.orange.opacity(0.4)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
+            context.stroke(selPath, with: .color(.red.opacity(0.4)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
         }
     }
 
@@ -178,8 +178,8 @@ struct GridBackground: View {
             let cx = size.width / 2, cy = size.height / 2
             var hLine = Path(); hLine.move(to: CGPoint(x: 0, y: cy)); hLine.addLine(to: CGPoint(x: size.width, y: cy))
             var vLine = Path(); vLine.move(to: CGPoint(x: cx, y: 0)); vLine.addLine(to: CGPoint(x: cx, y: size.height))
-            context.stroke(hLine, with: .color(.orange.opacity(0.08)), lineWidth: 0.5)
-            context.stroke(vLine, with: .color(.orange.opacity(0.08)), lineWidth: 0.5)
+            context.stroke(hLine, with: .color(.red.opacity(0.08)), lineWidth: 0.5)
+            context.stroke(vLine, with: .color(.red.opacity(0.08)), lineWidth: 0.5)
         }
     }
 }
@@ -192,9 +192,9 @@ struct JointHandle: View {
 
     var body: some View {
         Circle()
-            .fill(isSelected ? Color.orange : Color.white.opacity(0.6))
+            .fill(isSelected ? Color.red : Color.white.opacity(0.6))
             .frame(width: isHead ? 16 : 12, height: isHead ? 16 : 12)
-            .overlay(Circle().stroke(Color.orange, lineWidth: isSelected ? 2 : 0))
+            .overlay(Circle().stroke(Color.red, lineWidth: isSelected ? 2 : 0))
             .position(position)
             .allowsHitTesting(true)
             .contentShape(Circle().inset(by: -8))  // Larger hit target

@@ -1,6 +1,6 @@
 // Models.swift
 // All data models matching the Supabase database schema
-// v4.4: Added view_count/like_count to FeedItem, conversations/messages fields
+// v3: Added PlacedObject, SoundClip, user personalization, achievement models
 
 import Foundation
 import SwiftUI
@@ -69,23 +69,19 @@ struct StudioProjectInsert: Encodable {
 }
 
 // MARK: - Feed Item (project + user info)
-// v4.4: Added view_count and like_count (from studio_projects DB columns)
+// v4.3: CodingKeys map 'title' ↔ DB column 'name' (queries studio_projects)
 struct FeedItem: Codable, Identifiable {
     let id: Int
     let title: String
     let status: String?
     let created_at: String?
     let thumbnail_url: String?
-    let view_count: Int?
-    let like_count: Int?
     let users: FeedUser?
 
     enum CodingKeys: String, CodingKey {
         case id
         case title = "name"  // DB column is "name"
-        case status, created_at, thumbnail_url
-        case view_count, like_count
-        case users
+        case status, created_at, thumbnail_url, users
     }
 }
 
@@ -234,13 +230,13 @@ struct Achievement: Identifiable {
     let progress: Double   // 0.0 - 1.0
 
     static let all: [Achievement] = [
-        Achievement(id: "first_frame", title: "First Frame", description: "Create your first animation frame", icon: "1.circle.fill", color: .orange, unlocked: false, progress: 0),
+        Achievement(id: "first_frame", title: "First Frame", description: "Create your first animation frame", icon: "1.circle.fill", color: .red, unlocked: false, progress: 0),
         Achievement(id: "ten_frames", title: "Animator", description: "Create an animation with 10+ frames", icon: "10.circle.fill", color: .cyan, unlocked: false, progress: 0),
         Achievement(id: "first_publish", title: "Publisher", description: "Publish your first animation", icon: "paperplane.circle.fill", color: .green, unlocked: false, progress: 0),
         Achievement(id: "community_star", title: "Community Star", description: "Get 100 likes on an animation", icon: "star.circle.fill", color: .yellow, unlocked: false, progress: 0),
         Achievement(id: "prolific", title: "Prolific Creator", description: "Create 10 projects", icon: "flame.circle.fill", color: .red, unlocked: false, progress: 0),
         Achievement(id: "social_butterfly", title: "Social Butterfly", description: "Connect 3+ social accounts", icon: "person.2.circle.fill", color: .purple, unlocked: false, progress: 0),
-        Achievement(id: "streak_7", title: "On Fire", description: "Use the app 7 days in a row", icon: "flame.fill", color: .orange, unlocked: false, progress: 0),
+        Achievement(id: "streak_7", title: "On Fire", description: "Use the app 7 days in a row", icon: "flame.fill", color: .red, unlocked: false, progress: 0),
         Achievement(id: "asset_collector", title: "Asset Collector", description: "Use 50 different objects in your animations", icon: "cube.fill", color: .indigo, unlocked: false, progress: 0),
     ]
 }

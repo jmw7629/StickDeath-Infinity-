@@ -67,7 +67,7 @@ struct PublishSheet: View {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
                         Image(systemName: "megaphone.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                         Text("StickDeath Official Channels")
                             .font(.subheadline.bold())
                     }
@@ -104,7 +104,7 @@ struct PublishSheet: View {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Image(systemName: "seal.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                         Text("Video Branding")
                             .font(.subheadline.bold())
                     }
@@ -119,7 +119,7 @@ struct PublishSheet: View {
                         }
                         Spacer()
                         Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                     }
                     .padding(12)
                     .background(ThemeManager.surface)
@@ -135,19 +135,19 @@ struct PublishSheet: View {
                                     .foregroundStyle(.gray)
                             }
                         }
-                        .tint(.orange)
+                        .tint(.red)
                         .padding(.horizontal, 4)
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: "star.fill")
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.red)
                                 .font(.caption)
                             Text("Upgrade to Pro to remove watermark on personal exports")
                                 .font(.caption)
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(.red)
                         }
                         .padding(10)
-                        .background(.orange.opacity(0.1))
+                        .background(.red.opacity(0.1))
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
                 }
@@ -165,7 +165,7 @@ struct PublishSheet: View {
                                 .foregroundStyle(.gray)
                         }
                     }
-                    .tint(.orange)
+                    .tint(.red)
 
                     if publishToOwn {
                         // Connected accounts
@@ -179,10 +179,10 @@ struct PublishSheet: View {
                                 } label: {
                                     Label("Connect Accounts", systemImage: "link.badge.plus")
                                         .font(.subheadline.bold())
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.red)
                                         .padding(.vertical, 10)
                                         .frame(maxWidth: .infinity)
-                                        .background(.orange.opacity(0.12))
+                                        .background(.red.opacity(0.12))
                                         .clipShape(RoundedRectangle(cornerRadius: 10))
                                 }
                             }
@@ -230,7 +230,7 @@ struct PublishSheet: View {
                                 Text("Connect more platforms")
                             }
                             .font(.caption)
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(.red)
                         }
                         .padding(.top, 4)
                     }
@@ -253,7 +253,7 @@ struct PublishSheet: View {
                 // ── Progress ──
                 if isPublishing && !publishProgress.isEmpty {
                     HStack(spacing: 8) {
-                        ProgressView().tint(.orange).scaleEffect(0.8)
+                        ProgressView().tint(.red).scaleEffect(0.8)
                         Text(publishProgress)
                             .font(.caption)
                             .foregroundStyle(.gray)
@@ -277,7 +277,7 @@ struct PublishSheet: View {
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 16)
-                .background(title.isEmpty ? .gray : .orange)
+                .background(title.isEmpty ? .gray : .red)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .disabled(title.isEmpty || isPublishing)
 
