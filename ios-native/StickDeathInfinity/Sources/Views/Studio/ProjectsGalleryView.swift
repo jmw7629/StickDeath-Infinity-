@@ -1,173 +1,263 @@
-// ProjectsGalleryView.swift
-// Studio tab — user's animation projects
-// v4: Removed redundant + button, Bebas Neue headers, better contrast
+// ProjectsGalleryView.swift — "My Studio" project grid
+// Pulls from studio_projects table
+// Bold orange-on-dark theme with grid cards
 
 import SwiftUI
 
 struct ProjectsGalleryView: View {
+    @EnvironmentObject var auth: AuthManager
     @State private var projects: [StudioProject] = []
-    @State private var loading = true
+    @State private var isLoading = true
+    @State private var openEditorForProject: StudioProject?
     @State private var showNewProject = false
-    @State private var newTitle = ""
-    @State private var navigateToStudio: StudioProject?
-    @Environment(\.deviceContext) var ctx
 
-    /// Adaptive columns: 2 on phone, 3 on iPad, 4 on Mac
-    var columns: [GridItem] {
-        let count: Int = {
-            switch ctx.current {
-            case .phoneCompact: return 2
-            case .phoneRegular: return 2
-            case .pad: return 3
-            case .desktop: return 4
-            }
-        }()
-        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
-    }
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12)
+    ]
 
     var body: some View {
         NavigationStack {
             ZStack {
-                ThemeManager.background.ignoresSafeArea()
+                Color.black.ignoresSafeArea()
 
-                if loading && projects.isEmpty {
-                    ProgressView().tint(.orange)
-                } else if projects.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            // Quick-create card (always first — instant gratification)
-                            Button { showNewProject = true } label: {
-                                VStack(spacing: 12) {
-                                    Image(systemName: "plus.circle.fill")
-                                        .font(.system(size: 32))
-                                        .foregroundStyle(.orange)
-                                    Text("New Animation")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.orange)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 160)
-                                .background(ThemeManager.surface.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 14)
-                                        .strokeBorder(.orange.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                                )
-                            }
+                VStack(spacing: 0) {
+                    // Header
+                    header
 
-                            ForEach(projects) { project in
-                                ProjectCard(project: project)
-                                    .onTapGesture { navigateToStudio = project }
-                                    .contextMenu {
-                                        Button {
-                                            navigateToStudio = project
-                                        } label: {
-                                            Label("Open", systemImage: "play.fill")
-                                        }
-                                        Button(role: .destructive) {
-                                            Task { await deleteProject(project) }
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                            }
-                        }
-                        .padding()
-                        .frame(maxWidth: ctx.maxContentWidth)
+                    if isLoading {
+                        Spacer()
+                        ProgressView().tint(.orange).scaleEffect(1.2)
+                        Spacer()
+                    } else if projects.isEmpty {
+                        emptyState
+                    } else {
+                        projectGrid
                     }
-                    .refreshable { await loadProjects() }
                 }
             }
-            .navigationTitle("My Studio")
-            // Removed the redundant + toolbar button — the New Animation card is enough
-            .alert("New Animation", isPresented: $showNewProject) {
-                TextField("Project name", text: $newTitle)
-                Button("Create") { Task { await createProject() } }
-                Button("Cancel", role: .cancel) { newTitle = "" }
-            }
-            .navigationDestination(item: $navigateToStudio) { project in
+            .navigationBarHidden(true)
+            .fullScreenCover(item: $openEditorForProject) { project in
                 StudioView(vm: EditorViewModel(project: project))
+                    .environmentObject(auth)
             }
             .task { await loadProjects() }
         }
     }
 
+    // MARK: - Header
+    var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("MY STUDIO")
+                    .font(ThemeManager.headlineBold(size: 28))
+                    .foregroundStyle(.white)
+                Text("Create. Animate. Annihilate.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .padding(.bottom, 8)
+    }
+
+    // MARK: - Project Grid
+    var projectGrid: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, spacing: 12) {
+                // New project card
+                newProjectCard
+
+                // Existing projects
+                ForEach(projects) { project in
+                    projectCard(project)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .padding(.bottom, 80) // Tab bar clearance
+        }
+        .refreshable { await loadProjects() }
+    }
+
+    // MARK: - New Project Card
+    var newProjectCard: some View {
+        Button { createNewProject() } label: {
+            VStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.orange.opacity(0.08))
+                        .aspectRatio(4/3, contentMode: .fit)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12)
+                                .strokeBorder(Color.orange.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                        )
+
+                    VStack(spacing: 8) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.orange)
+                        Text("NEW PROJECT")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Project Card
+    func projectCard(_ project: StudioProject) -> some View {
+        Button { openEditorForProject = project } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                // Thumbnail
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(white: 0.08))
+                        .aspectRatio(4/3, contentMode: .fit)
+
+                    if let url = project.thumbnail_url, let imageURL = URL(string: url) {
+                        AsyncImage(url: imageURL) { image in
+                            image.resizable().scaledToFill()
+                        } placeholder: {
+                            projectPlaceholder(project)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        projectPlaceholder(project)
+                    }
+
+                    // Status badge
+                    VStack {
+                        HStack {
+                            Spacer()
+                            Text(project.status?.uppercased() ?? "DRAFT")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 3)
+                                .background(statusColor(project.status).opacity(0.85))
+                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                .padding(6)
+                        }
+                        Spacer()
+                    }
+                }
+
+                // Title + info
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(project.title)
+                        .font(.caption.bold())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    HStack(spacing: 4) {
+                        Text("\(project.fps ?? 12) FPS")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color(white: 0.4))
+                        Text("•")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color(white: 0.3))
+                        Text("\(project.canvas_width ?? 1280)×\(project.canvas_height ?? 720)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(Color(white: 0.4))
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+        }
+    }
+
+    func projectPlaceholder(_ project: StudioProject) -> some View {
+        VStack(spacing: 6) {
+            Image(systemName: "figure.run")
+                .font(.system(size: 24))
+                .foregroundStyle(.orange.opacity(0.25))
+            Text(project.title)
+                .font(.system(size: 9))
+                .foregroundStyle(Color(white: 0.3))
+                .lineLimit(1)
+        }
+    }
+
+    func statusColor(_ status: String?) -> Color {
+        switch status {
+        case "published": .green
+        case "rendering": .blue
+        default: Color(white: 0.3)
+        }
+    }
+
+    // MARK: - Empty State
     var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 48)).foregroundStyle(.orange.opacity(0.6))
-            Text("No projects yet")
-                .font(ThemeManager.headline(size: 28))
-            Text("Create your first stick figure animation")
-                .font(.subheadline).foregroundStyle(ThemeManager.textSecondary)
-            Button { showNewProject = true } label: {
-                Label("New Animation", systemImage: "plus")
-                    .font(.headline).foregroundStyle(.black)
-                    .padding(.horizontal, 24).padding(.vertical, 12)
-                    .background(.orange).clipShape(Capsule())
-            }
-        }
-    }
-
-    func loadProjects() async {
-        loading = true
-        projects = (try? await ProjectService.shared.fetchMyProjects()) ?? []
-        loading = false
-    }
-
-    func createProject() async {
-        let title = newTitle.isEmpty ? "Untitled" : newTitle
-        newTitle = ""
-        if let project = try? await ProjectService.shared.createProject(title: title) {
-            projects.insert(project, at: 0)
-            navigateToStudio = project
-        }
-    }
-
-    func deleteProject(_ project: StudioProject) async {
-        _ = try? await ProjectService.shared.deleteProject(projectId: project.id)
-        projects.removeAll { $0.id == project.id }
-    }
-}
-
-struct ProjectCard: View {
-    let project: StudioProject
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(ThemeManager.surface)
-                .frame(height: 120)
-                .overlay(
-                    Image(systemName: "figure.run")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.orange.opacity(0.3))
-                )
-
-            Text(project.title)
-                .font(.subheadline.bold()).lineLimit(1)
-
-            HStack {
-                Text(project.status ?? "draft")
-                    .font(.caption2)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(project.status == "published" ? Color.green.opacity(0.2) : Color.gray.opacity(0.2))
-                    .foregroundStyle(project.status == "published" ? .green : .gray)
+            Spacer()
+            Image(systemName: "paintbrush.pointed.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.orange.opacity(0.3))
+            Text("YOUR STUDIO IS EMPTY")
+                .font(ThemeManager.headlineBold(size: 20))
+                .foregroundStyle(.white)
+            Text("Create your first animation!")
+                .font(.subheadline)
+                .foregroundStyle(Color(white: 0.5))
+            Button { createNewProject() } label: {
+                Label("New Project", systemImage: "plus")
+                    .font(.subheadline.bold())
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 10)
+                    .background(Color.orange)
                     .clipShape(Capsule())
-                Spacer()
-                Text(project.fps.map { "\($0) fps" } ?? "24 fps")
-                    .font(.caption2).foregroundStyle(.gray)
+            }
+            .padding(.top, 8)
+            Spacer()
+        }
+    }
+
+    // MARK: - Data
+    func loadProjects() async {
+        guard let userId = auth.session?.user.id.uuidString else {
+            isLoading = false
+            return
+        }
+        isLoading = true
+        do {
+            projects = try await supabase
+                .from("studio_projects")
+                .select()
+                .eq("user_id", value: userId)
+                .order("updated_at", ascending: false)
+                .execute()
+                .value
+        } catch {
+            print("⚠️ Projects load error: \(error)")
+        }
+        isLoading = false
+    }
+
+    func createNewProject() {
+        Task {
+            guard let userId = auth.session?.user.id.uuidString else { return }
+            do {
+                let newProject: StudioProject = try await supabase
+                    .from("studio_projects")
+                    .insert([
+                        "user_id": userId,
+                        "name": "Untitled Animation",
+                        "status": "draft"
+                    ])
+                    .select()
+                    .single()
+                    .execute()
+                    .value
+                openEditorForProject = newProject
+                await loadProjects()
+            } catch {
+                print("⚠️ Create project error: \(error)")
             }
         }
-        .padding(10)
-        .background(ThemeManager.surfaceLight)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
-}
-
-extension StudioProject: Hashable {
-    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
-    public static func == (lhs: StudioProject, rhs: StudioProject) -> Bool { lhs.id == rhs.id }
 }
