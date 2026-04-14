@@ -76,12 +76,15 @@ struct FeedItem: Codable, Identifiable {
     let status: String?
     let created_at: String?
     let thumbnail_url: String?
+    let like_count: Int?
+    let view_count: Int?
     let users: FeedUser?
 
     enum CodingKeys: String, CodingKey {
         case id
         case title = "name"  // DB column is "name"
-        case status, created_at, thumbnail_url, users
+        case status, created_at, thumbnail_url
+        case like_count, view_count, users
     }
 }
 
