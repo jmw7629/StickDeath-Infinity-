@@ -9,12 +9,14 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
@@ -27,7 +29,10 @@ import { theme } from '../../src/theme';
 import { brandPink, brandCyan } from '../../src/theme/colors';
 import type { CommunityPost } from '../../src/types/database';
 
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+
 export default function ProfileTab() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user, profile, signOut, refreshProfile } = useAuth();
 
@@ -56,6 +61,40 @@ export default function ProfileTab() {
   useEffect(() => {
     fetchUserPosts();
   }, [fetchUserPosts]);
+
+  const [upgrading, setUpgrading] = useState(false);
+
+  const handleUpgrade = async () => {
+    if (!user) return;
+    setUpgrading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Not authenticated');
+
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/create-checkout`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          return_url: 'stickdeath://subscription/success',
+          cancel_url: 'stickdeath://subscription/cancel',
+        }),
+      });
+
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || json.message || 'Checkout failed');
+      if (json.checkout_url) {
+        await Linking.openURL(json.checkout_url);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Failed to start checkout';
+      Alert.alert('Error', msg);
+    } finally {
+      setUpgrading(false);
+    }
+  };
 
   const handleSignOut = () => {
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
@@ -130,7 +169,7 @@ export default function ProfileTab() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Profile</Text>
-        <Pressable style={styles.settingsButton}>
+        <Pressable style={styles.settingsButton} onPress={() => router.push('/settings')}>
           <Ionicons name="settings-outline" size={22} color={theme.colors.text} />
         </Pressable>
       </View>
@@ -247,6 +286,8 @@ export default function ProfileTab() {
               variant="primary"
               size="md"
               fullWidth
+              loading={upgrading}
+              onPress={handleUpgrade}
               style={styles.proButton}
             />
           </View>

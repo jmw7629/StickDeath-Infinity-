@@ -76,3 +76,39 @@ export const GlassPanel = {
   borderWidth: 1,
   borderRadius: 16,
 } as const;
+
+// ── Mobile App Theme Tokens ────────────────────────────
+
+export const brandPink = '#ff2d55';
+export const brandCyan = '#00D9D9';
+
+export const surface = '#0A0A0F';
+export const surfaceElevated = '#14141E';
+export const surfaceCard = '#1C1C2A';
+export const textPrimary = '#F0F0F5';
+export const textSecondary = '#8888A0';
+export const textMuted = '#555570';
+export const border = 'rgba(255, 255, 255, 0.08)';
+export const borderLight = 'rgba(255, 255, 255, 0.04)';
+
+export const palette = {
+  black: '#000000',
+  white: '#FFFFFF',
+  gray: {
+    50: '#FAFAFA',
+    100: '#F4F4F5',
+    200: '#E4E4E7',
+    300: '#D4D4D8',
+    400: '#A1A1AA',
+    500: '#71717A',
+    600: '#52525B',
+    700: '#3F3F46',
+    800: '#27272A',
+    900: '#18181B',
+    950: '#09090B',
+  } as Record<number, string>,
+  success: '#00D68F',
+  warning: '#FFB800',
+  error: '#FF4757',
+  info: '#4DABF7',
+} as const;

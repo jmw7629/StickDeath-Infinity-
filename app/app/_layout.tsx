@@ -69,6 +69,34 @@ export default function RootLayout() {
               gestureEnabled: false,
             }}
           />
+          <Stack.Screen
+            name="settings"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="post/[id]"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="user/[id]"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="messages/[id]"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="search"
+            options={{ headerShown: false, animation: 'fade' }}
+          />
+          <Stack.Screen
+            name="notifications"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
+          <Stack.Screen
+            name="challenges"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
         </Stack>
       </AuthProvider>
     </GestureHandlerRootView>

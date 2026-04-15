@@ -15,6 +15,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -33,6 +34,7 @@ interface FeedPost extends CommunityPost {
 const PAGE_SIZE = 20;
 
 export default function FeedTab() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
@@ -150,7 +152,7 @@ export default function FeedTab() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Feed</Text>
-        <Pressable>
+        <Pressable onPress={() => router.push('/search')}>
           <Ionicons name="search" size={22} color={theme.colors.text} />
         </Pressable>
       </View>
@@ -210,7 +212,7 @@ export default function FeedTab() {
               </View>
 
               {/* Media */}
-              <Pressable style={styles.mediaContainer}>
+              <Pressable style={styles.mediaContainer} onPress={() => router.push(`/post/${item.id}`)}>
                 {item.thumbnail_url ? (
                   <Image
                     source={{ uri: item.thumbnail_url }}

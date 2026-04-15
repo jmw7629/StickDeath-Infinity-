@@ -13,6 +13,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../../src/lib/supabase';
@@ -29,6 +30,7 @@ interface ThreadWithParticipants extends DmThread {
 }
 
 export default function MessagesTab() {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
 
@@ -214,7 +216,7 @@ export default function MessagesTab() {
             : item.other_user?.avatar_url;
 
           return (
-            <Pressable style={styles.threadRow}>
+            <Pressable style={styles.threadRow} onPress={() => router.push(`/messages/${item.id}`)}>
               <Avatar uri={avatarUri} name={displayName} size="md" />
 
               <View style={styles.threadInfo}>
