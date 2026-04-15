@@ -5,6 +5,10 @@
  * sends them to an FFmpeg rendering service to produce an MP4.
  * Stores the result in Supabase storage and updates render_jobs table.
  *
+ * Supports watermark overlay — the render worker produces both a
+ * watermarked and a clean version. The watermarked copy is used for
+ * official StickDeath channels; the clean copy for Pro user exports.
+ *
  * Architecture: Since edge functions can't run FFmpeg directly, we
  * delegate to an external render worker service (self-hosted or cloud).
  */
@@ -13,6 +17,7 @@ import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { handleCors, jsonResponse, errorResponse } from '../_shared/cors.ts';
 import { createAdminClient } from '../_shared/supabase.ts';
 import { verifyAuth, AuthError } from '../_shared/auth.ts';
+import { WATERMARK_TEXT, WATERMARK_TAGLINE } from '../_shared/official-channels.ts';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -22,6 +27,10 @@ interface RenderRequest {
   resolution?: '720p' | '1080p' | '4k';
   format?: 'mp4' | 'webm' | 'gif';
   quality?: 'draft' | 'standard' | 'high';
+  /** Whether to produce a watermarked copy (default: true) */
+  watermark?: boolean;
+  /** Override watermark text */
+  watermark_text?: string;
 }
 
 interface Frame {
@@ -43,7 +52,18 @@ interface RenderWorkerPayload {
   quality: string;
   output_bucket: string;
   output_path: string;
+  /** Path for the watermarked version (separate file) */
+  output_path_watermarked: string;
   webhook_url: string;
+  /** Watermark configuration for the render worker */
+  watermark: {
+    enabled: boolean;
+    text: string;
+    position: 'bottom-right';
+    opacity: number;
+    font_size: number;
+    include_stick_figure: boolean;
+  };
 }
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -83,13 +103,14 @@ serve(async (req: Request) => {
       resolution = '1080p',
       format = 'mp4',
       quality = 'standard',
+      watermark = true,
+      watermark_text,
     } = body;
 
     if (!project_id) {
       return errorResponse('project_id is required');
     }
 
-    // Validate resolution
     if (!RESOLUTION_MAP[resolution]) {
       return errorResponse(`Invalid resolution: ${resolution}. Use 720p, 1080p, or 4k`);
     }
@@ -108,16 +129,14 @@ serve(async (req: Request) => {
       }
     }
 
-    // Verify the project belongs to this user
+    // Verify project belongs to this user
     const { data: project, error: projError } = await adminClient
       .from('studio_projects')
       .select('id, user_id, title, frame_count')
       .eq('id', project_id)
       .single();
 
-    if (projError || !project) {
-      return errorResponse('Project not found', 404);
-    }
+    if (projError || !project) return errorResponse('Project not found', 404);
 
     if (project.user_id !== user.id && user.role !== 'admin') {
       return errorResponse('Not authorized to render this project', 403);
@@ -138,7 +157,7 @@ serve(async (req: Request) => {
       );
     }
 
-    // Fetch frames from the project
+    // Fetch frames
     const { data: frames, error: framesError } = await adminClient
       .from('studio_project_versions')
       .select('index, storage_path, duration_ms')
@@ -164,7 +183,7 @@ serve(async (req: Request) => {
       (frames as Frame[]).map(async (frame) => {
         const { data: signedUrl } = await adminClient.storage
           .from('studio_project_versions')
-          .createSignedUrl(frame.storage_path, 3600); // 1 hour expiry
+          .createSignedUrl(frame.storage_path, 3600);
 
         return {
           index: frame.index,
@@ -174,15 +193,17 @@ serve(async (req: Request) => {
       }),
     );
 
-    // Filter out any frames where URL generation failed
     const validFrames = frameUrls.filter((f) => f.url !== '');
     if (validFrames.length === 0) {
       return errorResponse('Failed to generate frame URLs', 500);
     }
 
-    // Create render job record
-    const outputPath = `renders/${user.id}/${project_id}/${Date.now()}.${format}`;
+    // Output paths — clean version + watermarked version
+    const ts = Date.now();
+    const outputPath = `renders/${user.id}/${project_id}/${ts}.${format}`;
+    const outputPathWatermarked = `renders/${user.id}/${project_id}/${ts}_wm.${format}`;
 
+    // Create render job record
     const { data: renderJob, error: rjError } = await adminClient
       .from('render_jobs')
       .insert({
@@ -190,9 +211,9 @@ serve(async (req: Request) => {
         user_id: user.id,
         status: 'queued',
         fps,
-        resolution,
+        width: RESOLUTION_MAP[resolution].width,
+        height: RESOLUTION_MAP[resolution].height,
         format,
-        quality,
         frame_count: validFrames.length,
         output_path: outputPath,
       })
@@ -203,7 +224,7 @@ serve(async (req: Request) => {
       return errorResponse(`Failed to create render job: ${rjError?.message}`, 500);
     }
 
-    // Build the render worker payload
+    // Build render worker payload with watermark config
     const workerPayload: RenderWorkerPayload = {
       job_id: renderJob.id,
       frames: validFrames,
@@ -211,12 +232,21 @@ serve(async (req: Request) => {
       resolution,
       format,
       quality,
-      output_bucket: 'renders',
+      output_bucket: 'rendered-videos',
       output_path: outputPath,
+      output_path_watermarked: outputPathWatermarked,
       webhook_url: `${FUNCTIONS_URL}/render-video?webhook=true`,
+      watermark: {
+        enabled: watermark,
+        text: watermark_text || WATERMARK_TAGLINE,
+        position: 'bottom-right',
+        opacity: 0.6,
+        font_size: 14,
+        include_stick_figure: true,
+      },
     };
 
-    // Send to render worker (fire-and-forget with error handling)
+    // Send to render worker
     const workerResponse = await fetch(`${RENDER_WORKER_URL}/render`, {
       method: 'POST',
       headers: {
@@ -227,14 +257,12 @@ serve(async (req: Request) => {
     });
 
     if (!workerResponse.ok) {
-      // Mark job as failed if worker rejects it
       await adminClient
         .from('render_jobs')
-        .update({ status: 'failed', error: 'Render worker rejected the job' })
+        .update({ status: 'failed', error_message: 'Render worker rejected the job' })
         .eq('id', renderJob.id);
 
-      const workerError = await workerResponse.text();
-      console.error('Render worker error:', workerError);
+      console.error('Render worker error:', await workerResponse.text());
       return errorResponse('Render service is unavailable. Please try again later.', 503);
     }
 
@@ -247,13 +275,12 @@ serve(async (req: Request) => {
     return jsonResponse({
       render_job_id: renderJob.id,
       status: 'rendering',
-      estimated_duration_s: Math.ceil(validFrames.length / fps) * 2, // rough estimate
+      watermark_enabled: watermark,
+      estimated_duration_s: Math.ceil(validFrames.length / fps) * 2,
       message: 'Render started. You will be notified when complete.',
     });
   } catch (err) {
-    if (err instanceof AuthError) {
-      return errorResponse(err.message, err.status);
-    }
+    if (err instanceof AuthError) return errorResponse(err.message, err.status);
     console.error('render-video error:', err);
     return errorResponse('Internal server error', 500);
   }
@@ -269,25 +296,32 @@ async function handleRenderWebhook(req: Request): Promise<Response> {
     }
 
     const body = await req.json();
-    const { job_id, status, output_url, error: renderError, duration_s } = body;
+    const {
+      job_id,
+      status,
+      output_url,
+      output_url_watermarked,
+      error: renderError,
+      duration_s,
+    } = body;
 
     if (!job_id) return errorResponse('job_id is required');
 
     const adminClient = createAdminClient();
 
     if (status === 'completed' && output_url) {
-      // Update render job as completed
+      // Update render job as completed — store both URLs
       await adminClient
         .from('render_jobs')
         .update({
           status: 'completed',
           output_url,
-          duration_s,
+          output_url_watermarked: output_url_watermarked ?? null,
           completed_at: new Date().toISOString(),
         })
         .eq('id', job_id);
 
-      // Fetch the render job to get project and user info
+      // Notify the user
       const { data: job } = await adminClient
         .from('render_jobs')
         .select('project_id, user_id')
@@ -295,22 +329,18 @@ async function handleRenderWebhook(req: Request): Promise<Response> {
         .single();
 
       if (job) {
-        // Send a notification to the user
         await adminClient.from('notifications').insert({
           user_id: job.user_id,
           type: 'render_completed',
-          title: 'Your video is ready!',
-          body: 'Your animation has been rendered successfully. Tap to view and publish.',
-          data: { render_job_id: job_id, project_id: job.project_id },
+          message: 'Your animation has been rendered! Tap to view and publish.',
         });
       }
     } else {
-      // Mark as failed
       await adminClient
         .from('render_jobs')
         .update({
           status: 'failed',
-          error: renderError ?? 'Unknown render error',
+          error_message: renderError ?? 'Unknown render error',
           completed_at: new Date().toISOString(),
         })
         .eq('id', job_id);

@@ -107,6 +107,14 @@ export default function RootLayout() {
             name="social-connect"
             options={{ headerShown: false, animation: 'slide_from_right' }}
           />
+          <Stack.Screen
+            name="publish"
+            options={{
+              headerShown: false,
+              animation: 'slide_from_bottom',
+              presentation: 'modal',
+            }}
+          />
         </Stack>
       </AuthProvider>
       </ErrorBoundary>

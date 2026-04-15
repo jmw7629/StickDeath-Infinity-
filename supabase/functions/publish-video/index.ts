@@ -1,34 +1,47 @@
 /**
  * publish-video — Supabase Edge Function
  *
- * Receives a render_jobs completion webhook or direct call.
- * Takes the rendered MP4 URL and publishes to platform channels:
- *   - YouTube (Data API v3)
- *   - TikTok (Content Posting API)
- *   - Instagram (Graph API — Reels)
- *   - Facebook (Graph API — Video)
+ * Publishes a rendered video to:
+ *   1. StickDeath OFFICIAL channels (YouTube, TikTok, Discord) — ALWAYS watermarked
+ *   2. User's own connected social accounts — watermark depends on Pro status
  *
- * Also publishes to user's own connected social accounts.
+ * Accepts either a render_jobs completion webhook or a direct authenticated call.
  * Updates publish_jobs table with per-platform status.
+ *
+ * Watermark rule:
+ *   - Official channels: ALWAYS watermarked (even for Pro users)
+ *   - User channels:     watermark for Free users, removable for Pro
  */
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts';
 import { corsHeaders, handleCors, jsonResponse, errorResponse } from '../_shared/cors.ts';
 import { createAdminClient } from '../_shared/supabase.ts';
 import { verifyAuth, AuthError } from '../_shared/auth.ts';
+import {
+  OFFICIAL_CHANNELS,
+  WATERMARK_TEXT,
+  WATERMARK_TAGLINE,
+  shouldWatermark,
+} from '../_shared/official-channels.ts';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Platform = 'youtube' | 'tiktok' | 'instagram' | 'facebook';
+type Platform = 'youtube' | 'tiktok' | 'instagram' | 'facebook' | 'discord';
 
 interface PublishRequest {
   render_job_id: string;
   platforms?: Platform[];
   publish_to_own_channels?: boolean;
+  title?: string;
+  description?: string;
+  account_type?: 'official' | 'user' | 'both';
+  /** Pro users can request no watermark on their personal copy */
+  watermark?: boolean;
 }
 
 interface PlatformResult {
-  platform: Platform;
+  platform: string;
+  target: 'official' | 'user';
   status: 'published' | 'failed';
   external_id?: string;
   external_url?: string;
@@ -41,6 +54,7 @@ interface RenderJob {
   user_id: string;
   status: string;
   output_url: string;
+  output_url_watermarked?: string;
 }
 
 interface Project {
@@ -67,14 +81,17 @@ async function publishToYouTube(
   description: string,
   tags: string[],
   accessToken: string,
+  isOfficial: boolean,
 ): Promise<PlatformResult> {
   try {
-    // Step 1: Download the video to a buffer
     const videoRes = await fetch(videoUrl);
     if (!videoRes.ok) throw new Error('Failed to download video');
     const videoBlob = await videoRes.blob();
 
-    // Step 2: Initialize resumable upload
+    const desc = isOfficial
+      ? `${description}\n\n🎬 ${WATERMARK_TAGLINE}\n🔥 Download the app: stickdeath.com`
+      : `${description}\n\n🎬 ${WATERMARK_TAGLINE}`;
+
     const initRes = await fetch(
       'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
       {
@@ -88,13 +105,14 @@ async function publishToYouTube(
         body: JSON.stringify({
           snippet: {
             title: title.slice(0, 100),
-            description: `${description}\n\n🎬 Made with StickDeath Infinity`,
-            tags: [...tags, 'stickdeath', 'animation', 'stickfigure'],
+            description: desc,
+            tags: [...tags, 'stickdeath', 'animation', 'stickfigure', 'stickdeathinf'],
             categoryId: '24', // Entertainment
           },
           status: {
             privacyStatus: 'public',
             selfDeclaredMadeForKids: false,
+            madeForKids: false,
           },
         }),
       },
@@ -108,29 +126,26 @@ async function publishToYouTube(
     const uploadUrl = initRes.headers.get('Location');
     if (!uploadUrl) throw new Error('No upload URL returned');
 
-    // Step 3: Upload the video bytes
     const uploadRes = await fetch(uploadUrl, {
       method: 'PUT',
       headers: { 'Content-Type': 'video/mp4' },
       body: videoBlob,
     });
 
-    if (!uploadRes.ok) {
-      const err = await uploadRes.text();
-      throw new Error(`YouTube upload failed: ${err}`);
-    }
-
+    if (!uploadRes.ok) throw new Error(`YouTube upload failed: ${await uploadRes.text()}`);
     const result = await uploadRes.json();
 
     return {
       platform: 'youtube',
+      target: isOfficial ? 'official' : 'user',
       status: 'published',
       external_id: result.id,
-      external_url: `https://youtube.com/watch?v=${result.id}`,
+      external_url: `https://youtube.com/shorts/${result.id}`,
     };
   } catch (err) {
     return {
       platform: 'youtube',
+      target: isOfficial ? 'official' : 'user',
       status: 'failed',
       error: err instanceof Error ? err.message : 'Unknown YouTube error',
     };
@@ -141,9 +156,13 @@ async function publishToTikTok(
   videoUrl: string,
   title: string,
   accessToken: string,
+  isOfficial: boolean,
 ): Promise<PlatformResult> {
   try {
-    // Step 1: Initialize video upload via TikTok Content Posting API
+    const caption = isOfficial
+      ? `${title} 🔥 ${WATERMARK_TAGLINE} #stickdeath #animation #stickfigure`
+      : `${title} #stickdeath #animation`;
+
     const initRes = await fetch(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
       {
@@ -154,7 +173,7 @@ async function publishToTikTok(
         },
         body: JSON.stringify({
           post_info: {
-            title: title.slice(0, 150),
+            title: caption.slice(0, 150),
             privacy_level: 'PUBLIC_TO_EVERYONE',
             disable_duet: false,
             disable_comment: false,
@@ -168,22 +187,19 @@ async function publishToTikTok(
       },
     );
 
-    if (!initRes.ok) {
-      const err = await initRes.text();
-      throw new Error(`TikTok init failed: ${err}`);
-    }
-
+    if (!initRes.ok) throw new Error(`TikTok init failed: ${await initRes.text()}`);
     const result = await initRes.json();
-    const publishId = result.data?.publish_id;
 
     return {
       platform: 'tiktok',
+      target: isOfficial ? 'official' : 'user',
       status: 'published',
-      external_id: publishId ?? undefined,
+      external_id: result.data?.publish_id,
     };
   } catch (err) {
     return {
       platform: 'tiktok',
+      target: isOfficial ? 'official' : 'user',
       status: 'failed',
       error: err instanceof Error ? err.message : 'Unknown TikTok error',
     };
@@ -195,9 +211,13 @@ async function publishToInstagram(
   caption: string,
   accessToken: string,
   igUserId: string,
+  isOfficial: boolean,
 ): Promise<PlatformResult> {
   try {
-    // Step 1: Create a media container for the Reel
+    const fullCaption = isOfficial
+      ? `${caption}\n\n🎬 ${WATERMARK_TAGLINE}\n🔥 Download the app!\n#stickdeath #animation #stickfigure #shorts`
+      : `${caption}\n\n🎬 ${WATERMARK_TAGLINE} #stickdeath #animation`;
+
     const containerRes = await fetch(
       `https://graph.facebook.com/v18.0/${igUserId}/media`,
       {
@@ -206,72 +226,52 @@ async function publishToInstagram(
         body: JSON.stringify({
           media_type: 'REELS',
           video_url: videoUrl,
-          caption: `${caption}\n\n🎬 Made with StickDeath Infinity #stickdeath #animation #stickfigure`,
+          caption: fullCaption,
           access_token: accessToken,
         }),
       },
     );
 
-    if (!containerRes.ok) {
-      const err = await containerRes.text();
-      throw new Error(`IG container failed: ${err}`);
-    }
-
+    if (!containerRes.ok) throw new Error(`IG container failed: ${await containerRes.text()}`);
     const container = await containerRes.json();
     const containerId = container.id;
 
-    // Step 2: Poll until container is ready (IG processes async)
     let ready = false;
     for (let i = 0; i < 30; i++) {
       const statusRes = await fetch(
         `https://graph.facebook.com/v18.0/${containerId}?fields=status_code&access_token=${accessToken}`,
       );
       const statusData = await statusRes.json();
-
-      if (statusData.status_code === 'FINISHED') {
-        ready = true;
-        break;
-      }
-      if (statusData.status_code === 'ERROR') {
-        throw new Error('IG container processing failed');
-      }
-      // Wait 2 seconds before polling again
+      if (statusData.status_code === 'FINISHED') { ready = true; break; }
+      if (statusData.status_code === 'ERROR') throw new Error('IG processing failed');
       await new Promise((r) => setTimeout(r, 2000));
     }
+    if (!ready) throw new Error('IG processing timed out');
 
-    if (!ready) throw new Error('IG container processing timed out');
-
-    // Step 3: Publish the container
     const publishRes = await fetch(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          creation_id: containerId,
-          access_token: accessToken,
-        }),
+        body: JSON.stringify({ creation_id: containerId, access_token: accessToken }),
       },
     );
 
-    if (!publishRes.ok) {
-      const err = await publishRes.text();
-      throw new Error(`IG publish failed: ${err}`);
-    }
-
+    if (!publishRes.ok) throw new Error(`IG publish failed: ${await publishRes.text()}`);
     const result = await publishRes.json();
 
     return {
       platform: 'instagram',
+      target: isOfficial ? 'official' : 'user',
       status: 'published',
       external_id: result.id,
-      external_url: `https://instagram.com/reel/${result.id}`,
     };
   } catch (err) {
     return {
       platform: 'instagram',
+      target: isOfficial ? 'official' : 'user',
       status: 'failed',
-      error: err instanceof Error ? err.message : 'Unknown Instagram error',
+      error: err instanceof Error ? err.message : 'Unknown IG error',
     };
   }
 }
@@ -282,9 +282,9 @@ async function publishToFacebook(
   description: string,
   accessToken: string,
   pageId: string,
+  isOfficial: boolean,
 ): Promise<PlatformResult> {
   try {
-    // Use the resumable upload API for Facebook videos
     const initRes = await fetch(
       `https://graph.facebook.com/v18.0/${pageId}/videos`,
       {
@@ -293,21 +293,18 @@ async function publishToFacebook(
         body: JSON.stringify({
           file_url: videoUrl,
           title: title.slice(0, 100),
-          description: `${description}\n\n🎬 Made with StickDeath Infinity`,
+          description: `${description}\n\n🎬 ${WATERMARK_TAGLINE}`,
           access_token: accessToken,
         }),
       },
     );
 
-    if (!initRes.ok) {
-      const err = await initRes.text();
-      throw new Error(`FB upload failed: ${err}`);
-    }
-
+    if (!initRes.ok) throw new Error(`FB upload failed: ${await initRes.text()}`);
     const result = await initRes.json();
 
     return {
       platform: 'facebook',
+      target: isOfficial ? 'official' : 'user',
       status: 'published',
       external_id: result.id,
       external_url: `https://facebook.com/${result.id}`,
@@ -315,8 +312,63 @@ async function publishToFacebook(
   } catch (err) {
     return {
       platform: 'facebook',
+      target: isOfficial ? 'official' : 'user',
       status: 'failed',
-      error: err instanceof Error ? err.message : 'Unknown Facebook error',
+      error: err instanceof Error ? err.message : 'Unknown FB error',
+    };
+  }
+}
+
+/**
+ * Post to the official StickDeath Discord channel via webhook.
+ * Uses Discord's execute webhook endpoint.
+ */
+async function publishToDiscord(
+  videoUrl: string,
+  title: string,
+  creatorName: string,
+  webhookUrl: string,
+): Promise<PlatformResult> {
+  try {
+    if (!webhookUrl) throw new Error('Discord webhook URL not configured');
+
+    const res = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'StickDeath ∞',
+        avatar_url: 'https://iohubnamsqnzyburydxr.supabase.co/storage/v1/object/public/app-assets/stickdeath-avatar.png',
+        embeds: [
+          {
+            title: `🎬 ${title}`,
+            description: `New animation by **${creatorName}**!\n\nMade with StickDeath Infinity`,
+            color: 0xff2d55, // brandPink
+            video: { url: videoUrl },
+            thumbnail: {
+              url: 'https://iohubnamsqnzyburydxr.supabase.co/storage/v1/object/public/app-assets/stickdeath-logo.png',
+            },
+            footer: {
+              text: 'StickDeath ∞ — Create. Animate. Annihilate.',
+            },
+            timestamp: new Date().toISOString(),
+          },
+        ],
+      }),
+    });
+
+    if (!res.ok) throw new Error(`Discord webhook failed: ${await res.text()}`);
+
+    return {
+      platform: 'discord',
+      target: 'official',
+      status: 'published',
+    };
+  } catch (err) {
+    return {
+      platform: 'discord',
+      target: 'official',
+      status: 'failed',
+      error: err instanceof Error ? err.message : 'Unknown Discord error',
     };
   }
 }
@@ -337,13 +389,11 @@ async function getValidToken(
 
   if (!token) return null;
 
-  // Check if token is expired (with 5-minute buffer)
   if (token.token_expires_at) {
     const expiresAt = new Date(token.token_expires_at).getTime();
     const now = Date.now() - 5 * 60 * 1000;
     if (expiresAt < now && token.refresh_token) {
-      // Token expired — attempt refresh based on platform
-      const refreshed = await refreshToken(platform, token.refresh_token);
+      const refreshed = await refreshPlatformToken(platform, token.refresh_token);
       if (refreshed) {
         await adminClient
           .from('social_tokens')
@@ -353,17 +403,16 @@ async function getValidToken(
           })
           .eq('user_id', userId)
           .eq('platform', platform);
-
         return { ...token, access_token: refreshed.access_token };
       }
-      return null; // Refresh failed
+      return null;
     }
   }
 
   return token as SocialToken;
 }
 
-async function refreshToken(
+async function refreshPlatformToken(
   platform: Platform,
   refreshToken: string,
 ): Promise<{ access_token: string; expires_at: string } | null> {
@@ -387,18 +436,6 @@ async function refreshToken(
           expires_at: new Date(Date.now() + data.expires_in * 1000).toISOString(),
         };
       }
-      case 'facebook':
-      case 'instagram': {
-        const res = await fetch(
-          `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${Deno.env.get('FACEBOOK_APP_ID')}&client_secret=${Deno.env.get('FACEBOOK_APP_SECRET')}&fb_exchange_token=${refreshToken}`,
-        );
-        const data = await res.json();
-        if (!data.access_token) return null;
-        return {
-          access_token: data.access_token,
-          expires_at: new Date(Date.now() + (data.expires_in ?? 5184000) * 1000).toISOString(),
-        };
-      }
       case 'tiktok': {
         const res = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
           method: 'POST',
@@ -417,6 +454,20 @@ async function refreshToken(
           expires_at: new Date(Date.now() + data.data.expires_in * 1000).toISOString(),
         };
       }
+      case 'facebook':
+      case 'instagram': {
+        const res = await fetch(
+          `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${Deno.env.get('FACEBOOK_APP_ID')}&client_secret=${Deno.env.get('FACEBOOK_APP_SECRET')}&fb_exchange_token=${refreshToken}`,
+        );
+        const data = await res.json();
+        if (!data.access_token) return null;
+        return {
+          access_token: data.access_token,
+          expires_at: new Date(Date.now() + (data.expires_in ?? 5184000) * 1000).toISOString(),
+        };
+      }
+      default:
+        return null;
     }
   } catch {
     return null;
@@ -432,16 +483,14 @@ serve(async (req: Request) => {
   try {
     const adminClient = createAdminClient();
 
-    // Support both webhook (no auth) and direct call (with auth)
     let userId: string;
     let body: PublishRequest;
 
     const rawBody = await req.json();
 
-    // Check if this is a render completion webhook
+    // Render completion webhook (no auth)
     if (rawBody.type === 'render.completed' && rawBody.render_job_id) {
       body = { render_job_id: rawBody.render_job_id };
-      // Get user from the render job
       const { data: job } = await adminClient
         .from('render_jobs')
         .select('user_id')
@@ -460,25 +509,34 @@ serve(async (req: Request) => {
       body = rawBody as PublishRequest;
     }
 
-    const { render_job_id, platforms, publish_to_own_channels } = body;
+    const {
+      render_job_id,
+      platforms,
+      publish_to_own_channels,
+      title: reqTitle,
+      description: reqDesc,
+      account_type = 'both',
+    } = body;
 
-    // Fetch the render job
+    // ── Fetch render job ──
     const { data: renderJob, error: rjError } = await adminClient
       .from('render_jobs')
       .select('*')
       .eq('id', render_job_id)
       .single();
 
-    if (rjError || !renderJob) {
-      return errorResponse('Render job not found', 404);
-    }
+    if (rjError || !renderJob) return errorResponse('Render job not found', 404);
 
     const job = renderJob as RenderJob;
     if (job.status !== 'completed' || !job.output_url) {
-      return errorResponse('Render job is not completed or has no output', 400);
+      return errorResponse('Render job not completed or has no output', 400);
     }
 
-    // Fetch the project for metadata
+    // Determine which video URLs to use
+    const watermarkedUrl = job.output_url_watermarked || job.output_url;
+    const cleanUrl = job.output_url;
+
+    // ── Fetch project metadata ──
     const { data: project } = await adminClient
       .from('studio_projects')
       .select('id, title, description, tags, user_id')
@@ -488,11 +546,21 @@ serve(async (req: Request) => {
     if (!project) return errorResponse('Project not found', 404);
     const proj = project as Project;
 
-    // Determine which platforms to publish to
-    const targetPlatforms: Platform[] =
-      platforms ?? ['youtube', 'tiktok', 'instagram', 'facebook'];
+    // ── Check if user is Pro ──
+    const { data: profile } = await adminClient
+      .from('profiles')
+      .select('subscription_tier, display_name, username')
+      .eq('id', userId)
+      .single();
 
-    // Create publish_job record
+    const isPro = profile?.subscription_tier === 'pro';
+    const creatorName = profile?.display_name || profile?.username || 'Anonymous';
+
+    const title = reqTitle || proj.title || 'StickDeath Animation';
+    const description = reqDesc || proj.description || 'Check out this stick figure animation!';
+    const tags = proj.tags || ['stickdeath', 'animation'];
+
+    // ── Create publish_job record ──
     const { data: publishJob, error: pjError } = await adminClient
       .from('publish_jobs')
       .insert({
@@ -500,153 +568,180 @@ serve(async (req: Request) => {
         project_id: proj.id,
         user_id: userId,
         status: 'publishing',
-        platforms: targetPlatforms,
-        results: {},
+        title,
+        description,
+        provider: account_type,
       })
       .select()
       .single();
 
-    if (pjError) {
-      return errorResponse(`Failed to create publish job: ${pjError.message}`, 500);
+    if (pjError) return errorResponse(`Failed to create publish job: ${pjError.message}`, 500);
+
+    const allResults: PlatformResult[] = [];
+
+    // ════════════════════════════════════════════════════════════════
+    // 1) OFFICIAL CHANNELS — Always watermarked
+    // ════════════════════════════════════════════════════════════════
+
+    if (account_type === 'official' || account_type === 'both') {
+      const officialPromises: Promise<PlatformResult>[] = [];
+
+      // YouTube → @stickdeath.infinity
+      const ytToken = Deno.env.get('STICKDEATH_YOUTUBE_TOKEN');
+      if (ytToken) {
+        officialPromises.push(
+          publishToYouTube(watermarkedUrl, title, description, tags, ytToken, true),
+        );
+      }
+
+      // TikTok → @stickdeath.infinity
+      const ttToken = Deno.env.get('STICKDEATH_TIKTOK_TOKEN');
+      if (ttToken) {
+        officialPromises.push(
+          publishToTikTok(watermarkedUrl, title, ttToken, true),
+        );
+      }
+
+      // Instagram (if configured)
+      const igToken = Deno.env.get('STICKDEATH_INSTAGRAM_TOKEN');
+      const igUserId = Deno.env.get('STICKDEATH_INSTAGRAM_USER_ID');
+      if (igToken && igUserId) {
+        officialPromises.push(
+          publishToInstagram(watermarkedUrl, `${title} — ${description}`, igToken, igUserId, true),
+        );
+      }
+
+      // Facebook (if configured)
+      const fbToken = Deno.env.get('STICKDEATH_FACEBOOK_TOKEN');
+      const fbPageId = Deno.env.get('STICKDEATH_FACEBOOK_PAGE_ID');
+      if (fbToken && fbPageId) {
+        officialPromises.push(
+          publishToFacebook(watermarkedUrl, title, description, fbToken, fbPageId, true),
+        );
+      }
+
+      // Discord → #stickdeath_infinity
+      const discordWebhookUrl = Deno.env.get('STICKDEATH_DISCORD_WEBHOOK_URL');
+      if (discordWebhookUrl) {
+        officialPromises.push(
+          publishToDiscord(watermarkedUrl, title, creatorName, discordWebhookUrl),
+        );
+      }
+
+      allResults.push(...(await Promise.all(officialPromises)));
     }
 
-    const title = proj.title || 'StickDeath Animation';
-    const description = proj.description || 'Check out this stick figure animation!';
-    const tags = proj.tags || ['stickdeath', 'animation'];
+    // ════════════════════════════════════════════════════════════════
+    // 2) USER'S OWN CHANNELS — watermark based on Pro status
+    // ════════════════════════════════════════════════════════════════
 
-    // ── Publish to StickDeath official channels ──
+    if (
+      (account_type === 'user' || account_type === 'both') &&
+      publish_to_own_channels !== false
+    ) {
+      // Pro users get the clean URL; free users get watermarked
+      const userVideoUrl = shouldWatermark('user', isPro) ? watermarkedUrl : cleanUrl;
 
-    const officialResults: PlatformResult[] = [];
+      const userPlatforms: Platform[] =
+        (platforms as Platform[]) ?? ['youtube', 'tiktok', 'instagram', 'facebook'];
 
-    // Official channel tokens come from env vars
-    const officialYTToken = Deno.env.get('STICKDEATH_YOUTUBE_TOKEN');
-    const officialTTToken = Deno.env.get('STICKDEATH_TIKTOK_TOKEN');
-    const officialIGToken = Deno.env.get('STICKDEATH_INSTAGRAM_TOKEN');
-    const officialIGUserId = Deno.env.get('STICKDEATH_INSTAGRAM_USER_ID');
-    const officialFBToken = Deno.env.get('STICKDEATH_FACEBOOK_TOKEN');
-    const officialFBPageId = Deno.env.get('STICKDEATH_FACEBOOK_PAGE_ID');
+      const userPromises: Promise<PlatformResult>[] = [];
 
-    // Run all platform publishes concurrently
-    const publishPromises: Promise<PlatformResult>[] = [];
-
-    if (targetPlatforms.includes('youtube') && officialYTToken) {
-      publishPromises.push(
-        publishToYouTube(job.output_url, title, description, tags, officialYTToken),
-      );
-    }
-
-    if (targetPlatforms.includes('tiktok') && officialTTToken) {
-      publishPromises.push(
-        publishToTikTok(job.output_url, title, officialTTToken),
-      );
-    }
-
-    if (targetPlatforms.includes('instagram') && officialIGToken && officialIGUserId) {
-      publishPromises.push(
-        publishToInstagram(
-          job.output_url,
-          `${title} — ${description}`,
-          officialIGToken,
-          officialIGUserId,
-        ),
-      );
-    }
-
-    if (targetPlatforms.includes('facebook') && officialFBToken && officialFBPageId) {
-      publishPromises.push(
-        publishToFacebook(job.output_url, title, description, officialFBToken, officialFBPageId),
-      );
-    }
-
-    officialResults.push(...(await Promise.all(publishPromises)));
-
-    // ── Publish to user's own connected channels ──
-
-    const userResults: PlatformResult[] = [];
-
-    if (publish_to_own_channels !== false) {
-      const userPublishPromises: Promise<PlatformResult>[] = [];
-
-      for (const platform of targetPlatforms) {
+      for (const platform of userPlatforms) {
+        if (platform === 'discord') continue; // No user Discord publishing
         const token = await getValidToken(adminClient, userId, platform);
         if (!token) continue;
 
         switch (platform) {
           case 'youtube':
-            userPublishPromises.push(
-              publishToYouTube(job.output_url, title, description, tags, token.access_token),
+            userPromises.push(
+              publishToYouTube(userVideoUrl, title, description, tags, token.access_token, false),
             );
             break;
           case 'tiktok':
-            userPublishPromises.push(
-              publishToTikTok(job.output_url, title, token.access_token),
+            userPromises.push(
+              publishToTikTok(userVideoUrl, title, token.access_token, false),
             );
             break;
           case 'instagram':
-            userPublishPromises.push(
+            userPromises.push(
               publishToInstagram(
-                job.output_url,
+                userVideoUrl,
                 `${title} — ${description}`,
                 token.access_token,
                 token.platform_user_id,
+                false,
               ),
             );
             break;
           case 'facebook':
-            userPublishPromises.push(
+            userPromises.push(
               publishToFacebook(
-                job.output_url,
+                userVideoUrl,
                 title,
                 description,
                 token.access_token,
                 token.platform_user_id,
+                false,
               ),
             );
             break;
         }
       }
 
-      userResults.push(...(await Promise.all(userPublishPromises)));
+      allResults.push(...(await Promise.all(userPromises)));
     }
 
-    // Determine overall status
-    const allResults = [...officialResults, ...userResults];
+    // ── Determine overall status ──
     const anySuccess = allResults.some((r) => r.status === 'published');
     const allFailed = allResults.length > 0 && allResults.every((r) => r.status === 'failed');
-
     const overallStatus = allFailed ? 'failed' : anySuccess ? 'published' : 'no_platforms';
 
-    // Update publish_job with results
+    // Split results by target
+    const officialResults = allResults.filter((r) => r.target === 'official');
+    const userResults = allResults.filter((r) => r.target === 'user');
+
+    // Update publish_job
     await adminClient
       .from('publish_jobs')
       .update({
         status: overallStatus,
-        results: {
-          official: officialResults,
-          user: userResults,
-        },
+        platform_video_id: allResults.find((r) => r.external_id)?.external_id ?? null,
+        platform_url: allResults.find((r) => r.external_url)?.external_url ?? null,
+        error_message: allFailed
+          ? allResults.map((r) => `${r.platform}: ${r.error}`).join('; ')
+          : null,
         completed_at: new Date().toISOString(),
       })
       .eq('id', publishJob.id);
 
-    // If successful, update the project's published status
+    // If any succeeded, mark project as published
     if (anySuccess) {
       await adminClient
         .from('studio_projects')
         .update({ is_published: true, published_at: new Date().toISOString() })
         .eq('id', proj.id);
+
+      // Notify the creator
+      await adminClient.from('notifications').insert({
+        user_id: userId,
+        type: 'publish_completed',
+        message: `Your animation "${title}" was published to ${officialResults.filter((r) => r.status === 'published').length} official channels!`,
+      });
     }
 
     return jsonResponse({
       publish_job_id: publishJob.id,
       status: overallStatus,
+      watermark_applied: {
+        official: true,
+        user: shouldWatermark('user', isPro),
+      },
       official_results: officialResults,
       user_results: userResults,
     });
   } catch (err) {
-    if (err instanceof AuthError) {
-      return errorResponse(err.message, err.status);
-    }
+    if (err instanceof AuthError) return errorResponse(err.message, err.status);
     console.error('publish-video error:', err);
     return errorResponse('Internal server error', 500);
   }
