@@ -16,7 +16,7 @@
 set -e
 
 PROJECT_REF="iohubnamsqnzyburydxr"
-FUNCTIONS=("stripe-webhook" "create-checkout" "publish-video" "render-video" "ai-assist" "admin-actions" "social-connect")
+FUNCTIONS=("stripe-webhook" "create-checkout" "publish-video" "render-video" "ai-assist" "admin-actions" "social-connect" "create-tip" "manage-subscription" "grant-referral-pro" "send-push-notification")
 
 echo "🚀 Deploying StickDeath Infinity Edge Functions..."
 echo "   Project: $PROJECT_REF"

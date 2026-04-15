@@ -77,3 +77,15 @@ verify_jwt = true
 
 [functions.social-connect]
 verify_jwt = true
+
+[functions.create-tip]
+verify_jwt = true
+
+[functions.manage-subscription]
+verify_jwt = true
+
+[functions.grant-referral-pro]
+verify_jwt = true
+
+[functions.send-push-notification]
+verify_jwt = false
