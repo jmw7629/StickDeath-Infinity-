@@ -1,12 +1,12 @@
 // EditorViewModel.swift
 // Main view model for the animation studio
-// v9: Drawing gesture handling, image import, cursor/select tool, project settings
+// v10: Rig/bone animation, IK solver, scrollable top taskbar
 
 import SwiftUI
 import Combine
 import PhotosUI
 
-enum EditorMode: Equatable { case pose, move, draw, cursor }
+enum EditorMode: Equatable { case pose, move, draw, cursor, rig }
 
 @MainActor
 class EditorViewModel: ObservableObject {
@@ -64,6 +64,17 @@ class EditorViewModel: ObservableObject {
     // AI
     @Published var aiSuggestion: String?
     @Published var showAIPanel = false
+
+    // Rig / Bone
+    @Published var rig: BoneRig = BoneRig.defaultHumanoid()
+    @Published var rigSubTool: RigSubTool = .select
+    @Published var selectedBoneId: UUID?
+    @Published var showBoneOverlay: Bool = true
+    @Published var rigDragStartJoint: String?     // For addBone: starting joint
+
+    var selectedBone: Bone? {
+        rig.bones.first { $0.id == selectedBoneId }
+    }
 
     // Auto-save timer
     private var autoSaveTask: Task<Void, Never>?
@@ -691,6 +702,366 @@ class EditorViewModel: ObservableObject {
             aiSuggestion = suggestion
         } catch {
             aiSuggestion = "Error: \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - Rig / Bone Operations
+
+    /// Move joint with IK awareness (when in rig mode with IK sub-tool)
+    func moveJointWithIK(_ jointName: String, to target: CGPoint, figureId: UUID) {
+        guard frames.indices.contains(currentFrameIndex),
+              let stateIdx = frames[currentFrameIndex].figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
+
+        if mode == .rig && rigSubTool == .ikDrag {
+            // Find IK chain containing this joint
+            if let chain = rig.ikChains.first(where: { $0.jointNames.contains(jointName) }) {
+                var joints = frames[currentFrameIndex].figureStates[stateIdx].joints
+                let constraints = Dictionary(
+                    uniqueKeysWithValues: rig.bones.compactMap { bone -> (String, AngleConstraint)? in
+                        guard let c = bone.angleConstraint else { return nil }
+                        return (bone.jointB, c)
+                    }
+                )
+                IKSolver.solve(chain: chain, target: target, joints: &joints, constraints: constraints)
+                IKSolver.enforceLengths(bones: rig.bones, joints: &joints)
+                frames[currentFrameIndex].figureStates[stateIdx].joints = joints
+            } else {
+                // No IK chain — direct move
+                frames[currentFrameIndex].figureStates[stateIdx].joints[jointName] = target
+            }
+        } else {
+            frames[currentFrameIndex].figureStates[stateIdx].joints[jointName] = target
+        }
+        HapticManager.shared.jointDrag()
+    }
+
+    /// Add a new bone between two joints
+    func addBone(from jointA: String, to position: CGPoint) {
+        pushUndo()
+        guard let figureId = selectedFigureId,
+              frames.indices.contains(currentFrameIndex),
+              let stateIdx = frames[currentFrameIndex].figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
+
+        // Create new joint name
+        let jointName = "custom_\(UUID().uuidString.prefix(6))"
+
+        // Add joint position to current frame
+        frames[currentFrameIndex].figureStates[stateIdx].joints[jointName] = position
+
+        // Also add to all other frames (copy position)
+        for i in frames.indices where i != currentFrameIndex {
+            if let idx = frames[i].figureStates.firstIndex(where: { $0.figureId == figureId }) {
+                frames[i].figureStates[idx].joints[jointName] = position
+            }
+        }
+
+        // Add to custom joints
+        rig.customJoints[jointName] = position
+
+        // Create bone
+        let parentBone = rig.bones.first { $0.jointB == jointA }
+        let length = hypot(position.x - (frames[currentFrameIndex].figureStates[stateIdx].joints[jointA]?.x ?? 0),
+                          position.y - (frames[currentFrameIndex].figureStates[stateIdx].joints[jointA]?.y ?? 0))
+        let bone = Bone(
+            id: UUID(),
+            name: "\(jointA)→\(jointName)",
+            parentId: parentBone?.id ?? rig.bones.first(where: { $0.jointB == jointA })?.id,
+            jointA: jointA,
+            jointB: jointName,
+            length: max(10, length),
+            thickness: 2.5,
+            color: "#FFFFFF",
+            locked: false,
+            angleConstraint: nil,
+            style: .stick
+        )
+        rig.bones.append(bone)
+        selectedBoneId = bone.id
+        markDirty()
+        HapticManager.shared.objectPlaced()
+    }
+
+    /// Split a bone (add joint in the middle)
+    func splitBone(_ boneId: UUID) {
+        guard let boneIdx = rig.bones.firstIndex(where: { $0.id == boneId }),
+              let figureId = selectedFigureId,
+              frames.indices.contains(currentFrameIndex),
+              let stateIdx = frames[currentFrameIndex].figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
+
+        pushUndo()
+        let bone = rig.bones[boneIdx]
+        let joints = frames[currentFrameIndex].figureStates[stateIdx].joints
+        guard let posA = joints[bone.jointA], let posB = joints[bone.jointB] else { return }
+
+        let midName = "mid_\(UUID().uuidString.prefix(6))"
+        let midPos = CGPoint(x: (posA.x + posB.x) / 2, y: (posA.y + posB.y) / 2)
+
+        // Add mid joint to all frames
+        for i in frames.indices {
+            if let idx = frames[i].figureStates.firstIndex(where: { $0.figureId == figureId }) {
+                let ja = frames[i].figureStates[idx].joints[bone.jointA] ?? posA
+                let jb = frames[i].figureStates[idx].joints[bone.jointB] ?? posB
+                frames[i].figureStates[idx].joints[midName] = CGPoint(x: (ja.x + jb.x) / 2, y: (ja.y + jb.y) / 2)
+            }
+        }
+        rig.customJoints[midName] = midPos
+
+        // Create two new bones
+        let boneA = Bone(id: UUID(), name: "\(bone.jointA)→\(midName)", parentId: bone.parentId,
+                         jointA: bone.jointA, jointB: midName, length: bone.length / 2,
+                         thickness: bone.thickness, color: bone.color, locked: bone.locked,
+                         angleConstraint: nil, style: bone.style)
+        let boneB = Bone(id: UUID(), name: "\(midName)→\(bone.jointB)", parentId: boneA.id,
+                         jointA: midName, jointB: bone.jointB, length: bone.length / 2,
+                         thickness: bone.thickness, color: bone.color, locked: bone.locked,
+                         angleConstraint: bone.angleConstraint, style: bone.style)
+
+        // Re-parent children
+        for i in rig.bones.indices {
+            if rig.bones[i].parentId == bone.id {
+                rig.bones[i].parentId = boneB.id
+            }
+        }
+
+        // Replace original
+        rig.bones.remove(at: boneIdx)
+        rig.bones.append(boneA)
+        rig.bones.append(boneB)
+
+        selectedBoneId = boneA.id
+        markDirty()
+    }
+
+    /// Delete a bone (and optionally its child joints)
+    func deleteBone(_ boneId: UUID) {
+        guard let boneIdx = rig.bones.firstIndex(where: { $0.id == boneId }) else { return }
+        pushUndo()
+        let bone = rig.bones[boneIdx]
+
+        // Re-parent children to this bone's parent
+        for i in rig.bones.indices {
+            if rig.bones[i].parentId == bone.id {
+                rig.bones[i].parentId = bone.parentId
+            }
+        }
+
+        rig.bones.remove(at: boneIdx)
+        if selectedBoneId == boneId { selectedBoneId = nil }
+        markDirty()
+    }
+
+    /// Select bone at tap location
+    func selectBoneAt(_ canvasPoint: CGPoint, joints: [String: CGPoint]) {
+        let threshold: CGFloat = 12
+
+        for bone in rig.bones {
+            guard let posA = joints[bone.jointA],
+                  let posB = joints[bone.jointB] else { continue }
+            let dist = distanceToLineSegment(point: canvasPoint, start: posA, end: posB)
+            if dist < threshold {
+                selectedBoneId = bone.id
+                HapticManager.shared.buttonTap()
+                return
+            }
+        }
+        selectedBoneId = nil
+    }
+
+    /// Update bone visual properties
+    func updateSelectedBoneStyle(_ style: BoneStyle) {
+        guard let id = selectedBoneId,
+              let idx = rig.bones.firstIndex(where: { $0.id == id }) else { return }
+        rig.bones[idx].style = style
+    }
+
+    func updateSelectedBoneColor(_ hex: String) {
+        guard let id = selectedBoneId,
+              let idx = rig.bones.firstIndex(where: { $0.id == id }) else { return }
+        rig.bones[idx].color = hex
+    }
+
+    func updateSelectedBoneThickness(_ thickness: CGFloat) {
+        guard let id = selectedBoneId,
+              let idx = rig.bones.firstIndex(where: { $0.id == id }) else { return }
+        rig.bones[idx].thickness = thickness
+    }
+
+    func updateSelectedBoneLocked(_ locked: Bool) {
+        guard let id = selectedBoneId,
+              let idx = rig.bones.firstIndex(where: { $0.id == id }) else { return }
+        rig.bones[idx].locked = locked
+    }
+
+    func toggleBoneVisibility() {
+        showBoneOverlay.toggle()
+    }
+
+    func toggleIKChainPin(chainId: UUID, pinned: Bool) {
+        guard let idx = rig.ikChains.firstIndex(where: { $0.id == chainId }) else { return }
+        rig.ikChains[idx].pinned = pinned
+    }
+
+    /// Apply rig template (replaces current figure with template skeleton)
+    func applyRigTemplate(_ template: RigTemplate) {
+        pushUndo()
+
+        // Replace figure joints
+        let figure = StickFigure(
+            id: UUID(),
+            name: template.name,
+            color: CodableColor(.white),
+            lineWidth: 3,
+            headRadius: template.id == "humanoid" ? 12 : 6,
+            joints: template.joints
+        )
+
+        figures = [figure]
+        selectedFigureId = figure.id
+
+        // Build rig from template
+        var bones: [Bone] = template.bones.map { pair in
+            let posA = template.joints[pair.0] ?? .zero
+            let posB = template.joints[pair.1] ?? .zero
+            return Bone(
+                id: UUID(),
+                name: "\(pair.0)→\(pair.1)",
+                parentId: nil,
+                jointA: pair.0,
+                jointB: pair.1,
+                length: hypot(posB.x - posA.x, posB.y - posA.y),
+                thickness: 2.5,
+                color: "#FFFFFF",
+                locked: false,
+                angleConstraint: nil,
+                style: .stick
+            )
+        }
+
+        // Resolve parent IDs
+        for i in bones.indices {
+            let parentJoint = bones[i].jointA
+            bones[i].parentId = bones.first(where: { $0.jointB == parentJoint })?.id
+        }
+
+        rig = BoneRig(bones: bones, customJoints: [:], ikChains: [])
+
+        // Reset frames
+        frames = [AnimationFrame(
+            id: UUID(),
+            figureStates: [FigureState(id: UUID(), figureId: figure.id, joints: template.joints, visible: true)],
+            duration: 1.0 / Double(project.fps ?? 12),
+            placedObjects: [],
+            drawnElements: [],
+            importedImages: []
+        )]
+        currentFrameIndex = 0
+        markDirty()
+    }
+
+    // MARK: - Rig Gesture Handling
+
+    func handleRigTap(at point: CGPoint) {
+        guard let figureId = selectedFigureId,
+              frames.indices.contains(currentFrameIndex),
+              let state = frames[currentFrameIndex].figureStates.first(where: { $0.figureId == figureId }) else { return }
+
+        let canvasPoint = screenToCanvas(point)
+
+        switch rigSubTool {
+        case .select:
+            selectBoneAt(canvasPoint, joints: state.joints)
+
+        case .addJoint:
+            // Find closest bone and split it
+            let threshold: CGFloat = 15
+            for bone in rig.bones {
+                guard let posA = state.joints[bone.jointA],
+                      let posB = state.joints[bone.jointB] else { continue }
+                let dist = distanceToLineSegment(point: canvasPoint, start: posA, end: posB)
+                if dist < threshold {
+                    splitBone(bone.id)
+                    return
+                }
+            }
+
+        case .deleteBone:
+            let threshold: CGFloat = 15
+            for bone in rig.bones {
+                guard let posA = state.joints[bone.jointA],
+                      let posB = state.joints[bone.jointB] else { continue }
+                let dist = distanceToLineSegment(point: canvasPoint, start: posA, end: posB)
+                if dist < threshold {
+                    deleteBone(bone.id)
+                    return
+                }
+            }
+
+        case .pinJoint:
+            // Find closest joint
+            let threshold: CGFloat = 15
+            for (name, pos) in state.joints {
+                if hypot(canvasPoint.x - pos.x, canvasPoint.y - pos.y) < threshold {
+                    // Toggle pin on IK chains containing this joint
+                    for i in rig.ikChains.indices {
+                        if rig.ikChains[i].jointNames.contains(name) {
+                            rig.ikChains[i].pinned.toggle()
+                        }
+                    }
+                    return
+                }
+            }
+
+        default: break
+        }
+    }
+
+    func handleRigDragBegan(at point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+        guard let figureId = selectedFigureId,
+              frames.indices.contains(currentFrameIndex),
+              let state = frames[currentFrameIndex].figureStates.first(where: { $0.figureId == figureId }) else { return }
+
+        if rigSubTool == .addBone {
+            // Find closest joint to start from
+            let threshold: CGFloat = 20
+            for (name, pos) in state.joints {
+                if hypot(canvasPoint.x - pos.x, canvasPoint.y - pos.y) < threshold {
+                    rigDragStartJoint = name
+                    return
+                }
+            }
+        } else if rigSubTool == .select || rigSubTool == .ikDrag {
+            // Find closest joint to drag
+            let threshold: CGFloat = 15
+            for (name, pos) in state.joints {
+                if hypot(canvasPoint.x - pos.x, canvasPoint.y - pos.y) < threshold {
+                    selectedJoint = name
+                    return
+                }
+            }
+        }
+    }
+
+    func handleRigDragMoved(to point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+        guard let figureId = selectedFigureId else { return }
+
+        if rigSubTool == .select || rigSubTool == .ikDrag {
+            guard let jointName = selectedJoint else { return }
+            moveJointWithIK(jointName, to: canvasPoint, figureId: figureId)
+        }
+        // addBone: live preview line drawn in CanvasView
+    }
+
+    func handleRigDragEnded(at point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+
+        if rigSubTool == .addBone, let startJoint = rigDragStartJoint {
+            addBone(from: startJoint, to: canvasPoint)
+            rigDragStartJoint = nil
+        } else if rigSubTool == .select || rigSubTool == .ikDrag {
+            if selectedJoint != nil { pushUndo() }
+            selectedJoint = nil
         }
     }
 

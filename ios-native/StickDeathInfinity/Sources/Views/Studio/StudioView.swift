@@ -1,7 +1,7 @@
 // StudioView.swift
 // Main animation studio — FlipaClip-inspired layout
-// v9: Drawing gestures wired, cursor/select tool, image import, project settings, frames viewer
-// Design refs: FlipaClip (tools left, timeline bottom) + Photoshop iPad (contextual UI)
+// v10: Scrollable top taskbar with Rig/Bone tool, IK-aware posing
+// Design refs: FlipaClip (tools left, timeline bottom) + Stick Nodes (rigging)
 
 import SwiftUI
 import PhotosUI
@@ -33,7 +33,7 @@ struct StudioView: View {
                 .gesture(canvasGesture)
                 .ignoresSafeArea()
 
-            // ── Drawing overlay (when in draw mode — renders completed elements) ──
+            // ── Drawing overlay (when in draw mode) ──
             if vm.mode == .draw {
                 DrawingOverlay(
                     drawState: vm.drawState,
@@ -48,27 +48,27 @@ struct StudioView: View {
                 textInputOverlay
             }
 
-            // ── Top Bar (ultra-thin) ──
+            // ── Top Taskbar (scrollable slider — compact) ──
             VStack(spacing: 0) {
-                topBar
+                topTaskbar
                 Spacer()
             }
 
-            // ── Left Tool Strip (FlipaClip-style) ──
+            // ── Left Tool Strip ──
             HStack(spacing: 0) {
                 leftToolStrip
                 Spacer()
             }
-            .padding(.top, 56)
+            .padding(.top, 52)
 
             // ── Right Action Strip ──
             HStack(spacing: 0) {
                 Spacer()
                 rightActionStrip
             }
-            .padding(.top, 56)
+            .padding(.top, 52)
 
-            // ── Bottom Timeline (always visible as thin strip) ──
+            // ── Bottom Timeline ──
             VStack(spacing: 0) {
                 Spacer()
                 bottomTimeline
@@ -189,8 +189,9 @@ struct StudioView: View {
             return AnyGesture(drawGesture.map { _ in () })
         case .cursor:
             return AnyGesture(cursorGesture.map { _ in () })
+        case .rig:
+            return AnyGesture(rigGesture.map { _ in () })
         case .pose:
-            // Pose mode joint dragging handled by JointHandle in CanvasView
             return AnyGesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in }
@@ -199,7 +200,7 @@ struct StudioView: View {
         }
     }
 
-    // Pan + zoom gesture for move mode
+    // Pan + zoom for move mode
     var moveGesture: some Gesture {
         MagnificationGesture()
             .simultaneously(with: DragGesture())
@@ -209,7 +210,7 @@ struct StudioView: View {
             }
     }
 
-    // Drawing gesture — forwards touch events to EditorViewModel
+    // Drawing gesture
     var drawGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { drag in
@@ -223,13 +224,12 @@ struct StudioView: View {
             }
     }
 
-    // Cursor gesture — tap to select, drag to move
+    // Cursor gesture
     var cursorGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { drag in
                 let dist = hypot(drag.translation.width, drag.translation.height)
                 if dist > 4 {
-                    // Dragging — move selected object
                     let delta = CGSize(
                         width: drag.translation.width - lastDragTranslation.width,
                         height: drag.translation.height - lastDragTranslation.height
@@ -241,10 +241,33 @@ struct StudioView: View {
             .onEnded { drag in
                 let dist = hypot(drag.translation.width, drag.translation.height)
                 if dist <= 4 {
-                    // Tap — select object at point
                     vm.handleCursorTap(at: drag.startLocation)
                 } else {
                     vm.pushUndo()
+                }
+                lastDragTranslation = .zero
+            }
+    }
+
+    // Rig gesture — IK-aware dragging, bone creation, selection
+    var rigGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { drag in
+                let dist = hypot(drag.translation.width, drag.translation.height)
+                if dist > 4 {
+                    if lastDragTranslation == .zero {
+                        vm.handleRigDragBegan(at: drag.startLocation)
+                    }
+                    vm.handleRigDragMoved(to: drag.location)
+                    lastDragTranslation = drag.translation
+                }
+            }
+            .onEnded { drag in
+                let dist = hypot(drag.translation.width, drag.translation.height)
+                if dist <= 4 {
+                    vm.handleRigTap(at: drag.startLocation)
+                } else {
+                    vm.handleRigDragEnded(at: drag.location)
                 }
                 lastDragTranslation = .zero
             }
@@ -278,153 +301,208 @@ struct StudioView: View {
         }
     }
 
-    // MARK: - Top Bar (ultra-thin, like FlipaClip)
-    var topBar: some View {
-        HStack(spacing: 12) {
-            // Back
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    // MARK: - TOP TASKBAR (SCROLLABLE SLIDER)
+    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    var topTaskbar: some View {
+        HStack(spacing: 0) {
+            // ── Fixed left: Back ──
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.white)
-                    .frame(width: 36, height: 36)
+                    .frame(width: 34, height: 34)
             }
+            .padding(.leading, 6)
 
-            // Project name (tap for settings)
-            Button {
-                vm.showProjectSettings = true
-            } label: {
-                HStack(spacing: 4) {
+            // ── Project name ──
+            Button { vm.showProjectSettings = true } label: {
+                HStack(spacing: 3) {
                     Text(vm.project.title)
-                        .font(.subheadline.bold())
+                        .font(.caption.bold())
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Image(systemName: "chevron.down")
-                        .font(.system(size: 8))
+                        .font(.system(size: 7))
                         .foregroundStyle(.gray)
                 }
             }
+            .frame(maxWidth: 80)
 
-            Spacer()
+            // ── Scrollable tool strip (THE SLIDER) ──
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    // Divider dot
+                    toolDivider
 
-            // Undo / Redo
-            Button { vm.undo() } label: {
-                Image(systemName: "arrow.uturn.backward")
-                    .font(.system(size: 15))
-                    .foregroundStyle(vm.undoStack.isEmpty ? .gray.opacity(0.4) : .white)
-                    .frame(width: 32, height: 32)
+                    // Creative modes
+                    taskbarTool(.pose, icon: "figure.stand", label: "Pose")
+                    taskbarTool(.move, icon: "hand.draw", label: "Move")
+                    taskbarTool(.draw, icon: "pencil.tip", label: "Draw")
+                    taskbarTool(.cursor, icon: "cursorarrow", label: "Select")
+                    taskbarTool(.rig, icon: "figure.stand.line.dotted.figure.stand", label: "Rig")
+
+                    toolDivider
+
+                    // Undo / Redo
+                    taskbarAction(icon: "arrow.uturn.backward", label: "Undo",
+                                  disabled: vm.undoStack.isEmpty) { vm.undo() }
+                    taskbarAction(icon: "arrow.uturn.forward", label: "Redo",
+                                  disabled: vm.redoStack.isEmpty) { vm.redo() }
+
+                    toolDivider
+
+                    // Play
+                    taskbarAction(icon: vm.isPlaying ? "pause.fill" : "play.fill",
+                                  label: vm.isPlaying ? "Pause" : "Play",
+                                  tint: .red) { vm.togglePlay() }
+
+                    toolDivider
+
+                    // Canvas tools
+                    taskbarToggle(icon: "circle.dotted", label: "Onion", active: vm.showOnionSkin) {
+                        vm.showOnionSkin.toggle()
+                    }
+                    taskbarToggle(icon: "grid", label: "Grid", active: vm.showGrid) {
+                        vm.showGrid.toggle()
+                    }
+
+                    // Rig bone overlay toggle (quick access in toolbar)
+                    if vm.mode == .rig {
+                        taskbarToggle(icon: vm.showBoneOverlay ? "eye.fill" : "eye.slash",
+                                      label: "Bones", active: vm.showBoneOverlay, tint: .green) {
+                            vm.toggleBoneVisibility()
+                        }
+                    }
+
+                    toolDivider
+
+                    // Import / Assets
+                    taskbarAction(icon: "photo.badge.plus", label: "Photo", tint: .green) {
+                        vm.showImagePicker = true
+                    }
+                    taskbarAction(icon: "cube.fill", label: "Assets", tint: .mint) {
+                        showAssetBrowser = true
+                    }
+
+                    if auth.isPro {
+                        taskbarAction(icon: "sparkles", label: "AI", tint: .purple) {
+                            vm.showAIPanel.toggle()
+                        }
+                    }
+
+                    taskbarAction(icon: "rectangle.split.3x3", label: "Frames") {
+                        vm.showFramesViewer = true
+                    }
+                    taskbarAction(icon: "square.3.layers.3d", label: "Layers") {
+                        showLayersSheet = true
+                    }
+                    taskbarAction(icon: "square.and.arrow.down", label: "Export") {
+                        showExportOptions = true
+                    }
+                    taskbarAction(icon: "questionmark.circle", label: "Help") {
+                        showQuickHelp = true
+                    }
+                }
+                .padding(.horizontal, 4)
             }
-            .disabled(vm.undoStack.isEmpty)
 
-            Button { vm.redo() } label: {
-                Image(systemName: "arrow.uturn.forward")
-                    .font(.system(size: 15))
-                    .foregroundStyle(vm.redoStack.isEmpty ? .gray.opacity(0.4) : .white)
-                    .frame(width: 32, height: 32)
-            }
-            .disabled(vm.redoStack.isEmpty)
-
-            // Play / Pause
-            Button { vm.togglePlay() } label: {
-                Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 16))
-                    .foregroundStyle(.red)
-                    .frame(width: 36, height: 36)
-                    .background(Color.red.opacity(0.15))
-                    .clipShape(Circle())
-            }
-
-            // Publish
+            // ── Fixed right: Publish ──
             Button { showPublishSheet = true } label: {
                 Image(systemName: "paperplane.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 12))
                     .foregroundStyle(.black)
-                    .frame(width: 32, height: 32)
+                    .frame(width: 30, height: 30)
                     .background(Color.red)
                     .clipShape(Circle())
             }
+            .padding(.trailing, 8)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .frame(height: 46)
         .background(
-            LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0)],
+            LinearGradient(colors: [.black.opacity(0.9), .black.opacity(0.6), .clear],
                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea(edges: .top)
         )
     }
 
-    // MARK: - Left Tool Strip (FlipaClip-style vertical toolbar)
+    // Taskbar tool button (mode selector)
+    func taskbarTool(_ mode: EditorMode, icon: String, label: String) -> some View {
+        Button {
+            vm.mode = mode
+            if mode != .cursor { vm.clearSelection() }
+            HapticManager.shared.buttonTap()
+        } label: {
+            VStack(spacing: 1) {
+                Image(systemName: icon)
+                    .font(.system(size: 14, weight: vm.mode == mode ? .bold : .medium))
+                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.7))
+                Text(label)
+                    .font(.system(size: 7, weight: .medium))
+                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.4))
+            }
+            .frame(width: 38, height: 38)
+            .background(vm.mode == mode ? Color.red.opacity(0.2) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // Taskbar action button
+    func taskbarAction(icon: String, label: String, disabled: Bool = false, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 1) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(disabled ? .gray.opacity(0.3) : tint.opacity(0.8))
+                Text(label)
+                    .font(.system(size: 7))
+                    .foregroundStyle(disabled ? .gray.opacity(0.2) : .white.opacity(0.4))
+            }
+            .frame(width: 36, height: 38)
+        }
+        .disabled(disabled)
+    }
+
+    // Taskbar toggle button
+    func taskbarToggle(icon: String, label: String, active: Bool, tint: Color = .white, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 1) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(active ? tint : .white.opacity(0.4))
+                Text(label)
+                    .font(.system(size: 7))
+                    .foregroundStyle(active ? tint.opacity(0.7) : .white.opacity(0.3))
+            }
+            .frame(width: 36, height: 38)
+            .background(active ? tint.opacity(0.1) : .clear)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    // Small visual divider between tool groups
+    var toolDivider: some View {
+        RoundedRectangle(cornerRadius: 1)
+            .fill(.white.opacity(0.12))
+            .frame(width: 1, height: 24)
+            .padding(.horizontal, 2)
+    }
+
+    // MARK: - Left Tool Strip (contextual sub-tools)
     var leftToolStrip: some View {
         VStack(spacing: 6) {
-            // Mode tools
-            toolButton(.pose, icon: "figure.stand", label: "Pose")
-            toolButton(.move, icon: "hand.draw", label: "Move")
-            toolButton(.draw, icon: "pencil.tip", label: "Draw")
-            toolButton(.cursor, icon: "cursorarrow", label: "Cursor")
-
-            Divider()
-                .frame(width: 28)
-                .background(Color.white.opacity(0.2))
-
-            // Drawing sub-tools (visible in draw mode)
-            if vm.mode == .draw {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 4) {
-                        ForEach(DrawingTool.allCases, id: \.self) { tool in
-                            drawToolButton(tool)
-                        }
-                    }
-                }
-                .frame(maxHeight: 220)
-
-                Divider()
-                    .frame(width: 28)
-                    .background(Color.white.opacity(0.2))
-
-                // Color indicator (tap for wheel)
-                ColorPicker("", selection: $vm.drawState.strokeColor, supportsOpacity: true)
-                    .labelsHidden()
-                    .frame(width: 30, height: 30)
-
-                // Brush size indicator
-                Button {
-                    vm.showBrushSizePopover.toggle()
-                } label: {
-                    ZStack {
-                        Circle()
-                            .stroke(.white.opacity(0.3), lineWidth: 1)
-                            .frame(width: 30, height: 30)
-                        Circle()
-                            .fill(vm.drawState.strokeColor)
-                            .frame(width: min(22, max(4, vm.drawState.strokeWidth * 2)),
-                                   height: min(22, max(4, vm.drawState.strokeWidth * 2)))
-                    }
-                }
-                .popover(isPresented: $vm.showBrushSizePopover) {
-                    BrushSizePopover(drawState: vm.drawState)
-                }
-
-                // Drawing undo (erase last stroke)
-                Button {
-                    vm.undoLastDrawnElement()
-                    HapticManager.shared.buttonTap()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(width: 30, height: 30)
-                }
-
-                // Clear all drawn elements
-                Button {
-                    vm.clearDrawnElements()
-                    HapticManager.shared.buttonTap()
-                } label: {
-                    Image(systemName: "trash.circle")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.red.opacity(0.6))
-                        .frame(width: 30, height: 30)
+            // Mode-specific sub-tools
+            switch vm.mode {
+            case .draw:
+                drawingSubTools
+            case .rig:
+                RigToolPanel(vm: vm)
+            default:
+                // Minimal: figure selector
+                if vm.figures.count > 1 {
+                    figureSelector
                 }
             }
-
             Spacer()
         }
         .padding(.vertical, 8)
@@ -435,48 +513,86 @@ struct StudioView: View {
                 .shadow(color: .black.opacity(0.3), radius: 8)
         )
         .padding(.leading, 8)
+        .frame(maxWidth: 52)
     }
 
-    // MARK: - Right Action Strip
-    var rightActionStrip: some View {
-        VStack(spacing: 6) {
-            // Layers
-            actionButton(icon: "square.3.layers.3d", label: "Layers", active: showLayersSheet) {
-                showLayersSheet.toggle()
+    // Drawing sub-tools (pencil, line, rect, circle, etc.)
+    var drawingSubTools: some View {
+        VStack(spacing: 4) {
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(spacing: 4) {
+                    ForEach(DrawingTool.allCases, id: \.self) { tool in
+                        drawToolButton(tool)
+                    }
+                }
+            }
+            .frame(maxHeight: 220)
+
+            Divider().frame(width: 28).background(Color.white.opacity(0.2))
+
+            ColorPicker("", selection: $vm.drawState.strokeColor, supportsOpacity: true)
+                .labelsHidden()
+                .frame(width: 30, height: 30)
+
+            Button { vm.showBrushSizePopover.toggle() } label: {
+                ZStack {
+                    Circle().stroke(.white.opacity(0.3), lineWidth: 1).frame(width: 30, height: 30)
+                    Circle()
+                        .fill(vm.drawState.strokeColor)
+                        .frame(width: min(22, max(4, vm.drawState.strokeWidth * 2)),
+                               height: min(22, max(4, vm.drawState.strokeWidth * 2)))
+                }
+            }
+            .popover(isPresented: $vm.showBrushSizePopover) {
+                BrushSizePopover(drawState: vm.drawState)
             }
 
-            // Properties / Project Settings
+            Button { vm.undoLastDrawnElement(); HapticManager.shared.buttonTap() } label: {
+                Image(systemName: "arrow.uturn.backward.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .frame(width: 30, height: 30)
+            }
+            .disabled(vm.frames[safe: vm.currentFrameIndex]?.drawnElements.isEmpty ?? true)
+
+            Button { vm.clearDrawnElements(); HapticManager.shared.buttonTap() } label: {
+                Image(systemName: "trash.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.red.opacity(0.6))
+                    .frame(width: 30, height: 30)
+            }
+        }
+    }
+
+    // Figure selector (when multiple figures)
+    var figureSelector: some View {
+        VStack(spacing: 4) {
+            ForEach(vm.figures) { fig in
+                Button {
+                    vm.selectedFigureId = fig.id
+                } label: {
+                    Circle()
+                        .fill(fig.color.color.opacity(vm.selectedFigureId == fig.id ? 1 : 0.4))
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Circle().stroke(.red, lineWidth: vm.selectedFigureId == fig.id ? 2 : 0)
+                        )
+                }
+            }
+        }
+    }
+
+    // MARK: - Right Action Strip (slim — most tools moved to taskbar)
+    var rightActionStrip: some View {
+        VStack(spacing: 6) {
+            // Settings
             actionButton(icon: "slider.horizontal.3", label: "Settings") {
                 vm.showProjectSettings = true
             }
 
-            // Frames viewer
-            actionButton(icon: "rectangle.split.3x3", label: "Frames") {
-                vm.showFramesViewer = true
-            }
-
-            // Onion skin toggle
-            actionButton(icon: "circle.dotted", label: "Onion", active: vm.showOnionSkin) {
-                vm.showOnionSkin.toggle()
-            }
-
-            // Grid toggle
-            actionButton(icon: "grid", label: "Grid", active: vm.showGrid) {
-                vm.showGrid.toggle()
-            }
-
-            Divider()
-                .frame(width: 28)
-                .background(Color.white.opacity(0.2))
-
-            // Import image from camera roll
-            actionButton(icon: "photo.badge.plus", label: "Image", tint: .green) {
-                vm.showImagePicker = true
-            }
-
-            // Assets
-            actionButton(icon: "cube.fill", label: "Assets", tint: .mint) {
-                showAssetBrowser = true
+            // Add figure
+            actionButton(icon: "person.badge.plus", label: "Figure", tint: .cyan) {
+                vm.addFigure()
             }
 
             // Templates
@@ -484,14 +600,7 @@ struct StudioView: View {
                 showTemplates = true
             }
 
-            // AI (Pro)
-            if auth.isPro {
-                actionButton(icon: "sparkles", label: "AI", active: vm.showAIPanel, tint: .purple) {
-                    vm.showAIPanel.toggle()
-                }
-            }
-
-            // More (export, help)
+            // More
             Menu {
                 Button { showExportOptions = true } label: {
                     Label("Export Video", systemImage: "square.and.arrow.down")
@@ -526,28 +635,22 @@ struct StudioView: View {
         .padding(.trailing, 8)
     }
 
-    // MARK: - Bottom Timeline (compact, expandable)
+    // MARK: - Bottom Timeline
     var bottomTimeline: some View {
         VStack(spacing: 0) {
-            // Sound clips strip (if any)
             if !vm.soundClips.isEmpty {
                 SoundTimelineStrip(vm: vm)
                     .frame(height: 28)
             }
 
-            // Frame timeline
             HStack(spacing: 0) {
-                // Frame counter (tap for full frames view)
-                Button {
-                    vm.showFramesViewer = true
-                } label: {
+                Button { vm.showFramesViewer = true } label: {
                     Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.6))
                         .frame(width: 40)
                 }
 
-                // Scrollable frame strip
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {
@@ -560,9 +663,7 @@ struct StudioView: View {
                                     hasImages: !frame.importedImages.isEmpty
                                 )
                                 .id(idx)
-                                .onTapGesture {
-                                    vm.goToFrame(idx)
-                                }
+                                .onTapGesture { vm.goToFrame(idx) }
                                 .contextMenu {
                                     Button {
                                         vm.currentFrameIndex = idx
@@ -588,7 +689,6 @@ struct StudioView: View {
                     }
                 }
 
-                // Add frame button
                 Button {
                     vm.addFrame()
                     HapticManager.shared.buttonTap()
@@ -608,25 +708,6 @@ struct StudioView: View {
     }
 
     // MARK: - Helpers
-
-    func toolButton(_ mode: EditorMode, icon: String, label: String) -> some View {
-        Button {
-            vm.mode = mode
-            if mode != .cursor { vm.clearSelection() }
-        } label: {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.7))
-                    .frame(width: 36, height: 36)
-                    .background(vm.mode == mode ? Color.red.opacity(0.2) : .white.opacity(0.08))
-                    .clipShape(Circle())
-                Text(label)
-                    .font(.system(size: 8))
-                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.5))
-            }
-        }
-    }
 
     func drawToolButton(_ tool: DrawingTool) -> some View {
         Button { vm.drawState.tool = tool } label: {
@@ -669,25 +750,16 @@ struct FrameThumb: View {
             RoundedRectangle(cornerRadius: 4)
                 .fill(isSelected ? Color.red.opacity(0.3) : Color.white.opacity(0.08))
                 .frame(width: 36, height: 36)
-
             RoundedRectangle(cornerRadius: 4)
                 .stroke(isSelected ? Color.red : Color.clear, lineWidth: 1.5)
                 .frame(width: 36, height: 36)
-
             VStack(spacing: 1) {
-                // Frame number
                 Text("\(index + 1)")
                     .font(.system(size: 10, weight: isSelected ? .bold : .regular, design: .monospaced))
                     .foregroundStyle(isSelected ? .red : .white.opacity(0.6))
-
-                // Indicators
                 HStack(spacing: 2) {
-                    if hasDrawing {
-                        Circle().fill(Color.orange).frame(width: 4, height: 4)
-                    }
-                    if hasImages {
-                        Circle().fill(Color.green).frame(width: 4, height: 4)
-                    }
+                    if hasDrawing { Circle().fill(Color.orange).frame(width: 4, height: 4) }
+                    if hasImages { Circle().fill(Color.green).frame(width: 4, height: 4) }
                 }
             }
         }

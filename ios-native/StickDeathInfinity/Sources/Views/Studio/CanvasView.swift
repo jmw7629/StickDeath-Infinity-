@@ -1,6 +1,6 @@
 // CanvasView.swift
 // GPU-accelerated animation canvas — zero-lag rendering
-// v9: White canvas background, drawn elements, imported images, cursor selection
+// v10: Bone rig rendering (styled bones, thickness, IK handles), add-bone preview
 
 import SwiftUI
 
@@ -15,32 +15,38 @@ struct CanvasView: View {
             )
 
             ZStack {
-                // ── White canvas area (so drawing is visible) ──
-                canvasBackground(geo: geo, center: center)
+                // ── White canvas area ──
+                canvasBackground(center: center)
 
-                // Grid (subtle, on top of white area)
+                // Grid
                 if vm.showGrid {
                     GridBackground()
                         .drawingGroup()
                 }
 
-                // All figures composited in one GPU pass
+                // All figures (GPU composited)
                 figureLayer(center: center)
                     .drawingGroup(opaque: false)
 
-                // Drawn elements layer (freehand, shapes, text)
+                // Bone overlay (rig mode or when showBoneOverlay is on)
+                if vm.showBoneOverlay && (vm.mode == .rig || vm.mode == .pose) {
+                    boneOverlay(center: center)
+                        .drawingGroup(opaque: false)
+                }
+
+                // Drawn elements
                 drawnElementsLayer(center: center)
                     .drawingGroup(opaque: false)
 
-                // Imported images layer
+                // Imported images
                 importedImagesLayer(center: center)
 
-                // Joint handles (only in pose mode, only for selected figure)
-                if vm.mode == .pose {
+                // Joint handles (pose mode or rig select/IK)
+                if vm.mode == .pose || (vm.mode == .rig && [.select, .ikDrag, .addBone, .pinJoint].contains(vm.rigSubTool)) {
                     jointHandles(center: center, geoSize: geo.size)
                 }
 
-                // Placed objects layer
+                // Placed objects
                 objectsLayer(center: center)
                     .drawingGroup(opaque: false)
 
@@ -49,20 +55,32 @@ struct CanvasView: View {
                     selectionOverlay(bounds: sel, center: center)
                 }
 
-                // Current drawing path (live feedback)
+                // Current drawing path (live)
                 if vm.mode == .draw && !vm.drawState.currentPath.isEmpty {
                     currentDrawingPath(center: center)
                 }
+
+                // Rig: add-bone preview line
+                if vm.mode == .rig && vm.rigSubTool == .addBone,
+                   let startJoint = vm.rigDragStartJoint,
+                   let figId = vm.selectedFigureId,
+                   let state = vm.frames[safe: vm.currentFrameIndex]?.figureStates.first(where: { $0.figureId == figId }),
+                   let startPos = state.joints[startJoint] {
+                    addBonePreview(startPos: startPos, center: center)
+                }
+
+                // Selected bone highlight
+                if vm.mode == .rig, let bone = vm.selectedBone {
+                    selectedBoneHighlight(bone: bone, center: center)
+                }
             }
-            .onAppear {
-                vm.canvasSize = geo.size
-            }
+            .onAppear { vm.canvasSize = geo.size }
         }
     }
 
-    // MARK: - White Canvas Background
+    // MARK: - Canvas Background
     @ViewBuilder
-    func canvasBackground(geo: GeometryReader<some View>.Content, center: CGPoint) -> some View {
+    func canvasBackground(center: CGPoint) -> some View {
         let cw = CGFloat(vm.project.canvas_width ?? 1080) * vm.canvasScale
         let ch = CGFloat(vm.project.canvas_height ?? 1920) * vm.canvasScale
         RoundedRectangle(cornerRadius: 4)
@@ -72,11 +90,11 @@ struct CanvasView: View {
             .shadow(color: .black.opacity(0.3), radius: 12)
     }
 
-    // MARK: - Figure Layer (single Canvas draw call = fast)
+    // MARK: - Figure Layer (single Canvas draw call)
     @ViewBuilder
     func figureLayer(center: CGPoint) -> some View {
         Canvas { context, _ in
-            // Onion skin (previous frame — faded)
+            // Onion skin
             if vm.showOnionSkin, vm.currentFrameIndex > 0,
                let prevFrame = vm.frames[safe: vm.currentFrameIndex - 1] {
                 for state in prevFrame.figureStates where state.visible {
@@ -100,12 +118,10 @@ struct CanvasView: View {
         }
     }
 
-    // MARK: - Draw Figure (pure Core Graphics — no SwiftUI overhead)
     func drawFigure(context: inout GraphicsContext, figure: StickFigure, joints: [String: CGPoint],
                     center: CGPoint, scale: CGFloat, opacity: Double, selected: Bool) {
         let color = figure.color.color.opacity(opacity)
 
-        // Draw bones
         for (from, to) in StickFigure.bones {
             guard let p1 = joints[from], let p2 = joints[to] else { continue }
             let start = CGPoint(x: center.x + p1.x * scale, y: center.y + p1.y * scale)
@@ -116,7 +132,19 @@ struct CanvasView: View {
             context.stroke(path, with: .color(color), lineWidth: figure.lineWidth * scale)
         }
 
-        // Draw head
+        // Custom bones (from rig)
+        for bone in vm.rig.bones {
+            guard !StickFigure.bones.contains(where: { $0.0 == bone.jointA && $0.1 == bone.jointB }) else { continue }
+            guard let p1 = joints[bone.jointA], let p2 = joints[bone.jointB] else { continue }
+            let start = CGPoint(x: center.x + p1.x * scale, y: center.y + p1.y * scale)
+            let end = CGPoint(x: center.x + p2.x * scale, y: center.y + p2.y * scale)
+            var path = Path()
+            path.move(to: start)
+            path.addLine(to: end)
+            context.stroke(path, with: .color(color), lineWidth: figure.lineWidth * scale)
+        }
+
+        // Head
         if let headPos = joints["head"] {
             let hc = CGPoint(x: center.x + headPos.x * scale, y: center.y + headPos.y * scale)
             let r = figure.headRadius * scale
@@ -124,7 +152,7 @@ struct CanvasView: View {
             context.stroke(headPath, with: .color(color), lineWidth: figure.lineWidth * scale)
         }
 
-        // Selection outline
+        // Selection box
         if selected {
             let allPoints = joints.values.map { CGPoint(x: center.x + $0.x * scale, y: center.y + $0.y * scale) }
             guard let minX = allPoints.map(\.x).min(), let maxX = allPoints.map(\.x).max(),
@@ -134,6 +162,160 @@ struct CanvasView: View {
                                     cornerSize: CGSize(width: 8, height: 8))
             context.stroke(selPath, with: .color(.red.opacity(0.4)), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
         }
+    }
+
+    // MARK: - Bone Overlay (styled bones — thickness, taper, block, etc.)
+    @ViewBuilder
+    func boneOverlay(center: CGPoint) -> some View {
+        if let figId = vm.selectedFigureId,
+           let state = vm.frames[safe: vm.currentFrameIndex]?.figureStates.first(where: { $0.figureId == figId }) {
+            Canvas { context, _ in
+                for bone in vm.rig.bones {
+                    guard bone.style != .hidden else { continue }
+                    guard let posA = state.joints[bone.jointA],
+                          let posB = state.joints[bone.jointB] else { continue }
+                    let pA = CGPoint(x: center.x + posA.x * vm.canvasScale, y: center.y + posA.y * vm.canvasScale)
+                    let pB = CGPoint(x: center.x + posB.x * vm.canvasScale, y: center.y + posB.y * vm.canvasScale)
+                    let thickness = bone.thickness * vm.canvasScale
+                    let boneColor = Color(hex: bone.color)
+                    let isSelected = bone.id == vm.selectedBoneId
+
+                    switch bone.style {
+                    case .stick:
+                        var path = Path()
+                        path.move(to: pA)
+                        path.addLine(to: pB)
+                        context.stroke(path, with: .color(isSelected ? .red : boneColor.opacity(0.5)),
+                                      lineWidth: isSelected ? thickness + 2 : thickness)
+
+                    case .tapered:
+                        drawTaperedBone(context: &context, from: pA, to: pB,
+                                       baseWidth: thickness * 2, tipWidth: thickness * 0.5,
+                                       color: isSelected ? .red : boneColor.opacity(0.5))
+
+                    case .block:
+                        drawBlockBone(context: &context, from: pA, to: pB,
+                                     width: thickness * 1.5,
+                                     color: isSelected ? .red : boneColor.opacity(0.5))
+
+                    case .rounded:
+                        drawRoundedBone(context: &context, from: pA, to: pB,
+                                       width: thickness * 1.5,
+                                       color: isSelected ? .red : boneColor.opacity(0.5))
+
+                    case .hidden:
+                        break
+                    }
+
+                    // Lock icon
+                    if bone.locked {
+                        let mid = CGPoint(x: (pA.x + pB.x) / 2, y: (pA.y + pB.y) / 2)
+                        if let lockSymbol = context.resolveSymbol(id: "lock_\(bone.id.uuidString)") {
+                            context.draw(lockSymbol, at: mid)
+                        }
+                    }
+                }
+            } symbols: {
+                ForEach(vm.rig.bones.filter { $0.locked }) { bone in
+                    Image(systemName: "lock.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.yellow)
+                        .tag("lock_\(bone.id.uuidString)")
+                }
+            }
+        }
+    }
+
+    // Tapered bone (thick at base, thin at tip)
+    func drawTaperedBone(context: inout GraphicsContext, from: CGPoint, to: CGPoint,
+                         baseWidth: CGFloat, tipWidth: CGFloat, color: Color) {
+        let angle = atan2(to.y - from.y, to.x - from.x)
+        let perpAngle = angle + .pi / 2
+
+        let bL = CGPoint(x: from.x + cos(perpAngle) * baseWidth / 2, y: from.y + sin(perpAngle) * baseWidth / 2)
+        let bR = CGPoint(x: from.x - cos(perpAngle) * baseWidth / 2, y: from.y - sin(perpAngle) * baseWidth / 2)
+        let tL = CGPoint(x: to.x + cos(perpAngle) * tipWidth / 2, y: to.y + sin(perpAngle) * tipWidth / 2)
+        let tR = CGPoint(x: to.x - cos(perpAngle) * tipWidth / 2, y: to.y - sin(perpAngle) * tipWidth / 2)
+
+        var path = Path()
+        path.move(to: bL)
+        path.addLine(to: tL)
+        path.addLine(to: tR)
+        path.addLine(to: bR)
+        path.closeSubpath()
+        context.fill(path, with: .color(color))
+        context.stroke(path, with: .color(color.opacity(0.8)), lineWidth: 0.5)
+    }
+
+    // Block bone (rectangle oriented along bone axis)
+    func drawBlockBone(context: inout GraphicsContext, from: CGPoint, to: CGPoint,
+                       width: CGFloat, color: Color) {
+        let angle = atan2(to.y - from.y, to.x - from.x)
+        let perpAngle = angle + .pi / 2
+        let hw = width / 2
+
+        let corners = [
+            CGPoint(x: from.x + cos(perpAngle) * hw, y: from.y + sin(perpAngle) * hw),
+            CGPoint(x: to.x + cos(perpAngle) * hw, y: to.y + sin(perpAngle) * hw),
+            CGPoint(x: to.x - cos(perpAngle) * hw, y: to.y - sin(perpAngle) * hw),
+            CGPoint(x: from.x - cos(perpAngle) * hw, y: from.y - sin(perpAngle) * hw),
+        ]
+
+        var path = Path()
+        path.move(to: corners[0])
+        for c in corners.dropFirst() { path.addLine(to: c) }
+        path.closeSubpath()
+        context.fill(path, with: .color(color))
+        context.stroke(path, with: .color(color.opacity(0.8)), lineWidth: 0.5)
+    }
+
+    // Rounded bone (capsule shape)
+    func drawRoundedBone(context: inout GraphicsContext, from: CGPoint, to: CGPoint,
+                         width: CGFloat, color: Color) {
+        // Draw as thick line with round caps
+        var path = Path()
+        path.move(to: from)
+        path.addLine(to: to)
+        context.stroke(path, with: .color(color),
+                      style: StrokeStyle(lineWidth: width, lineCap: .round))
+    }
+
+    // MARK: - Selected Bone Highlight
+    @ViewBuilder
+    func selectedBoneHighlight(bone: Bone, center: CGPoint) -> some View {
+        if let figId = vm.selectedFigureId,
+           let state = vm.frames[safe: vm.currentFrameIndex]?.figureStates.first(where: { $0.figureId == figId }),
+           let posA = state.joints[bone.jointA],
+           let posB = state.joints[bone.jointB] {
+            let pA = CGPoint(x: center.x + posA.x * vm.canvasScale, y: center.y + posA.y * vm.canvasScale)
+            let pB = CGPoint(x: center.x + posB.x * vm.canvasScale, y: center.y + posB.y * vm.canvasScale)
+
+            // Dashed highlight line
+            Path { path in
+                path.move(to: pA)
+                path.addLine(to: pB)
+            }
+            .stroke(.red, style: StrokeStyle(lineWidth: (bone.thickness + 4) * vm.canvasScale, lineCap: .round, dash: [6, 4]))
+            .opacity(0.4)
+            .allowsHitTesting(false)
+
+            // Joint dots
+            Circle().fill(.red).frame(width: 10, height: 10).position(pA)
+            Circle().fill(.red).frame(width: 10, height: 10).position(pB)
+        }
+    }
+
+    // MARK: - Add-Bone Preview
+    @ViewBuilder
+    func addBonePreview(startPos: CGPoint, center: CGPoint) -> some View {
+        // This just shows a dashed line from start joint following touch
+        // The actual drawing is handled by the rig gesture + vm.rigDragStartJoint
+        let pA = CGPoint(x: center.x + startPos.x * vm.canvasScale,
+                         y: center.y + startPos.y * vm.canvasScale)
+        Circle()
+            .fill(.green.opacity(0.6))
+            .frame(width: 14, height: 14)
+            .position(pA)
     }
 
     // MARK: - Drawn Elements Layer
@@ -189,9 +371,7 @@ struct CanvasView: View {
             Path { path in
                 guard let first = points.first else { return }
                 path.move(to: sp(first, center))
-                for pt in points.dropFirst() {
-                    path.addLine(to: sp(pt, center))
-                }
+                for pt in points.dropFirst() { path.addLine(to: sp(pt, center)) }
             }
             .stroke(color, lineWidth: width)
 
@@ -206,28 +386,20 @@ struct CanvasView: View {
 
         case .rectangle:
             if let first = points.first, let last = points.last {
-                let p1 = sp(first, center)
-                let p2 = sp(last, center)
-                let rect = CGRect(
-                    x: min(p1.x, p2.x), y: min(p1.y, p2.y),
-                    width: abs(p2.x - p1.x), height: abs(p2.y - p1.y)
-                )
-                Rectangle()
-                    .stroke(color, lineWidth: width)
+                let p1 = sp(first, center); let p2 = sp(last, center)
+                let rect = CGRect(x: min(p1.x, p2.x), y: min(p1.y, p2.y),
+                                  width: abs(p2.x - p1.x), height: abs(p2.y - p1.y))
+                Rectangle().stroke(color, lineWidth: width)
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
             }
 
         case .circle:
             if let first = points.first, let last = points.last {
-                let p1 = sp(first, center)
-                let p2 = sp(last, center)
-                let rect = CGRect(
-                    x: min(p1.x, p2.x), y: min(p1.y, p2.y),
-                    width: abs(p2.x - p1.x), height: abs(p2.y - p1.y)
-                )
-                Ellipse()
-                    .stroke(color, lineWidth: width)
+                let p1 = sp(first, center); let p2 = sp(last, center)
+                let rect = CGRect(x: min(p1.x, p2.x), y: min(p1.y, p2.y),
+                                  width: abs(p2.x - p1.x), height: abs(p2.y - p1.y))
+                Ellipse().stroke(color, lineWidth: width)
                     .frame(width: rect.width, height: rect.height)
                     .position(x: rect.midX, y: rect.midY)
             }
@@ -236,7 +408,7 @@ struct CanvasView: View {
         }
     }
 
-    // MARK: - Selection overlay (cursor mode)
+    // MARK: - Selection Overlay
     @ViewBuilder
     func selectionOverlay(bounds: CGRect, center: CGPoint) -> some View {
         let screenRect = CGRect(
@@ -249,19 +421,14 @@ struct CanvasView: View {
             .stroke(Color.blue, style: StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
             .frame(width: screenRect.width, height: screenRect.height)
             .position(x: screenRect.midX, y: screenRect.midY)
-
-        // Resize handles at corners
         ForEach(0..<4, id: \.self) { corner in
             let x = corner % 2 == 0 ? screenRect.minX : screenRect.maxX
             let y = corner < 2 ? screenRect.minY : screenRect.maxY
-            Circle()
-                .fill(Color.blue)
-                .frame(width: 10, height: 10)
-                .position(x: x, y: y)
+            Circle().fill(Color.blue).frame(width: 10, height: 10).position(x: x, y: y)
         }
     }
 
-    // MARK: - Joint Handles (lightweight overlays)
+    // MARK: - Joint Handles
     @ViewBuilder
     func jointHandles(center: CGPoint, geoSize: CGSize) -> some View {
         if let frame = vm.frames[safe: vm.currentFrameIndex],
@@ -272,10 +439,17 @@ struct CanvasView: View {
                         x: center.x + pos.x * vm.canvasScale,
                         y: center.y + pos.y * vm.canvasScale
                     )
+
+                    // Different handle style in rig mode
+                    let isRigMode = vm.mode == .rig
+                    let isPinned = vm.rig.ikChains.contains { $0.pinned && $0.jointNames.contains(jointName) }
+
                     JointHandle(
                         position: screenPos,
                         isHead: jointName == "head",
-                        isSelected: vm.selectedJoint == jointName
+                        isSelected: vm.selectedJoint == jointName,
+                        isRigMode: isRigMode,
+                        isPinned: isPinned
                     )
                     .highPriorityGesture(
                         DragGesture(minimumDistance: 1)
@@ -285,7 +459,11 @@ struct CanvasView: View {
                                     x: (drag.location.x - center.x) / vm.canvasScale,
                                     y: (drag.location.y - center.y) / vm.canvasScale
                                 )
-                                vm.moveJoint(jointName, to: newPos, figureId: state.figureId)
+                                if vm.mode == .rig {
+                                    vm.moveJointWithIK(jointName, to: newPos, figureId: state.figureId)
+                                } else {
+                                    vm.moveJoint(jointName, to: newPos, figureId: state.figureId)
+                                }
                             }
                             .onEnded { _ in vm.pushUndo() }
                     )
@@ -294,7 +472,7 @@ struct CanvasView: View {
         }
     }
 
-    // MARK: - Objects Layer (placed props from asset library)
+    // MARK: - Objects Layer
     @ViewBuilder
     func objectsLayer(center: CGPoint) -> some View {
         if let frame = vm.frames[safe: vm.currentFrameIndex] {
@@ -312,31 +490,25 @@ struct CanvasView: View {
         }
     }
 
-    // Helper: canvas point → screen point
     func sp(_ pt: CGPoint, _ center: CGPoint) -> CGPoint {
         CGPoint(x: center.x + pt.x * vm.canvasScale, y: center.y + pt.y * vm.canvasScale)
     }
 }
 
-// MARK: - Grid Background (drawn once per resize, GPU cached)
+// MARK: - Grid Background
 struct GridBackground: View {
     var body: some View {
         Canvas { context, size in
             let gridSize: CGFloat = 40
             let color = Color.gray.opacity(0.08)
             for x in stride(from: 0, to: size.width, by: gridSize) {
-                var path = Path()
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: size.height))
+                var path = Path(); path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height))
                 context.stroke(path, with: .color(color), lineWidth: 0.5)
             }
             for y in stride(from: 0, to: size.height, by: gridSize) {
-                var path = Path()
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
+                var path = Path(); path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: size.width, y: y))
                 context.stroke(path, with: .color(color), lineWidth: 0.5)
             }
-            // Center crosshair
             let cx = size.width / 2, cy = size.height / 2
             var hLine = Path(); hLine.move(to: CGPoint(x: 0, y: cy)); hLine.addLine(to: CGPoint(x: size.width, y: cy))
             var vLine = Path(); vLine.move(to: CGPoint(x: cx, y: 0)); vLine.addLine(to: CGPoint(x: cx, y: size.height))
@@ -346,19 +518,54 @@ struct GridBackground: View {
     }
 }
 
-// MARK: - Joint Handle
+// MARK: - Joint Handle (updated for rig mode)
 struct JointHandle: View {
     let position: CGPoint
     let isHead: Bool
     let isSelected: Bool
+    var isRigMode: Bool = false
+    var isPinned: Bool = false
 
     var body: some View {
-        Circle()
-            .fill(isSelected ? Color.red : Color.white.opacity(0.6))
-            .frame(width: isHead ? 16 : 12, height: isHead ? 16 : 12)
-            .overlay(Circle().stroke(Color.red, lineWidth: isSelected ? 2 : 0))
-            .position(position)
-            .allowsHitTesting(true)
-            .contentShape(Circle().inset(by: -8))
+        ZStack {
+            // Rig mode: diamond shape, larger hit target
+            if isRigMode {
+                Diamond()
+                    .fill(isPinned ? .yellow : (isSelected ? .red : .cyan.opacity(0.7)))
+                    .frame(width: isHead ? 18 : 14, height: isHead ? 18 : 14)
+                    .overlay(
+                        Diamond()
+                            .stroke(isSelected ? .white : .clear, lineWidth: 1.5)
+                    )
+            } else {
+                Circle()
+                    .fill(isSelected ? Color.red : Color.white.opacity(0.6))
+                    .frame(width: isHead ? 16 : 12, height: isHead ? 16 : 12)
+                    .overlay(Circle().stroke(Color.red, lineWidth: isSelected ? 2 : 0))
+            }
+
+            // Pin indicator
+            if isPinned {
+                Image(systemName: "pin.fill")
+                    .font(.system(size: 6))
+                    .foregroundStyle(.black)
+            }
+        }
+        .position(position)
+        .allowsHitTesting(true)
+        .contentShape(Circle().inset(by: -10))
+    }
+}
+
+// Diamond shape for rig joints
+struct Diamond: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.midY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.midY))
+        path.closeSubpath()
+        return path
     }
 }
