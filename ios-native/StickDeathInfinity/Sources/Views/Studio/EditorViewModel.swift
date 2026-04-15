@@ -1,11 +1,12 @@
 // EditorViewModel.swift
 // Main view model for the animation studio
-// v3: PlacedObject support, sound timeline, offline save, performance-optimized state
+// v9: Drawing gesture handling, image import, cursor/select tool, project settings
 
 import SwiftUI
 import Combine
+import PhotosUI
 
-enum EditorMode { case pose, move, draw }
+enum EditorMode: Equatable { case pose, move, draw, cursor }
 
 @MainActor
 class EditorViewModel: ObservableObject {
@@ -26,15 +27,22 @@ class EditorViewModel: ObservableObject {
     @Published var soundClips: [SoundClip] = []
 
     // Editor state
-    @Published var mode: EditorMode = .pose
+    @Published var mode: EditorMode = .draw
     @Published var canvasOffset: CGSize = .zero
     @Published var canvasScale: CGFloat = 1.0
+    @Published var canvasSize: CGSize = .zero
     @Published var showOnionSkin = true
+    @Published var showGrid = false
     @Published var isPlaying = false
     @Published var showLayers = false
     @Published var showProperties = false
     @Published var showTimeline = true
     @Published var showAssetBrowser = false
+
+    // Cursor/select tool
+    @Published var selectedObjectBounds: CGRect?
+    @Published var selectedImageId: UUID?
+    @Published var selectedPlacedObjectId: UUID?
 
     // Undo (bounded ring buffer — never grows unbounded)
     @Published var undoStack: [AnimationData] = []
@@ -44,6 +52,14 @@ class EditorViewModel: ObservableObject {
     // Drawing
     @Published var drawState = DrawingState()
     @Published var showBrushSizePopover = false
+
+    // Image import
+    @Published var showImagePicker = false
+    @Published var importedPhotoItem: PhotosPickerItem?
+
+    // Project settings
+    @Published var showProjectSettings = false
+    @Published var showFramesViewer = false
 
     // AI
     @Published var aiSuggestion: String?
@@ -57,16 +73,24 @@ class EditorViewModel: ObservableObject {
         figures.first { $0.id == selectedFigureId }
     }
 
+    var canvasCenter: CGPoint {
+        CGPoint(
+            x: canvasSize.width / 2 + canvasOffset.width,
+            y: canvasSize.height / 2 + canvasOffset.height
+        )
+    }
+
     init(project: StudioProject) {
         self.project = project
-        // Create initial frame with empty placedObjects
         let initialFrame = AnimationFrame(
             id: UUID(),
             figureStates: figures.map { fig in
                 FigureState(id: UUID(), figureId: fig.id, joints: fig.joints, visible: true)
             },
-            duration: 1.0 / Double(project.fps ?? 24),
-            placedObjects: []
+            duration: 1.0 / Double(project.fps ?? 12),
+            placedObjects: [],
+            drawnElements: [],
+            importedImages: []
         )
         self.frames = [initialFrame]
         startAutoSave()
@@ -80,7 +104,7 @@ class EditorViewModel: ObservableObject {
     private func startAutoSave() {
         autoSaveTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 30_000_000_000) // 30s
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
                 guard let self = self, self.isDirty else { continue }
                 await self.saveProject()
                 self.isDirty = false
@@ -90,19 +114,314 @@ class EditorViewModel: ObservableObject {
 
     private func markDirty() { isDirty = true }
 
+    // MARK: - Drawing Gesture Handling
+    func handleDrawingBegan(at point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+        drawState.currentPath = [canvasPoint]
+
+        if drawState.tool == .text {
+            drawState.textPosition = canvasPoint
+            drawState.showTextInput = true
+        }
+    }
+
+    func handleDrawingMoved(to point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+
+        switch drawState.tool {
+        case .pencil:
+            drawState.currentPath.append(canvasPoint)
+        case .line, .arrow, .rectangle, .circle:
+            // Keep first point, update last
+            if drawState.currentPath.count > 1 {
+                drawState.currentPath[drawState.currentPath.count - 1] = canvasPoint
+            } else {
+                drawState.currentPath.append(canvasPoint)
+            }
+        case .eraser:
+            eraseAt(canvasPoint)
+        case .text:
+            break
+        }
+    }
+
+    func handleDrawingEnded(at point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+        guard !drawState.currentPath.isEmpty else { return }
+
+        if drawState.tool == .text || drawState.tool == .eraser {
+            drawState.currentPath = []
+            return
+        }
+
+        pushUndo()
+
+        var element = DrawnElement(
+            id: UUID(),
+            tool: drawState.tool.rawValue,
+            points: drawState.currentPath,
+            origin: nil,
+            size: nil,
+            strokeColor: drawState.strokeColor.toHex(),
+            strokeWidth: drawState.strokeWidth,
+            fillColor: drawState.fillEnabled ? drawState.fillColor.toHex() : nil,
+            text: nil,
+            fontSize: nil
+        )
+
+        // For shapes, compute origin + size
+        if drawState.tool == .rectangle || drawState.tool == .circle {
+            if let first = drawState.currentPath.first, let last = drawState.currentPath.last {
+                element.origin = CGPoint(x: min(first.x, last.x), y: min(first.y, last.y))
+                element.size = CGSize(width: abs(last.x - first.x), height: abs(last.y - first.y))
+            }
+        }
+
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        frames[currentFrameIndex].drawnElements.append(element)
+        drawState.currentPath = []
+        markDirty()
+        HapticManager.shared.buttonTap()
+    }
+
+    func commitTextElement(_ text: String) {
+        guard !text.isEmpty else { return }
+        pushUndo()
+
+        let element = DrawnElement(
+            id: UUID(),
+            tool: "text",
+            points: [],
+            origin: drawState.textPosition,
+            size: nil,
+            strokeColor: drawState.strokeColor.toHex(),
+            strokeWidth: drawState.strokeWidth,
+            fillColor: nil,
+            text: text,
+            fontSize: 18
+        )
+
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        frames[currentFrameIndex].drawnElements.append(element)
+        drawState.showTextInput = false
+        drawState.textInput = ""
+        markDirty()
+    }
+
+    private func eraseAt(_ point: CGPoint) {
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        let threshold: CGFloat = 15
+        frames[currentFrameIndex].drawnElements.removeAll { element in
+            switch element.tool {
+            case "pencil":
+                return element.points.contains { pt in
+                    hypot(pt.x - point.x, pt.y - point.y) < threshold
+                }
+            case "rectangle", "circle":
+                if let origin = element.origin, let size = element.size {
+                    let rect = CGRect(origin: origin, size: size).insetBy(dx: -threshold, dy: -threshold)
+                    return rect.contains(point)
+                }
+                return false
+            case "text":
+                if let origin = element.origin {
+                    return hypot(origin.x - point.x, origin.y - point.y) < threshold * 2
+                }
+                return false
+            default:
+                if let first = element.points.first, let last = element.points.last {
+                    return distanceToLineSegment(point: point, start: first, end: last) < threshold
+                }
+                return false
+            }
+        }
+    }
+
+    private func distanceToLineSegment(point: CGPoint, start: CGPoint, end: CGPoint) -> CGFloat {
+        let dx = end.x - start.x
+        let dy = end.y - start.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else { return hypot(point.x - start.x, point.y - start.y) }
+        let t = max(0, min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq))
+        let proj = CGPoint(x: start.x + t * dx, y: start.y + t * dy)
+        return hypot(point.x - proj.x, point.y - proj.y)
+    }
+
+    // MARK: - Cursor/Select Tool
+    func handleCursorTap(at point: CGPoint) {
+        let canvasPoint = screenToCanvas(point)
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        let frame = frames[currentFrameIndex]
+
+        // Check imported images (reverse order = topmost first)
+        for img in frame.importedImages.reversed() {
+            let rect = CGRect(
+                x: img.position.x - img.size.width / 2,
+                y: img.position.y - img.size.height / 2,
+                width: img.size.width,
+                height: img.size.height
+            )
+            if rect.contains(canvasPoint) {
+                selectedImageId = img.id
+                selectedPlacedObjectId = nil
+                selectedObjectBounds = rect
+                return
+            }
+        }
+
+        // Check placed objects
+        for obj in frame.placedObjects.reversed() {
+            let rect = CGRect(
+                x: obj.position.x - obj.size / 2,
+                y: obj.position.y - obj.size / 2,
+                width: obj.size, height: obj.size
+            )
+            if rect.contains(canvasPoint) {
+                selectedPlacedObjectId = obj.id
+                selectedImageId = nil
+                selectedObjectBounds = rect
+                return
+            }
+        }
+
+        // Nothing hit — deselect
+        clearSelection()
+    }
+
+    func handleCursorDrag(translation: CGSize) {
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        let dx = translation.width / canvasScale
+        let dy = translation.height / canvasScale
+
+        if let imgId = selectedImageId,
+           let idx = frames[currentFrameIndex].importedImages.firstIndex(where: { $0.id == imgId }) {
+            frames[currentFrameIndex].importedImages[idx].position.x += dx
+            frames[currentFrameIndex].importedImages[idx].position.y += dy
+            updateSelectionBounds()
+        } else if let objId = selectedPlacedObjectId,
+                  let idx = frames[currentFrameIndex].placedObjects.firstIndex(where: { $0.id == objId }) {
+            frames[currentFrameIndex].placedObjects[idx].position.x += dx
+            frames[currentFrameIndex].placedObjects[idx].position.y += dy
+            updateSelectionBounds()
+        }
+    }
+
+    func deleteSelected() {
+        pushUndo()
+        guard frames.indices.contains(currentFrameIndex) else { return }
+        if let imgId = selectedImageId {
+            frames[currentFrameIndex].importedImages.removeAll { $0.id == imgId }
+        }
+        if let objId = selectedPlacedObjectId {
+            frames[currentFrameIndex].placedObjects.removeAll { $0.id == objId }
+        }
+        clearSelection()
+        markDirty()
+    }
+
+    func clearSelection() {
+        selectedImageId = nil
+        selectedPlacedObjectId = nil
+        selectedObjectBounds = nil
+    }
+
+    private func updateSelectionBounds() {
+        if let imgId = selectedImageId,
+           let img = frames[safe: currentFrameIndex]?.importedImages.first(where: { $0.id == imgId }) {
+            selectedObjectBounds = CGRect(
+                x: img.position.x - img.size.width / 2,
+                y: img.position.y - img.size.height / 2,
+                width: img.size.width, height: img.size.height
+            )
+        } else if let objId = selectedPlacedObjectId,
+                  let obj = frames[safe: currentFrameIndex]?.placedObjects.first(where: { $0.id == objId }) {
+            selectedObjectBounds = CGRect(
+                x: obj.position.x - obj.size / 2,
+                y: obj.position.y - obj.size / 2,
+                width: obj.size, height: obj.size
+            )
+        }
+    }
+
+    // MARK: - Image Import
+    func importImage(_ image: UIImage) {
+        pushUndo()
+        guard frames.indices.contains(currentFrameIndex) else { return }
+
+        let maxDim: CGFloat = 200
+        let scale = min(maxDim / image.size.width, maxDim / image.size.height, 1.0)
+        let importedImage = ImportedImage(
+            id: UUID(),
+            image: image,
+            position: .zero,
+            size: CGSize(width: image.size.width * scale, height: image.size.height * scale),
+            rotation: 0,
+            opacity: 1.0
+        )
+
+        frames[currentFrameIndex].importedImages.append(importedImage)
+
+        // Auto-switch to cursor to move it
+        mode = .cursor
+        selectedImageId = importedImage.id
+        selectedPlacedObjectId = nil
+        updateSelectionBounds()
+
+        markDirty()
+        HapticManager.shared.objectPlaced()
+    }
+
+    func processPhotoPicker(item: PhotosPickerItem?) async {
+        guard let item = item else { return }
+        if let data = try? await item.loadTransferable(type: Data.self),
+           let uiImage = UIImage(data: data) {
+            importImage(uiImage)
+        }
+    }
+
+    // MARK: - Project Settings
+    func updateProjectSettings(title: String, fps: Int, canvasWidth: Int, canvasHeight: Int) {
+        project = StudioProject(
+            id: project.id,
+            user_id: project.user_id,
+            title: title,
+            description: project.description,
+            canvas_width: canvasWidth,
+            canvas_height: canvasHeight,
+            fps: fps,
+            status: project.status,
+            created_at: project.created_at,
+            updated_at: project.updated_at,
+            thumbnail_url: project.thumbnail_url,
+            background_type: project.background_type,
+            background_value: project.background_value
+        )
+        // Update frame durations
+        let duration = 1.0 / Double(fps)
+        for i in frames.indices {
+            frames[i].duration = duration
+        }
+        markDirty()
+    }
+
+    // MARK: - Coordinate Conversion
+    func screenToCanvas(_ screenPoint: CGPoint) -> CGPoint {
+        CGPoint(
+            x: (screenPoint.x - canvasCenter.x) / canvasScale,
+            y: (screenPoint.y - canvasCenter.y) / canvasScale
+        )
+    }
+
     // MARK: - Load from Supabase (with offline fallback)
     func loadProject() async {
-        // Try offline cache first for instant load (5-second rule)
         if let cached = OfflineManager.shared.loadCachedProject(projectId: project.id) {
             if let data = try? JSONDecoder().decode(AnimationData.self, from: cached) {
                 applyAnimationData(data)
             }
         }
 
-        // Then fetch latest from server (will update if newer)
         if let data = try? await ProjectService.shared.loadLatestVersion(projectId: project.id) {
             applyAnimationData(data)
-            // Cache for offline
             if let encoded = try? JSONEncoder().encode(data) {
                 OfflineManager.shared.cacheProject(encoded, projectId: project.id)
             }
@@ -121,16 +440,13 @@ class EditorViewModel: ObservableObject {
         isSaving = true
         let data = AnimationData(frames: frames, figures: figures, soundTimeline: soundClips)
 
-        // Always cache locally first (instant)
         if let encoded = try? JSONEncoder().encode(data) {
             OfflineManager.shared.cacheProject(encoded, projectId: project.id)
         }
 
-        // Try server save
         if OfflineManager.shared.isOnline {
             _ = try? await ProjectService.shared.saveVersion(projectId: project.id, data: data)
         } else {
-            // Queue for later sync
             if let payload = try? JSONEncoder().encode(["projectId": project.id]) {
                 OfflineManager.shared.enqueue(type: .saveProject, payload: payload)
             }
@@ -166,7 +482,6 @@ class EditorViewModel: ObservableObject {
         let fig = StickFigure.newFigure(name: "Figure \(count)", color: figureColor(count))
         figures.append(fig)
         selectedFigureId = fig.id
-        // Add figure state to all existing frames
         for i in frames.indices {
             frames[i].figureStates.append(
                 FigureState(id: UUID(), figureId: fig.id, joints: fig.joints, visible: true)
@@ -202,8 +517,10 @@ class EditorViewModel: ObservableObject {
                     visible: currentState?.visible ?? true
                 )
             },
-            duration: 1.0 / Double(project.fps ?? 24),
-            placedObjects: frames[safe: currentFrameIndex]?.placedObjects ?? []
+            duration: 1.0 / Double(project.fps ?? 12),
+            placedObjects: frames[safe: currentFrameIndex]?.placedObjects ?? [],
+            drawnElements: [],
+            importedImages: []
         )
         frames.insert(newFrame, at: currentFrameIndex + 1)
         currentFrameIndex += 1
@@ -223,7 +540,9 @@ class EditorViewModel: ObservableObject {
                 PlacedObject(id: UUID(), assetId: $0.assetId, sfSymbol: $0.sfSymbol, name: $0.name,
                             position: $0.position, size: $0.size, rotation: $0.rotation,
                             opacity: $0.opacity, tint: $0.tint, zIndex: $0.zIndex, locked: $0.locked)
-            }
+            },
+            drawnElements: current.drawnElements,
+            importedImages: current.importedImages
         )
         frames.insert(dup, at: currentFrameIndex + 1)
         currentFrameIndex += 1
@@ -238,7 +557,14 @@ class EditorViewModel: ObservableObject {
         HapticManager.shared.frameSwitched()
     }
 
-    // MARK: - Joint Dragging (minimal state mutation for zero-lag)
+    func goToFrame(_ index: Int) {
+        guard frames.indices.contains(index) else { return }
+        currentFrameIndex = index
+        clearSelection()
+        HapticManager.shared.frameSwitched()
+    }
+
+    // MARK: - Joint Dragging
     func moveJoint(_ joint: String, to point: CGPoint, figureId: UUID) {
         guard frames.indices.contains(currentFrameIndex),
               let stateIdx = frames[currentFrameIndex].figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
@@ -246,7 +572,7 @@ class EditorViewModel: ObservableObject {
         HapticManager.shared.jointDrag()
     }
 
-    // MARK: - Placed Objects (from Asset Library)
+    // MARK: - Placed Objects
     func addPlacedObject(asset: StudioAsset) {
         pushUndo()
         guard frames.indices.contains(currentFrameIndex) else { return }
@@ -264,6 +590,9 @@ class EditorViewModel: ObservableObject {
             locked: false
         )
         frames[currentFrameIndex].placedObjects.append(obj)
+        mode = .cursor
+        selectedPlacedObjectId = obj.id
+        updateSelectionBounds()
         HapticManager.shared.objectPlaced()
     }
 
@@ -316,7 +645,7 @@ class EditorViewModel: ObservableObject {
         soundClips.removeAll { $0.id == id }
     }
 
-    // MARK: - Playback (high-precision timer)
+    // MARK: - Playback
     func togglePlay() {
         isPlaying.toggle()
         if isPlaying { playLoop() }
@@ -324,17 +653,32 @@ class EditorViewModel: ObservableObject {
 
     private func playLoop() {
         guard isPlaying else { return }
-        let fps = project.fps ?? 24
+        let fps = project.fps ?? 12
         let delay = 1.0 / Double(fps)
 
         Task {
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             if isPlaying {
                 currentFrameIndex = (currentFrameIndex + 1) % frames.count
-                if currentFrameIndex == 0 && !isPlaying { return } // Stop at end
+                if currentFrameIndex == 0 && !isPlaying { return }
                 playLoop()
             }
         }
+    }
+
+    // MARK: - Drawing Undo (per-frame)
+    func undoLastDrawnElement() {
+        guard frames.indices.contains(currentFrameIndex),
+              !frames[currentFrameIndex].drawnElements.isEmpty else { return }
+        pushUndo()
+        frames[currentFrameIndex].drawnElements.removeLast()
+    }
+
+    func clearDrawnElements() {
+        guard frames.indices.contains(currentFrameIndex),
+              !frames[currentFrameIndex].drawnElements.isEmpty else { return }
+        pushUndo()
+        frames[currentFrameIndex].drawnElements.removeAll()
     }
 
     // MARK: - AI Assist
@@ -353,13 +697,12 @@ class EditorViewModel: ObservableObject {
     // MARK: - Apply Template
     func applyTemplate(_ template: AnimationTemplate) {
         pushUndo()
-
         figures = (0..<template.figureCount).map { i in
             StickFigure.newFigure(name: "Figure \(i + 1)", color: figureColor(i))
         }
         selectedFigureId = figures.first?.id
 
-        let fps = Double(project.fps ?? 24)
+        let fps = Double(project.fps ?? 12)
         frames = (0..<template.frameCount).map { frameIdx in
             let progress = Double(frameIdx) / Double(template.frameCount)
             let sway = sin(progress * .pi * 2)
@@ -368,7 +711,6 @@ class EditorViewModel: ObservableObject {
                 id: UUID(),
                 figureStates: figures.map { fig in
                     var joints = StickFigure.defaultJoints
-
                     switch template.category {
                     case "Action":
                         joints["leftHand"] = CGPoint(x: -50 + sway * 20, y: 5 - abs(sway) * 15)
@@ -385,11 +727,12 @@ class EditorViewModel: ObservableObject {
                         joints["leftHand"] = CGPoint(x: -50 - sway * 10, y: 5)
                         joints["rightHand"] = CGPoint(x: 50 + sway * 10, y: 5)
                     }
-
                     return FigureState(id: UUID(), figureId: fig.id, joints: joints, visible: true)
                 },
                 duration: 1.0 / fps,
-                placedObjects: []
+                placedObjects: [],
+                drawnElements: [],
+                importedImages: []
             )
         }
         currentFrameIndex = 0
@@ -400,5 +743,15 @@ class EditorViewModel: ObservableObject {
 extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil
+    }
+}
+
+// Color → Hex
+extension Color {
+    func toHex() -> String {
+        let uiColor = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        uiColor.getRed(&r, green: &g, blue: &b, alpha: &a)
+        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
     }
 }

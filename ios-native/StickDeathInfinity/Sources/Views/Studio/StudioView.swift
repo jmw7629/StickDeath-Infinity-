@@ -1,9 +1,10 @@
 // StudioView.swift
 // Main animation studio — FlipaClip-inspired layout
-// v8: Full-screen canvas, left tool strip, bottom timeline, bottom-sheet panels
+// v9: Drawing gestures wired, cursor/select tool, image import, project settings, frames viewer
 // Design refs: FlipaClip (tools left, timeline bottom) + Photoshop iPad (contextual UI)
 
 import SwiftUI
+import PhotosUI
 
 struct StudioView: View {
     @StateObject var vm: EditorViewModel
@@ -17,6 +18,8 @@ struct StudioView: View {
     @State private var showLayersSheet = false
     @State private var showPropertiesSheet = false
     @State private var showMoreMenu = false
+    @State private var showQuickHelp = false
+    @State private var lastDragTranslation: CGSize = .zero
 
     var isWide: Bool { hSize == .regular }
 
@@ -30,13 +33,19 @@ struct StudioView: View {
                 .gesture(canvasGesture)
                 .ignoresSafeArea()
 
-            // ── Drawing overlay (when in draw mode) ──
+            // ── Drawing overlay (when in draw mode — renders completed elements) ──
             if vm.mode == .draw {
                 DrawingOverlay(
                     drawState: vm.drawState,
                     canvasCenter: CGPoint(x: UIScreen.main.bounds.width / 2, y: UIScreen.main.bounds.height / 2),
                     canvasScale: vm.canvasScale
                 )
+                .allowsHitTesting(false)
+            }
+
+            // ── Text input overlay (draw mode → text tool) ──
+            if vm.drawState.showTextInput {
+                textInputOverlay
             }
 
             // ── Top Bar (ultra-thin) ──
@@ -50,7 +59,7 @@ struct StudioView: View {
                 leftToolStrip
                 Spacer()
             }
-            .padding(.top, 56) // below top bar
+            .padding(.top, 56)
 
             // ── Right Action Strip ──
             HStack(spacing: 0) {
@@ -65,6 +74,30 @@ struct StudioView: View {
                 bottomTimeline
             }
 
+            // ── Cursor mode: delete button ──
+            if vm.mode == .cursor && (vm.selectedImageId != nil || vm.selectedPlacedObjectId != nil) {
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Button {
+                            vm.deleteSelected()
+                            HapticManager.shared.buttonTap()
+                        } label: {
+                            Image(systemName: "trash.fill")
+                                .font(.system(size: 16))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Color.red)
+                                .clipShape(Circle())
+                                .shadow(color: .red.opacity(0.5), radius: 8)
+                        }
+                        .padding(.trailing, 60)
+                        .padding(.bottom, 80)
+                    }
+                }
+            }
+
             // ── Watermark (non-Pro users) ──
             if !auth.isPro {
                 VStack {
@@ -73,7 +106,7 @@ struct StudioView: View {
                         Spacer()
                         WatermarkPreview()
                             .padding(.trailing, 12)
-                            .padding(.bottom, 68) // above timeline
+                            .padding(.bottom, 68)
                     }
                 }
                 .allowsHitTesting(false)
@@ -82,6 +115,11 @@ struct StudioView: View {
             // ── AI Panel overlay ──
             if vm.showAIPanel {
                 AIAssistPanel(vm: vm)
+            }
+
+            // ── Quick Help overlay ──
+            if showQuickHelp {
+                QuickHelpOverlay(isShowing: $showQuickHelp)
             }
 
             // ── Saving indicator ──
@@ -124,8 +162,120 @@ struct StudioView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $vm.showProjectSettings) {
+            ProjectSettingsView(vm: vm)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $vm.showFramesViewer) {
+            FramesGridView(vm: vm)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .photosPicker(isPresented: $vm.showImagePicker, selection: $vm.importedPhotoItem, matching: .images)
+        .onChange(of: vm.importedPhotoItem) { newItem in
+            Task { await vm.processPhotoPicker(item: newItem) }
+        }
         .task { await vm.loadProject() }
         .onDisappear { Task { await vm.saveProject() } }
+    }
+
+    // MARK: - Canvas Gesture (mode-dependent)
+    var canvasGesture: some Gesture {
+        switch vm.mode {
+        case .move:
+            return AnyGesture(moveGesture.map { _ in () })
+        case .draw:
+            return AnyGesture(drawGesture.map { _ in () })
+        case .cursor:
+            return AnyGesture(cursorGesture.map { _ in () })
+        case .pose:
+            // Pose mode joint dragging handled by JointHandle in CanvasView
+            return AnyGesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in }
+                    .map { _ in () }
+            )
+        }
+    }
+
+    // Pan + zoom gesture for move mode
+    var moveGesture: some Gesture {
+        MagnificationGesture()
+            .simultaneously(with: DragGesture())
+            .onChanged { value in
+                if let scale = value.first { vm.canvasScale = max(0.3, min(5.0, scale)) }
+                if let drag = value.second { vm.canvasOffset = drag.translation }
+            }
+    }
+
+    // Drawing gesture — forwards touch events to EditorViewModel
+    var drawGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { drag in
+                if vm.drawState.currentPath.isEmpty {
+                    vm.handleDrawingBegan(at: drag.startLocation)
+                }
+                vm.handleDrawingMoved(to: drag.location)
+            }
+            .onEnded { drag in
+                vm.handleDrawingEnded(at: drag.location)
+            }
+    }
+
+    // Cursor gesture — tap to select, drag to move
+    var cursorGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { drag in
+                let dist = hypot(drag.translation.width, drag.translation.height)
+                if dist > 4 {
+                    // Dragging — move selected object
+                    let delta = CGSize(
+                        width: drag.translation.width - lastDragTranslation.width,
+                        height: drag.translation.height - lastDragTranslation.height
+                    )
+                    vm.handleCursorDrag(translation: delta)
+                    lastDragTranslation = drag.translation
+                }
+            }
+            .onEnded { drag in
+                let dist = hypot(drag.translation.width, drag.translation.height)
+                if dist <= 4 {
+                    // Tap — select object at point
+                    vm.handleCursorTap(at: drag.startLocation)
+                } else {
+                    vm.pushUndo()
+                }
+                lastDragTranslation = .zero
+            }
+    }
+
+    // MARK: - Text Input Overlay
+    var textInputOverlay: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 8) {
+                TextField("Type text…", text: $vm.drawState.textInput)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.body)
+                Button("Add") {
+                    vm.commitTextElement(vm.drawState.textInput)
+                    HapticManager.shared.buttonTap()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                Button("Cancel") {
+                    vm.drawState.showTextInput = false
+                    vm.drawState.textInput = ""
+                }
+                .foregroundStyle(.gray)
+            }
+            .padding()
+            .background(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal)
+            .padding(.bottom, 70)
+        }
     }
 
     // MARK: - Top Bar (ultra-thin, like FlipaClip)
@@ -139,11 +289,20 @@ struct StudioView: View {
                     .frame(width: 36, height: 36)
             }
 
-            // Project name
-            Text(vm.project.title)
-                .font(.subheadline.bold())
-                .foregroundStyle(.white)
-                .lineLimit(1)
+            // Project name (tap for settings)
+            Button {
+                vm.showProjectSettings = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text(vm.project.title)
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.gray)
+                }
+            }
 
             Spacer()
 
@@ -199,6 +358,7 @@ struct StudioView: View {
             toolButton(.pose, icon: "figure.stand", label: "Pose")
             toolButton(.move, icon: "hand.draw", label: "Move")
             toolButton(.draw, icon: "pencil.tip", label: "Draw")
+            toolButton(.cursor, icon: "cursorarrow", label: "Cursor")
 
             Divider()
                 .frame(width: 28)
@@ -241,6 +401,28 @@ struct StudioView: View {
                 .popover(isPresented: $vm.showBrushSizePopover) {
                     BrushSizePopover(drawState: vm.drawState)
                 }
+
+                // Drawing undo (erase last stroke)
+                Button {
+                    vm.undoLastDrawnElement()
+                    HapticManager.shared.buttonTap()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white.opacity(0.5))
+                        .frame(width: 30, height: 30)
+                }
+
+                // Clear all drawn elements
+                Button {
+                    vm.clearDrawnElements()
+                    HapticManager.shared.buttonTap()
+                } label: {
+                    Image(systemName: "trash.circle")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.red.opacity(0.6))
+                        .frame(width: 30, height: 30)
+                }
             }
 
             Spacer()
@@ -263,9 +445,14 @@ struct StudioView: View {
                 showLayersSheet.toggle()
             }
 
-            // Properties
-            actionButton(icon: "slider.horizontal.3", label: "Props", active: showPropertiesSheet) {
-                showPropertiesSheet.toggle()
+            // Properties / Project Settings
+            actionButton(icon: "slider.horizontal.3", label: "Settings") {
+                vm.showProjectSettings = true
+            }
+
+            // Frames viewer
+            actionButton(icon: "rectangle.split.3x3", label: "Frames") {
+                vm.showFramesViewer = true
             }
 
             // Onion skin toggle
@@ -273,9 +460,19 @@ struct StudioView: View {
                 vm.showOnionSkin.toggle()
             }
 
+            // Grid toggle
+            actionButton(icon: "grid", label: "Grid", active: vm.showGrid) {
+                vm.showGrid.toggle()
+            }
+
             Divider()
                 .frame(width: 28)
                 .background(Color.white.opacity(0.2))
+
+            // Import image from camera roll
+            actionButton(icon: "photo.badge.plus", label: "Image", tint: .green) {
+                vm.showImagePicker = true
+            }
 
             // Assets
             actionButton(icon: "cube.fill", label: "Assets", tint: .mint) {
@@ -301,6 +498,9 @@ struct StudioView: View {
                 }
                 Button { showTemplates = true } label: {
                     Label("Templates", systemImage: "square.on.square.dashed")
+                }
+                Button { showQuickHelp = true } label: {
+                    Label("Quick Help", systemImage: "questionmark.circle")
                 }
             } label: {
                 VStack(spacing: 2) {
@@ -337,26 +537,47 @@ struct StudioView: View {
 
             // Frame timeline
             HStack(spacing: 0) {
-                // Frame counter
-                Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: 40)
+                // Frame counter (tap for full frames view)
+                Button {
+                    vm.showFramesViewer = true
+                } label: {
+                    Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 40)
+                }
 
                 // Scrollable frame strip
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 4) {
-                            ForEach(Array(vm.frames.enumerated()), id: \.element.id) { idx, _ in
+                            ForEach(Array(vm.frames.enumerated()), id: \.element.id) { idx, frame in
                                 FrameThumb(
                                     index: idx,
                                     isSelected: idx == vm.currentFrameIndex,
-                                    figureCount: vm.figures.count
+                                    figureCount: vm.figures.count,
+                                    hasDrawing: !frame.drawnElements.isEmpty,
+                                    hasImages: !frame.importedImages.isEmpty
                                 )
                                 .id(idx)
                                 .onTapGesture {
-                                    vm.currentFrameIndex = idx
-                                    HapticManager.shared.frameSwitched()
+                                    vm.goToFrame(idx)
+                                }
+                                .contextMenu {
+                                    Button {
+                                        vm.currentFrameIndex = idx
+                                        vm.duplicateFrame()
+                                    } label: {
+                                        Label("Duplicate", systemImage: "doc.on.doc")
+                                    }
+                                    if vm.frames.count > 1 {
+                                        Button(role: .destructive) {
+                                            vm.currentFrameIndex = idx
+                                            vm.deleteFrame()
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -389,7 +610,10 @@ struct StudioView: View {
     // MARK: - Helpers
 
     func toolButton(_ mode: EditorMode, icon: String, label: String) -> some View {
-        Button { vm.mode = mode } label: {
+        Button {
+            vm.mode = mode
+            if mode != .cursor { vm.clearSelection() }
+        } label: {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 16, weight: .medium))
@@ -430,24 +654,6 @@ struct StudioView: View {
             }
         }
     }
-
-    var canvasGesture: some Gesture {
-        vm.mode == .move
-            ? AnyGesture(
-                MagnificationGesture()
-                    .simultaneously(with: DragGesture())
-                    .onChanged { value in
-                        if let scale = value.first { vm.canvasScale = scale }
-                        if let drag = value.second { vm.canvasOffset = drag.translation }
-                    }
-                    .map { _ in () }
-              )
-            : AnyGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in }
-                    .map { _ in () }
-              )
-    }
 }
 
 // MARK: - Frame Thumbnail (compact)
@@ -455,6 +661,8 @@ struct FrameThumb: View {
     let index: Int
     let isSelected: Bool
     let figureCount: Int
+    var hasDrawing: Bool = false
+    var hasImages: Bool = false
 
     var body: some View {
         ZStack {
@@ -467,456 +675,21 @@ struct FrameThumb: View {
                 .frame(width: 36, height: 36)
 
             VStack(spacing: 1) {
-                Image(systemName: "figure.stand")
-                    .font(.system(size: 10))
-                    .foregroundStyle(isSelected ? .white : .white.opacity(0.4))
+                // Frame number
                 Text("\(index + 1)")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundStyle(isSelected ? .white : .white.opacity(0.4))
-            }
-        }
-    }
-}
+                    .font(.system(size: 10, weight: isSelected ? .bold : .regular, design: .monospaced))
+                    .foregroundStyle(isSelected ? .red : .white.opacity(0.6))
 
-// MARK: - Brush Size Popover (sliders for size + opacity)
-struct BrushSizePopover: View {
-    @ObservedObject var drawState: DrawingState
-
-    var body: some View {
-        VStack(spacing: 16) {
-            Text("Brush Settings")
-                .font(.subheadline.bold())
-
-            // Size slider
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text("Size").font(.caption)
-                    Spacer()
-                    Text("\(Int(drawState.strokeWidth))px").font(.caption.bold())
-                }
-                Slider(value: $drawState.strokeWidth, in: 1...30, step: 1)
-                    .tint(.red)
-
-                // Preview
-                HStack {
-                    Spacer()
-                    Circle()
-                        .fill(drawState.strokeColor)
-                        .frame(width: max(4, drawState.strokeWidth * 2),
-                               height: max(4, drawState.strokeWidth * 2))
-                    Spacer()
-                }
-                .frame(height: 40)
-            }
-
-            // Fill toggle
-            Toggle(isOn: $drawState.fillEnabled) {
-                Text("Fill shapes").font(.caption)
-            }
-            .tint(.red)
-
-            if drawState.fillEnabled {
-                ColorPicker("Fill color", selection: $drawState.fillColor, supportsOpacity: true)
-                    .font(.caption)
-            }
-        }
-        .padding(16)
-        .frame(width: 220)
-    }
-}
-
-// MARK: - Layers Sheet (bottom sheet instead of side panel)
-struct LayersSheet: View {
-    @ObservedObject var vm: EditorViewModel
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                ThemeManager.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(vm.figures) { fig in
-                            HStack(spacing: 12) {
-                                // Color indicator
-                                Circle()
-                                    .fill(fig.color.color)
-                                    .frame(width: 24, height: 24)
-
-                                // Figure icon
-                                Image(systemName: "figure.stand")
-                                    .font(.system(size: 16))
-                                    .foregroundStyle(fig.color.color)
-
-                                // Name
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(fig.name).font(.subheadline.bold())
-                                    Text("\(fig.joints.count) joints")
-                                        .font(.caption2).foregroundStyle(.gray)
-                                }
-
-                                Spacer()
-
-                                // Visibility
-                                Button {
-                                    toggleVisibility(fig.id)
-                                } label: {
-                                    Image(systemName: isVisible(fig.id) ? "eye" : "eye.slash")
-                                        .foregroundStyle(isVisible(fig.id) ? .white : .gray)
-                                }
-
-                                // Select
-                                if vm.selectedFigureId == fig.id {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.red)
-                                } else {
-                                    Image(systemName: "circle")
-                                        .foregroundStyle(.gray)
-                                }
-                            }
-                            .padding(12)
-                            .background(
-                                vm.selectedFigureId == fig.id
-                                    ? Color.red.opacity(0.1) : ThemeManager.surface
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                            .onTapGesture { vm.selectedFigureId = fig.id }
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    vm.deleteFigure(fig.id)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                        }
-
-                        // Add figure button
-                        Button {
-                            vm.addFigure()
-                            HapticManager.shared.buttonTap()
-                        } label: {
-                            HStack {
-                                Image(systemName: "plus.circle.fill")
-                                Text("Add Figure")
-                            }
-                            .font(.subheadline.bold())
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding(14)
-                            .background(Color.red.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
+                // Indicators
+                HStack(spacing: 2) {
+                    if hasDrawing {
+                        Circle().fill(Color.orange).frame(width: 4, height: 4)
                     }
-                    .padding(16)
-                }
-            }
-            .navigationTitle("Layers")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-    }
-
-    func isVisible(_ figureId: UUID) -> Bool {
-        vm.frames[safe: vm.currentFrameIndex]?.figureStates.first(where: { $0.figureId == figureId })?.visible ?? true
-    }
-
-    func toggleVisibility(_ figureId: UUID) {
-        guard let stateIdx = vm.frames[safe: vm.currentFrameIndex]?.figureStates.firstIndex(where: { $0.figureId == figureId }) else { return }
-        vm.frames[vm.currentFrameIndex].figureStates[stateIdx].visible.toggle()
-    }
-}
-
-// MARK: - Properties Sheet (bottom sheet)
-struct PropertiesSheet: View {
-    @ObservedObject var vm: EditorViewModel
-    @Environment(\.dismiss) var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                ThemeManager.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 16) {
-                        if let fig = vm.selectedFigure {
-                            // Figure properties
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("Figure: \(fig.name)")
-                                    .font(.headline)
-
-                                HStack {
-                                    Text("Color").font(.subheadline)
-                                    Spacer()
-                                    if let idx = vm.figures.firstIndex(where: { $0.id == vm.selectedFigureId }) {
-                                        ColorPicker("", selection: colorBinding(idx))
-                                            .labelsHidden()
-                                    }
-                                }
-                                .padding(12)
-                                .background(ThemeManager.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                            }
-                        } else {
-                            VStack(spacing: 12) {
-                                Image(systemName: "figure.stand")
-                                    .font(.system(size: 40))
-                                    .foregroundStyle(.gray)
-                                Text("Select a figure to edit properties")
-                                    .font(.subheadline)
-                                    .foregroundStyle(.gray)
-                            }
-                            .padding(.top, 40)
-                        }
-
-                        // Project settings
-                        VStack(alignment: .leading, spacing: 12) {
-                            Text("Project Settings")
-                                .font(.headline)
-
-                            HStack {
-                                Text("FPS").font(.subheadline)
-                                Spacer()
-                                Text("\(vm.project.fps ?? 24)").font(.subheadline.bold())
-                            }
-                            .padding(12)
-                            .background(ThemeManager.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                            HStack {
-                                Text("Frames").font(.subheadline)
-                                Spacer()
-                                Text("\(vm.frames.count)").font(.subheadline.bold())
-                            }
-                            .padding(12)
-                            .background(ThemeManager.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-
-                            HStack {
-                                Text("Onion Skin").font(.subheadline)
-                                Spacer()
-                                Toggle("", isOn: $vm.showOnionSkin)
-                                    .tint(.red)
-                            }
-                            .padding(12)
-                            .background(ThemeManager.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                        }
-                    }
-                    .padding(16)
-                }
-            }
-            .navigationTitle("Properties")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-    }
-
-    func colorBinding(_ idx: Int) -> Binding<Color> {
-        Binding(
-            get: { vm.figures[idx].color.color },
-            set: { _ in /* Color is stored as FigureColor enum, would need conversion */ }
-        )
-    }
-}
-
-// MARK: - Sound Timeline Strip (compact)
-struct SoundTimelineStrip: View {
-    @ObservedObject var vm: EditorViewModel
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                ForEach(vm.soundClips) { clip in
-                    HStack(spacing: 4) {
-                        Image(systemName: "speaker.wave.2.fill")
-                            .font(.system(size: 8))
-                        Text(clip.name)
-                            .font(.system(size: 9))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .background(colorForCategory(clip.category).opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .contextMenu {
-                        Button(role: .destructive) { vm.removeSoundClip(clip.id) } label: {
-                            Label("Remove", systemImage: "trash")
-                        }
+                    if hasImages {
+                        Circle().fill(Color.green).frame(width: 4, height: 4)
                     }
                 }
             }
-            .padding(.horizontal, 8)
         }
-        .background(Color.black.opacity(0.6))
-    }
-
-    func colorForCategory(_ cat: String) -> Color {
-        switch cat {
-        case "combat": return .red
-        case "movement": return .cyan
-        case "voices": return .red
-        case "environment_sfx": return .green
-        case "music_stings": return .purple
-        case "comedy": return .pink
-        default: return .gray
-        }
-    }
-}
-
-// MARK: - Watermark Preview
-struct WatermarkPreview: View {
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "figure.run")
-                .font(.system(size: 8))
-            Text("StickDeath ∞")
-                .font(.system(size: 10, weight: .bold))
-        }
-        .foregroundStyle(.white.opacity(0.4))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.black.opacity(0.3))
-        .clipShape(RoundedRectangle(cornerRadius: 4))
-    }
-}
-
-// MARK: - Quick Help Overlay
-struct QuickHelpOverlay: View {
-    @Binding var isShowing: Bool
-
-    private let tips = [
-        ("figure.stand", "Pose Mode", "Drag joints to pose your stick figures"),
-        ("hand.draw", "Move Mode", "Pan & zoom the canvas"),
-        ("pencil.tip", "Draw Mode", "Freehand sketch on the canvas"),
-        ("cube.fill", "Assets", "1,000+ objects & sounds to add"),
-        ("timeline.selection", "Timeline", "Add frames, reorder, set timing"),
-        ("square.3.layers.3d", "Layers", "Manage multiple figures"),
-        ("sparkles", "AI Assist", "Let AI generate animations (Pro)"),
-        ("arrow.uturn.backward", "Undo", "Up to 50 steps of undo"),
-        ("paperplane.fill", "Publish", "Share to all platforms"),
-    ]
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.7)
-                .ignoresSafeArea()
-                .onTapGesture { isShowing = false }
-
-            VStack(spacing: 0) {
-                HStack {
-                    Text("Quick Reference").font(.headline)
-                    Spacer()
-                    Button { isShowing = false } label: {
-                        Image(systemName: "xmark.circle.fill").font(.title3).foregroundStyle(.gray)
-                    }
-                }
-                .padding()
-
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(Array(tips.enumerated()), id: \.offset) { _, tip in
-                            HStack(spacing: 14) {
-                                Image(systemName: tip.0).font(.body).foregroundStyle(.red).frame(width: 28)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(tip.1).font(.subheadline.bold())
-                                    Text(tip.2).font(.caption).foregroundStyle(.gray)
-                                }
-                                Spacer()
-                            }
-                            .padding(.horizontal, 16).padding(.vertical, 10)
-                        }
-                    }
-                }
-            }
-            .background(ThemeManager.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .frame(maxWidth: 340, maxHeight: 420)
-            .shadow(color: .black.opacity(0.5), radius: 20)
-        }
-    }
-}
-
-// MARK: - Export Options Sheet
-struct ExportOptionsSheet: View {
-    @ObservedObject var vm: EditorViewModel
-    @EnvironmentObject var auth: AuthManager
-    @Environment(\.dismiss) var dismiss
-    @State private var isExporting = false
-    @State private var exportSuccess = false
-    @State private var includeWatermark = true
-
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                ThemeManager.background.ignoresSafeArea()
-                VStack(spacing: 24) {
-                    Image(systemName: "square.and.arrow.down.fill").font(.system(size: 40)).foregroundStyle(.red)
-                    Text("Export to Camera Roll").font(.title2.bold())
-                    Text("Save a copy of your animation as a video file to your device.")
-                        .font(.subheadline).foregroundStyle(.gray).multilineTextAlignment(.center).padding(.horizontal, 32)
-
-                    VStack(spacing: 8) {
-                        if auth.isPro {
-                            Toggle(isOn: $includeWatermark) {
-                                VStack(alignment: .leading) {
-                                    Text("Include watermark").font(.subheadline.bold())
-                                    Text("\"StickDeath ∞\" branding on the video").font(.caption).foregroundStyle(.gray)
-                                }
-                            }
-                            .tint(.red).padding().background(ThemeManager.surface).clipShape(RoundedRectangle(cornerRadius: 12))
-                        } else {
-                            HStack(spacing: 10) {
-                                Image(systemName: "seal.fill").foregroundStyle(.red)
-                                VStack(alignment: .leading) {
-                                    Text("Watermark included").font(.subheadline.bold())
-                                    Text("Upgrade to Pro to export without watermark").font(.caption).foregroundStyle(.gray)
-                                }
-                                Spacer()
-                            }
-                            .padding().background(ThemeManager.surface).clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                    .padding(.horizontal, 24)
-
-                    if exportSuccess {
-                        Label("Saved to Camera Roll!", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    }
-
-                    Button {
-                        Task { await exportVideo() }
-                    } label: {
-                        if isExporting { ProgressView().tint(.black) }
-                        else { Label("Export Video", systemImage: "square.and.arrow.down").font(.headline).foregroundStyle(.black) }
-                    }
-                    .frame(maxWidth: .infinity).padding(.vertical, 16).background(.red)
-                    .clipShape(RoundedRectangle(cornerRadius: 14)).padding(.horizontal, 40).disabled(isExporting)
-
-                    Spacer()
-                }
-                .padding(.top, 32)
-            }
-            .navigationTitle("Export").navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-        }
-    }
-
-    func exportVideo() async {
-        isExporting = true
-        let watermark = auth.isPro ? includeWatermark : true
-        do {
-            let _ = try await PublishService.shared.exportLocally(projectId: vm.project.id, watermark: watermark)
-            exportSuccess = true
-        } catch { print("Export error: \(error)") }
-        isExporting = false
     }
 }

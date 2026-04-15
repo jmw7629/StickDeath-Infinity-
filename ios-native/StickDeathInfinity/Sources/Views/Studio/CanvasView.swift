@@ -1,10 +1,6 @@
 // CanvasView.swift
-// GPU-accelerated stick figure canvas — zero-lag rendering
-// Uses SwiftUI Canvas (backed by Core Graphics / Metal) with:
-//   - drawingGroup() for GPU compositing
-//   - Minimal redraws via Equatable conformance
-//   - Efficient gesture handling with no state churn
-//   - Adaptive to all screen sizes
+// GPU-accelerated animation canvas — zero-lag rendering
+// v9: White canvas background, drawn elements, imported images, cursor selection
 
 import SwiftUI
 
@@ -19,13 +15,25 @@ struct CanvasView: View {
             )
 
             ZStack {
-                // Grid — drawn once via Canvas, no per-frame cost
-                GridBackground()
-                    .drawingGroup()  // GPU compositing
+                // ── White canvas area (so drawing is visible) ──
+                canvasBackground(geo: geo, center: center)
+
+                // Grid (subtle, on top of white area)
+                if vm.showGrid {
+                    GridBackground()
+                        .drawingGroup()
+                }
 
                 // All figures composited in one GPU pass
                 figureLayer(center: center)
                     .drawingGroup(opaque: false)
+
+                // Drawn elements layer (freehand, shapes, text)
+                drawnElementsLayer(center: center)
+                    .drawingGroup(opaque: false)
+
+                // Imported images layer
+                importedImagesLayer(center: center)
 
                 // Joint handles (only in pose mode, only for selected figure)
                 if vm.mode == .pose {
@@ -35,8 +43,33 @@ struct CanvasView: View {
                 // Placed objects layer
                 objectsLayer(center: center)
                     .drawingGroup(opaque: false)
+
+                // Selection highlight (cursor mode)
+                if vm.mode == .cursor, let sel = vm.selectedObjectBounds {
+                    selectionOverlay(bounds: sel, center: center)
+                }
+
+                // Current drawing path (live feedback)
+                if vm.mode == .draw && !vm.drawState.currentPath.isEmpty {
+                    currentDrawingPath(center: center)
+                }
+            }
+            .onAppear {
+                vm.canvasSize = geo.size
             }
         }
+    }
+
+    // MARK: - White Canvas Background
+    @ViewBuilder
+    func canvasBackground(geo: GeometryReader<some View>.Content, center: CGPoint) -> some View {
+        let cw = CGFloat(vm.project.canvas_width ?? 1080) * vm.canvasScale
+        let ch = CGFloat(vm.project.canvas_height ?? 1920) * vm.canvasScale
+        RoundedRectangle(cornerRadius: 4)
+            .fill(Color.white)
+            .frame(width: cw, height: ch)
+            .position(x: center.x, y: center.y)
+            .shadow(color: .black.opacity(0.3), radius: 12)
     }
 
     // MARK: - Figure Layer (single Canvas draw call = fast)
@@ -103,6 +136,131 @@ struct CanvasView: View {
         }
     }
 
+    // MARK: - Drawn Elements Layer
+    @ViewBuilder
+    func drawnElementsLayer(center: CGPoint) -> some View {
+        if let frame = vm.frames[safe: vm.currentFrameIndex] {
+            ForEach(frame.drawnElements) { element in
+                DrawnElementView(element: element, center: center, scale: vm.canvasScale)
+            }
+        }
+    }
+
+    // MARK: - Imported Images Layer
+    @ViewBuilder
+    func importedImagesLayer(center: CGPoint) -> some View {
+        if let frame = vm.frames[safe: vm.currentFrameIndex] {
+            ForEach(frame.importedImages) { img in
+                let pos = CGPoint(
+                    x: center.x + img.position.x * vm.canvasScale,
+                    y: center.y + img.position.y * vm.canvasScale
+                )
+                let w = img.size.width * vm.canvasScale
+                let h = img.size.height * vm.canvasScale
+
+                Image(uiImage: img.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: w, height: h)
+                    .rotationEffect(.degrees(img.rotation))
+                    .opacity(img.opacity)
+                    .position(pos)
+                    .overlay(
+                        vm.mode == .cursor && vm.selectedImageId == img.id
+                            ? RoundedRectangle(cornerRadius: 4)
+                                .stroke(Color.blue, style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+                                .frame(width: w + 4, height: h + 4)
+                                .position(pos)
+                            : nil
+                    )
+            }
+        }
+    }
+
+    // MARK: - Current Drawing Path (live)
+    @ViewBuilder
+    func currentDrawingPath(center: CGPoint) -> some View {
+        let color = vm.drawState.strokeColor
+        let width = vm.drawState.strokeWidth * vm.canvasScale
+        let points = vm.drawState.currentPath
+
+        switch vm.drawState.tool {
+        case .pencil:
+            Path { path in
+                guard let first = points.first else { return }
+                path.move(to: sp(first, center))
+                for pt in points.dropFirst() {
+                    path.addLine(to: sp(pt, center))
+                }
+            }
+            .stroke(color, lineWidth: width)
+
+        case .line, .arrow:
+            if let first = points.first, let last = points.last {
+                Path { path in
+                    path.move(to: sp(first, center))
+                    path.addLine(to: sp(last, center))
+                }
+                .stroke(color, lineWidth: width)
+            }
+
+        case .rectangle:
+            if let first = points.first, let last = points.last {
+                let p1 = sp(first, center)
+                let p2 = sp(last, center)
+                let rect = CGRect(
+                    x: min(p1.x, p2.x), y: min(p1.y, p2.y),
+                    width: abs(p2.x - p1.x), height: abs(p2.y - p1.y)
+                )
+                Rectangle()
+                    .stroke(color, lineWidth: width)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+
+        case .circle:
+            if let first = points.first, let last = points.last {
+                let p1 = sp(first, center)
+                let p2 = sp(last, center)
+                let rect = CGRect(
+                    x: min(p1.x, p2.x), y: min(p1.y, p2.y),
+                    width: abs(p2.x - p1.x), height: abs(p2.y - p1.y)
+                )
+                Ellipse()
+                    .stroke(color, lineWidth: width)
+                    .frame(width: rect.width, height: rect.height)
+                    .position(x: rect.midX, y: rect.midY)
+            }
+
+        default: EmptyView()
+        }
+    }
+
+    // MARK: - Selection overlay (cursor mode)
+    @ViewBuilder
+    func selectionOverlay(bounds: CGRect, center: CGPoint) -> some View {
+        let screenRect = CGRect(
+            x: center.x + bounds.origin.x * vm.canvasScale,
+            y: center.y + bounds.origin.y * vm.canvasScale,
+            width: bounds.width * vm.canvasScale,
+            height: bounds.height * vm.canvasScale
+        )
+        RoundedRectangle(cornerRadius: 4)
+            .stroke(Color.blue, style: StrokeStyle(lineWidth: 1.5, dash: [6, 3]))
+            .frame(width: screenRect.width, height: screenRect.height)
+            .position(x: screenRect.midX, y: screenRect.midY)
+
+        // Resize handles at corners
+        ForEach(0..<4, id: \.self) { corner in
+            let x = corner % 2 == 0 ? screenRect.minX : screenRect.maxX
+            let y = corner < 2 ? screenRect.minY : screenRect.maxY
+            Circle()
+                .fill(Color.blue)
+                .frame(width: 10, height: 10)
+                .position(x: x, y: y)
+        }
+    }
+
     // MARK: - Joint Handles (lightweight overlays)
     @ViewBuilder
     func jointHandles(center: CGPoint, geoSize: CGSize) -> some View {
@@ -153,6 +311,11 @@ struct CanvasView: View {
             }
         }
     }
+
+    // Helper: canvas point → screen point
+    func sp(_ pt: CGPoint, _ center: CGPoint) -> CGPoint {
+        CGPoint(x: center.x + pt.x * vm.canvasScale, y: center.y + pt.y * vm.canvasScale)
+    }
 }
 
 // MARK: - Grid Background (drawn once per resize, GPU cached)
@@ -160,8 +323,7 @@ struct GridBackground: View {
     var body: some View {
         Canvas { context, size in
             let gridSize: CGFloat = 40
-            let color = Color.white.opacity(0.03)
-            // Major grid
+            let color = Color.gray.opacity(0.08)
             for x in stride(from: 0, to: size.width, by: gridSize) {
                 var path = Path()
                 path.move(to: CGPoint(x: x, y: 0))
@@ -178,8 +340,8 @@ struct GridBackground: View {
             let cx = size.width / 2, cy = size.height / 2
             var hLine = Path(); hLine.move(to: CGPoint(x: 0, y: cy)); hLine.addLine(to: CGPoint(x: size.width, y: cy))
             var vLine = Path(); vLine.move(to: CGPoint(x: cx, y: 0)); vLine.addLine(to: CGPoint(x: cx, y: size.height))
-            context.stroke(hLine, with: .color(.red.opacity(0.08)), lineWidth: 0.5)
-            context.stroke(vLine, with: .color(.red.opacity(0.08)), lineWidth: 0.5)
+            context.stroke(hLine, with: .color(.red.opacity(0.12)), lineWidth: 0.5)
+            context.stroke(vLine, with: .color(.red.opacity(0.12)), lineWidth: 0.5)
         }
     }
 }
@@ -197,6 +359,6 @@ struct JointHandle: View {
             .overlay(Circle().stroke(Color.red, lineWidth: isSelected ? 2 : 0))
             .position(position)
             .allowsHitTesting(true)
-            .contentShape(Circle().inset(by: -8))  // Larger hit target
+            .contentShape(Circle().inset(by: -8))
     }
 }

@@ -43,7 +43,7 @@ enum DrawingTool: String, CaseIterable {
 // MARK: - Drawing State (lives on EditorViewModel via extension)
 class DrawingState: ObservableObject {
     @Published var tool: DrawingTool = .pencil
-    @Published var strokeColor: Color = .white
+    @Published var strokeColor: Color = .black
     @Published var strokeWidth: CGFloat = 3
     @Published var fillEnabled: Bool = false
     @Published var fillColor: Color = .clear

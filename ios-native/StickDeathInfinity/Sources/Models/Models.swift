@@ -105,6 +105,52 @@ struct AnimationFrame: Codable, Identifiable {
     var figureStates: [FigureState]
     var duration: Double
     var placedObjects: [PlacedObject]  // v3: props from asset library
+    var drawnElements: [DrawnElement]   // v9: freehand drawing, shapes, text
+    var importedImages: [ImportedImage] // v9: photos imported to canvas
+}
+
+// MARK: - Imported Image (photo on canvas — draggable/resizable)
+struct ImportedImage: Identifiable {
+    let id: UUID
+    var image: UIImage
+    var position: CGPoint     // Center position in canvas coords
+    var size: CGSize           // Display size in canvas coords
+    var rotation: Double       // Degrees
+    var opacity: Double
+}
+
+// Codable conformance for ImportedImage (stores as PNG data)
+extension ImportedImage: Codable {
+    enum CodingKeys: String, CodingKey {
+        case id, position, size, rotation, opacity, imageData
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(position, forKey: .position)
+        try container.encode(size, forKey: .size)
+        try container.encode(rotation, forKey: .rotation)
+        try container.encode(opacity, forKey: .opacity)
+        if let data = image.pngData() {
+            try container.encode(data, forKey: .imageData)
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        position = try container.decode(CGPoint.self, forKey: .position)
+        size = try container.decode(CGSize.self, forKey: .size)
+        rotation = try container.decode(Double.self, forKey: .rotation)
+        opacity = try container.decode(Double.self, forKey: .opacity)
+        if let data = try container.decodeIfPresent(Data.self, forKey: .imageData),
+           let img = UIImage(data: data) {
+            image = img
+        } else {
+            image = UIImage()
+        }
+    }
 }
 
 struct FigureState: Codable, Identifiable {
