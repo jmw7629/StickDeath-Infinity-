@@ -24,6 +24,8 @@ import { useAuth } from '../../src/hooks/useAuth';
 import { Avatar } from '../../src/components/common/Avatar';
 import { Button } from '../../src/components/common/Button';
 import { LoadingScreen } from '../../src/components/common/LoadingScreen';
+import { TipModal } from '../../src/components/common/TipModal';
+import { ReportModal } from '../../src/components/common/ReportModal';
 import { theme } from '../../src/theme';
 import { brandPink } from '../../src/theme/colors';
 import type { Profile, CommunityPost } from '../../src/types/database';
@@ -39,6 +41,8 @@ export default function UserProfileScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isFollowing, setIsFollowing] = useState(false);
   const [followLoading, setFollowLoading] = useState(false);
+  const [showTipModal, setShowTipModal] = useState(false);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   const isOwnProfile = user?.id === userId;
 
@@ -208,7 +212,22 @@ export default function UserProfileScreen() {
         <Text style={styles.headerTitle} numberOfLines={1}>
           @{profile.username}
         </Text>
-        <View style={styles.backButton} />
+        {!isOwnProfile ? (
+          <Pressable
+            onPress={() =>
+              Alert.alert(profile.username, '', [
+                { text: 'Send Tip 💰', onPress: () => setShowTipModal(true) },
+                { text: 'Report', style: 'destructive', onPress: () => setShowReportModal(true) },
+                { text: 'Cancel', style: 'cancel' },
+              ])
+            }
+            style={styles.backButton}
+          >
+            <Ionicons name="ellipsis-horizontal" size={22} color={theme.colors.text} />
+          </Pressable>
+        ) : (
+          <View style={styles.backButton} />
+        )}
       </View>
 
       <FlatList
@@ -357,6 +376,24 @@ export default function UserProfileScreen() {
             <Text style={styles.emptyText}>No animations yet</Text>
           </View>
         }
+      />
+
+      {/* Tip Modal */}
+      <TipModal
+        visible={showTipModal}
+        onClose={() => setShowTipModal(false)}
+        recipientId={userId!}
+        recipientName={profile.display_name || profile.username}
+        recipientAvatar={profile.avatar_url}
+      />
+
+      {/* Report Modal */}
+      <ReportModal
+        visible={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        entityType="user"
+        entityId={userId!}
+        entityLabel={`@${profile.username}`}
       />
     </View>
   );

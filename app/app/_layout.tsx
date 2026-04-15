@@ -21,6 +21,7 @@ import {
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { StyleSheet } from 'react-native';
 import { AuthProvider } from '../src/lib/auth';
+import { ErrorBoundary } from '../src/components/common/ErrorBoundary';
 import { theme } from '../src/theme';
 
 // Keep splash visible while fonts load
@@ -50,6 +51,7 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={styles.root}>
+      <ErrorBoundary>
       <AuthProvider>
         <StatusBar style="light" />
         <Stack
@@ -97,8 +99,17 @@ export default function RootLayout() {
             name="challenges"
             options={{ headerShown: false, animation: 'slide_from_right' }}
           />
+          <Stack.Screen
+            name="onboarding"
+            options={{ headerShown: false, animation: 'fade', gestureEnabled: false }}
+          />
+          <Stack.Screen
+            name="social-connect"
+            options={{ headerShown: false, animation: 'slide_from_right' }}
+          />
         </Stack>
       </AuthProvider>
+      </ErrorBoundary>
     </GestureHandlerRootView>
   );
 }

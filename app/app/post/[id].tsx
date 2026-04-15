@@ -26,6 +26,7 @@ import { supabase } from '../../src/lib/supabase';
 import { useAuth } from '../../src/hooks/useAuth';
 import { Avatar } from '../../src/components/common/Avatar';
 import { LoadingScreen } from '../../src/components/common/LoadingScreen';
+import { ReportModal } from '../../src/components/common/ReportModal';
 import { theme } from '../../src/theme';
 import { brandPink } from '../../src/theme/colors';
 import type {
@@ -60,6 +61,7 @@ export default function PostDetailScreen() {
   const [liked, setLiked] = useState(false);
   const [showReactions, setShowReactions] = useState(false);
   const [replyingTo, setReplyingTo] = useState<string | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   const fetchPost = useCallback(async () => {
     if (!id) return;
@@ -247,9 +249,16 @@ export default function PostDetailScreen() {
           <Ionicons name="chevron-back" size={24} color={theme.colors.text} />
         </Pressable>
         <Text style={styles.headerTitle}>Post</Text>
-        <Pressable onPress={handleShare} style={styles.backButton}>
-          <Ionicons name="share-outline" size={22} color={theme.colors.text} />
-        </Pressable>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Pressable onPress={handleShare} style={styles.backButton}>
+            <Ionicons name="share-outline" size={22} color={theme.colors.text} />
+          </Pressable>
+          {post && post.user_id !== user?.id && (
+            <Pressable onPress={() => setShowReportModal(true)} style={styles.backButton}>
+              <Ionicons name="flag-outline" size={20} color={theme.colors.textMuted} />
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <FlatList
@@ -480,6 +489,14 @@ export default function PostDetailScreen() {
           </Pressable>
         </View>
       </View>
+      {/* Report Modal */}
+      <ReportModal
+        visible={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        entityType="post"
+        entityId={postId!}
+        entityLabel={post?.caption || 'Post'}
+      />
     </KeyboardAvoidingView>
   );
 }

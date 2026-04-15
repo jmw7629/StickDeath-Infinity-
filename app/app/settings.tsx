@@ -349,6 +349,16 @@ export default function SettingsScreen() {
               </View>
               <Text style={styles.rowAction}>Connect</Text>
             </Pressable>
+
+            <View style={styles.divider} />
+
+            <Pressable style={styles.row} onPress={() => router.push('/social-connect')}>
+              <View style={styles.rowLeft}>
+                <Ionicons name="share-social-outline" size={22} color={theme.colors.textSecondary} />
+                <Text style={styles.rowTitle}>Social Publishing</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.colors.textMuted} />
+            </Pressable>
           </View>
         </View>
 
