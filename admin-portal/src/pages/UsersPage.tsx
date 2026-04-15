@@ -130,7 +130,6 @@ export default function UsersPage() {
                       >
                         <option value="free">Free</option>
                         <option value="pro">Pro</option>
-                        <option value="creator">Creator</option>
                         <option value="moderator">Moderator</option>
                         <option value="admin">Admin</option>
                         <option value="superadmin">Superadmin</option>

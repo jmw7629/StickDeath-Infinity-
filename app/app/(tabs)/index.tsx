@@ -98,9 +98,17 @@ export default function StudioTab() {
           </Text>
           <Text style={styles.headerTitle}>Your Projects</Text>
         </View>
-        <Pressable style={styles.createButton} onPress={handleCreateProject}>
-          <Ionicons name="add" size={24} color={theme.colors.white} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={styles.challengeButton}
+            onPress={() => router.push('/challenges')}
+          >
+            <Ionicons name="trophy-outline" size={20} color={brandCyan} />
+          </Pressable>
+          <Pressable style={styles.createButton} onPress={handleCreateProject}>
+            <Ionicons name="add" size={24} color={theme.colors.white} />
+          </Pressable>
+        </View>
       </View>
 
       {/* Project grid */}
@@ -196,6 +204,21 @@ const styles = StyleSheet.create({
     fontFamily: theme.fontFamily.bold,
     fontSize: theme.fontSize.xxl,
     color: theme.colors.text,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  challengeButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   createButton: {
     width: 48,

@@ -22,12 +22,7 @@ export const TIERS = {
   pro: {
     name: "Pro",
     priceId: Deno.env.get("STRIPE_PRO_PRICE_ID") ?? null,
-    features: ["unlimited_projects", "no_watermark", "hd_export", "priority_render"],
-  },
-  creator: {
-    name: "Creator",
-    priceId: Deno.env.get("STRIPE_CREATOR_PRICE_ID") ?? null,
-    features: ["everything_pro", "publish_to_socials", "analytics", "creator_badge", "tips_enabled"],
+    features: ["unlimited_projects", "no_watermark", "hd_export", "priority_render", "publish_to_socials", "analytics", "creator_badge", "tips_enabled"],
   },
 } as const;
 

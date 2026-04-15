@@ -152,9 +152,14 @@ export default function FeedTab() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Feed</Text>
-        <Pressable onPress={() => router.push('/search')}>
-          <Ionicons name="search" size={22} color={theme.colors.text} />
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable onPress={() => router.push('/search')}>
+            <Ionicons name="search" size={22} color={theme.colors.text} />
+          </Pressable>
+          <Pressable onPress={() => router.push('/notifications')}>
+            <Ionicons name="notifications-outline" size={22} color={theme.colors.text} />
+          </Pressable>
+        </View>
       </View>
 
       <FlatList
@@ -315,6 +320,11 @@ const styles = StyleSheet.create({
     fontFamily: theme.fontFamily.bold,
     fontSize: theme.fontSize.xxl,
     color: theme.colors.text,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
   },
   listContent: {
     paddingHorizontal: theme.spacing.lg,

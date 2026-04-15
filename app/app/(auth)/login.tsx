@@ -18,6 +18,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { supabase } from '../../src/lib/supabase';
 import { useAuth } from '../../src/hooks/useAuth';
 import { Button } from '../../src/components/common/Button';
 import { theme } from '../../src/theme';
@@ -31,6 +32,30 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [oauthLoading, setOauthLoading] = useState<string | null>(null);
+
+  const handleForgotPassword = async () => {
+    if (!email.trim()) {
+      Alert.alert(
+        'Enter Your Email',
+        'Type your email address above, then tap "Forgot password?" again.',
+      );
+      return;
+    }
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        { redirectTo: 'stickdeath://auth/reset-password' },
+      );
+      if (error) throw error;
+      Alert.alert(
+        'Check Your Email',
+        'If an account exists for that email, we sent a password reset link.',
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Reset failed';
+      Alert.alert('Error', message);
+    }
+  };
 
   const handleEmailLogin = async () => {
     if (!email.trim() || !password) {
@@ -156,7 +181,7 @@ export default function LoginScreen() {
             </View>
           </View>
 
-          <Pressable style={styles.forgotPassword}>
+          <Pressable style={styles.forgotPassword} onPress={handleForgotPassword}>
             <Text style={styles.forgotPasswordText}>Forgot password?</Text>
           </Pressable>
 

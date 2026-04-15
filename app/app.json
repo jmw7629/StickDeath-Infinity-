@@ -17,6 +17,9 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.stickdeath.infinity",
       "buildNumber": "1",
+      "entitlements": {
+        "com.apple.developer.applesignin": ["Default"]
+      },
       "infoPlist": {
         "NSCameraUsageDescription": "Used to capture reference photos for animations",
         "NSPhotoLibraryUsageDescription": "Used to import images into your animation projects",
@@ -35,11 +38,20 @@
       "expo-router",
       "expo-font",
       "expo-secure-store",
+      "expo-apple-authentication",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#ff2d55"
+        }
+      ],
       [
         "expo-build-properties",
         {
           "ios": {
-            "deploymentTarget": "15.0"
+            "deploymentTarget": "15.0",
+            "usesAppleSignIn": true
           }
         }
       ]

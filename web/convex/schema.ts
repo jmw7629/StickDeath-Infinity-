@@ -16,7 +16,6 @@ const schema = defineSchema({
     subscription: v.union(
       v.literal("free"),
       v.literal("pro"),
-      v.literal("creator"),
     ),
     superAdmin: v.boolean(),
     banned: v.boolean(),

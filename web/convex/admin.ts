@@ -45,7 +45,6 @@ export const setSubscription = mutation({
     subscription: v.union(
       v.literal("free"),
       v.literal("pro"),
-      v.literal("creator"),
     ),
   },
   handler: async (ctx, { targetUserId, subscription }) => {
