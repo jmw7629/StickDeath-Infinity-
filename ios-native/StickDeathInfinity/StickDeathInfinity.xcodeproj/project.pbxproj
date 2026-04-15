@@ -72,6 +72,10 @@
 		BDEED23BEAD9B6B886C7AD13 /* TemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17923995DF749A864EF61570; };
 		0C1C1E101BED8E26462FD8AB /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54DAF0F6912EFD1D55C92200; };
 		000000000000000000000061 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000060; };
+		SPM_SUPA_BF /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = SPM_SUPA_PR; };
+		SPM_STRIPE_BF /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = SPM_STRIPE_PR; };
+		SPM_AUTH_BF /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = SPM_AUTH_PR; };
+		FONT_BF_001 /* SpecialElite-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = FONT_FR_001; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -141,6 +145,8 @@
 		54DAF0F6912EFD1D55C92200 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		000000000000000000000050 /* StickDeathInfinity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StickDeathInfinity.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		000000000000000000000060 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		FONT_FR_001 /* SpecialElite-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpecialElite-Regular.ttf"; sourceTree = "<group>"; };
+		INFOPLIST_FR /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -150,6 +156,8 @@
 				FE34C8CEB318C70FA0D7E5C4 /* Sources */,
 				000000000000000000000060 /* Assets.xcassets */,
 				000000000000000000000003 /* Products */,
+				FONTS_GRP_001 /* Fonts */,
+				INFOPLIST_FR /* Info.plist */,
 			);
 			sourceTree = "<group>";
 		};
@@ -336,6 +344,14 @@
 			path = Studio;
 			sourceTree = "<group>";
 		};
+		FONTS_GRP_001 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				FONT_FR_001 /* SpecialElite-Regular.ttf */,
+			);
+			path = Fonts;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -347,6 +363,11 @@
 			dependencies = ();
 			name = StickDeathInfinity;
 			productName = StickDeathInfinity;
+			packageProductDependencies = (
+				SPM_SUPA_PR /* Supabase */,
+				SPM_STRIPE_PR /* StripePaymentSheet */,
+				SPM_AUTH_PR /* Auth */,
+			);
 			productReference = 000000000000000000000050;
 			productType = "com.apple.product-type.application";
 		};
@@ -365,6 +386,10 @@
 			productRefGroup = 000000000000000000000003;
 			projectDirPath = "";
 			projectRoot = "";
+			packageReferences = (
+				SPM_SUPA_PKG /* XCRemoteSwiftPackageReference "supabase-swift" */,
+				SPM_STRIPE_PKG /* XCRemoteSwiftPackageReference "stripe-ios" */,
+			);
 			targets = (000000000000000000000010);
 		};
 /* End PBXProject section */
@@ -447,7 +472,11 @@
 		000000000000000000000041 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
-			files = ();
+			files = (
+				SPM_SUPA_BF /* Supabase in Frameworks */,
+				SPM_STRIPE_BF /* StripePaymentSheet in Frameworks */,
+				SPM_AUTH_BF /* Auth in Frameworks */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -458,6 +487,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				000000000000000000000061 /* Assets.xcassets in Resources */,
+				FONT_BF_001 /* SpecialElite-Regular.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -501,8 +531,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "STICKDEATH ∞";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSCameraUsageDescription = "STICKDEATH ∞ needs camera access to import photos and videos for your animations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "STICKDEATH ∞ needs microphone access to record audio for your animations.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "STICKDEATH ∞ needs photo library access to import and save animations.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -524,8 +558,12 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "STICKDEATH ∞";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.entertainment";
+				INFOPLIST_KEY_NSCameraUsageDescription = "STICKDEATH ∞ needs camera access to import photos and videos for your animations.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "STICKDEATH ∞ needs microphone access to record audio for your animations.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "STICKDEATH ∞ needs photo library access to import and save animations.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
@@ -556,6 +594,44 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+
+/* Begin XCRemoteSwiftPackageReference section */
+		SPM_SUPA_PKG /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.0;
+			};
+		};
+		SPM_STRIPE_PKG /* XCRemoteSwiftPackageReference "stripe-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 23.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		SPM_SUPA_PR /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = SPM_SUPA_PKG;
+			productName = Supabase;
+		};
+		SPM_STRIPE_PR /* StripePaymentSheet */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = SPM_STRIPE_PKG;
+			productName = StripePaymentSheet;
+		};
+		SPM_AUTH_PR /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = SPM_SUPA_PKG;
+			productName = Auth;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 	};
 	rootObject = 000000000000000000000001;

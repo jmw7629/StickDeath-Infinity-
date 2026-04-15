@@ -1,6 +1,8 @@
 // LoginView.swift
+// v2: + Sign In with Apple button
 
 import SwiftUI
+import AuthenticationServices
 
 struct LoginView: View {
     @EnvironmentObject var auth: AuthManager
@@ -10,6 +12,7 @@ struct LoginView: View {
     @State private var password = ""
     @State private var error: String?
     @State private var loading = false
+    @State private var appleSignInCoordinator = AppleSignInCoordinator()
 
     var body: some View {
         NavigationStack {
@@ -28,7 +31,28 @@ struct LoginView: View {
                         }
                         .padding(.top, 40)
 
-                        // Form
+                        // Sign In with Apple
+                        SignInWithAppleButton(.signIn) { request in
+                            let _ = auth.generateNonce()
+                            request.requestedScopes = [.fullName, .email]
+                            request.nonce = auth.sha256Nonce()
+                        } onCompletion: { result in
+                            handleAppleSignIn(result)
+                        }
+                        .signInWithAppleButtonStyle(.white)
+                        .frame(height: 50)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 24)
+
+                        // Divider
+                        HStack {
+                            Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 1)
+                            Text("or").font(.caption).foregroundStyle(.gray)
+                            Rectangle().fill(Color.gray.opacity(0.3)).frame(height: 1)
+                        }
+                        .padding(.horizontal, 32)
+
+                        // Email / Password Form
                         VStack(spacing: 16) {
                             TextField("Email", text: $email)
                                 .textFieldStyle(.plain)
@@ -96,5 +120,32 @@ struct LoginView: View {
             self.error = error.localizedDescription
         }
         loading = false
+    }
+
+    func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+                  let tokenData = credential.identityToken,
+                  let idToken = String(data: tokenData, encoding: .utf8),
+                  let nonce = auth.rawNonce else {
+                error = "Apple Sign-In failed — missing token"
+                return
+            }
+            loading = true
+            Task {
+                do {
+                    try await auth.signInWithApple(idToken: idToken, nonce: nonce)
+                    dismiss()
+                } catch {
+                    self.error = error.localizedDescription
+                }
+                loading = false
+            }
+        case .failure(let err):
+            if (err as NSError).code != ASAuthorizationError.canceled.rawValue {
+                error = err.localizedDescription
+            }
+        }
     }
 }

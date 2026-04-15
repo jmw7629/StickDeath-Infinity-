@@ -1,10 +1,12 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
-// v4: 3-second timeout on session check so app never gets stuck on splash
+// v5: + Apple Sign-In via ASAuthorizationController + 3-second splash timeout
 
 import Foundation
 import SwiftUI
 import Supabase
+import AuthenticationServices
+import CryptoKit
 
 @MainActor
 class AuthManager: ObservableObject {
@@ -17,6 +19,9 @@ class AuthManager: ObservableObject {
 
     private let profileCacheKey = "cached_user_profile"
 
+    // Apple Sign-In state
+    private var currentNonce: String?
+
     private init() {
         loadCachedProfile()
         Task { await checkSessionWithTimeout() }
@@ -24,19 +29,14 @@ class AuthManager: ObservableObject {
 
     // MARK: - Timeout wrapper — never stuck on splash
     private func checkSessionWithTimeout() async {
-        // Race: session check vs 3-second timeout
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await self.checkSession() }
             group.addTask {
                 try? await Task.sleep(for: .seconds(3))
                 if await self.isLoading {
-                    await MainActor.run {
-                        // Timeout hit — show WelcomeView (or cached profile)
-                        self.isLoading = false
-                    }
+                    await MainActor.run { self.isLoading = false }
                 }
             }
-            // Wait for session check to finish (or timeout already flipped isLoading)
             await group.next()
             group.cancelAll()
         }
@@ -107,6 +107,46 @@ class AuthManager: ObservableObject {
         await fetchProfile()
     }
 
+    /// Generate a random nonce for Apple Sign-In
+    func generateNonce() -> String {
+        let nonce = randomNonceString()
+        currentNonce = nonce
+        return nonce
+    }
+
+    /// Get the SHA256 hash of the current nonce (for Apple's request)
+    func sha256Nonce() -> String {
+        guard let nonce = currentNonce else { return "" }
+        let data = Data(nonce.utf8)
+        let hash = SHA256.hash(data: data)
+        return hash.compactMap { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Return the raw nonce for Supabase verification
+    var rawNonce: String? { currentNonce }
+
+    private func randomNonceString(length: Int = 32) -> String {
+        let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+        var result = ""
+        var remainingLength = length
+        while remainingLength > 0 {
+            let randoms: [UInt8] = (0 ..< 16).map { _ in
+                var random: UInt8 = 0
+                let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+                if status != errSecSuccess { random = UInt8.random(in: 0...255) }
+                return random
+            }
+            for random in randoms {
+                if remainingLength == 0 { break }
+                if random < charset.count {
+                    result.append(charset[Int(random)])
+                    remainingLength -= 1
+                }
+            }
+        }
+        return result
+    }
+
     // MARK: - Logout
     func logout() async {
         _ = try? await supabase.auth.signOut()
@@ -168,5 +208,33 @@ class AuthManager: ObservableObject {
 
     var isAdmin: Bool {
         currentUser?.role == "admin" || currentUser?.role == "superadmin"
+    }
+}
+
+// MARK: - Apple Sign-In Coordinator (UIKit bridge)
+class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    var onComplete: ((Result<(String, String), Error>) -> Void)?
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let window = scene.windows.first else {
+            return ASPresentationAnchor()
+        }
+        return window
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
+              let tokenData = credential.identityToken,
+              let idToken = String(data: tokenData, encoding: .utf8) else {
+            onComplete?(.failure(NSError(domain: "AppleSignIn", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing identity token"])))
+            return
+        }
+        let nonce = AuthManager.shared.rawNonce ?? ""
+        onComplete?(.success((idToken, nonce)))
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        onComplete?(.failure(error))
     }
 }

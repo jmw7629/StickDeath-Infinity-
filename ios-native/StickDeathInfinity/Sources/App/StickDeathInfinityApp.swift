@@ -1,5 +1,6 @@
 // StickDeathInfinityApp.swift
 // Main entry point — supports iPhone, iPad, Mac Catalyst
+// v2: + onOpenURL for deep links + Sign In with Apple entitlement
 
 import SwiftUI
 
@@ -21,6 +22,9 @@ struct StickDeathInfinityApp: App {
                     offlineManager.startMonitoring()
                     PushNotificationManager.shared.requestPermission()
                 }
+                .onOpenURL { url in
+                    handleDeepLink(url)
+                }
         }
         #if os(macOS) || targetEnvironment(macCatalyst)
         .defaultSize(width: 1200, height: 800)
@@ -40,10 +44,39 @@ struct StickDeathInfinityApp: App {
         }
         #endif
     }
+
+    /// Handle deep links: stickdeath://post/{id}, stickdeath://challenge/{id}, etc.
+    private func handleDeepLink(_ url: URL) {
+        guard url.scheme == "stickdeath" else { return }
+        let host = url.host ?? ""
+        let pathComponents = url.pathComponents.filter { $0 != "/" }
+
+        switch host {
+        case "post":
+            if let id = pathComponents.first {
+                NotificationCenter.default.post(name: .deepLinkPost, object: id)
+            }
+        case "challenge":
+            if let id = pathComponents.first {
+                NotificationCenter.default.post(name: .deepLinkChallenge, object: id)
+            }
+        case "studio":
+            NotificationCenter.default.post(name: .switchToTab, object: "studio")
+        case "profile":
+            if let id = pathComponents.first {
+                NotificationCenter.default.post(name: .deepLinkProfile, object: id)
+            }
+        default:
+            break
+        }
+    }
 }
 
 extension Notification.Name {
     static let newProject = Notification.Name("newProject")
     static let toggleSidebar = Notification.Name("toggleSidebar")
     static let switchToTab = Notification.Name("switchToTab")
+    static let deepLinkPost = Notification.Name("deepLinkPost")
+    static let deepLinkChallenge = Notification.Name("deepLinkChallenge")
+    static let deepLinkProfile = Notification.Name("deepLinkProfile")
 }
