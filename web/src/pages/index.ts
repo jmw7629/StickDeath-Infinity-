@@ -1,0 +1,12 @@
+export { default as LandingPage } from "./LandingPage";
+export { LoginPage } from "./LoginPage";
+export { SignupPage } from "./SignupPage";
+export { default as DashboardPage } from "./DashboardPage";
+export { SettingsPage } from "./SettingsPage";
+export { default as StudioPage } from "./StudioPage";
+export { default as FeedPage } from "./FeedPage";
+export { default as ChallengesPage } from "./ChallengesPage";
+export { default as SpatterPage } from "./SpatterPage";
+export { default as ProfilePage } from "./ProfilePage";
+export { default as HomePage } from "./HomePage";
+export { default as StudioHubPage } from "./StudioHubPage";
