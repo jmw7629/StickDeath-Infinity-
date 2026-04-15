@@ -19,6 +19,8 @@ struct StudioView: View {
     @State private var showPropertiesSheet = false
     @State private var showMoreMenu = false
     @State private var showQuickHelp = false
+    @State private var showToolKey = false
+    @State private var showUserGuide = false
     @State private var lastDragTranslation: CGSize = .zero
 
     var isWide: Bool { hSize == .regular }
@@ -169,6 +171,16 @@ struct StudioView: View {
         }
         .sheet(isPresented: $vm.showFramesViewer) {
             FramesGridView(vm: vm)
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showToolKey) {
+            StudioToolKey()
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showUserGuide) {
+            StudioUserGuide()
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -400,8 +412,11 @@ struct StudioView: View {
                     taskbarAction(icon: "square.and.arrow.down", label: "Export") {
                         showExportOptions = true
                     }
-                    taskbarAction(icon: "questionmark.circle", label: "Help") {
-                        showQuickHelp = true
+                    taskbarAction(icon: "book.fill", label: "Guide") {
+                        showUserGuide = true
+                    }
+                    taskbarAction(icon: "key.fill", label: "Key") {
+                        showToolKey = true
                     }
                 }
                 .padding(.horizontal, 4)
@@ -608,8 +623,17 @@ struct StudioView: View {
                 Button { showTemplates = true } label: {
                     Label("Templates", systemImage: "square.on.square.dashed")
                 }
+
+                Divider()
+
+                Button { showToolKey = true } label: {
+                    Label("Tool Key", systemImage: "key.fill")
+                }
+                Button { showUserGuide = true } label: {
+                    Label("User Guide", systemImage: "book.fill")
+                }
                 Button { showQuickHelp = true } label: {
-                    Label("Quick Help", systemImage: "questionmark.circle")
+                    Label("Quick Reference", systemImage: "questionmark.circle")
                 }
             } label: {
                 VStack(spacing: 2) {

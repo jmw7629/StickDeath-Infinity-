@@ -66,6 +66,8 @@
 		5154C260B331435D5EEA024A /* RigToolPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D5986D4B75785634D0C3D82; };
 		F8D3F4ADC168B5E878A6B4CD /* SpatterStudioPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C70A20A3A99368862F480553; };
 		A1340C6447DBBC4E1D4DA144 /* StudioComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = 893321ABBEB0B6CF9B65328B; };
+		35FDBB8C5DD1FC2B026E8ACF /* StudioToolKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD8E65F13157FBDEFBA6BF68; };
+		60556BA97464990B56ABF194 /* StudioUserGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD0950709C2528DD18F4B7C1; };
 		9496D6D5AC23C2DCA7110E1E /* StudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C5AEEAA9A7761BA6A81E637; };
 		BDEED23BEAD9B6B886C7AD13 /* TemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17923995DF749A864EF61570; };
 		0C1C1E101BED8E26462FD8AB /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54DAF0F6912EFD1D55C92200; };
@@ -132,6 +134,8 @@
 		1D5986D4B75785634D0C3D82 /* RigToolPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RigToolPanel.swift; sourceTree = "<group>"; };
 		C70A20A3A99368862F480553 /* SpatterStudioPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterStudioPanel.swift; sourceTree = "<group>"; };
 		893321ABBEB0B6CF9B65328B /* StudioComponents.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioComponents.swift; sourceTree = "<group>"; };
+		DD8E65F13157FBDEFBA6BF68 /* StudioToolKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioToolKey.swift; sourceTree = "<group>"; };
+		BD0950709C2528DD18F4B7C1 /* StudioUserGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioUserGuide.swift; sourceTree = "<group>"; };
 		6C5AEEAA9A7761BA6A81E637 /* StudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioView.swift; sourceTree = "<group>"; };
 		17923995DF749A864EF61570 /* TemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatesView.swift; sourceTree = "<group>"; };
 		54DAF0F6912EFD1D55C92200 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
@@ -323,6 +327,8 @@
 				1D5986D4B75785634D0C3D82 /* RigToolPanel.swift */,
 				C70A20A3A99368862F480553 /* SpatterStudioPanel.swift */,
 				893321ABBEB0B6CF9B65328B /* StudioComponents.swift */,
+				DD8E65F13157FBDEFBA6BF68 /* StudioToolKey.swift */,
+				BD0950709C2528DD18F4B7C1 /* StudioUserGuide.swift */,
 				6C5AEEAA9A7761BA6A81E637 /* StudioView.swift */,
 				17923995DF749A864EF61570 /* TemplatesView.swift */,
 				54DAF0F6912EFD1D55C92200 /* TimelinePanel.swift */,
@@ -427,6 +433,8 @@
 				5154C260B331435D5EEA024A /* RigToolPanel.swift in Sources */,
 				F8D3F4ADC168B5E878A6B4CD /* SpatterStudioPanel.swift in Sources */,
 				A1340C6447DBBC4E1D4DA144 /* StudioComponents.swift in Sources */,
+				35FDBB8C5DD1FC2B026E8ACF /* StudioToolKey.swift in Sources */,
+				60556BA97464990B56ABF194 /* StudioUserGuide.swift in Sources */,
 				9496D6D5AC23C2DCA7110E1E /* StudioView.swift in Sources */,
 				BDEED23BEAD9B6B886C7AD13 /* TemplatesView.swift in Sources */,
 				0C1C1E101BED8E26462FD8AB /* TimelinePanel.swift in Sources */,
