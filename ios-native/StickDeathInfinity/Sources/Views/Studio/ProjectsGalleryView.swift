@@ -1,15 +1,16 @@
 // ProjectsGalleryView.swift
-// Studio tab — user's animation projects
-// v3: Adaptive grid columns for iPad/Mac, pull-to-refresh, offline project list
+// Studio tab root — user's animation projects
+// v4: Uses StudioDestination for navigation (MainTabView owns the NavigationStack)
+// Adaptive grid columns for iPad/Mac, pull-to-refresh, offline project list
 
 import SwiftUI
 
 struct ProjectsGalleryView: View {
+    @EnvironmentObject var router: NavigationRouter
     @State private var projects: [StudioProject] = []
     @State private var loading = true
     @State private var showNewProject = false
     @State private var newTitle = ""
-    @State private var navigateToStudio: StudioProject?
     @Environment(\.deviceContext) var ctx
 
     /// Adaptive columns: 2 on phone, 3 on iPad, 4 on Mac
@@ -26,78 +27,82 @@ struct ProjectsGalleryView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                ThemeManager.background.ignoresSafeArea()
+        ZStack {
+            ThemeManager.background.ignoresSafeArea()
 
-                if loading && projects.isEmpty {
-                    ProgressView().tint(.red)
-                } else if projects.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVGrid(columns: columns, spacing: 12) {
-                            // Quick-create card (always first — instant gratification)
-                            Button { showNewProject = true } label: {
-                                VStack(spacing: 12) {
-                                    Image(systemName: "plus.circle.fill")
-                                        .font(.system(size: 32))
-                                        .foregroundStyle(.red)
-                                    Text("New Animation")
-                                        .font(.caption.bold())
-                                        .foregroundStyle(.red)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 160)
-                                .background(ThemeManager.surface.opacity(0.5))
-                                .clipShape(RoundedRectangle(cornerRadius: 14))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 14)
-                                        .strokeBorder(.red.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                                )
+            if loading && projects.isEmpty {
+                ProgressView().tint(.red)
+            } else if projects.isEmpty {
+                emptyState
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: columns, spacing: 12) {
+                        // Quick-create card (always first — instant gratification)
+                        Button { showNewProject = true } label: {
+                            VStack(spacing: 12) {
+                                Image(systemName: "plus.circle.fill")
+                                    .font(.system(size: 32))
+                                    .foregroundStyle(.red)
+                                Text("New Animation")
+                                    .font(.caption.bold())
+                                    .foregroundStyle(.red)
                             }
-
-                            ForEach(projects) { project in
-                                ProjectCard(project: project)
-                                    .onTapGesture { navigateToStudio = project }
-                                    .contextMenu {
-                                        Button {
-                                            navigateToStudio = project
-                                        } label: {
-                                            Label("Open", systemImage: "play.fill")
-                                        }
-                                        Button(role: .destructive) {
-                                            Task { await deleteProject(project) }
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 160)
+                            .background(ThemeManager.surface.opacity(0.5))
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 14)
+                                    .strokeBorder(.red.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                            )
                         }
-                        .padding()
-                        .frame(maxWidth: ctx.maxContentWidth)
+
+                        ForEach(projects) { project in
+                            ProjectCard(project: project)
+                                .onTapGesture {
+                                    router.studioPath.append(StudioDestination.editor(project))
+                                }
+                                .contextMenu {
+                                    Button {
+                                        router.studioPath.append(StudioDestination.editor(project))
+                                    } label: {
+                                        Label("Open", systemImage: "play.fill")
+                                    }
+                                    Button(role: .destructive) {
+                                        Task { await deleteProject(project) }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                        }
                     }
-                    .refreshable { await loadProjects() }
+                    .padding()
+                    .frame(maxWidth: ctx.maxContentWidth)
                 }
+                .refreshable { await loadProjects() }
             }
-            .navigationTitle("My Studio")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button { showNewProject = true } label: {
-                        Image(systemName: "plus.circle.fill").foregroundStyle(.red)
-                    }
-                }
-            }
-            .alert("New Animation", isPresented: $showNewProject) {
-                TextField("Project name", text: $newTitle)
-                Button("Create") { Task { await createProject() } }
-                Button("Cancel", role: .cancel) { newTitle = "" }
-            }
-            .navigationDestination(item: $navigateToStudio) { project in
-                StudioView(vm: EditorViewModel(project: project))
-            }
-            .task { await loadProjects() }
         }
+        .navigationTitle("My Studio")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    router.openSpatter(context: .studio(nil))
+                } label: {
+                    Image(systemName: "sparkles").foregroundStyle(.red)
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button { showNewProject = true } label: {
+                    Image(systemName: "plus.circle.fill").foregroundStyle(.red)
+                }
+            }
+        }
+        .alert("New Animation", isPresented: $showNewProject) {
+            TextField("Project name", text: $newTitle)
+            Button("Create") { Task { await createProject() } }
+            Button("Cancel", role: .cancel) { newTitle = "" }
+        }
+        .task { await loadProjects() }
     }
 
     var emptyState: some View {
@@ -127,7 +132,7 @@ struct ProjectsGalleryView: View {
         newTitle = ""
         if let project = try? await ProjectService.shared.createProject(title: title) {
             projects.insert(project, at: 0)
-            navigateToStudio = project
+            router.studioPath.append(StudioDestination.editor(project))
         }
     }
 

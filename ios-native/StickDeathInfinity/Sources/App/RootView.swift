@@ -1,18 +1,21 @@
 // RootView.swift
 // Routes: Splash → Onboarding → Auth → Main
+// Injects NavigationRouter as environment object (shared across all tabs)
+// Adds SpatterOverlay at ZStack top level (Layer 4 — never changes navigation)
 // Wrapped in ResponsiveContainer for universal device support
-// 5-second rule: animated splash hooks users instantly
 
 import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var offline: OfflineManager
+    @StateObject private var router = NavigationRouter()
     @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
 
     var body: some View {
         ResponsiveContainer { ctx in
             ZStack {
+                // Main content
                 Group {
                     if auth.isLoading {
                         SplashView()
@@ -20,6 +23,7 @@ struct RootView: View {
                         OnboardingView(isComplete: $hasCompletedOnboarding)
                     } else if auth.isLoggedIn {
                         MainTabView()
+                            .environmentObject(router)
                     } else {
                         WelcomeView()
                     }
@@ -49,6 +53,16 @@ struct RootView: View {
                         }
                         Spacer()
                     }
+                }
+
+                // ── Layer 4: Spatter AI Overlay ──
+                // Never changes navigation state. Sits on top of everything.
+                // Closing returns user exactly where they were.
+                if router.showSpatter {
+                    SpatterOverlay()
+                        .environmentObject(router)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        .zIndex(100)
                 }
             }
         }
@@ -88,7 +102,6 @@ struct SplashView: View {
 
     var body: some View {
         ZStack {
-            // Dark gradient background
             RadialGradient(
                 colors: [Color(hex: "#1a0005"), .black],
                 center: .center, startRadius: 50, endRadius: 400
@@ -96,7 +109,6 @@ struct SplashView: View {
 
             VStack(spacing: 16) {
                 ZStack {
-                    // Outer glow rings
                     ForEach(0..<3, id: \.self) { i in
                         Circle()
                             .stroke(.red.opacity(0.15 - Double(i) * 0.04), lineWidth: 1.5)
@@ -111,7 +123,6 @@ struct SplashView: View {
                             )
                     }
 
-                    // Main icon
                     Image(systemName: "figure.run")
                         .font(.system(size: 56, weight: .medium))
                         .foregroundStyle(
@@ -120,7 +131,7 @@ struct SplashView: View {
                         .shadow(color: .red.opacity(0.5), radius: 20)
                 }
 
-                Text("STICKDEATH INFINITY")
+                Text("STICKDEATH ∞")
                     .font(.system(size: 32, weight: .black, design: .rounded))
                     .foregroundStyle(.white)
                     .opacity(textOpacity)

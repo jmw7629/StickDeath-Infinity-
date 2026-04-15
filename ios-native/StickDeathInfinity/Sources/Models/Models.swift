@@ -301,3 +301,62 @@ struct AnimationTemplate: Identifiable {
     let frameCount: Int
     let isPro: Bool
 }
+
+// MARK: - Challenge (Supabase: challenges table)
+struct Challenge: Codable, Identifiable, Hashable {
+    let id: Int
+    var title: String
+    var description: String?
+    var theme: String?
+    var start_date: String?
+    var end_date: String?
+    var status: String?             // "active", "voting", "completed"
+    var prize_description: String?
+    var entry_count: Int?
+    var thumbnail_url: String?
+    var created_by: String?
+
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: Challenge, rhs: Challenge) -> Bool { lhs.id == rhs.id }
+}
+
+struct ChallengeEntry: Codable, Identifiable {
+    let id: Int
+    let challenge_id: Int
+    let project_id: Int?
+    var user_id: String?
+    var user: FeedUser?
+    var project_title: String?
+    var thumbnail_url: String?
+    var vote_count: Int?
+    var created_at: String?
+}
+
+// MARK: - Notification (Supabase: notifications table)
+struct AppNotification: Codable, Identifiable {
+    let id: Int
+    var type: String            // "like", "comment", "follow", "challenge", "system"
+    var title: String
+    var body: String?
+    var read: Bool
+    var created_at: String?
+    var related_post_id: Int?
+    var related_user_id: String?
+    var related_challenge_id: Int?
+}
+
+// MARK: - Comment (Supabase: comments table)
+struct PostComment: Codable, Identifiable {
+    let id: Int
+    let post_id: Int
+    let user_id: String
+    var content: String
+    var created_at: String?
+    var user: FeedUser?
+}
+
+// MARK: - Hashable conformance for navigation destinations
+extension FeedItem: Hashable {
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: FeedItem, rhs: FeedItem) -> Bool { lhs.id == rhs.id }
+}
