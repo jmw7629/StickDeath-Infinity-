@@ -1,306 +1,371 @@
 // HomeView.swift
-// Layer 1 ROOT — Home tab (community feed)
-//
-// Why is the user here?  → Discover content, get inspired
-// Next action?           → Tap a post → fullscreen viewer → creator profile
-// Back?                  → Returns to same scroll position
-// Forward?               → PostDetail → CreatorProfile → Message — all within Home's NavigationStack
-//
-// Flow: Home → Post → Fullscreen → Creator → Profile → Back → Back → same scroll position
+// Layer 1 ROOT — Home tab — matches web design
+// Challenge banner → Continue creating → Community chat feed → Message input
 
 import SwiftUI
+
+// Seed messages (matches web app exactly)
+private struct CommunityMsg: Identifiable {
+    let id: String
+    let username: String
+    let avatar: String
+    let isBot: Bool
+    let text: String
+    let time: String
+    let likes: Int
+    let replies: Int
+    let isAnnouncement: Bool
+}
+
+private let seedMessages: [CommunityMsg] = [
+    .init(id: "1", username: "Spatter", avatar: "🩸", isBot: true,
+          text: "Welcome to StickDeath ∞! 🎨 Share your animations, get feedback, and connect with other creators. The bloodier the better. 💀",
+          time: "2m ago", likes: 12, replies: 3, isAnnouncement: false),
+    .init(id: "2", username: "StickMaster99", avatar: "💀", isBot: false,
+          text: "Just finished my first fight scene! 6 frames of pure chaos. How do you guys do smooth walk cycles?",
+          time: "5m ago", likes: 8, replies: 5, isAnnouncement: false),
+    .init(id: "3", username: "Spatter", avatar: "🩸", isBot: true,
+          text: "🔥 Weekly Challenge is LIVE: \"Epic Death Scene\" — Create the most creative death animation. Winner gets featured! Ends in 3 days.",
+          time: "15m ago", likes: 24, replies: 11, isAnnouncement: true),
+    .init(id: "4", username: "AnimateOrDie", avatar: "⚔️", isBot: false,
+          text: "Pro tip: use onion skinning set to 2 frames before/after for fight scenes. Changes everything.",
+          time: "22m ago", likes: 31, replies: 7, isAnnouncement: false),
+    .init(id: "5", username: "BoneBreaker", avatar: "🦴", isBot: false,
+          text: "Anyone else obsessed with the stick figure tool? I\'ve been posing for like an hour 😂",
+          time: "45m ago", likes: 15, replies: 4, isAnnouncement: false),
+]
 
 struct HomeView: View {
     @EnvironmentObject var router: NavigationRouter
     @EnvironmentObject var offline: OfflineManager
-    @Environment(\.horizontalSizeClass) var hSize
-
     @State private var items: [FeedItem] = []
-    @State private var featured: [FeedItem] = []
     @State private var loading = true
-    @State private var page = 1
-    @State private var searchText = ""
-
-    var isWide: Bool { hSize == .regular }
-
-    var filteredItems: [FeedItem] {
-        if searchText.isEmpty { return items }
-        return items.filter {
-            $0.title.localizedCaseInsensitiveContains(searchText) ||
-            ($0.users?.username ?? "").localizedCaseInsensitiveContains(searchText)
-        }
-    }
+    @State private var newMessage = ""
+    @State private var likedMessages: Set<String> = []
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            if loading && items.isEmpty {
-                ProgressView().tint(.red)
-            } else if items.isEmpty {
-                emptyState
-            } else {
+            VStack(spacing: 0) {
+                // ── Header: STICKDEATH ∞ ──
+                stickyHeader
+
                 ScrollView {
-                    VStack(spacing: 0) {
-                        // ── Featured Banner ──
-                        if !featured.isEmpty && searchText.isEmpty {
-                            FeaturedBanner(items: featured) { item in
-                                router.homePath.append(HomeDestination.postDetail(item))
-                            }
-                            .frame(height: isWide ? 280 : 200)
-                        }
+                    VStack(spacing: 12) {
+                        // ── Featured Challenge Banner ──
+                        challengeBanner
+                            .padding(.horizontal, 16)
 
-                        // ── Content Grid ──
-                        if isWide {
-                            LazyVGrid(columns: [
-                                GridItem(.flexible(), spacing: 12),
-                                GridItem(.flexible(), spacing: 12)
-                            ], spacing: 12) {
-                                ForEach(filteredItems) { item in
-                                    HomeFeedCard(item: item, compact: true) {
-                                        router.homePath.append(HomeDestination.postDetail(item))
-                                    } onCreatorTap: {
-                                        if let userId = item.users?.username {
-                                            router.homePath.append(HomeDestination.creatorProfile(userId))
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(16)
-                        } else {
-                            LazyVStack(spacing: 12) {
-                                ForEach(filteredItems) { item in
-                                    HomeFeedCard(item: item, compact: false) {
-                                        router.homePath.append(HomeDestination.postDetail(item))
-                                    } onCreatorTap: {
-                                        if let userId = item.users?.username {
-                                            router.homePath.append(HomeDestination.creatorProfile(userId))
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.top, 12)
-                        }
+                        // ── Continue Creating ──
+                        continueCard
+                            .padding(.horizontal, 16)
 
-                        // Load more
-                        if !loading && !items.isEmpty {
-                            Button("Load More") {
-                                Task { await loadMore() }
-                            }
-                            .font(.subheadline).foregroundStyle(.red).padding()
-                        }
-                    }
-                }
-                .refreshable { await refresh() }
-            }
-        }
-        .navigationTitle("Home")
-        .searchable(text: $searchText, prompt: "Search animations")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    router.openSpatter(context: .home)
-                } label: {
-                    Image(systemName: "sparkles")
-                        .foregroundStyle(.red)
-                }
-            }
-        }
-        .task { await loadFeed() }
-    }
-
-    // MARK: - Empty State (forward action: create)
-    var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "play.rectangle.fill")
-                .font(.system(size: 56)).foregroundStyle(.red.opacity(0.5))
-            Text("No animations yet")
-                .font(.title3.bold())
-            Text("Be the first to publish!")
-                .font(.subheadline).foregroundStyle(.gray)
-            Button {
-                router.selectedTab = .studio
-            } label: {
-                Label("Create Your First", systemImage: "plus")
-                    .font(.headline).foregroundStyle(.black)
-                    .padding(.horizontal, 24).padding(.vertical, 12)
-                    .background(.red).clipShape(Capsule())
-            }
-        }
-    }
-
-    // MARK: - Data
-    func loadFeed() async {
-        loading = true
-        if let cached = offline.loadCachedFeed(),
-           let cachedItems = try? JSONDecoder().decode([FeedItem].self, from: cached) {
-            items = cachedItems
-            featured = Array(cachedItems.prefix(3))
-            loading = false
-        }
-        let freshItems = (try? await ProjectService.shared.fetchFeed(page: 1)) ?? []
-        if !freshItems.isEmpty {
-            items = freshItems
-            featured = Array(freshItems.prefix(3))
-            if let data = try? JSONEncoder().encode(freshItems) {
-                offline.cacheFeed(data)
-            }
-        }
-        page = 1
-        loading = false
-    }
-
-    func loadMore() async {
-        page += 1
-        let newItems = (try? await ProjectService.shared.fetchFeed(page: page)) ?? []
-        items.append(contentsOf: newItems)
-    }
-
-    func refresh() async { await loadFeed() }
-}
-
-// MARK: - Featured Banner (tappable — navigates to post)
-struct FeaturedBanner: View {
-    let items: [FeedItem]
-    let onTap: (FeedItem) -> Void
-    @State private var currentIndex = 0
-    @State private var timer: Timer?
-
-    var body: some View {
-        TabView(selection: $currentIndex) {
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                Button { onTap(item) } label: {
-                    ZStack {
-                        LinearGradient(
-                            colors: [bannerColor(index).opacity(0.4), .black],
-                            startPoint: .topLeading, endPoint: .bottomTrailing
-                        )
-                        VStack(spacing: 8) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.white.opacity(0.8))
-                            Text(item.title)
-                                .font(.title3.bold()).foregroundStyle(.white)
-                                .multilineTextAlignment(.center)
-                            HStack(spacing: 12) {
-                                Label(item.users?.username ?? "Anonymous", systemImage: "person.fill")
-                                if let views = item.view_count, views > 0 {
-                                    Label("\(views) views", systemImage: "eye")
-                                }
-                                if let likes = item.like_count, likes > 0 {
-                                    Label("\(likes)", systemImage: "heart.fill")
-                                        .foregroundStyle(.red)
-                                }
-                            }
-                            .font(.caption).foregroundStyle(.white.opacity(0.7))
-                            Text("🔥 Featured")
-                                .font(.caption2.bold()).foregroundStyle(.red)
-                        }
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                    .padding(.horizontal, 12)
-                }
-                .tag(index)
-            }
-        }
-        .tabViewStyle(.page(indexDisplayMode: .always))
-        .onAppear { startAutoScroll() }
-        .onDisappear { timer?.invalidate() }
-    }
-
-    func startAutoScroll() {
-        timer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: true) { _ in
-            withAnimation(.easeInOut(duration: 0.5)) {
-                currentIndex = (currentIndex + 1) % max(items.count, 1)
-            }
-        }
-    }
-
-    func bannerColor(_ index: Int) -> Color {
-        [Color.red, .purple, .cyan][index % 3]
-    }
-}
-
-// MARK: - Feed Card (every element is tappable → forward navigation)
-struct HomeFeedCard: View {
-    let item: FeedItem
-    var compact: Bool = false
-    let onTap: () -> Void
-    let onCreatorTap: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Creator row — tappable → creatorProfile
-            Button(action: onCreatorTap) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(LinearGradient(colors: [.red.opacity(0.3), .red.opacity(0.2)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .frame(width: 32, height: 32)
-                        .overlay(
-                            Text(String(item.users?.username?.prefix(1) ?? "?").uppercased())
-                                .font(.caption.bold()).foregroundStyle(.white)
-                        )
-                    VStack(alignment: .leading) {
-                        Text(item.users?.username ?? "Anonymous").font(.subheadline.bold())
-                        if let date = item.created_at?.prefix(10) {
-                            Text(String(date)).font(.caption2).foregroundStyle(.gray)
-                        }
-                    }
-                    Spacer()
-                }
-            }
-            .buttonStyle(.plain)
-
-            // Animation preview — tappable → postDetail
-            Button(action: onTap) {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(ThemeManager.surface)
-                    .frame(height: compact ? 140 : 200)
-                    .overlay(
-                        VStack(spacing: 8) {
-                            Image(systemName: "play.circle.fill")
-                                .font(.system(size: compact ? 36 : 44))
-                                .foregroundStyle(.white.opacity(0.6))
-                            Text(item.title)
-                                .font(compact ? .caption : .subheadline)
+                        // ── COMMUNITY header ──
+                        HStack {
+                            Text("COMMUNITY")
+                                .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(.white)
+                                .tracking(1)
+                            Spacer()
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(.green)
+                                    .frame(width: 6, height: 6)
+                                Text("142 online")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.green)
+                            }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+
+                        // ── Messages ──
+                        ForEach(seedMessages) { msg in
+                            communityMessageCard(msg)
+                                .padding(.horizontal, 16)
+                        }
+
+                        // Spacer for input bar
+                        Color.clear.frame(height: 60)
+                    }
+                    .padding(.top, 12)
+                }
+
+                // ── Message Input ──
+                messageInput
+            }
+        }
+        .navigationBarHidden(true)
+    }
+
+    // MARK: - Header
+    var stickyHeader: some View {
+        HStack {
+            HStack(spacing: 0) {
+                Text("STICK")
+                    .foregroundStyle(ThemeManager.brand)
+                Text("DEATH")
+                    .foregroundStyle(.white)
+                Text(" ∞")
+                    .foregroundStyle(Color(hex: "#ef4444"))
+                    .font(.system(size: 12))
+            }
+            .font(.custom("SpecialElite-Regular", size: 18, relativeTo: .headline))
+            .fontWeight(.black)
+
+            Spacer()
+
+            Button {
+                router.selectedTab = .profile
+            } label: {
+                Circle()
+                    .fill(ThemeManager.surface)
+                    .frame(width: 32, height: 32)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .strokeBorder(ThemeManager.border, lineWidth: 1)
+                    )
+                    .overlay(
+                        Image(systemName: "person")
+                            .font(.system(size: 13))
+                            .foregroundStyle(ThemeManager.textMuted)
                     )
             }
-            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(ThemeManager.background.opacity(0.9))
+        .overlay(
+            Rectangle().fill(ThemeManager.border).frame(height: 1),
+            alignment: .bottom
+        )
+    }
 
-            // Engagement row — all tappable
-            HStack(spacing: 20) {
-                Button(action: onTap) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "heart")
-                        Text("\(item.like_count ?? 0)")
-                    }
+    // MARK: - Challenge Banner
+    var challengeBanner: some View {
+        Button {
+            router.selectedTab = .challenges
+        } label: {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(ThemeManager.brand.opacity(0.2))
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        Image(systemName: "trophy.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(ThemeManager.brand)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Epic Death Scene")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("47 entries · 3 days left · Prize: Featured Creator")
+                        .font(.system(size: 10))
+                        .foregroundStyle(ThemeManager.textSecondary)
                 }
-                Button(action: onTap) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bubble.right")
-                        Text("0")
-                    }
-                }
-                HStack(spacing: 4) {
-                    Image(systemName: "eye")
-                    Text("\(item.view_count ?? 0)")
-                }
+
                 Spacer()
-                Button(action: {}) {
-                    Image(systemName: "bookmark")
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ThemeManager.textDim)
+            }
+            .padding(12)
+            .background(
+                LinearGradient(
+                    colors: [ThemeManager.brand.opacity(0.15), Color(hex: "#7f1d1d").opacity(0.08)],
+                    startPoint: .leading, endPoint: .trailing
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(ThemeManager.brand.opacity(0.3), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Continue Creating Card
+    var continueCard: some View {
+        Button {
+            router.selectedTab = .studio
+        } label: {
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(ThemeManager.surface)
+                    .frame(width: 40, height: 40)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(ThemeManager.border, lineWidth: 1)
+                    )
+                    .overlay(
+                        Image(systemName: "play.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(ThemeManager.textMuted)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Continue creating")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(.white)
+                    Text("Jump back into the studio")
+                        .font(.system(size: 10))
+                        .foregroundStyle(ThemeManager.textMuted)
                 }
-                Button(action: {}) {
-                    Image(systemName: "paperplane")
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ThemeManager.textDim)
+            }
+            .padding(12)
+            .background(ThemeManager.card)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(ThemeManager.border, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Community Message Card
+    func communityMessageCard(_ msg: CommunityMsg) -> some View {
+        let isLiked = likedMessages.contains(msg.id)
+
+        return VStack(alignment: .leading, spacing: 6) {
+            // User row
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(msg.isBot ? ThemeManager.brand.opacity(0.2) : ThemeManager.surface)
+                    .frame(width: 28, height: 28)
+                    .overlay(
+                        Group {
+                            if !msg.isBot {
+                                Circle().strokeBorder(ThemeManager.border, lineWidth: 1)
+                            }
+                        }
+                    )
+                    .overlay(Text(msg.avatar).font(.system(size: 13)))
+
+                HStack(spacing: 6) {
+                    Text(msg.username)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(msg.isBot ? Color(hex: "#f87171") : .white)
+
+                    if msg.isBot {
+                        Text("AI")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(Color(hex: "#f87171"))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(ThemeManager.brand.opacity(0.2))
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Spacer()
+
+                Text(msg.time)
+                    .font(.system(size: 10))
+                    .foregroundStyle(ThemeManager.textDim)
+            }
+
+            // Text
+            Text(msg.text)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(hex: "#c0c0d0"))
+                .lineSpacing(3)
+                .padding(.leading, 36)
+
+            // Actions
+            HStack(spacing: 16) {
+                Button {
+                    if likedMessages.contains(msg.id) { likedMessages.remove(msg.id) }
+                    else { likedMessages.insert(msg.id) }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: isLiked ? "heart.fill" : "heart")
+                            .font(.system(size: 11))
+                        Text("\(msg.likes + (isLiked ? 1 : 0))")
+                            .font(.system(size: 10))
+                    }
+                    .foregroundStyle(isLiked ? ThemeManager.brand : ThemeManager.textDim)
+                }
+
+                HStack(spacing: 3) {
+                    Image(systemName: "bubble.right")
+                        .font(.system(size: 11))
+                    Text("\(msg.replies)")
+                        .font(.system(size: 10))
+                }
+                .foregroundStyle(ThemeManager.textDim)
+
+                if msg.isAnnouncement {
+                    Spacer()
+                    Button {
+                        router.selectedTab = .challenges
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "flame.fill")
+                                .font(.system(size: 11))
+                            Text("Join Challenge")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .foregroundStyle(ThemeManager.brand)
+                    }
                 }
             }
-            .font(.caption).foregroundStyle(.gray)
-            .buttonStyle(.plain)
+            .padding(.leading, 36)
+            .padding(.top, 2)
         }
-        .padding(14)
-        .background(ThemeManager.surfaceLight)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .padding(12)
+        .background(msg.isAnnouncement ? ThemeManager.brand.opacity(0.06) : ThemeManager.card.opacity(1))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(
+                    msg.isAnnouncement ? ThemeManager.brand.opacity(0.2) : ThemeManager.surface,
+                    lineWidth: 1
+                )
+        )
+    }
+
+    // MARK: - Message Input
+    var messageInput: some View {
+        HStack(spacing: 8) {
+            TextField("Message the community...", text: $newMessage)
+                .font(.system(size: 13))
+                .foregroundStyle(.white)
+
+            Button {} label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(newMessage.isEmpty ? ThemeManager.border : ThemeManager.brand)
+            }
+            .disabled(newMessage.isEmpty)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(ThemeManager.card)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(ThemeManager.border, lineWidth: 1)
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(ThemeManager.background.opacity(0.95))
+    }
+
+    // MARK: - Data loading
+    func loadFeed() async {
+        loading = true
+        items = (try? await ProjectService.shared.fetchFeed(page: 1)) ?? []
+        loading = false
     }
 }

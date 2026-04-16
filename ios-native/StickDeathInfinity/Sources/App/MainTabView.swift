@@ -1,8 +1,8 @@
 // MainTabView.swift
 // Layer 1 — ROOT NAVIGATION
 // 4 destination tabs: Home · Challenges · Studio · Profile
-// Each tab owns its NavigationStack + NavigationPath — back always retraces exact route.
-// Messages moved to Profile context. Spatter AI lives as overlay at RootView level.
+// Custom tab bar matching web BottomNav design
+// Each tab owns its NavigationStack + NavigationPath
 
 import SwiftUI
 
@@ -11,30 +11,26 @@ struct MainTabView: View {
     @EnvironmentObject var router: NavigationRouter
 
     var body: some View {
-        TabView(selection: $router.selectedTab) {
-            // ── Tab 0: HOME (Discover) ──
-            HomeTab()
-                .tabItem { Label(AppTab.home.title, systemImage: AppTab.home.icon) }
-                .tag(AppTab.home)
+        ZStack(alignment: .bottom) {
+            // ── Tab Content ──
+            Group {
+                switch router.selectedTab {
+                case .home: HomeTab()
+                case .challenges: ChallengesTab()
+                case .studio: StudioTab()
+                case .profile: ProfileTab()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // ── Tab 1: CHALLENGES ──
-            ChallengesTab()
-                .tabItem { Label(AppTab.challenges.title, systemImage: AppTab.challenges.icon) }
-                .tag(AppTab.challenges)
+            // ── Custom Bottom Nav (matches web) ──
+            customTabBar
 
-            // ── Tab 2: STUDIO (Create) ──
-            StudioTab()
-                .tabItem { Label(AppTab.studio.title, systemImage: AppTab.studio.icon) }
-                .tag(AppTab.studio)
-
-            // ── Tab 3: PROFILE ──
-            ProfileTab()
-                .tabItem { Label(AppTab.profile.title, systemImage: AppTab.profile.icon) }
-                .tag(AppTab.profile)
+            // ── Spatter FAB (blood drop) ──
+            spatterFAB
         }
-        .tint(.red)
+        .ignoresSafeArea(.keyboard)
         .onChange(of: router.selectedTab) { _, newTab in
-            // Update Spatter context when tab changes
             switch newTab {
             case .home: router.spatterContext = .home
             case .challenges: router.spatterContext = .challenges
@@ -43,9 +39,107 @@ struct MainTabView: View {
             }
         }
     }
+
+    // MARK: - Custom Tab Bar
+    var customTabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(.home, icon: "flame.fill", label: "Home")
+            tabButton(.challenges, icon: "trophy.fill", label: "Challenges")
+            studioTabButton
+            tabButton(.profile, icon: "person.fill", label: "Profile")
+        }
+        .frame(height: 56)
+        .background(
+            ThemeManager.card.opacity(0.95)
+                .background(.ultraThinMaterial)
+        )
+        .overlay(
+            Rectangle().fill(ThemeManager.border).frame(height: 1),
+            alignment: .top
+        )
+    }
+
+    func tabButton(_ tab: AppTab, icon: String, label: String) -> some View {
+        let isActive = router.selectedTab == tab
+        return Button {
+            router.selectedTab = tab
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? .white : ThemeManager.textDim)
+                Text(label)
+                    .font(.system(size: 10, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? .white : ThemeManager.textDim)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // Studio tab — special red pill capsule when active
+    var studioTabButton: some View {
+        let isActive = router.selectedTab == .studio
+        return Button {
+            router.selectedTab = .studio
+        } label: {
+            VStack(spacing: 2) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(isActive ? ThemeManager.brand : ThemeManager.surface)
+                        .frame(width: 40, height: 28)
+                        .overlay(
+                            Group {
+                                if !isActive {
+                                    RoundedRectangle(cornerRadius: 8)
+                                        .strokeBorder(ThemeManager.border, lineWidth: 1)
+                                }
+                            }
+                        )
+                        .shadow(color: isActive ? ThemeManager.brand.opacity(0.3) : .clear, radius: 8)
+
+                    Image(systemName: "pencil")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(isActive ? .white : ThemeManager.textDim)
+                }
+                .offset(y: -2)
+
+                Text("Studio")
+                    .font(.system(size: 10, weight: isActive ? .semibold : .regular))
+                    .foregroundStyle(isActive ? .white : ThemeManager.textDim)
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    // MARK: - Spatter FAB (Blood Drop Button)
+    var spatterFAB: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    router.openSpatter(context: router.spatterContext)
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(ThemeManager.brand)
+                            .frame(width: 52, height: 52)
+                            .shadow(color: ThemeManager.brand.opacity(0.4), radius: 10)
+
+                        // Blood drop icon
+                        Image(systemName: "drop.fill")
+                            .font(.system(size: 22))
+                            .foregroundStyle(.white)
+                    }
+                }
+                .padding(.trailing, 16)
+                .padding(.bottom, 72) // above tab bar
+            }
+        }
+    }
 }
 
-// MARK: - Home Tab (NavigationStack with typed path)
+// MARK: - Tab Views (NavigationStack wrappers)
 struct HomeTab: View {
     @EnvironmentObject var router: NavigationRouter
 
@@ -64,7 +158,6 @@ struct HomeTab: View {
     }
 }
 
-// MARK: - Challenges Tab
 struct ChallengesTab: View {
     @EnvironmentObject var router: NavigationRouter
 
@@ -77,7 +170,7 @@ struct ChallengesTab: View {
                         ChallengeDetailView(challenge: challenge)
                     case .creatorProfile(let userId):
                         CreatorProfileView(userId: userId)
-                    case .challengeEditor(let project, let challengeId):
+                    case .challengeEditor(let project, _):
                         StudioView(vm: EditorViewModel(project: project))
                     }
                 }
@@ -85,7 +178,6 @@ struct ChallengesTab: View {
     }
 }
 
-// MARK: - Studio Tab
 struct StudioTab: View {
     @EnvironmentObject var router: NavigationRouter
 
@@ -104,7 +196,6 @@ struct StudioTab: View {
     }
 }
 
-// MARK: - Profile Tab
 struct ProfileTab: View {
     @EnvironmentObject var router: NavigationRouter
 
@@ -113,28 +204,17 @@ struct ProfileTab: View {
             ProfileView()
                 .navigationDestination(for: ProfileDestination.self) { dest in
                     switch dest {
-                    case .notifications:
-                        NotificationsView()
-                    case .messages:
-                        MessagesListView()
-                    case .chat(let id, let username):
-                        ChatView(conversationId: id, otherUsername: username)
-                    case .settings:
-                        EditProfileSheet()
-                    case .achievements:
-                        AchievementsView()
-                    case .connectedAccounts:
-                        ConnectedAccountsView()
-                    case .subscription:
-                        SubscriptionView()
-                    case .personalization:
-                        PersonalizationSheet()
-                    case .referral:
-                        ReferralView()
-                    case .help:
-                        HelpCenterView()
-                    case .creatorProfile(let userId):
-                        CreatorProfileView(userId: userId)
+                    case .notifications: NotificationsView()
+                    case .messages: MessagesListView()
+                    case .chat(let id, let username): ChatView(conversationId: id, otherUsername: username)
+                    case .settings: EditProfileSheet()
+                    case .achievements: AchievementsView()
+                    case .connectedAccounts: ConnectedAccountsView()
+                    case .subscription: SubscriptionView()
+                    case .personalization: PersonalizationSheet()
+                    case .referral: ReferralView()
+                    case .help: HelpCenterView()
+                    case .creatorProfile(let userId): CreatorProfileView(userId: userId)
                     }
                 }
         }

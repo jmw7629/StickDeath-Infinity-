@@ -1,9 +1,26 @@
 // ProjectsGalleryView.swift
-// Studio tab root — user's animation projects
-// v4: Uses StudioDestination for navigation (MainTabView owns the NavigationStack)
-// Adaptive grid columns for iPad/Mac, pull-to-refresh, offline project list
+// Studio tab root — matches web StudioHubPage design
+// Header: "Studio" + red "New Project" button
+// Empty state: clapperboard + "No projects yet" + Create button
+// Templates grid: skull icons, 2-col layout
 
 import SwiftUI
+
+private struct Template: Identifiable {
+    let id: String
+    let name: String
+    let frames: Int
+    let desc: String
+}
+
+private let templates: [Template] = [
+    .init(id: "walk", name: "Walk Cycle", frames: 8, desc: "Basic walking animation"),
+    .init(id: "fight", name: "Fight Combo", frames: 12, desc: "3-hit attack sequence"),
+    .init(id: "death", name: "Death Scene", frames: 6, desc: "Classic stick death"),
+    .init(id: "dance", name: "Dance Loop", frames: 16, desc: "Looping dance moves"),
+    .init(id: "run", name: "Run Cycle", frames: 6, desc: "Smooth running loop"),
+    .init(id: "jump", name: "Jump Arc", frames: 8, desc: "Jump with squash & stretch"),
+]
 
 struct ProjectsGalleryView: View {
     @EnvironmentObject var router: NavigationRouter
@@ -13,89 +30,47 @@ struct ProjectsGalleryView: View {
     @State private var newTitle = ""
     @State private var errorMessage: String?
     @State private var showError = false
-    @Environment(\.deviceContext) var ctx
-
-    /// Adaptive columns: 2 on phone, 3 on iPad, 4 on Mac
-    var columns: [GridItem] {
-        let count: Int = {
-            switch ctx.current {
-            case .phoneCompact: return 2
-            case .phoneRegular: return 2
-            case .pad: return 3
-            case .desktop: return 4
-            }
-        }()
-        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
-    }
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            if loading && projects.isEmpty {
-                ProgressView().tint(.red)
-            } else if projects.isEmpty {
-                emptyState
-            } else {
-                ScrollView {
-                    LazyVGrid(columns: columns, spacing: 12) {
-                        // Quick-create card (always first — instant gratification)
-                        Button { showNewProject = true } label: {
-                            VStack(spacing: 12) {
-                                Image(systemName: "plus.circle.fill")
-                                    .font(.system(size: 32))
-                                    .foregroundStyle(.red)
-                                Text("New Animation")
-                                    .font(.caption.bold())
-                                    .foregroundStyle(.red)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 160)
-                            .background(ThemeManager.surface.opacity(0.5))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .strokeBorder(.red.opacity(0.3), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
-                            )
-                        }
-
-                        ForEach(projects) { project in
-                            ProjectCard(project: project)
-                                .onTapGesture {
-                                    router.studioPath.append(StudioDestination.editor(project))
-                                }
-                                .contextMenu {
-                                    Button {
-                                        router.studioPath.append(StudioDestination.editor(project))
-                                    } label: {
-                                        Label("Open", systemImage: "play.fill")
-                                    }
-                                    Button(role: .destructive) {
-                                        Task { await deleteProject(project) }
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                        }
+            ScrollView {
+                VStack(spacing: 0) {
+                    if loading && projects.isEmpty {
+                        ProgressView().tint(.red).padding(.top, 80)
+                    } else if projects.isEmpty {
+                        emptyState
+                        templatesSection
+                    } else {
+                        projectsGrid
+                        templatesSection
                     }
-                    .padding()
-                    .frame(maxWidth: ctx.maxContentWidth)
                 }
-                .refreshable { await loadProjects() }
             }
+            .refreshable { await loadProjects() }
         }
-        .navigationTitle("My Studio")
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    router.openSpatter(context: .studio(nil))
-                } label: {
-                    Image(systemName: "sparkles").foregroundStyle(.red)
-                }
+                Text("Studio")
+                    .font(.custom("SpecialElite-Regular", size: 20, relativeTo: .headline))
+                    .fontWeight(.bold)
+                    .foregroundStyle(.white)
             }
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button { showNewProject = true } label: {
-                    Image(systemName: "plus.circle.fill").foregroundStyle(.red)
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 12, weight: .bold))
+                        Text("New Project")
+                            .font(.system(size: 12, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(ThemeManager.brand)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
         }
@@ -104,30 +79,178 @@ struct ProjectsGalleryView: View {
             Button("Create") { Task { await createProject() } }
             Button("Cancel", role: .cancel) { newTitle = "" }
         }
-        .task { await loadProjects() }
         .alert("Error", isPresented: $showError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "Something went wrong")
         }
+        .task { await loadProjects() }
     }
 
+    // MARK: - Empty State (matches web design)
     var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 48)).foregroundStyle(.gray)
-            Text("No projects yet").font(.title3.bold())
-            Text("Create your first stick figure animation")
-                .font(.subheadline).foregroundStyle(.gray)
+        VStack(spacing: 12) {
+            // Clapperboard icon
+            RoundedRectangle(cornerRadius: 16)
+                .fill(ThemeManager.card)
+                .frame(width: 80, height: 80)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(ThemeManager.border, lineWidth: 1)
+                )
+                .overlay(
+                    Text("🎬").font(.system(size: 40))
+                )
+
+            Text("No projects yet")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+
+            Text("Create your first stick figure animation.\nStart from scratch or pick a template below.")
+                .font(.system(size: 12))
+                .foregroundStyle(ThemeManager.textMuted)
+                .multilineTextAlignment(.center)
+                .lineSpacing(2)
+
             Button { showNewProject = true } label: {
-                Label("New Animation", systemImage: "plus")
-                    .font(.headline).foregroundStyle(.black)
-                    .padding(.horizontal, 24).padding(.vertical, 12)
-                    .background(.red).clipShape(Capsule())
+                HStack(spacing: 6) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Create Animation")
+                        .font(.system(size: 14, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(ThemeManager.brand)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
             }
         }
+        .padding(.top, 40)
+        .padding(.bottom, 20)
     }
 
+    // MARK: - Projects Grid
+    var projectsGrid: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(projects) { project in
+                Button {
+                    router.studioPath.append(StudioDestination.editor(project))
+                } label: {
+                    HStack(spacing: 12) {
+                        RoundedRectangle(cornerRadius: 10)
+                            .fill(ThemeManager.background)
+                            .frame(width: 64, height: 48)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .strokeBorder(ThemeManager.border, lineWidth: 1)
+                            )
+                            .overlay(
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundStyle(ThemeManager.brand.opacity(0.5))
+                            )
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(project.title)
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.white)
+                            Text("\(project.fps ?? 24) fps · \(project.status ?? "draft")")
+                                .font(.system(size: 10))
+                                .foregroundStyle(ThemeManager.textMuted)
+                        }
+
+                        Spacer()
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13))
+                            .foregroundStyle(ThemeManager.textDim)
+                    }
+                    .padding(12)
+                    .background(ThemeManager.card)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .strokeBorder(ThemeManager.border, lineWidth: 1)
+                    )
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button {
+                        router.studioPath.append(StudioDestination.editor(project))
+                    } label: { Label("Open", systemImage: "play.fill") }
+                    Button(role: .destructive) {
+                        Task { await deleteProject(project) }
+                    } label: { Label("Delete", systemImage: "trash") }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+    }
+
+    // MARK: - Templates Section (matches web design — skull icons)
+    var templatesSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.2x2.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(ThemeManager.textMuted)
+                Text("TEMPLATES")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .tracking(1)
+            }
+            .padding(.horizontal, 16)
+
+            LazyVGrid(columns: [
+                GridItem(.flexible(), spacing: 8),
+                GridItem(.flexible(), spacing: 8)
+            ], spacing: 8) {
+                ForEach(templates) { tpl in
+                    Button { showNewProject = true } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            // Skull preview area
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(ThemeManager.background)
+                                .aspectRatio(16/10, contentMode: .fit)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .strokeBorder(ThemeManager.surface, lineWidth: 1)
+                                )
+                                .overlay(
+                                    Text("💀")
+                                        .font(.system(size: 28))
+                                        .opacity(0.4)
+                                )
+
+                            Text(tpl.name)
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundStyle(.white)
+
+                            Text("\(tpl.frames) frames · \(tpl.desc)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(ThemeManager.textDim)
+                                .lineLimit(2)
+                        }
+                        .padding(10)
+                        .background(ThemeManager.card)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(ThemeManager.border, lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .padding(.top, 20)
+        .padding(.bottom, 24)
+    }
+
+    // MARK: - Data
     func loadProjects() async {
         loading = true
         projects = (try? await ProjectService.shared.fetchMyProjects()) ?? []
@@ -143,7 +266,7 @@ struct ProjectsGalleryView: View {
             projects.insert(project, at: 0)
             router.studioPath.append(StudioDestination.editor(project))
         } catch {
-            // Create a local-only project so the user can still draw immediately
+            // Create local-only project so user can draw immediately
             let localProject = StudioProject(
                 id: -Int.random(in: 1...999_999),
                 user_id: await AuthManager.shared.session?.user.id.uuidString ?? "local",
@@ -168,41 +291,6 @@ struct ProjectsGalleryView: View {
     func deleteProject(_ project: StudioProject) async {
         _ = try? await ProjectService.shared.deleteProject(projectId: project.id)
         projects.removeAll { $0.id == project.id }
-    }
-}
-
-struct ProjectCard: View {
-    let project: StudioProject
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(ThemeManager.surface)
-                .frame(height: 120)
-                .overlay(
-                    Image(systemName: "figure.run")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.red.opacity(0.3))
-                )
-
-            Text(project.title)
-                .font(.subheadline.bold()).lineLimit(1)
-
-            HStack {
-                Text(project.status ?? "draft")
-                    .font(.caption2)
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(project.status == "published" ? Color.green.opacity(0.2) : Color.gray.opacity(0.2))
-                    .foregroundStyle(project.status == "published" ? .green : .gray)
-                    .clipShape(Capsule())
-                Spacer()
-                Text(project.fps.map { "\($0) fps" } ?? "24 fps")
-                    .font(.caption2).foregroundStyle(.gray)
-            }
-        }
-        .padding(10)
-        .background(ThemeManager.surfaceLight)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
