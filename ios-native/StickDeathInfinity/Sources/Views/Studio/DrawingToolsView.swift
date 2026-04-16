@@ -1,7 +1,6 @@
 // DrawingToolsView.swift
-// Drawing tools overlay for the Studio's Draw mode
-// Appears as a floating toolbar when draw mode is active
-// Supports: freehand, line, rectangle, circle, eraser, text
+// v2: 12 brush types, fill tool, lasso tool, 5-mode color picker
+// Floating toolbar for the Studio's Draw mode
 
 import SwiftUI
 
@@ -12,37 +11,44 @@ enum DrawingTool: String, CaseIterable {
     case rectangle  // Rectangle/square
     case circle     // Circle/ellipse
     case arrow      // Arrow
+    case fill       // Flood fill
+    case lasso      // Freehand selection
     case eraser     // Erase drawn elements
     case text       // Add text label
 
     var icon: String {
         switch self {
-        case .pencil: return "pencil.tip"
-        case .line: return "line.diagonal"
+        case .pencil:    return "pencil.tip"
+        case .line:      return "line.diagonal"
         case .rectangle: return "rectangle"
-        case .circle: return "circle"
-        case .arrow: return "arrow.up.right"
-        case .eraser: return "eraser.fill"
-        case .text: return "textformat"
+        case .circle:    return "circle"
+        case .arrow:     return "arrow.up.right"
+        case .fill:      return "paintbrush.pointed.fill"
+        case .lasso:     return "lasso"
+        case .eraser:    return "eraser.fill"
+        case .text:      return "textformat"
         }
     }
 
     var label: String {
         switch self {
-        case .pencil: return "Pen"
-        case .line: return "Line"
+        case .pencil:    return "Draw"
+        case .line:      return "Line"
         case .rectangle: return "Rect"
-        case .circle: return "Circle"
-        case .arrow: return "Arrow"
-        case .eraser: return "Erase"
-        case .text: return "Text"
+        case .circle:    return "Circle"
+        case .arrow:     return "Arrow"
+        case .fill:      return "Fill"
+        case .lasso:     return "Lasso"
+        case .eraser:    return "Erase"
+        case .text:      return "Text"
         }
     }
 }
 
-// MARK: - Drawing State (lives on EditorViewModel via extension)
+// MARK: - Drawing State
 class DrawingState: ObservableObject {
     @Published var tool: DrawingTool = .pencil
+    @Published var brushType: BrushType = .pen
     @Published var strokeColor: Color = .black
     @Published var strokeWidth: CGFloat = 3
     @Published var fillEnabled: Bool = false
@@ -53,26 +59,38 @@ class DrawingState: ObservableObject {
     @Published var showTextInput: Bool = false
     @Published var textPosition: CGPoint = .zero
 
+    // Lasso
+    @Published var lassoPath: [CGPoint] = []
+    @Published var lassoSelectedIds: Set<UUID> = []
+
     func clear() {
         drawnElements.removeAll()
+        lassoSelectedIds.removeAll()
     }
 
     func undoLastElement() {
         _ = drawnElements.popLast()
     }
+
+    func deleteSelected() {
+        drawnElements.removeAll { lassoSelectedIds.contains($0.id) }
+        lassoSelectedIds.removeAll()
+        lassoPath.removeAll()
+    }
 }
 
-// MARK: - Drawn Element (stored per frame)
+// MARK: - Drawn Element
 struct DrawnElement: Identifiable, Codable {
     let id: UUID
-    var tool: String            // DrawingTool.rawValue
-    var points: [CGPoint]       // Path points (for pencil/line/arrow)
-    var origin: CGPoint?        // For rect/circle: top-left
-    var size: CGSize?           // For rect/circle: width/height
-    var strokeColor: String     // Hex
+    var tool: String
+    var brushType: String?       // BrushType.rawValue — nil for legacy
+    var points: [CGPoint]
+    var origin: CGPoint?
+    var size: CGSize?
+    var strokeColor: String      // Hex
     var strokeWidth: CGFloat
-    var fillColor: String?      // Hex, nil = no fill
-    var text: String?           // For text tool
+    var fillColor: String?       // Hex
+    var text: String?
     var fontSize: CGFloat?
 }
 
@@ -81,67 +99,97 @@ struct DrawingToolsView: View {
     @ObservedObject var drawState: DrawingState
     @State private var showColorPicker = false
     @State private var showWidthSlider = false
+    @State private var showBrushPicker = false
 
     var body: some View {
         VStack(spacing: 0) {
-            // Tool selection row
-            HStack(spacing: 2) {
-                ForEach(DrawingTool.allCases, id: \.self) { tool in
-                    drawToolButton(tool)
-                }
-
-                Divider().frame(height: 24).background(ThemeManager.border)
-
-                // Color swatch
-                Button { showColorPicker.toggle(); showWidthSlider = false } label: {
-                    Circle()
-                        .fill(drawState.strokeColor)
-                        .frame(width: 22, height: 22)
-                        .overlay(Circle().stroke(.white.opacity(0.3), lineWidth: 1))
-                }
-
-                // Stroke width
-                Button {
-                    showWidthSlider.toggle()
-                    showColorPicker = false
-                } label: {
-                    VStack(spacing: 1) {
-                        RoundedRectangle(cornerRadius: 1)
-                            .fill(.white)
-                            .frame(width: 18, height: max(1, drawState.strokeWidth))
+            // Tool row — scrollable for 9 tools
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    ForEach(DrawingTool.allCases, id: \.self) { tool in
+                        drawToolButton(tool)
                     }
-                    .frame(width: 28, height: 28)
-                }
 
-                // Undo drawn
-                Button { drawState.undoLastElement() } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.red)
-                        .frame(width: 28, height: 28)
-                }
-                .disabled(drawState.drawnElements.isEmpty)
+                    Divider().frame(height: 24).background(ThemeManager.border)
 
-                // Clear all
-                Button { drawState.clear() } label: {
-                    Image(systemName: "trash")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.red.opacity(0.7))
+                    // Brush type button
+                    Button { showBrushPicker = true } label: {
+                        VStack(spacing: 1) {
+                            Image(systemName: drawState.brushType.icon)
+                                .font(.system(size: 14))
+                            Text(drawState.brushType.displayName)
+                                .font(.system(size: 7, weight: .medium))
+                        }
+                        .foregroundStyle(.orange)
+                        .frame(width: 36, height: 36)
+                    }
+
+                    // Color swatch
+                    Button { showColorPicker.toggle(); showWidthSlider = false } label: {
+                        Circle()
+                            .fill(drawState.strokeColor)
+                            .frame(width: 22, height: 22)
+                            .overlay(Circle().stroke(.white.opacity(0.3), lineWidth: 1))
+                    }
+
+                    // Stroke width
+                    Button {
+                        showWidthSlider.toggle()
+                        showColorPicker = false
+                    } label: {
+                        VStack(spacing: 1) {
+                            RoundedRectangle(cornerRadius: 1)
+                                .fill(.white)
+                                .frame(width: 18, height: max(1, drawState.strokeWidth))
+                        }
                         .frame(width: 28, height: 28)
+                    }
+
+                    // Undo
+                    Button { drawState.undoLastElement() } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.red)
+                            .frame(width: 28, height: 28)
+                    }
+                    .disabled(drawState.drawnElements.isEmpty)
+
+                    // Delete selected (lasso)
+                    if !drawState.lassoSelectedIds.isEmpty {
+                        Button { drawState.deleteSelected() } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.red)
+                                .frame(width: 28, height: 28)
+                        }
+                    }
+
+                    // Clear all
+                    Button { drawState.clear() } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red.opacity(0.5))
+                            .frame(width: 28, height: 28)
+                    }
+                    .disabled(drawState.drawnElements.isEmpty)
                 }
-                .disabled(drawState.drawnElements.isEmpty)
+                .padding(.horizontal, 6)
             }
-            .padding(.horizontal, 6)
             .padding(.vertical, 4)
             .background(.ultraThinMaterial)
             .clipShape(RoundedRectangle(cornerRadius: 10))
 
-            // Expanded panels
+            // Expanded: 5-mode color picker
             if showColorPicker {
-                drawColorPicker
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                ColorPickerPanel(
+                    selectedColor: $drawState.strokeColor,
+                    fillEnabled: $drawState.fillEnabled,
+                    fillColor: $drawState.fillColor
+                )
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
 
+            // Expanded: width slider
             if showWidthSlider {
                 widthSlider
                     .transition(.move(edge: .top).combined(with: .opacity))
@@ -149,6 +197,10 @@ struct DrawingToolsView: View {
         }
         .animation(.spring(response: 0.25), value: showColorPicker)
         .animation(.spring(response: 0.25), value: showWidthSlider)
+        .sheet(isPresented: $showBrushPicker) {
+            BrushPickerSheet(selectedBrush: $drawState.brushType)
+                .presentationDetents([.medium])
+        }
     }
 
     @ViewBuilder
@@ -162,7 +214,7 @@ struct DrawingToolsView: View {
                 Image(systemName: tool.icon)
                     .font(.system(size: 14, weight: drawState.tool == tool ? .bold : .regular))
                 Text(tool.label)
-                    .font(.system(size: 8, weight: .medium))
+                    .font(.system(size: 7, weight: .medium))
             }
             .foregroundStyle(drawState.tool == tool ? .red : .white.opacity(0.6))
             .frame(width: 36, height: 36)
@@ -171,54 +223,9 @@ struct DrawingToolsView: View {
         }
     }
 
-    // MARK: - Color Picker
-    var drawColorPicker: some View {
-        VStack(spacing: 8) {
-            // Preset swatches
-            let presets: [Color] = [.white, .red, .orange, .yellow, .green, .cyan, .blue, .purple, .pink, .gray]
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(28), spacing: 4), count: 10), spacing: 4) {
-                ForEach(presets, id: \.self) { color in
-                    Circle()
-                        .fill(color)
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Circle().stroke(.white, lineWidth: drawState.strokeColor == color ? 2 : 0)
-                        )
-                        .onTapGesture { drawState.strokeColor = color }
-                }
-            }
-
-            // iOS system color picker
-            ColorPicker("Custom", selection: $drawState.strokeColor, supportsOpacity: true)
-                .font(.caption)
-                .labelsHidden()
-
-            // Fill toggle
-            HStack {
-                Toggle(isOn: $drawState.fillEnabled) {
-                    Text("Fill").font(.caption2)
-                }
-                .toggleStyle(.switch)
-                .tint(.red)
-                .scaleEffect(0.8)
-
-                if drawState.fillEnabled {
-                    ColorPicker("", selection: $drawState.fillColor)
-                        .labelsHidden()
-                        .scaleEffect(0.8)
-                }
-            }
-        }
-        .padding(10)
-        .background(.ultraThinMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .frame(width: 300)
-    }
-
     // MARK: - Width Slider
     var widthSlider: some View {
         HStack(spacing: 12) {
-            // Preview
             RoundedRectangle(cornerRadius: drawState.strokeWidth / 2)
                 .fill(drawState.strokeColor)
                 .frame(width: 40, height: max(1, drawState.strokeWidth))
@@ -239,7 +246,6 @@ struct DrawingToolsView: View {
 }
 
 // MARK: - Drawing Canvas Overlay
-// Place this on top of CanvasView when in draw mode
 struct DrawingOverlay: View {
     @ObservedObject var drawState: DrawingState
     let canvasCenter: CGPoint
@@ -247,17 +253,33 @@ struct DrawingOverlay: View {
 
     var body: some View {
         ZStack {
-            // Render completed elements
+            // Completed elements
             ForEach(drawState.drawnElements) { element in
                 DrawnElementView(element: element, center: canvasCenter, scale: canvasScale)
             }
 
-            // Render current in-progress path
+            // Lasso selection highlight
+            ForEach(drawState.drawnElements.filter { drawState.lassoSelectedIds.contains($0.id) }) { element in
+                DrawnElementView(element: element, center: canvasCenter, scale: canvasScale)
+                    .opacity(0.3)
+                    .blendMode(.difference)
+            }
+
+            // Current drawing path
             if !drawState.currentPath.isEmpty {
                 currentPathView
             }
+
+            // Lasso path overlay
+            if !drawState.lassoPath.isEmpty {
+                LassoOverlayView(
+                    points: drawState.lassoPath,
+                    canvasCenter: canvasCenter,
+                    canvasScale: canvasScale
+                )
+            }
         }
-        .drawingGroup(opaque: false)  // GPU composite
+        .drawingGroup(opaque: false)
     }
 
     @ViewBuilder
@@ -267,14 +289,14 @@ struct DrawingOverlay: View {
 
         switch drawState.tool {
         case .pencil:
-            Path { path in
-                guard let first = drawState.currentPath.first else { return }
-                path.move(to: screenPoint(first))
-                for pt in drawState.currentPath.dropFirst() {
-                    path.addLine(to: screenPoint(pt))
-                }
-            }
-            .stroke(color, lineWidth: width)
+            BrushRenderer.render(
+                points: drawState.currentPath,
+                brush: drawState.brushType,
+                color: color,
+                width: drawState.strokeWidth,
+                scale: canvasScale,
+                toScreen: { screenPoint($0) }
+            )
 
         case .line, .arrow:
             if let first = drawState.currentPath.first, let last = drawState.currentPath.last {
@@ -333,18 +355,19 @@ struct DrawnElementView: View {
 
     var strokeColor: Color { Color(hex: element.strokeColor) }
     var fillColor: Color? { element.fillColor.flatMap { Color(hex: $0) } }
+    var brush: BrushType { BrushType(rawValue: element.brushType ?? "pen") ?? .pen }
 
     var body: some View {
         switch element.tool {
         case "pencil":
-            Path { path in
-                guard let first = element.points.first else { return }
-                path.move(to: sp(first))
-                for pt in element.points.dropFirst() {
-                    path.addLine(to: sp(pt))
-                }
-            }
-            .stroke(strokeColor, lineWidth: element.strokeWidth * scale)
+            BrushRenderer.render(
+                points: element.points,
+                brush: brush,
+                color: strokeColor,
+                width: element.strokeWidth,
+                scale: scale,
+                toScreen: { sp($0) }
+            )
 
         case "line":
             if let first = element.points.first, let last = element.points.last {
@@ -431,7 +454,6 @@ struct ArrowShape: Shape {
         path.move(to: from)
         path.addLine(to: to)
 
-        // Arrowhead
         let angle = atan2(to.y - from.y, to.x - from.x)
         let headLength: CGFloat = 12
         let headAngle: CGFloat = .pi / 6

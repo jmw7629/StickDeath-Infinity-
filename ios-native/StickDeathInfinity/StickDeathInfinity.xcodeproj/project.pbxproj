@@ -76,6 +76,11 @@
 		SPM_STRIPE_BF /* StripePaymentSheet in Frameworks */ = {isa = PBXBuildFile; productRef = SPM_STRIPE_PR; };
 		SPM_AUTH_BF /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = SPM_AUTH_PR; };
 		FONT_BF_001 /* SpecialElite-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = FONT_FR_001; };
+		BRUSH_BF /* BrushEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = BRUSH_FR; };
+		COLOR_BF /* ColorPickerPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = COLOR_FR; };
+		FILL_BF /* FillLassoTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = FILL_FR; };
+		AUDIO_BF /* AudioManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDIO_FR; };
+		VIDEO_BF /* VideoExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = VIDEO_FR; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -147,6 +152,11 @@
 		000000000000000000000060 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FONT_FR_001 /* SpecialElite-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "SpecialElite-Regular.ttf"; sourceTree = "<group>"; };
 		INFOPLIST_FR /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BRUSH_FR /* BrushEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrushEngine.swift; sourceTree = "<group>"; };
+		COLOR_FR /* ColorPickerPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorPickerPanel.swift; sourceTree = "<group>"; };
+		FILL_FR /* FillLassoTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FillLassoTools.swift; sourceTree = "<group>"; };
+		AUDIO_FR /* AudioManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioManager.swift; sourceTree = "<group>"; };
+		VIDEO_FR /* VideoExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExportManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
