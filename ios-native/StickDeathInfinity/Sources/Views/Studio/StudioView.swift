@@ -440,7 +440,18 @@ struct StudioView: View {
                 .padding(.horizontal, 4)
             }
 
-            // ── Fixed right: Publish ──
+            // ── Save button ──
+            Button {
+                Task { await vm.saveProject() }
+                HapticManager.shared.buttonTap()
+            } label: {
+                Image(systemName: "square.and.arrow.down.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .frame(width: 30, height: 30)
+            }
+
+            // ── Publish ──
             Button { showPublishSheet = true } label: {
                 Image(systemName: "paperplane.fill")
                     .font(.system(size: 12))

@@ -272,7 +272,14 @@ class AuthManager: ObservableObject {
 
     var isPro: Bool {
         currentUser?.subscription_tier == "pro" ||
+        currentUser?.subscription_tier == "creator" ||
         currentUser?.role == "pro" ||
+        currentUser?.role == "admin" ||
+        currentUser?.role == "superadmin"
+    }
+
+    var isCreator: Bool {
+        currentUser?.subscription_tier == "creator" ||
         currentUser?.role == "admin" ||
         currentUser?.role == "superadmin"
     }

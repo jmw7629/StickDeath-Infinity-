@@ -81,6 +81,7 @@
 		A2806E1C74D3286A73264DBF /* StudioToolKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26407EBAA053256BF2D77FB1; };
 		B7EC05909553CC6D66445875 /* StudioUserGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = 973F7DD8381BAE9F694593A7; };
 		513E54BDD43E3CAA10DC78F3 /* StudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE57C8194340B9B10037A11; };
+		B1C2D3E4F5A600BB11223355 /* SimpleStudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F600AA11223344; };
 		9FAA2A79524048F317340206 /* TemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13C0B4488E888DD72D0A700E; };
 		368557365C1BEF620E9B2F14 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0CAC79A41E16C91B8D9419; };
 		92B86C870C36C12F12F53A0E /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 106DDC5E3884629131F462D6; };
@@ -167,6 +168,7 @@
 		26407EBAA053256BF2D77FB1 /* StudioToolKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioToolKey.swift; sourceTree = "<group>"; };
 		973F7DD8381BAE9F694593A7 /* StudioUserGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioUserGuide.swift; sourceTree = "<group>"; };
 		EAE57C8194340B9B10037A11 /* StudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioView.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F600AA11223344 /* SimpleStudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SimpleStudioView.swift; sourceTree = "<group>"; };
 		13C0B4488E888DD72D0A700E /* TemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatesView.swift; sourceTree = "<group>"; };
 		6E0CAC79A41E16C91B8D9419 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		2B3C4D5E6F7A8B9C0D1E2F3A /* LocalizationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalizationManager.swift; sourceTree = "<group>"; };
@@ -388,6 +390,7 @@
 				26407EBAA053256BF2D77FB1 /* StudioToolKey.swift */,
 				973F7DD8381BAE9F694593A7 /* StudioUserGuide.swift */,
 				EAE57C8194340B9B10037A11 /* StudioView.swift */,
+				A1B2C3D4E5F600AA11223344 /* SimpleStudioView.swift */,
 				13C0B4488E888DD72D0A700E /* TemplatesView.swift */,
 				6E0CAC79A41E16C91B8D9419 /* TimelinePanel.swift */,
 				2CF4D43AF878117082ECFF71 /* VideoImportSheet.swift */,
@@ -531,6 +534,7 @@
 				A2806E1C74D3286A73264DBF /* StudioToolKey.swift in Sources */,
 				B7EC05909553CC6D66445875 /* StudioUserGuide.swift in Sources */,
 				513E54BDD43E3CAA10DC78F3 /* StudioView.swift in Sources */,
+				B1C2D3E4F5A600BB11223355 /* SimpleStudioView.swift in Sources */,
 				9FAA2A79524048F317340206 /* TemplatesView.swift in Sources */,
 				368557365C1BEF620E9B2F14 /* TimelinePanel.swift in Sources */,
 				1A2B3C4D5E6F7A8B9C0D1E2F /* LocalizationManager.swift in Sources */,

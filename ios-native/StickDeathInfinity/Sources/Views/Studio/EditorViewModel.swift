@@ -68,6 +68,9 @@ class EditorViewModel: ObservableObject {
     @Published var aiSuggestion: String?
     @Published var showAIPanel = false
 
+    // Frame copy/paste
+    @Published var copiedFrameData: AnimationFrame?
+
     // Rig / Bone
     @Published var rig: BoneRig = BoneRig.defaultHumanoid()
     @Published var rigSubTool: RigSubTool = .select
@@ -641,6 +644,28 @@ class EditorViewModel: ObservableObject {
         pushUndo()
         frames.remove(at: currentFrameIndex)
         currentFrameIndex = min(currentFrameIndex, frames.count - 1)
+        HapticManager.shared.frameSwitched()
+    }
+
+    func pasteFrameAfterCurrent() {
+        guard let source = copiedFrameData else { return }
+        pushUndo()
+        let pasted = AnimationFrame(
+            id: UUID(),
+            figureStates: source.figureStates.map {
+                FigureState(id: UUID(), figureId: $0.figureId, joints: $0.joints, visible: $0.visible)
+            },
+            duration: source.duration,
+            placedObjects: source.placedObjects.map {
+                PlacedObject(id: UUID(), assetId: $0.assetId, sfSymbol: $0.sfSymbol, name: $0.name,
+                            position: $0.position, size: $0.size, rotation: $0.rotation,
+                            opacity: $0.opacity, tint: $0.tint, zIndex: $0.zIndex, locked: $0.locked)
+            },
+            drawnElements: source.drawnElements,
+            importedImages: source.importedImages
+        )
+        frames.insert(pasted, at: currentFrameIndex + 1)
+        currentFrameIndex += 1
         HapticManager.shared.frameSwitched()
     }
 
