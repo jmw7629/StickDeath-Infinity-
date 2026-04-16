@@ -30,7 +30,7 @@ struct MessagesListView: View {
                     List {
                         ForEach(conversations) { convo in
                             NavigationLink {
-                                ChatView(conversationId: convo.id, otherUsername: convo.username)
+                                ConversationChatView(conversationId: convo.id, otherUsername: convo.username)
                             } label: {
                                 HStack(spacing: 12) {
                                     // Avatar
@@ -117,7 +117,7 @@ struct ConversationPreview: Identifiable {
 }
 
 // MARK: - Chat View
-struct ChatView: View {
+struct ConversationChatView: View {
     let conversationId: Int
     let otherUsername: String
     @State private var messages: [Message] = []
