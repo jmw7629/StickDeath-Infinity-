@@ -1,6 +1,6 @@
 // StickDeathInfinityApp.swift
 // Main entry point — supports iPhone, iPad, Mac Catalyst
-// v2: + onOpenURL for deep links + Sign In with Apple entitlement
+// v3: + Realtime subscriptions + onOpenURL deep links + Sign In with Apple
 
 import SwiftUI
 
@@ -9,6 +9,7 @@ struct StickDeathInfinityApp: App {
     @StateObject private var authManager = AuthManager.shared
     @StateObject private var themeManager = ThemeManager()
     @StateObject private var offlineManager = OfflineManager.shared
+    @StateObject private var realtime = RealtimeManager.shared
 
     var body: some Scene {
         WindowGroup {
@@ -16,6 +17,7 @@ struct StickDeathInfinityApp: App {
                 .environmentObject(authManager)
                 .environmentObject(themeManager)
                 .environmentObject(offlineManager)
+                .environmentObject(realtime)
                 .preferredColorScheme(.dark)
                 .tint(Color("AccentColor"))
                 .onAppear {
@@ -24,6 +26,15 @@ struct StickDeathInfinityApp: App {
                 }
                 .onOpenURL { url in
                     handleDeepLink(url)
+                }
+                .onChange(of: authManager.isAuthenticated) { _, isAuth in
+                    Task {
+                        if isAuth {
+                            await realtime.subscribeAll()
+                        } else {
+                            await realtime.unsubscribeAll()
+                        }
+                    }
                 }
         }
         #if os(macOS) || targetEnvironment(macCatalyst)
@@ -45,17 +56,7 @@ struct StickDeathInfinityApp: App {
         #endif
     }
 
-    /// Start Realtime on login
-                .onChange(of: auth.isAuthenticated) { _, isAuth in
-                    Task {
-                        if isAuth {
-                            await realtime.subscribeAll()
-                        } else {
-                            await realtime.unsubscribeAll()
-                        }
-                    }
-                }
-                // Handle deep links: stickdeath://post/{id}, stickdeath://challenge/{id}, etc.
+    // Handle deep links: stickdeath://post/{id}, stickdeath://challenge/{id}, etc.
     private func handleDeepLink(_ url: URL) {
         guard url.scheme == "stickdeath" else { return }
         let host = url.host ?? ""
