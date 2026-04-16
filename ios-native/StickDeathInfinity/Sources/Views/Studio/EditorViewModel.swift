@@ -170,11 +170,11 @@ class EditorViewModel: ObservableObject {
         if drawState.tool == .lasso {
             drawState.lassoPath.append(canvasPoint) // close to lift-off point
             if drawState.lassoPath.count > 2, frames.indices.contains(currentFrameIndex) {
-                let selected = LassoTool.selectElements(
+                let ids = LassoTool.selectElements(
                     in: drawState.drawnElements,
-                    enclosedBy: drawState.lassoPath
+                    lasso: drawState.lassoPath
                 )
-                drawState.lassoSelectedIds = Set(selected.map(\.id))
+                drawState.lassoSelectedIds = Set(ids)
             }
             return
         }
