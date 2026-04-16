@@ -424,8 +424,8 @@ class EditorViewModel: ObservableObject {
 
         for (offset, image) in images.enumerated() {
             // Scale to fit canvas
-            let canvasW = CGFloat(project.canvasWidth ?? 1080)
-            let canvasH = CGFloat(project.canvasHeight ?? 1920)
+            let canvasW = CGFloat(project.canvas_width ?? 1080)
+            let canvasH = CGFloat(project.canvas_height ?? 1920)
             let scale = min(canvasW / image.size.width, canvasH / image.size.height, 1.0)
             let scaledSize = CGSize(
                 width: image.size.width * scale,

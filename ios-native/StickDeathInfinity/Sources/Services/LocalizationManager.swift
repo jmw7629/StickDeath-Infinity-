@@ -36,6 +36,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Localization Manager (SwiftUI observable, MainActor)
+
 @MainActor
 final class LocalizationManager: ObservableObject {
     static let shared = LocalizationManager()
@@ -51,22 +53,7 @@ final class LocalizationManager: ObservableObject {
     }
     
     private func updateBundle() {
-        let langCode: String
-        
-        switch selectedLanguage {
-        case .system:
-            // Use the device's preferred language, fallback to English
-            let preferred = Locale.preferredLanguages.first ?? "en"
-            if preferred.hasPrefix("zh") {
-                langCode = "zh-Hans"
-            } else {
-                langCode = "en"
-            }
-        case .english:
-            langCode = "en"
-        case .chinese:
-            langCode = "zh-Hans"
-        }
+        let langCode = Self.resolvedLangCode(for: selectedLanguage)
         
         if let path = Bundle.main.path(forResource: langCode, ofType: "lproj"),
            let bundle = Bundle(path: path) {
@@ -75,12 +62,11 @@ final class LocalizationManager: ObservableObject {
             currentBundle = .main
         }
         
-        // Force SwiftUI views to update
         objectWillChange.send()
     }
     
     /// Get a localized string using the current language bundle
-    func localized(_ key: String, comment: String = "") -> String {
+    func localized(_ key: String) -> String {
         currentBundle.localizedString(forKey: key, value: nil, table: nil)
     }
     
@@ -92,12 +78,35 @@ final class LocalizationManager: ObservableObject {
         case .chinese: return Locale(identifier: "zh-Hans")
         }
     }
+    
+    /// Resolve the language code — shared helper used by both the manager and the String extension
+    static func resolvedLangCode(for language: AppLanguage) -> String {
+        switch language {
+        case .system:
+            let preferred = Locale.preferredLanguages.first ?? "en"
+            return preferred.hasPrefix("zh") ? "zh-Hans" : "en"
+        case .english:
+            return "en"
+        case .chinese:
+            return "zh-Hans"
+        }
+    }
 }
 
 // MARK: - String extension for easy localization
+// Self-contained — reads UserDefaults directly so it works from any isolation context.
+
 extension String {
-    /// Returns the localized version of this string using the app's selected language
+    /// Returns the localized version of this string using the app's selected language.
     var loc: String {
-        LocalizationManager.shared.localized(self)
+        let raw = UserDefaults.standard.string(forKey: "appLanguage") ?? "system"
+        let language = AppLanguage(rawValue: raw) ?? .system
+        let langCode = LocalizationManager.resolvedLangCode(for: language)
+        
+        if let path = Bundle.main.path(forResource: langCode, ofType: "lproj"),
+           let bundle = Bundle(path: path) {
+            return bundle.localizedString(forKey: self, value: nil, table: nil)
+        }
+        return self
     }
 }
