@@ -80,8 +80,6 @@ class VideoExportManager: ObservableObject {
         writer.startWriting()
         writer.startSession(atSourceTime: .zero)
 
-        let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
-
         // Write frames
         for (index, frame) in frames.enumerated() {
             // Wait for writer to be ready

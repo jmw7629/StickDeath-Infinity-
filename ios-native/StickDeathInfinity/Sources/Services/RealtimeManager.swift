@@ -1,6 +1,6 @@
 // RealtimeManager.swift
 // Supabase Realtime subscriptions — live updates for messages, notifications, feed
-// Listens via Supabase Realtime channels and publishes changes to SwiftUI
+// Uses Supabase Realtime V2 channels
 
 import Foundation
 import Supabase
@@ -26,16 +26,9 @@ class RealtimeManager: ObservableObject {
 
         isSubscribed = true
 
-        // 1) Notifications for this user
         await subscribeToNotifications(userId: userId)
-
-        // 2) Messages for this user's conversations
         await subscribeToMessages(userId: userId)
-
-        // 3) New posts in the community feed
         await subscribeToFeed()
-
-        // 4) Challenge entries (live vote updates)
         await subscribeToChallengeEntries()
 
         print("✅ Realtime: all channels subscribed")
@@ -49,17 +42,20 @@ class RealtimeManager: ObservableObject {
             InsertAction.self,
             schema: "public",
             table: "notifications",
-            filter: "user_id=eq.\(userId)"
+            filter: .eq("user_id", value: userId)
         )
 
-        await channel.subscribe()
+        do {
+            try await channel.subscribe()
+        } catch {
+            print("⚠️ Realtime notifications subscribe error: \(error)")
+        }
         channels.append(channel)
 
         Task {
             for await insert in changes {
                 await MainActor.run {
                     self.unreadNotifications += 1
-                    // Post local notification
                     if let body = try? insert.record["body"]?.stringValue {
                         NotificationCenter.default.post(
                             name: .newNotification,
@@ -81,7 +77,11 @@ class RealtimeManager: ObservableObject {
             table: "messages"
         )
 
-        await channel.subscribe()
+        do {
+            try await channel.subscribe()
+        } catch {
+            print("⚠️ Realtime messages subscribe error: \(error)")
+        }
         channels.append(channel)
 
         Task {
@@ -108,10 +108,14 @@ class RealtimeManager: ObservableObject {
             InsertAction.self,
             schema: "public",
             table: "studio_projects",
-            filter: "published=eq.true"
+            filter: .eq("published", value: "true")
         )
 
-        await channel.subscribe()
+        do {
+            try await channel.subscribe()
+        } catch {
+            print("⚠️ Realtime feed subscribe error: \(error)")
+        }
         channels.append(channel)
 
         Task {
@@ -127,7 +131,6 @@ class RealtimeManager: ObservableObject {
                         timestamp: Date()
                     )
                     self.liveFeedItems.insert(event, at: 0)
-                    // Keep only last 50
                     if self.liveFeedItems.count > 50 {
                         self.liveFeedItems = Array(self.liveFeedItems.prefix(50))
                     }
@@ -146,7 +149,11 @@ class RealtimeManager: ObservableObject {
             table: "challenge_entries"
         )
 
-        await channel.subscribe()
+        do {
+            try await channel.subscribe()
+        } catch {
+            print("⚠️ Realtime challenge entries subscribe error: \(error)")
+        }
         channels.append(channel)
 
         Task {
@@ -163,7 +170,7 @@ class RealtimeManager: ObservableObject {
     func trackPresence(projectId: String, username: String) async throws -> RealtimeChannelV2 {
         let channel = supabase.realtimeV2.channel("presence:\(projectId)")
 
-        await channel.subscribe()
+        try await channel.subscribe()
         try await channel.track(state: ["username": .string(username), "online_at": .string(ISO8601DateFormatter().string(from: Date()))])
 
         channels.append(channel)

@@ -126,8 +126,6 @@ class AudioManager: ObservableObject {
 
         for clip in clips {
             let clipStart = Double(clip.startFrame) / Double(fps)
-            let clipEnd = Double(clip.startFrame + clip.durationFrames) / Double(fps)
-
             if frame >= clip.startFrame && frame < clip.startFrame + clip.durationFrames {
                 // Should be playing
                 if let player = players[clip.id] {
