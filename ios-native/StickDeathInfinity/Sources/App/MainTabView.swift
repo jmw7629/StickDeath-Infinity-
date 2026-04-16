@@ -180,6 +180,7 @@ struct ChallengesTab: View {
 
 struct StudioTab: View {
     @EnvironmentObject var router: NavigationRouter
+    @EnvironmentObject var auth: AuthManager
 
     var body: some View {
         NavigationStack(path: $router.studioPath) {
@@ -187,7 +188,11 @@ struct StudioTab: View {
                 .navigationDestination(for: StudioDestination.self) { dest in
                     switch dest {
                     case .editor(let project):
-                        StudioView(vm: EditorViewModel(project: project))
+                        if auth.isCreator {
+                            StudioView(vm: EditorViewModel(project: project))
+                        } else {
+                            SimpleStudioView(vm: EditorViewModel(project: project))
+                        }
                     case .templates:
                         TemplatesView()
                     }
@@ -214,6 +219,8 @@ struct ProfileTab: View {
                     case .personalization: PersonalizationSheet()
                     case .referral: ReferralView()
                     case .help: HelpCenterView()
+                    case .appSettings: AppSettingsView()
+                    case .about: AboutView()
                     case .creatorProfile(let userId): CreatorProfileView(userId: userId)
                     }
                 }

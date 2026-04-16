@@ -1,0 +1,181 @@
+/* 简体中文 — STICKDEATH ∞ */
+
+// MARK: - 标签页
+"tab.home"       = "首页";
+"tab.studio"     = "工作室";
+"tab.feed"       = "动态";
+"tab.messages"   = "消息";
+"tab.profile"    = "我的";
+
+// MARK: - 工作室工具
+"tool.draw"      = "画笔";
+"tool.erase"     = "橡皮";
+"tool.select"    = "选择";
+"tool.rig"       = "骨骼";
+"tool.shapes"    = "形状";
+"tool.text"      = "文字";
+"tool.image"     = "图片";
+"tool.video"     = "视频";
+"tool.undo"      = "撤销";
+"tool.redo"      = "重做";
+"tool.play"      = "播放";
+"tool.pause"     = "暂停";
+"tool.onion"     = "洋葱皮";
+"tool.layers"    = "图层";
+"tool.frames"    = "帧";
+"tool.brush"     = "画笔";
+"tool.fill"      = "填充";
+"tool.lasso"     = "套索";
+"tool.color"     = "颜色";
+
+// MARK: - 工作室画布
+"studio.newProject"     = "新建项目";
+"studio.untitled"       = "未命名";
+"studio.fps"            = "帧率";
+"studio.frame"          = "帧";
+"studio.frames"         = "帧";
+"studio.addFrame"       = "添加帧";
+"studio.duplicateFrame" = "复制帧";
+"studio.deleteFrame"    = "删除帧";
+"studio.canvasSize"     = "画布大小";
+"studio.background"     = "背景";
+"studio.export"         = "导出";
+"studio.publish"        = "发布";
+"studio.save"           = "保存";
+"studio.saving"         = "保存中…";
+"studio.saved"          = "已保存";
+
+// MARK: - 视频导入
+"video.import"          = "导入视频";
+"video.selectVideo"     = "选择视频";
+"video.extractFrames"   = "提取帧";
+"video.extracting"      = "正在提取帧…";
+"video.duration"        = "时长";
+"video.resolution"      = "分辨率";
+"video.frameRate"       = "帧率";
+"video.targetFPS"       = "目标帧率";
+"video.maxFrames"       = "最大帧数";
+"video.importAll"       = "导入全部帧";
+"video.importRange"     = "导入范围";
+"video.cancel"          = "取消";
+"video.done"            = "完成";
+
+// MARK: - 个人中心
+"profile.title"            = "个人中心";
+"profile.notifications"    = "通知";
+"profile.messages"         = "消息";
+"profile.editProfile"      = "编辑资料";
+"profile.personalization"  = "个性化";
+"profile.subscription"     = "订阅";
+"profile.connectedAccounts"= "关联账号";
+"profile.achievements"     = "成就";
+"profile.inviteFriends"    = "邀请好友";
+"profile.appSettings"      = "应用设置";
+"profile.about"            = "关于";
+"profile.help"             = "帮助与说明";
+"profile.replayTutorial"   = "重播教程";
+"profile.adminPortal"      = "管理后台";
+"profile.signOut"          = "退出登录";
+"profile.signOutConfirm"   = "确定退出？";
+"profile.projects"         = "作品";
+"profile.followers"        = "粉丝";
+"profile.following"        = "关注";
+"profile.likes"            = "获赞";
+"profile.pro"              = "专业版";
+"profile.free"             = "免费版";
+
+// MARK: - 应用设置
+"settings.title"           = "应用设置";
+"settings.layout"          = "布局";
+"settings.general"         = "通用";
+"settings.performance"     = "性能";
+"settings.language"        = "语言";
+"settings.version"         = "版本";
+"settings.canvasRotation"  = "画布旋转";
+"settings.canvasRotationDesc" = "允许双指旋转画布";
+"settings.stylusPressure"  = "触控笔压感";
+"settings.stylusPressureDesc" = "使用 Apple Pencil 时笔画粗细随压力变化";
+"settings.drawInput"       = "绘图输入";
+"settings.touchOnly"       = "仅触摸";
+"settings.stylusOnly"      = "仅触控笔";
+"settings.stylusAndTouch"  = "触控笔和触摸";
+"settings.timeLapse"       = "延时录制";
+"settings.timeLapseDesc"   = "记录你的创作过程";
+"settings.hapticFeedback"  = "触感反馈";
+"settings.hapticDesc"      = "工具和操作时震动";
+"settings.fpsCounter"      = "帧率显示";
+"settings.fpsCounterDesc"  = "在工作室中显示帧率";
+"settings.reducedMotion"   = "减弱动画";
+"settings.reducedMotionDesc" = "最小化动画效果";
+"settings.autoSave"        = "自动保存";
+"settings.autoSaveDesc"    = "保存间隔（秒）";
+"settings.chooseLanguage"  = "选择语言";
+
+// MARK: - 关于
+"about.title"              = "关于";
+"about.tagline"            = "创作・动画・征服";
+"about.copyright"          = "© 2026 Willis NMB Designs\n北默特尔比奇, 南卡罗来纳";
+"about.app"                = "应用";
+"about.version"            = "版本";
+"about.helpCenter"         = "帮助中心";
+"about.support"            = "技术支持";
+"about.community"          = "社区";
+"about.bugs"               = "问题反馈";
+"about.openSource"         = "开源组件";
+"about.followUs"           = "关注我们";
+"about.privacyPolicy"      = "隐私政策";
+"about.termsOfService"     = "服务条款";
+
+// MARK: - 登录
+"auth.signIn"              = "登录";
+"auth.signUp"              = "注册";
+"auth.signInWithApple"     = "通过 Apple 登录";
+"auth.email"               = "邮箱";
+"auth.password"            = "密码";
+"auth.forgotPassword"      = "忘记密码？";
+"auth.noAccount"           = "没有账号？";
+"auth.hasAccount"          = "已有账号？";
+"auth.welcome"             = "欢迎来到 STICKDEATH ∞";
+
+// MARK: - 动态
+"feed.title"               = "动态";
+"feed.trending"            = "热门";
+"feed.latest"              = "最新";
+"feed.following"           = "关注";
+"feed.forYou"              = "推荐";
+"feed.like"                = "点赞";
+"feed.comment"             = "评论";
+"feed.share"               = "分享";
+"feed.report"              = "举报";
+
+// MARK: - 订阅
+"sub.free"                 = "免费版";
+"sub.pro"                  = "专业版";
+"sub.proPrice"             = "¥35/月";
+"sub.upgrade"              = "升级专业版";
+"sub.restore"              = "恢复购买";
+"sub.features"             = "专业版功能";
+"sub.unlimited"            = "无限项目";
+"sub.noWatermark"          = "无水印";
+"sub.hdExport"             = "高清导出";
+"sub.prioritySupport"      = "优先支持";
+"sub.allBrushes"           = "全部画笔和特效";
+
+// MARK: - 通用
+"common.cancel"            = "取消";
+"common.done"              = "完成";
+"common.save"              = "保存";
+"common.delete"            = "删除";
+"common.edit"              = "编辑";
+"common.share"             = "分享";
+"common.loading"           = "加载中…";
+"common.error"             = "错误";
+"common.retry"             = "重试";
+"common.ok"                = "好的";
+"common.yes"               = "是";
+"common.no"                = "否";
+"common.search"            = "搜索";
+"common.close"             = "关闭";
+"common.back"              = "返回";
+"common.next"              = "下一步";
+"common.continue"          = "继续";

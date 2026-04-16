@@ -57,6 +57,9 @@ class EditorViewModel: ObservableObject {
     @Published var showImagePicker = false
     @Published var importedPhotoItem: PhotosPickerItem?
 
+    // Video import
+    @Published var showVideoImport = false
+
     // Project settings
     @Published var showProjectSettings = false
     @Published var showFramesViewer = false
@@ -64,6 +67,9 @@ class EditorViewModel: ObservableObject {
     // AI
     @Published var aiSuggestion: String?
     @Published var showAIPanel = false
+
+    // Frame copy/paste
+    @Published var copiedFrameData: AnimationFrame?
 
     // Rig / Bone
     @Published var rig: BoneRig = BoneRig.defaultHumanoid()
@@ -411,6 +417,58 @@ class EditorViewModel: ObservableObject {
         }
     }
 
+    // MARK: - Video Import
+    /// Insert extracted video frames into the timeline as new animation frames
+    func importVideoFrames(_ images: [UIImage]) {
+        guard !images.isEmpty else { return }
+        pushUndo()
+
+        let insertIndex = currentFrameIndex + 1
+
+        for (offset, image) in images.enumerated() {
+            // Scale to fit canvas
+            let canvasW = CGFloat(project.canvas_width ?? 1080)
+            let canvasH = CGFloat(project.canvas_height ?? 1920)
+            let scale = min(canvasW / image.size.width, canvasH / image.size.height, 1.0)
+            let scaledSize = CGSize(
+                width: image.size.width * scale,
+                height: image.size.height * scale
+            )
+
+            let importedImage = ImportedImage(
+                id: UUID(),
+                image: image,
+                position: .zero,
+                size: scaledSize,
+                rotation: 0,
+                opacity: 1.0
+            )
+
+            let newFrame = AnimationFrame(
+                id: UUID(),
+                figureStates: figures.map { fig in
+                    let currentState = frames[safe: currentFrameIndex]?.figureStates.first { $0.figureId == fig.id }
+                    return FigureState(
+                        id: UUID(),
+                        figureId: fig.id,
+                        joints: currentState?.joints ?? fig.joints,
+                        visible: currentState?.visible ?? true
+                    )
+                },
+                duration: 1.0 / Double(project.fps ?? 12),
+                placedObjects: [],
+                drawnElements: [],
+                importedImages: [importedImage]
+            )
+
+            frames.insert(newFrame, at: min(insertIndex + offset, frames.count))
+        }
+
+        currentFrameIndex = insertIndex
+        markDirty()
+        HapticManager.shared.objectPlaced()
+    }
+
     // MARK: - Project Settings
     func updateProjectSettings(title: String, fps: Int, canvasWidth: Int, canvasHeight: Int) {
         project = StudioProject(
@@ -586,6 +644,28 @@ class EditorViewModel: ObservableObject {
         pushUndo()
         frames.remove(at: currentFrameIndex)
         currentFrameIndex = min(currentFrameIndex, frames.count - 1)
+        HapticManager.shared.frameSwitched()
+    }
+
+    func pasteFrameAfterCurrent() {
+        guard let source = copiedFrameData else { return }
+        pushUndo()
+        let pasted = AnimationFrame(
+            id: UUID(),
+            figureStates: source.figureStates.map {
+                FigureState(id: UUID(), figureId: $0.figureId, joints: $0.joints, visible: $0.visible)
+            },
+            duration: source.duration,
+            placedObjects: source.placedObjects.map {
+                PlacedObject(id: UUID(), assetId: $0.assetId, sfSymbol: $0.sfSymbol, name: $0.name,
+                            position: $0.position, size: $0.size, rotation: $0.rotation,
+                            opacity: $0.opacity, tint: $0.tint, zIndex: $0.zIndex, locked: $0.locked)
+            },
+            drawnElements: source.drawnElements,
+            importedImages: source.importedImages
+        )
+        frames.insert(pasted, at: currentFrameIndex + 1)
+        currentFrameIndex += 1
         HapticManager.shared.frameSwitched()
     }
 
