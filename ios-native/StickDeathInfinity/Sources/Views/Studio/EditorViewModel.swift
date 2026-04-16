@@ -133,6 +133,9 @@ class EditorViewModel: ObservableObject {
         if drawState.tool == .text {
             drawState.textPosition = canvasPoint
             drawState.showTextInput = true
+        } else if drawState.tool == .lasso {
+            drawState.lassoPath = [canvasPoint]
+            drawState.lassoSelectedIds.removeAll()
         }
     }
 
@@ -151,16 +154,34 @@ class EditorViewModel: ObservableObject {
             }
         case .eraser:
             eraseAt(canvasPoint)
-        case .text:
+        case .lasso:
+            // Accumulate lasso freehand path
+            drawState.lassoPath.append(canvasPoint)
+        case .fill, .text:
+            // Fill acts on tap (began), text opens input — nothing to do on drag
             break
         }
     }
 
     func handleDrawingEnded(at point: CGPoint) {
         let canvasPoint = screenToCanvas(point)
+
+        // Lasso: close the path, add final point, and select enclosed elements
+        if drawState.tool == .lasso {
+            drawState.lassoPath.append(canvasPoint) // close to lift-off point
+            if drawState.lassoPath.count > 2, frames.indices.contains(currentFrameIndex) {
+                let selected = LassoTool.selectElements(
+                    in: drawState.drawnElements,
+                    enclosedBy: drawState.lassoPath
+                )
+                drawState.lassoSelectedIds = Set(selected.map(\.id))
+            }
+            return
+        }
+
         guard !drawState.currentPath.isEmpty else { return }
 
-        if drawState.tool == .text || drawState.tool == .eraser {
+        if drawState.tool == .text || drawState.tool == .eraser || drawState.tool == .fill {
             drawState.currentPath = []
             return
         }
