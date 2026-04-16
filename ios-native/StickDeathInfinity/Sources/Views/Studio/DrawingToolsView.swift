@@ -46,6 +46,7 @@ enum DrawingTool: String, CaseIterable {
 }
 
 // MARK: - Drawing State
+@MainActor
 class DrawingState: ObservableObject {
     @Published var tool: DrawingTool = .pencil
     @Published var brushType: BrushType = .pen

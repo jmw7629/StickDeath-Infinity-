@@ -3,6 +3,7 @@
 
 import SwiftUI
 
+@MainActor
 class ThemeManager: ObservableObject {
     @Published var accentColor: Color = .red
 

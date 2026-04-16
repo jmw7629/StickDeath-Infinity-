@@ -301,7 +301,7 @@ class VideoExportManager: ObservableObject {
                     red: CGFloat(figure.color.red),
                     green: CGFloat(figure.color.green),
                     blue: CGFloat(figure.color.blue),
-                    alpha: CGFloat(figure.color.alpha)
+                    alpha: CGFloat(figure.color.opacity)
                 )
 
                 context.setStrokeColor(color.cgColor)
