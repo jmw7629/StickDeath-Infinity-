@@ -234,7 +234,7 @@ struct HomeView: View {
     }
 
     // MARK: - Community Message Card
-    func communityMessageCard(_ msg: CommunityMsg) -> some View {
+    private func communityMessageCard(_ msg: CommunityMsg) -> some View {
         let isLiked = likedMessages.contains(msg.id)
 
         return VStack(alignment: .leading, spacing: 6) {
