@@ -2,6 +2,28 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!-- Required Bundle Metadata -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+    <key>CFBundleShortVersionString</key>
+    <string>$(MARKETING_VERSION)</string>
+    <key>CFBundleVersion</key>
+    <string>$(CURRENT_PROJECT_VERSION)</string>
+
+    <!-- Display Name -->
+    <key>CFBundleDisplayName</key>
+    <string>STICKDEATH ∞</string>
+
     <!-- Custom Fonts -->
     <key>UIAppFonts</key>
     <array>
@@ -28,10 +50,32 @@
         <string>audio</string>
     </array>
 
+    <!-- Camera, Microphone, Photo Library permissions -->
+    <key>NSCameraUsageDescription</key>
+    <string>STICKDEATH ∞ needs camera access to import reference photos and record animations.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>STICKDEATH ∞ needs microphone access to add audio to your animations.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>STICKDEATH ∞ needs photo library access to import images and save exported videos.</string>
+    <key>NSPhotoLibraryAddUsageDescription</key>
+    <string>STICKDEATH ∞ needs permission to save exported videos to your Camera Roll.</string>
+
     <!-- Status bar -->
     <key>UIStatusBarStyle</key>
     <string>UIStatusBarStyleLightContent</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <true/>
+
+    <!-- Supported orientations -->
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+
+    <!-- Launch screen (SwiftUI — empty dict = default) -->
+    <key>UILaunchScreen</key>
+    <dict/>
 </dict>
 </plist>
