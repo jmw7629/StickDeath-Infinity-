@@ -45,7 +45,17 @@ struct StickDeathInfinityApp: App {
         #endif
     }
 
-    /// Handle deep links: stickdeath://post/{id}, stickdeath://challenge/{id}, etc.
+    /// Start Realtime on login
+                .onChange(of: auth.isAuthenticated) { _, isAuth in
+                    Task {
+                        if isAuth {
+                            await realtime.subscribeAll()
+                        } else {
+                            await realtime.unsubscribeAll()
+                        }
+                    }
+                }
+                // Handle deep links: stickdeath://post/{id}, stickdeath://challenge/{id}, etc.
     private func handleDeepLink(_ url: URL) {
         guard url.scheme == "stickdeath" else { return }
         let host = url.host ?? ""

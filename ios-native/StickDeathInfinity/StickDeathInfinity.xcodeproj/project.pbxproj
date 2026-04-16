@@ -81,6 +81,9 @@
 		FILL_BF /* FillLassoTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = FILL_FR; };
 		AUDIO_BF /* AudioManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = AUDIO_FR; };
 		VIDEO_BF /* VideoExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = VIDEO_FR; };
+		RTMGR_BF /* RealtimeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = RTMGR_FR; };
+		ADMIN_BF /* AdminDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADMIN_FR; };
+		COMMFD_BF /* CommunityFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = COMMFD_FR; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -157,6 +160,9 @@
 		FILL_FR /* FillLassoTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FillLassoTools.swift; sourceTree = "<group>"; };
 		AUDIO_FR /* AudioManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioManager.swift; sourceTree = "<group>"; };
 		VIDEO_FR /* VideoExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExportManager.swift; sourceTree = "<group>"; };
+		RTMGR_FR /* RealtimeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealtimeManager.swift; sourceTree = "<group>"; };
+		ADMIN_FR /* AdminDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminDashboardView.swift; sourceTree = "<group>"; };
+		COMMFD_FR /* CommunityFeedView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommunityFeedView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
