@@ -55,8 +55,6 @@
 		44E17BE0BD83AF0EBBC7CCB4 /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8F7E0DD39D8B800549CEEE; };
 		728CAA2C2EF77313D3466B35 /* PersonalizationSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 346A17C2592A9589A7D10A77; };
 		77987BB664657C7AE045258A /* ProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAF03F643ABCE8706547F07C; };
-				A1B2C3D4E5F6A1B2C3D4E5F6 /* AppSettingsView.swift in Sources */,
-				F6A1B2C3D4E5F6A1B2C3D4E5 /* AboutView.swift in Sources */,
 		A1B2C3D4E5F6A1B2C3D4E5F6 /* AppSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A1B2C3D4E5F6A1B2C3; };
 		F6A1B2C3D4E5F6A1B2C3D4E5 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A1B2C3D4E5F6A1; };
 		840896F08B7D87703B0569C6 /* ReferralView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C8536A5BE9928C53766D7E; };
@@ -141,8 +139,6 @@
 		9D8F7E0DD39D8B800549CEEE /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
 		346A17C2592A9589A7D10A77 /* PersonalizationSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PersonalizationSheet.swift; sourceTree = "<group>"; };
 		CAF03F643ABCE8706547F07C /* ProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileView.swift; sourceTree = "<group>"; };
-				D4E5F6A1B2C3D4E5F6A1B2C3 /* AppSettingsView.swift */,
-				B2C3D4E5F6A1B2C3D4E5F6A1 /* AboutView.swift */,
 		D4E5F6A1B2C3D4E5F6A1B2C3 /* AppSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsView.swift; sourceTree = "<group>"; };
 		B2C3D4E5F6A1B2C3D4E5F6A1 /* AboutView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutView.swift; sourceTree = "<group>"; };
 		A5C8536A5BE9928C53766D7E /* ReferralView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReferralView.swift; sourceTree = "<group>"; };
@@ -505,8 +501,6 @@
 				77987BB664657C7AE045258A /* ProfileView.swift in Sources */,
 				A1B2C3D4E5F6A1B2C3D4E5F6 /* AppSettingsView.swift in Sources */,
 				F6A1B2C3D4E5F6A1B2C3D4E5 /* AboutView.swift in Sources */,
-		A1B2C3D4E5F6A1B2C3D4E5F6 /* AppSettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4E5F6A1B2C3D4E5F6A1B2C3; };
-		F6A1B2C3D4E5F6A1B2C3D4E5 /* AboutView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2C3D4E5F6A1B2C3D4E5F6A1; };
 				840896F08B7D87703B0569C6 /* ReferralView.swift in Sources */,
 				6214D45081A3B21CA24F589F /* SubscriptionView.swift in Sources */,
 				A78A7FF553095CDCF2456527 /* SpatterOverlay.swift in Sources */,

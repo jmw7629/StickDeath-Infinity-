@@ -72,6 +72,8 @@ enum ProfileDestination: Hashable {
     case personalization
     case referral
     case help
+    case appSettings
+    case about
     case creatorProfile(String)
 }
 

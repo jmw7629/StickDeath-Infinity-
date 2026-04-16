@@ -214,6 +214,8 @@ struct ProfileTab: View {
                     case .personalization: PersonalizationSheet()
                     case .referral: ReferralView()
                     case .help: HelpCenterView()
+                    case .appSettings: AppSettingsView()
+                    case .about: AboutView()
                     case .creatorProfile(let userId): CreatorProfileView(userId: userId)
                     }
                 }

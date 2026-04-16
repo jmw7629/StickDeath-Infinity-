@@ -237,6 +237,14 @@ struct ProfileView: View {
                 router.profilePath.append(ProfileDestination.referral)
             }
 
+            NavMenuRow(icon: "gearshape.fill", title: "App Settings", tint: .gray) {
+                router.profilePath.append(ProfileDestination.appSettings)
+            }
+
+            NavMenuRow(icon: "info.circle", title: "About", tint: .gray) {
+                router.profilePath.append(ProfileDestination.about)
+            }
+
             NavMenuRow(icon: "questionmark.circle", title: "Help & Instructions", tint: .cyan) {
                 router.profilePath.append(ProfileDestination.help)
             }
