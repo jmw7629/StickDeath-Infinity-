@@ -23,7 +23,9 @@ struct StudioView: View {
     @State private var showUserGuide = false
     @State private var lastDragTranslation: CGSize = .zero
 
+    @Environment(\.verticalSizeClass) var vSize
     var isWide: Bool { hSize == .regular }
+    var isLandscape: Bool { vSize == .compact }
 
     var body: some View {
         ZStack {
@@ -70,10 +72,18 @@ struct StudioView: View {
             }
             .padding(.top, 52)
 
-            // ── Bottom Timeline ──
-            VStack(spacing: 0) {
-                Spacer()
-                bottomTimeline
+            // ── Timeline: bottom in portrait, right side in landscape ──
+            if isLandscape {
+                HStack(spacing: 0) {
+                    Spacer()
+                    landscapeTimeline
+                }
+                .padding(.top, 52)
+            } else {
+                VStack(spacing: 0) {
+                    Spacer()
+                    bottomTimeline
+                }
             }
 
             // ── Cursor mode: delete button ──
@@ -181,6 +191,11 @@ struct StudioView: View {
         }
         .sheet(isPresented: $showUserGuide) {
             StudioUserGuide()
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $vm.showVideoImport) {
+            VideoImportSheet(vm: vm)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
@@ -392,6 +407,9 @@ struct StudioView: View {
                     // Import / Assets
                     taskbarAction(icon: "photo.badge.plus", label: "Photo", tint: .green) {
                         vm.showImagePicker = true
+                    }
+                    taskbarAction(icon: "video.badge.plus", label: "Video", tint: .orange) {
+                        vm.showVideoImport = true
                     }
                     taskbarAction(icon: "cube.fill", label: "Assets", tint: .mint) {
                         showAssetBrowser = true
@@ -729,6 +747,84 @@ struct StudioView: View {
             .frame(height: 48)
             .background(.ultraThinMaterial)
         }
+    }
+
+    // MARK: - Landscape Timeline (vertical right-side panel)
+
+    var landscapeTimeline: some View {
+        VStack(spacing: 0) {
+            // Playback controls (vertical)
+            VStack(spacing: 8) {
+                Button { vm.togglePlay() } label: {
+                    Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.red)
+                        .frame(width: 36, height: 36)
+                        .background(Color.red.opacity(0.15))
+                        .clipShape(Circle())
+                }
+
+                Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+            .padding(.vertical, 8)
+
+            // Vertical frame strip
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 4) {
+                        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { idx, frame in
+                            FrameThumb(
+                                index: idx,
+                                isSelected: idx == vm.currentFrameIndex,
+                                figureCount: vm.figures.count,
+                                hasDrawing: !frame.drawnElements.isEmpty,
+                                hasImages: !frame.importedImages.isEmpty
+                            )
+                            .id(idx)
+                            .onTapGesture { vm.goToFrame(idx) }
+                            .contextMenu {
+                                Button {
+                                    vm.currentFrameIndex = idx
+                                    vm.duplicateFrame()
+                                } label: {
+                                    Label("Duplicate", systemImage: "doc.on.doc")
+                                }
+                                if vm.frames.count > 1 {
+                                    Button(role: .destructive) {
+                                        vm.currentFrameIndex = idx
+                                        vm.deleteFrame()
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .onChange(of: vm.currentFrameIndex) { newVal in
+                    withAnimation { proxy.scrollTo(newVal, anchor: .center) }
+                }
+            }
+
+            // Add frame button
+            Button {
+                vm.addFrame()
+                HapticManager.shared.buttonTap()
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.red)
+                    .frame(width: 36, height: 36)
+                    .background(Color.red.opacity(0.15))
+                    .clipShape(Circle())
+            }
+            .padding(.bottom, 8)
+        }
+        .frame(width: 52)
+        .background(.ultraThinMaterial)
     }
 
     // MARK: - Helpers

@@ -57,6 +57,9 @@ class EditorViewModel: ObservableObject {
     @Published var showImagePicker = false
     @Published var importedPhotoItem: PhotosPickerItem?
 
+    // Video import
+    @Published var showVideoImport = false
+
     // Project settings
     @Published var showProjectSettings = false
     @Published var showFramesViewer = false
@@ -409,6 +412,58 @@ class EditorViewModel: ObservableObject {
            let uiImage = UIImage(data: data) {
             importImage(uiImage)
         }
+    }
+
+    // MARK: - Video Import
+    /// Insert extracted video frames into the timeline as new animation frames
+    func importVideoFrames(_ images: [UIImage]) {
+        guard !images.isEmpty else { return }
+        pushUndo()
+
+        let insertIndex = currentFrameIndex + 1
+
+        for (offset, image) in images.enumerated() {
+            // Scale to fit canvas
+            let canvasW = CGFloat(project.canvasWidth ?? 1080)
+            let canvasH = CGFloat(project.canvasHeight ?? 1920)
+            let scale = min(canvasW / image.size.width, canvasH / image.size.height, 1.0)
+            let scaledSize = CGSize(
+                width: image.size.width * scale,
+                height: image.size.height * scale
+            )
+
+            let importedImage = ImportedImage(
+                id: UUID(),
+                image: image,
+                position: .zero,
+                size: scaledSize,
+                rotation: 0,
+                opacity: 1.0
+            )
+
+            let newFrame = AnimationFrame(
+                id: UUID(),
+                figureStates: figures.map { fig in
+                    let currentState = frames[safe: currentFrameIndex]?.figureStates.first { $0.figureId == fig.id }
+                    return FigureState(
+                        id: UUID(),
+                        figureId: fig.id,
+                        joints: currentState?.joints ?? fig.joints,
+                        visible: currentState?.visible ?? true
+                    )
+                },
+                duration: 1.0 / Double(project.fps ?? 12),
+                placedObjects: [],
+                drawnElements: [],
+                importedImages: [importedImage]
+            )
+
+            frames.insert(newFrame, at: min(insertIndex + offset, frames.count))
+        }
+
+        currentFrameIndex = insertIndex
+        markDirty()
+        HapticManager.shared.objectPlaced()
     }
 
     // MARK: - Project Settings

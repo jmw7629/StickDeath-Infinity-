@@ -31,6 +31,8 @@
 		10BE856E02C771D665CB93B4 /* StripeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7132C6669561D0B837A1E0A; };
 		9B11C45F1A1FAEF5CBFC2071 /* SupabaseClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D81E10047016898A0EAFA27; };
 		6E6BABD3AF4DADA2CA883795 /* VideoExportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4B521DEA01C8D6DD3F7E65F; };
+		BE4CA1C4D9677AFC80EF8866 /* VideoImportManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C54E2CD155E09E04E221DE4; };
+		6365B57C9C042EB4B83386BE /* VideoImportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2CF4D43AF878117082ECFF71; };
 		D3F10A3E3F483CCF82983E4D /* WatermarkService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50811EF90B1116530391F0A7; };
 		EBF3044626A4B5C277F27D01 /* AdminDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C690B6A7E387EAE6CB4BB404; };
 		19CEAF5078A966FCF98CF015 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07EFDE78C9084F1376B76BFC; };
@@ -111,6 +113,8 @@
 		B7132C6669561D0B837A1E0A /* StripeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StripeService.swift; sourceTree = "<group>"; };
 		3D81E10047016898A0EAFA27 /* SupabaseClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupabaseClient.swift; sourceTree = "<group>"; };
 		E4B521DEA01C8D6DD3F7E65F /* VideoExportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoExportManager.swift; sourceTree = "<group>"; };
+		8C54E2CD155E09E04E221DE4 /* VideoImportManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoImportManager.swift; sourceTree = "<group>"; };
+		2CF4D43AF878117082ECFF71 /* VideoImportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoImportSheet.swift; sourceTree = "<group>"; };
 		50811EF90B1116530391F0A7 /* WatermarkService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WatermarkService.swift; sourceTree = "<group>"; };
 		C690B6A7E387EAE6CB4BB404 /* AdminDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdminDashboardView.swift; sourceTree = "<group>"; };
 		07EFDE78C9084F1376B76BFC /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -238,6 +242,7 @@
 				B7132C6669561D0B837A1E0A /* StripeService.swift */,
 				3D81E10047016898A0EAFA27 /* SupabaseClient.swift */,
 				E4B521DEA01C8D6DD3F7E65F /* VideoExportManager.swift */,
+				8C54E2CD155E09E04E221DE4 /* VideoImportManager.swift */,
 				50811EF90B1116530391F0A7 /* WatermarkService.swift */,
 			);
 			path = Services;
@@ -373,6 +378,7 @@
 				EAE57C8194340B9B10037A11 /* StudioView.swift */,
 				13C0B4488E888DD72D0A700E /* TemplatesView.swift */,
 				6E0CAC79A41E16C91B8D9419 /* TimelinePanel.swift */,
+				2CF4D43AF878117082ECFF71 /* VideoImportSheet.swift */,
 			);
 			path = Studio;
 			sourceTree = "<group>";
@@ -463,6 +469,8 @@
 				10BE856E02C771D665CB93B4 /* StripeService.swift in Sources */,
 				9B11C45F1A1FAEF5CBFC2071 /* SupabaseClient.swift in Sources */,
 				6E6BABD3AF4DADA2CA883795 /* VideoExportManager.swift in Sources */,
+				BE4CA1C4D9677AFC80EF8866 /* VideoImportManager.swift in Sources */,
+				6365B57C9C042EB4B83386BE /* VideoImportSheet.swift in Sources */,
 				D3F10A3E3F483CCF82983E4D /* WatermarkService.swift in Sources */,
 				EBF3044626A4B5C277F27D01 /* AdminDashboardView.swift in Sources */,
 				19CEAF5078A966FCF98CF015 /* LoginView.swift in Sources */,
