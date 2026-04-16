@@ -36,6 +36,21 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Free function — no actor isolation, callable from anywhere
+
+/// Resolves the language code from an AppLanguage value.
+private func resolvedLangCode(for language: AppLanguage) -> String {
+    switch language {
+    case .system:
+        let preferred = Locale.preferredLanguages.first ?? "en"
+        return preferred.hasPrefix("zh") ? "zh-Hans" : "en"
+    case .english:
+        return "en"
+    case .chinese:
+        return "zh-Hans"
+    }
+}
+
 // MARK: - Localization Manager (SwiftUI observable, MainActor)
 
 @MainActor
@@ -53,7 +68,7 @@ final class LocalizationManager: ObservableObject {
     }
     
     private func updateBundle() {
-        let langCode = Self.resolvedLangCode(for: selectedLanguage)
+        let langCode = resolvedLangCode(for: selectedLanguage)
         
         if let path = Bundle.main.path(forResource: langCode, ofType: "lproj"),
            let bundle = Bundle(path: path) {
@@ -78,30 +93,17 @@ final class LocalizationManager: ObservableObject {
         case .chinese: return Locale(identifier: "zh-Hans")
         }
     }
-    
-    /// Resolve the language code — shared helper used by both the manager and the String extension
-    static func resolvedLangCode(for language: AppLanguage) -> String {
-        switch language {
-        case .system:
-            let preferred = Locale.preferredLanguages.first ?? "en"
-            return preferred.hasPrefix("zh") ? "zh-Hans" : "en"
-        case .english:
-            return "en"
-        case .chinese:
-            return "zh-Hans"
-        }
-    }
 }
 
 // MARK: - String extension for easy localization
-// Self-contained — reads UserDefaults directly so it works from any isolation context.
+// Fully self-contained — no reference to LocalizationManager at all.
 
 extension String {
     /// Returns the localized version of this string using the app's selected language.
     var loc: String {
         let raw = UserDefaults.standard.string(forKey: "appLanguage") ?? "system"
         let language = AppLanguage(rawValue: raw) ?? .system
-        let langCode = LocalizationManager.resolvedLangCode(for: language)
+        let langCode = resolvedLangCode(for: language)
         
         if let path = Bundle.main.path(forResource: langCode, ofType: "lproj"),
            let bundle = Bundle(path: path) {
