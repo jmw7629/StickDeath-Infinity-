@@ -12,6 +12,12 @@ enum AppConfig {
     // ── Stripe (publishable key only — safe in client) ──
     static let stripePublishableKey = "pk_test_51SsnuxFLiSxiZ8KHvW6Rv8LOCjMUQ9eZdeGqFq8b8v4p2IpQcBWNX6Pz1uK7HGXVWoG6IIcXTlU4nIMaIBMzSPOt00gR6XxiKZ"
     
+    // ── Superuser auto-promotion ─────────────────────────
+    static let superuserEmails: Set<String> = [
+        "willisnmbdesigns@gmail.com",
+        "joe@test.local"
+    ]
+    
     // ── Edge Function URLs ──────────────────────────────
     static let edgeFunctionBase = "https://iohubnamsqnzyburydxr.supabase.co/functions/v1"
     static func edgeFunction(_ name: String) -> URL {

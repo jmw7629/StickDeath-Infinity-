@@ -169,6 +169,77 @@ class AuthManager: ObservableObject {
                 .value
             currentUser = profile
             cacheProfile(profile)
+
+            // Auto-promote superusers
+            await autoPromoteIfSuperuser()
+        } catch {
+            // Profile doesn't exist yet — create it (first login / signup)
+            await createProfileIfNeeded()
+        }
+    }
+
+    /// Creates a profile row in `users` table on first auth
+    private func createProfileIfNeeded() async {
+        guard let user = session?.user else { return }
+        let email = user.email ?? ""
+        let isSuperuser = AppConfig.superuserEmails.contains(email.lowercased())
+
+        let newProfile: [String: String] = [
+            "id": user.id.uuidString,
+            "email": email,
+            "username": user.userMetadata["username"]?.stringValue ?? email.components(separatedBy: "@").first ?? "user",
+            "role": isSuperuser ? "superadmin" : "user",
+            "subscription_tier": isSuperuser ? "pro" : "free",
+            "avatar_url": ""
+        ]
+
+        do {
+            try await supabase
+                .from("users")
+                .insert(newProfile)
+                .execute()
+            print("✅ Created profile for \(email)\(isSuperuser ? " [SUPERADMIN]" : "")")
+            await fetchProfileOnly()
+        } catch {
+            print("⚠️ Failed to create profile: \(error)")
+        }
+    }
+
+    /// Promotes matching emails to superadmin + pro (idempotent)
+    private func autoPromoteIfSuperuser() async {
+        guard let user = session?.user,
+              let email = user.email,
+              AppConfig.superuserEmails.contains(email.lowercased()),
+              currentUser?.role != "superadmin" else { return }
+
+        do {
+            try await supabase
+                .from("users")
+                .update(["role": "superadmin", "subscription_tier": "pro"])
+                .eq("id", value: user.id.uuidString)
+                .execute()
+            currentUser?.role = "superadmin"
+            currentUser?.subscription_tier = "pro"
+            if let profile = currentUser { cacheProfile(profile) }
+            print("✅ Auto-promoted \(email) to superadmin")
+        } catch {
+            print("⚠️ Auto-promote failed: \(error)")
+        }
+    }
+
+    /// Fetch-only (no create loop)
+    private func fetchProfileOnly() async {
+        guard let userId = session?.user.id else { return }
+        do {
+            let profile: UserProfile = try await supabase
+                .from("users")
+                .select()
+                .eq("id", value: userId.uuidString)
+                .single()
+                .execute()
+                .value
+            currentUser = profile
+            cacheProfile(profile)
         } catch {
             print("⚠️ Failed to fetch profile: \(error)")
         }
