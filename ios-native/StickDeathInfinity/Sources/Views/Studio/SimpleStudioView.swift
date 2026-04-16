@@ -65,18 +65,43 @@ struct SimpleStudioView: View {
     }
 
     @State private var activeTool: SimpleTool = .brush
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    @Environment(\.verticalSizeClass) private var vSizeClass
+
+    /// True when phone is held sideways (compact vertical)
+    private var isLandscape: Bool { vSizeClass == .compact }
 
     var body: some View {
         ZStack {
             Color(hex: "0a0a0f").ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                topBar
-                toolbarPill
-                canvasArea
-                propertiesBar
-                frameStrip
-                bottomActionBar
+            if isLandscape {
+                // ── LANDSCAPE: toolbar on left, canvas fills space, timeline at bottom ──
+                VStack(spacing: 0) {
+                    HStack(spacing: 0) {
+                        // Vertical toolbar on left
+                        verticalToolbar
+                        // Main area
+                        VStack(spacing: 0) {
+                            topBar
+                            canvasArea
+                            propertiesBar
+                        }
+                    }
+                    // Compact combined bottom: frame strip + action bar
+                    frameStrip
+                    bottomActionBar
+                }
+            } else {
+                // ── PORTRAIT: standard stacked layout ──
+                VStack(spacing: 0) {
+                    topBar
+                    toolbarPill
+                    canvasArea
+                    propertiesBar
+                    frameStrip
+                    bottomActionBar
+                }
             }
 
             // Text input overlay
@@ -324,6 +349,54 @@ struct SimpleStudioView: View {
         }
         .padding(.vertical, 6)
         .background(Color(hex: "0a0a0f").opacity(0.01)) // Transparent bg
+    }
+
+    // ── LANDSCAPE: Vertical toolbar on the left side ──
+    var verticalToolbar: some View {
+        VStack(spacing: 2) {
+            // Grip handle
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(Color(hex: "444444"))
+                .frame(width: 40, height: 22)
+
+            ForEach(SimpleTool.allCases, id: \.self) { tool in
+                Button {
+                    activeTool = tool
+                    HapticManager.shared.buttonTap()
+                } label: {
+                    toolPillIcon(tool)
+                }
+            }
+
+            // Shapes overflow
+            Menu {
+                Button { vm.drawState.tool = .line; vm.mode = .draw } label: { Label("Line".loc, systemImage: "line.diagonal") }
+                Button { vm.drawState.tool = .rectangle; vm.mode = .draw } label: { Label("Rectangle".loc, systemImage: "rectangle") }
+                Button { vm.drawState.tool = .circle; vm.mode = .draw } label: { Label("Circle".loc, systemImage: "circle") }
+                Button { vm.drawState.tool = .arrow; vm.mode = .draw } label: { Label("Arrow".loc, systemImage: "arrow.up.right") }
+            } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(hex: "1e1e2e"))
+                        .frame(width: 42, height: 42)
+                    embossedIcon("ellipsis", color: ToolPalette.shapes, size: 18)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(Color(hex: "141420"))
+                .shadow(color: .black.opacity(0.6), radius: 6, x: 3, y: 0)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22)
+                        .stroke(Color(hex: "2a2a3a").opacity(0.4), lineWidth: 1)
+                )
+        )
+        .padding(.leading, 4)
+        .padding(.vertical, 4)
     }
 
     // Single tool button in the pill — embossed 3D look
