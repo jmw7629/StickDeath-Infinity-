@@ -1,0 +1,181 @@
+/* English — STICKDEATH ∞ */
+
+// MARK: - Tabs
+"tab.home"       = "Home";
+"tab.studio"     = "Studio";
+"tab.feed"       = "Feed";
+"tab.messages"   = "Messages";
+"tab.profile"    = "Profile";
+
+// MARK: - Studio Tools
+"tool.draw"      = "Draw";
+"tool.erase"     = "Erase";
+"tool.select"    = "Select";
+"tool.rig"       = "Rig";
+"tool.shapes"    = "Shapes";
+"tool.text"      = "Text";
+"tool.image"     = "Image";
+"tool.video"     = "Video";
+"tool.undo"      = "Undo";
+"tool.redo"      = "Redo";
+"tool.play"      = "Play";
+"tool.pause"     = "Pause";
+"tool.onion"     = "Onion";
+"tool.layers"    = "Layers";
+"tool.frames"    = "Frames";
+"tool.brush"     = "Brush";
+"tool.fill"      = "Fill";
+"tool.lasso"     = "Lasso";
+"tool.color"     = "Color";
+
+// MARK: - Studio Canvas
+"studio.newProject"     = "New Project";
+"studio.untitled"       = "Untitled";
+"studio.fps"            = "FPS";
+"studio.frame"          = "Frame";
+"studio.frames"         = "Frames";
+"studio.addFrame"       = "Add Frame";
+"studio.duplicateFrame" = "Duplicate Frame";
+"studio.deleteFrame"    = "Delete Frame";
+"studio.canvasSize"     = "Canvas Size";
+"studio.background"     = "Background";
+"studio.export"         = "Export";
+"studio.publish"        = "Publish";
+"studio.save"           = "Save";
+"studio.saving"         = "Saving...";
+"studio.saved"          = "Saved";
+
+// MARK: - Video Import
+"video.import"          = "Import Video";
+"video.selectVideo"     = "Select Video";
+"video.extractFrames"   = "Extract Frames";
+"video.extracting"      = "Extracting frames...";
+"video.duration"        = "Duration";
+"video.resolution"      = "Resolution";
+"video.frameRate"       = "Frame Rate";
+"video.targetFPS"       = "Target FPS";
+"video.maxFrames"       = "Max Frames";
+"video.importAll"       = "Import All Frames";
+"video.importRange"     = "Import Range";
+"video.cancel"          = "Cancel";
+"video.done"            = "Done";
+
+// MARK: - Profile
+"profile.title"            = "Profile";
+"profile.notifications"    = "Notifications";
+"profile.messages"         = "Messages";
+"profile.editProfile"      = "Edit Profile";
+"profile.personalization"  = "Personalization";
+"profile.subscription"     = "Subscription";
+"profile.connectedAccounts"= "Connected Accounts";
+"profile.achievements"     = "Achievements";
+"profile.inviteFriends"    = "Invite Friends";
+"profile.appSettings"      = "App Settings";
+"profile.about"            = "About";
+"profile.help"             = "Help & Instructions";
+"profile.replayTutorial"   = "Replay Tutorial";
+"profile.adminPortal"      = "Admin Portal";
+"profile.signOut"          = "Sign Out";
+"profile.signOutConfirm"   = "Are you sure?";
+"profile.projects"         = "Projects";
+"profile.followers"        = "Followers";
+"profile.following"        = "Following";
+"profile.likes"            = "Likes";
+"profile.pro"              = "PRO";
+"profile.free"             = "Free";
+
+// MARK: - App Settings
+"settings.title"           = "App Settings";
+"settings.layout"          = "Layout";
+"settings.general"         = "General";
+"settings.performance"     = "Performance";
+"settings.language"        = "Language";
+"settings.version"         = "Version";
+"settings.canvasRotation"  = "Canvas Rotation";
+"settings.canvasRotationDesc" = "Allow two-finger rotation on canvas";
+"settings.stylusPressure"  = "Stylus Pressure";
+"settings.stylusPressureDesc" = "Vary line width with Apple Pencil pressure";
+"settings.drawInput"       = "Draw Input";
+"settings.touchOnly"       = "Touch only";
+"settings.stylusOnly"      = "Stylus only";
+"settings.stylusAndTouch"  = "Stylus and touch";
+"settings.timeLapse"       = "Time-Lapse";
+"settings.timeLapseDesc"   = "Record your drawing process";
+"settings.hapticFeedback"  = "Haptic Feedback";
+"settings.hapticDesc"      = "Vibration for tools and actions";
+"settings.fpsCounter"      = "FPS Counter";
+"settings.fpsCounterDesc"  = "Show frame rate in studio";
+"settings.reducedMotion"   = "Reduced Motion";
+"settings.reducedMotionDesc" = "Minimize animations";
+"settings.autoSave"        = "Auto-Save";
+"settings.autoSaveDesc"    = "Save interval in seconds";
+"settings.chooseLanguage"  = "Choose Language";
+
+// MARK: - About
+"about.title"              = "About";
+"about.tagline"            = "Create. Animate. Annihilate.";
+"about.copyright"          = "© 2026 Willis NMB Designs\nNorth Myrtle Beach, SC";
+"about.app"                = "App";
+"about.version"            = "Version";
+"about.helpCenter"         = "Help Center";
+"about.support"            = "Support";
+"about.community"          = "Community";
+"about.bugs"               = "Bugs";
+"about.openSource"         = "Open Source";
+"about.followUs"           = "Follow Us";
+"about.privacyPolicy"      = "Privacy Policy";
+"about.termsOfService"     = "Terms of Service";
+
+// MARK: - Auth
+"auth.signIn"              = "Sign In";
+"auth.signUp"              = "Sign Up";
+"auth.signInWithApple"     = "Sign in with Apple";
+"auth.email"               = "Email";
+"auth.password"            = "Password";
+"auth.forgotPassword"      = "Forgot Password?";
+"auth.noAccount"           = "Don't have an account?";
+"auth.hasAccount"          = "Already have an account?";
+"auth.welcome"             = "Welcome to STICKDEATH ∞";
+
+// MARK: - Feed
+"feed.title"               = "Feed";
+"feed.trending"            = "Trending";
+"feed.latest"              = "Latest";
+"feed.following"           = "Following";
+"feed.forYou"              = "For You";
+"feed.like"                = "Like";
+"feed.comment"             = "Comment";
+"feed.share"               = "Share";
+"feed.report"              = "Report";
+
+// MARK: - Subscription
+"sub.free"                 = "Free";
+"sub.pro"                  = "Pro";
+"sub.proPrice"             = "$4.99/month";
+"sub.upgrade"              = "Upgrade to Pro";
+"sub.restore"              = "Restore Purchase";
+"sub.features"             = "Pro Features";
+"sub.unlimited"            = "Unlimited projects";
+"sub.noWatermark"          = "No watermark";
+"sub.hdExport"             = "HD export";
+"sub.prioritySupport"      = "Priority support";
+"sub.allBrushes"           = "All brushes & effects";
+
+// MARK: - Common
+"common.cancel"            = "Cancel";
+"common.done"              = "Done";
+"common.save"              = "Save";
+"common.delete"            = "Delete";
+"common.edit"              = "Edit";
+"common.share"             = "Share";
+"common.loading"           = "Loading...";
+"common.error"             = "Error";
+"common.retry"             = "Retry";
+"common.ok"                = "OK";
+"common.yes"               = "Yes";
+"common.no"                = "No";
+"common.search"            = "Search";
+"common.close"             = "Close";
+"common.back"              = "Back";
+"common.next"              = "Next";
+"common.continue"          = "Continue";
