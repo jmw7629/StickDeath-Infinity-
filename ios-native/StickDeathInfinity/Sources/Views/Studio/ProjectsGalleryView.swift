@@ -11,6 +11,8 @@ struct ProjectsGalleryView: View {
     @State private var loading = true
     @State private var showNewProject = false
     @State private var newTitle = ""
+    @State private var errorMessage: String?
+    @State private var showError = false
     @Environment(\.deviceContext) var ctx
 
     /// Adaptive columns: 2 on phone, 3 on iPad, 4 on Mac
@@ -103,6 +105,11 @@ struct ProjectsGalleryView: View {
             Button("Cancel", role: .cancel) { newTitle = "" }
         }
         .task { await loadProjects() }
+        .alert("Error", isPresented: $showError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "Something went wrong")
+        }
     }
 
     var emptyState: some View {
@@ -130,9 +137,31 @@ struct ProjectsGalleryView: View {
     func createProject() async {
         let title = newTitle.isEmpty ? "Untitled" : newTitle
         newTitle = ""
-        if let project = try? await ProjectService.shared.createProject(title: title) {
+
+        do {
+            let project = try await ProjectService.shared.createProject(title: title)
             projects.insert(project, at: 0)
             router.studioPath.append(StudioDestination.editor(project))
+        } catch {
+            // Create a local-only project so the user can still draw immediately
+            let localProject = StudioProject(
+                id: -Int.random(in: 1...999_999),
+                user_id: await AuthManager.shared.session?.user.id.uuidString ?? "local",
+                title: title,
+                description: nil,
+                canvas_width: 1920,
+                canvas_height: 1080,
+                fps: 24,
+                status: "draft",
+                created_at: nil,
+                updated_at: nil,
+                thumbnail_url: nil,
+                background_type: nil,
+                background_value: nil
+            )
+            projects.insert(localProject, at: 0)
+            router.studioPath.append(StudioDestination.editor(localProject))
+            print("⚠️ Created local project (server error: \(error.localizedDescription))")
         }
     }
 
