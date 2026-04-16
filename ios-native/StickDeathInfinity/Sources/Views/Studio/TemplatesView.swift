@@ -8,7 +8,7 @@ struct TemplatesView: View {
     @Environment(\.dismiss) var dismiss
     @Environment(\.deviceContext) var ctx
     @EnvironmentObject var auth: AuthManager
-    let onSelect: (AnimationTemplate) -> Void
+    var onSelect: (AnimationTemplate) -> Void = { _ in }
 
     @State private var selectedCategory = "All"
 

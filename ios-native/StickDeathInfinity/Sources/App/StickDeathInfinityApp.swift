@@ -27,7 +27,7 @@ struct StickDeathInfinityApp: App {
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }
-                .onChange(of: authManager.isAuthenticated) { _, isAuth in
+                .onChange(of: authManager.isLoggedIn) { _, isAuth in
                     Task {
                         if isAuth {
                             await realtime.subscribeAll()

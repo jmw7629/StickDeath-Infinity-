@@ -160,11 +160,11 @@ class RealtimeManager: ObservableObject {
     }
 
     // MARK: - Presence (who's online in a Studio project)
-    func trackPresence(projectId: String, username: String) async -> RealtimeChannelV2 {
+    func trackPresence(projectId: String, username: String) async throws -> RealtimeChannelV2 {
         let channel = supabase.realtimeV2.channel("presence:\(projectId)")
 
         await channel.subscribe()
-        await channel.track(["username": .string(username), "online_at": .string(ISO8601DateFormatter().string(from: Date()))])
+        try await channel.track(state: ["username": .string(username), "online_at": .string(ISO8601DateFormatter().string(from: Date()))])
 
         channels.append(channel)
         return channel
