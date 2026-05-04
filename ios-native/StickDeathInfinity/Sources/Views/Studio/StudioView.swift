@@ -1,7 +1,7 @@
 // StudioView.swift
-// Main animation studio — FlipaClip-inspired layout
-// v10: Scrollable top taskbar with Rig/Bone tool, IK-aware posing
-// Design refs: FlipaClip (tools left, timeline bottom) + Stick Nodes (rigging)
+// Main animation studio — pixel-perfect match to StickDeath Infinity reference design
+// Layout: Top bar → Canvas → Tool settings → Frame strip → Action bar
+// Plus floating toolbar, color picker, layer manager, settings overlays
 
 import SwiftUI
 import PhotosUI
@@ -10,782 +10,322 @@ struct StudioView: View {
     @StateObject var vm: EditorViewModel
     @EnvironmentObject var auth: AuthManager
     @Environment(\.dismiss) var dismiss
-    @Environment(\.horizontalSizeClass) var hSize
-    @State private var showPublishSheet = false
-    @State private var showTemplates = false
-    @State private var showExportOptions = false
-    @State private var showAssetBrowser = false
-    @State private var showLayersSheet = false
-    @State private var showPropertiesSheet = false
-    @State private var showMoreMenu = false
-    @State private var showQuickHelp = false
-    @State private var showToolKey = false
-    @State private var showUserGuide = false
-    @State private var lastDragTranslation: CGSize = .zero
 
-    var isWide: Bool { hSize == .regular }
+    // Panel state
+    @State private var activePanel: StudioPanel = .none
+    @State private var showPublishSheet = false
 
     var body: some View {
         ZStack {
             // Full-screen dark background
-            Color.black.ignoresSafeArea()
+            Color(hex: "0a0a0a").ignoresSafeArea()
 
-            // ── Canvas (takes ALL available space) ──
-            CanvasView(vm: vm)
-                .gesture(canvasGesture)
-                .ignoresSafeArea()
-
-            // ── Drawing overlay (when in draw mode) ──
-            if vm.mode == .draw {
-                DrawingOverlay(
-                    drawState: vm.drawState,
-                    canvasCenter: CGPoint(x: UIScreen.main.bounds.width / 2, y: UIScreen.main.bounds.height / 2),
-                    canvasScale: vm.canvasScale
-                )
-                .allowsHitTesting(false)
+            // ── Main Layout ──
+            VStack(spacing: 0) {
+                topBar
+                canvasArea
+                frameStrip
+                actionBar
             }
 
-            // ── Text input overlay (draw mode → text tool) ──
+            // ── Floating Toolbar (movable white pill) ──
+            FloatingToolbar(vm: vm, activePanel: $activePanel)
+
+            // ── Bottom Sheet Panels ──
+            if activePanel == .none && vm.mode == .draw {
+                ToolSettingsSheet(vm: vm)
+            }
+            if activePanel == .colorPicker {
+                StudioColorPicker(vm: vm)
+            }
+            if activePanel == .layers {
+                StudioLayerManager(vm: vm)
+            }
+            if activePanel == .settings {
+                StudioSettingsMenu(vm: vm, activePanel: $activePanel)
+            }
+
+            // ── Full-Screen Overlays ──
+            if activePanel == .audio {
+                StudioAudioTimeline(vm: vm, activePanel: $activePanel)
+            }
+            if activePanel == .soundLibrary {
+                StudioSoundLibrary(vm: vm, activePanel: $activePanel)
+            }
+            if activePanel == .export {
+                StudioExportPanel(vm: vm, activePanel: $activePanel)
+            }
+            if activePanel == .assetVault {
+                StudioAssetVault(vm: vm, activePanel: $activePanel)
+            }
+            if activePanel == .importVideo {
+                StudioImportVideo(vm: vm, activePanel: $activePanel)
+            }
+            if activePanel == .framesViewer {
+                StudioFramesViewer(vm: vm, activePanel: $activePanel)
+            }
+
+            // Text input overlay
             if vm.drawState.showTextInput {
                 textInputOverlay
             }
-
-            // ── Top Taskbar (scrollable slider — compact) ──
-            VStack(spacing: 0) {
-                topTaskbar
-                Spacer()
-            }
-
-            // ── Left Tool Strip ──
-            HStack(spacing: 0) {
-                leftToolStrip
-                Spacer()
-            }
-            .padding(.top, 52)
-
-            // ── Right Action Strip ──
-            HStack(spacing: 0) {
-                Spacer()
-                rightActionStrip
-            }
-            .padding(.top, 52)
-
-            // ── Bottom Timeline ──
-            VStack(spacing: 0) {
-                Spacer()
-                bottomTimeline
-            }
-
-            // ── Cursor mode: delete button ──
-            if vm.mode == .cursor && (vm.selectedImageId != nil || vm.selectedPlacedObjectId != nil) {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button {
-                            vm.deleteSelected()
-                            HapticManager.shared.buttonTap()
-                        } label: {
-                            Image(systemName: "trash.fill")
-                                .font(.system(size: 16))
-                                .foregroundStyle(.white)
-                                .frame(width: 44, height: 44)
-                                .background(Color.red)
-                                .clipShape(Circle())
-                                .shadow(color: .red.opacity(0.5), radius: 8)
-                        }
-                        .padding(.trailing, 60)
-                        .padding(.bottom, 80)
-                    }
-                }
-            }
-
-            // ── Watermark (non-Pro users) ──
-            if !auth.isPro {
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        WatermarkPreview()
-                            .padding(.trailing, 12)
-                            .padding(.bottom, 68)
-                    }
-                }
-                .allowsHitTesting(false)
-            }
-
-            // ── AI Panel overlay ──
-            if vm.showAIPanel {
-                AIAssistPanel(vm: vm)
-            }
-
-            // ── Quick Help overlay ──
-            if showQuickHelp {
-                QuickHelpOverlay(isShowing: $showQuickHelp)
-            }
-
-            // ── Saving indicator ──
-            if vm.isSaving {
-                VStack {
-                    HStack {
-                        Spacer()
-                        Label("Saving…", systemImage: "icloud.and.arrow.up")
-                            .font(.caption2)
-                            .padding(6)
-                            .background(.ultraThinMaterial)
-                            .clipShape(Capsule())
-                            .padding(.top, 50)
-                            .padding(.trailing, 56)
-                    }
-                    Spacer()
-                }
-            }
         }
-        .animation(.spring(response: 0.3), value: vm.mode)
-        .animation(.spring(response: 0.3), value: vm.showTimeline)
-        .navigationBarHidden(true)
+        .sheet(isPresented: $showPublishSheet) {
+            PublishSheet(vm: vm)
+        }
         .statusBarHidden(true)
-        .sheet(isPresented: $showPublishSheet) { PublishSheet(vm: vm) }
-        .sheet(isPresented: $showTemplates) { TemplatesView { vm.applyTemplate($0) } }
-        .sheet(isPresented: $showExportOptions) { ExportOptionsSheet(vm: vm) }
-        .sheet(isPresented: $showAssetBrowser) {
-            AssetBrowserView(
-                onObjectSelected: { asset in vm.addPlacedObject(asset: asset) },
-                onSoundSelected: { asset in vm.addSoundClip(asset: asset) }
-            )
-        }
-        .sheet(isPresented: $showLayersSheet) {
-            LayersSheet(vm: vm)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showPropertiesSheet) {
-            PropertiesSheet(vm: vm)
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $vm.showProjectSettings) {
-            ProjectSettingsView(vm: vm)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $vm.showFramesViewer) {
-            FramesGridView(vm: vm)
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showToolKey) {
-            StudioToolKey()
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .sheet(isPresented: $showUserGuide) {
-            StudioUserGuide()
-                .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-        }
-        .photosPicker(isPresented: $vm.showImagePicker, selection: $vm.importedPhotoItem, matching: .images)
-        .onChange(of: vm.importedPhotoItem) { newItem in
-            Task { await vm.processPhotoPicker(item: newItem) }
-        }
-        .task { await vm.loadProject() }
-        .onDisappear { Task { await vm.saveProject() } }
     }
 
-    // MARK: - Canvas Gesture (mode-dependent)
-    var canvasGesture: some Gesture {
-        switch vm.mode {
-        case .move:
-            return AnyGesture(moveGesture.map { _ in () })
-        case .draw:
-            return AnyGesture(drawGesture.map { _ in () })
-        case .cursor:
-            return AnyGesture(cursorGesture.map { _ in () })
-        case .rig:
-            return AnyGesture(rigGesture.map { _ in () })
-        case .pose:
-            return AnyGesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { _ in }
-                    .map { _ in () }
-            )
-        }
-    }
-
-    // Pan + zoom for move mode
-    var moveGesture: some Gesture {
-        MagnificationGesture()
-            .simultaneously(with: DragGesture())
-            .onChanged { value in
-                if let scale = value.first { vm.canvasScale = max(0.3, min(5.0, scale)) }
-                if let drag = value.second { vm.canvasOffset = drag.translation }
-            }
-    }
-
-    // Drawing gesture
-    var drawGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { drag in
-                if vm.drawState.currentPath.isEmpty {
-                    vm.handleDrawingBegan(at: drag.startLocation)
-                }
-                vm.handleDrawingMoved(to: drag.location)
-            }
-            .onEnded { drag in
-                vm.handleDrawingEnded(at: drag.location)
-            }
-    }
-
-    // Cursor gesture
-    var cursorGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { drag in
-                let dist = hypot(drag.translation.width, drag.translation.height)
-                if dist > 4 {
-                    let delta = CGSize(
-                        width: drag.translation.width - lastDragTranslation.width,
-                        height: drag.translation.height - lastDragTranslation.height
-                    )
-                    vm.handleCursorDrag(translation: delta)
-                    lastDragTranslation = drag.translation
-                }
-            }
-            .onEnded { drag in
-                let dist = hypot(drag.translation.width, drag.translation.height)
-                if dist <= 4 {
-                    vm.handleCursorTap(at: drag.startLocation)
-                } else {
-                    vm.pushUndo()
-                }
-                lastDragTranslation = .zero
-            }
-    }
-
-    // Rig gesture — IK-aware dragging, bone creation, selection
-    var rigGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { drag in
-                let dist = hypot(drag.translation.width, drag.translation.height)
-                if dist > 4 {
-                    if lastDragTranslation == .zero {
-                        vm.handleRigDragBegan(at: drag.startLocation)
-                    }
-                    vm.handleRigDragMoved(to: drag.location)
-                    lastDragTranslation = drag.translation
-                }
-            }
-            .onEnded { drag in
-                let dist = hypot(drag.translation.width, drag.translation.height)
-                if dist <= 4 {
-                    vm.handleRigTap(at: drag.startLocation)
-                } else {
-                    vm.handleRigDragEnded(at: drag.location)
-                }
-                lastDragTranslation = .zero
-            }
-    }
-
-    // MARK: - Text Input Overlay
-    var textInputOverlay: some View {
-        VStack {
-            Spacer()
-            HStack(spacing: 8) {
-                TextField("Type text…", text: $vm.drawState.textInput)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.body)
-                Button("Add") {
-                    vm.commitTextElement(vm.drawState.textInput)
-                    HapticManager.shared.buttonTap()
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                Button("Cancel") {
-                    vm.drawState.showTextInput = false
-                    vm.drawState.textInput = ""
-                }
-                .foregroundStyle(.gray)
-            }
-            .padding()
-            .background(.ultraThinMaterial)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .padding(.horizontal)
-            .padding(.bottom, 70)
-        }
-    }
-
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // MARK: - TOP TASKBAR (SCROLLABLE SLIDER)
-    // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    var topTaskbar: some View {
-        HStack(spacing: 0) {
-            // ── Fixed left: Back ──
+    // MARK: - Top Bar
+    var topBar: some View {
+        HStack(spacing: 8) {
             Button { dismiss() } label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .frame(width: 36, height: 36)
+            }
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(vm.project.title)
+                    .font(.system(size: 15, weight: .bold))
                     .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-            }
-            .padding(.leading, 6)
-
-            // ── Project name ──
-            Button { vm.showProjectSettings = true } label: {
-                HStack(spacing: 3) {
-                    Text(vm.project.title)
-                        .font(.caption.bold())
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 7))
-                        .foregroundStyle(.gray)
-                }
-            }
-            .frame(maxWidth: 80)
-
-            // ── Scrollable tool strip (THE SLIDER) ──
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 3) {
-                    // Divider dot
-                    toolDivider
-
-                    // Creative modes
-                    taskbarTool(.pose, icon: "figure.stand", label: "Pose")
-                    taskbarTool(.move, icon: "hand.draw", label: "Move")
-                    taskbarTool(.draw, icon: "pencil.tip", label: "Draw")
-                    taskbarTool(.cursor, icon: "cursorarrow", label: "Select")
-                    taskbarTool(.rig, icon: "figure.stand.line.dotted.figure.stand", label: "Rig")
-
-                    toolDivider
-
-                    // Undo / Redo
-                    taskbarAction(icon: "arrow.uturn.backward", label: "Undo",
-                                  disabled: vm.undoStack.isEmpty) { vm.undo() }
-                    taskbarAction(icon: "arrow.uturn.forward", label: "Redo",
-                                  disabled: vm.redoStack.isEmpty) { vm.redo() }
-
-                    toolDivider
-
-                    // Play
-                    taskbarAction(icon: vm.isPlaying ? "pause.fill" : "play.fill",
-                                  label: vm.isPlaying ? "Pause" : "Play",
-                                  tint: .red) { vm.togglePlay() }
-
-                    toolDivider
-
-                    // Canvas tools
-                    taskbarToggle(icon: "circle.dotted", label: "Onion", active: vm.showOnionSkin) {
-                        vm.showOnionSkin.toggle()
-                    }
-                    taskbarToggle(icon: "grid", label: "Grid", active: vm.showGrid) {
-                        vm.showGrid.toggle()
-                    }
-
-                    // Rig bone overlay toggle (quick access in toolbar)
-                    if vm.mode == .rig {
-                        taskbarToggle(icon: vm.showBoneOverlay ? "eye.fill" : "eye.slash",
-                                      label: "Bones", active: vm.showBoneOverlay, tint: .green) {
-                            vm.toggleBoneVisibility()
-                        }
-                    }
-
-                    toolDivider
-
-                    // Import / Assets
-                    taskbarAction(icon: "photo.badge.plus", label: "Photo", tint: .green) {
-                        vm.showImagePicker = true
-                    }
-                    taskbarAction(icon: "cube.fill", label: "Assets", tint: .mint) {
-                        showAssetBrowser = true
-                    }
-
-                    if auth.isPro {
-                        taskbarAction(icon: "sparkles", label: "AI", tint: .purple) {
-                            vm.showAIPanel.toggle()
-                        }
-                    }
-
-                    taskbarAction(icon: "rectangle.split.3x3", label: "Frames") {
-                        vm.showFramesViewer = true
-                    }
-                    taskbarAction(icon: "square.3.layers.3d", label: "Layers") {
-                        showLayersSheet = true
-                    }
-                    taskbarAction(icon: "square.and.arrow.down", label: "Export") {
-                        showExportOptions = true
-                    }
-                    taskbarAction(icon: "book.fill", label: "Guide") {
-                        showUserGuide = true
-                    }
-                    taskbarAction(icon: "key.fill", label: "Key") {
-                        showToolKey = true
-                    }
-                }
-                .padding(.horizontal, 4)
-            }
-
-            // ── Fixed right: Publish ──
-            Button { showPublishSheet = true } label: {
-                Image(systemName: "paperplane.fill")
+                    .lineLimit(1)
+                Text("\(vm.project.fps ?? 12) FPS · \(vm.frames.count) frames · \(currentLayerCount) layers")
                     .font(.system(size: 12))
-                    .foregroundStyle(.black)
-                    .frame(width: 30, height: 30)
-                    .background(Color.red)
-                    .clipShape(Circle())
+                    .foregroundStyle(.white.opacity(0.35))
             }
-            .padding(.trailing, 8)
-        }
-        .frame(height: 46)
-        .background(
-            LinearGradient(colors: [.black.opacity(0.9), .black.opacity(0.6), .clear],
-                          startPoint: .top, endPoint: .bottom)
-                .ignoresSafeArea(edges: .top)
-        )
-    }
 
-    // Taskbar tool button (mode selector)
-    func taskbarTool(_ mode: EditorMode, icon: String, label: String) -> some View {
-        Button {
-            vm.mode = mode
-            if mode != .cursor { vm.clearSelection() }
-            HapticManager.shared.buttonTap()
-        } label: {
-            VStack(spacing: 1) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: vm.mode == mode ? .bold : .medium))
-                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.7))
-                Text(label)
-                    .font(.system(size: 7, weight: .medium))
-                    .foregroundStyle(vm.mode == mode ? .red : .white.opacity(0.4))
-            }
-            .frame(width: 38, height: 38)
-            .background(vm.mode == mode ? Color.red.opacity(0.2) : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    // Taskbar action button
-    func taskbarAction(icon: String, label: String, disabled: Bool = false, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 1) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(disabled ? .gray.opacity(0.3) : tint.opacity(0.8))
-                Text(label)
-                    .font(.system(size: 7))
-                    .foregroundStyle(disabled ? .gray.opacity(0.2) : .white.opacity(0.4))
-            }
-            .frame(width: 36, height: 38)
-        }
-        .disabled(disabled)
-    }
-
-    // Taskbar toggle button
-    func taskbarToggle(icon: String, label: String, active: Bool, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 1) {
-                Image(systemName: icon)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(active ? tint : .white.opacity(0.4))
-                Text(label)
-                    .font(.system(size: 7))
-                    .foregroundStyle(active ? tint.opacity(0.7) : .white.opacity(0.3))
-            }
-            .frame(width: 36, height: 38)
-            .background(active ? tint.opacity(0.1) : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    // Small visual divider between tool groups
-    var toolDivider: some View {
-        RoundedRectangle(cornerRadius: 1)
-            .fill(.white.opacity(0.12))
-            .frame(width: 1, height: 24)
-            .padding(.horizontal, 2)
-    }
-
-    // MARK: - Left Tool Strip (contextual sub-tools)
-    var leftToolStrip: some View {
-        VStack(spacing: 6) {
-            // Mode-specific sub-tools
-            switch vm.mode {
-            case .draw:
-                drawingSubTools
-            case .rig:
-                RigToolPanel(vm: vm)
-            default:
-                // Minimal: figure selector
-                if vm.figures.count > 1 {
-                    figureSelector
-                }
-            }
             Spacer()
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.3), radius: 8)
-        )
-        .padding(.leading, 8)
-        .frame(maxWidth: 52)
-    }
 
-    // Drawing sub-tools (pencil, line, rect, circle, etc.)
-    var drawingSubTools: some View {
-        VStack(spacing: 4) {
-            ScrollView(.vertical, showsIndicators: false) {
-                VStack(spacing: 4) {
-                    ForEach(DrawingTool.allCases, id: \.self) { tool in
-                        drawToolButton(tool)
-                    }
-                }
-            }
-            .frame(maxHeight: 220)
-
-            Divider().frame(width: 28).background(Color.white.opacity(0.2))
-
-            ColorPicker("", selection: $vm.drawState.strokeColor, supportsOpacity: true)
-                .labelsHidden()
-                .frame(width: 30, height: 30)
-
-            Button { vm.showBrushSizePopover.toggle() } label: {
-                ZStack {
-                    Circle().stroke(.white.opacity(0.3), lineWidth: 1).frame(width: 30, height: 30)
-                    Circle()
-                        .fill(vm.drawState.strokeColor)
-                        .frame(width: min(22, max(4, vm.drawState.strokeWidth * 2)),
-                               height: min(22, max(4, vm.drawState.strokeWidth * 2)))
-                }
-            }
-            .popover(isPresented: $vm.showBrushSizePopover) {
-                BrushSizePopover(drawState: vm.drawState)
+            Button { activePanel = .export } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(Color(hex: "E03030"))
+                    .frame(width: 36, height: 36)
             }
 
-            Button { vm.undoLastDrawnElement(); HapticManager.shared.buttonTap() } label: {
-                Image(systemName: "arrow.uturn.backward.circle")
-                    .font(.system(size: 14))
+            Button { activePanel = activePanel == .settings ? .none : .settings } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: 30, height: 30)
-            }
-            .disabled(vm.frames[safe: vm.currentFrameIndex]?.drawnElements.isEmpty ?? true)
-
-            Button { vm.clearDrawnElements(); HapticManager.shared.buttonTap() } label: {
-                Image(systemName: "trash.circle")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.red.opacity(0.6))
-                    .frame(width: 30, height: 30)
+                    .frame(width: 36, height: 36)
             }
         }
-    }
-
-    // Figure selector (when multiple figures)
-    var figureSelector: some View {
-        VStack(spacing: 4) {
-            ForEach(vm.figures) { fig in
-                Button {
-                    vm.selectedFigureId = fig.id
-                } label: {
-                    Circle()
-                        .fill(fig.color.color.opacity(vm.selectedFigureId == fig.id ? 1 : 0.4))
-                        .frame(width: 24, height: 24)
-                        .overlay(
-                            Circle().stroke(.red, lineWidth: vm.selectedFigureId == fig.id ? 2 : 0)
-                        )
-                }
-            }
-        }
-    }
-
-    // MARK: - Right Action Strip (slim — most tools moved to taskbar)
-    var rightActionStrip: some View {
-        VStack(spacing: 6) {
-            // Settings
-            actionButton(icon: "slider.horizontal.3", label: "Settings") {
-                vm.showProjectSettings = true
-            }
-
-            // Add figure
-            actionButton(icon: "person.badge.plus", label: "Figure", tint: .cyan) {
-                vm.addFigure()
-            }
-
-            // Templates
-            actionButton(icon: "square.on.square.dashed", label: "Tmpl", tint: .cyan) {
-                showTemplates = true
-            }
-
-            // More
-            Menu {
-                Button { showExportOptions = true } label: {
-                    Label("Export Video", systemImage: "square.and.arrow.down")
-                }
-                Button { showTemplates = true } label: {
-                    Label("Templates", systemImage: "square.on.square.dashed")
-                }
-
-                Divider()
-
-                Button { showToolKey = true } label: {
-                    Label("Tool Key", systemImage: "key.fill")
-                }
-                Button { showUserGuide = true } label: {
-                    Label("User Guide", systemImage: "book.fill")
-                }
-                Button { showQuickHelp = true } label: {
-                    Label("Quick Reference", systemImage: "questionmark.circle")
-                }
-            } label: {
-                VStack(spacing: 2) {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .frame(width: 36, height: 36)
-                        .background(.white.opacity(0.08))
-                        .clipShape(Circle())
-                    Text("More").font(.system(size: 8)).foregroundStyle(.white.opacity(0.5))
-                }
-            }
-
-            Spacer()
-        }
+        .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .padding(.horizontal, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 14)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.3), radius: 8)
-        )
-        .padding(.trailing, 8)
+        .background(Color(hex: "111111"))
     }
 
-    // MARK: - Bottom Timeline
-    var bottomTimeline: some View {
-        VStack(spacing: 0) {
-            if !vm.soundClips.isEmpty {
-                SoundTimelineStrip(vm: vm)
-                    .frame(height: 28)
+    // MARK: - Canvas
+    var canvasArea: some View {
+        GeometryReader { geo in
+            ZStack {
+                // Dark margins
+                Color(hex: "0a0a0a")
+
+                // White canvas
+                CanvasView(vm: vm)
+                    .background(.white)
+                    .frame(
+                        width: geo.size.width * 0.76,
+                        height: geo.size.height
+                    )
+                    .clipShape(Rectangle())
+                    .shadow(color: .black.opacity(0.15), radius: 15)
+                    .gesture(canvasGesture)
+            }
+        }
+    }
+
+    // MARK: - Frame Strip
+    var frameStrip: some View {
+        HStack(spacing: 8) {
+            // Nav + play
+            Button { vm.currentFrameIndex = max(0, vm.currentFrameIndex - 1) } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(width: 28, height: 28)
             }
 
-            HStack(spacing: 0) {
-                Button { vm.showFramesViewer = true } label: {
-                    Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .frame(width: 40)
-                }
+            Button { vm.isPlaying.toggle() } label: {
+                Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(Circle().fill(Color(hex: "222222")))
+            }
 
-                ScrollViewReader { proxy in
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 4) {
-                            ForEach(Array(vm.frames.enumerated()), id: \.element.id) { idx, frame in
-                                FrameThumb(
-                                    index: idx,
-                                    isSelected: idx == vm.currentFrameIndex,
-                                    figureCount: vm.figures.count,
-                                    hasDrawing: !frame.drawnElements.isEmpty,
-                                    hasImages: !frame.importedImages.isEmpty
-                                )
-                                .id(idx)
-                                .onTapGesture { vm.goToFrame(idx) }
-                                .contextMenu {
-                                    Button {
-                                        vm.currentFrameIndex = idx
-                                        vm.duplicateFrame()
-                                    } label: {
-                                        Label("Duplicate", systemImage: "doc.on.doc")
-                                    }
-                                    if vm.frames.count > 1 {
-                                        Button(role: .destructive) {
-                                            vm.currentFrameIndex = idx
-                                            vm.deleteFrame()
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                }
+            Button { vm.currentFrameIndex = min(vm.frames.count - 1, vm.currentFrameIndex + 1) } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.4))
+                    .frame(width: 28, height: 28)
+            }
+
+            // Separator
+            Rectangle()
+                .fill(.white.opacity(0.1))
+                .frame(width: 1, height: 28)
+                .padding(.horizontal, 2)
+
+            // Frame thumbnails
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(Array(vm.frames.enumerated()), id: \.offset) { index, _ in
+                        Button {
+                            vm.currentFrameIndex = index
+                        } label: {
+                            VStack(spacing: 0) {
+                                Rectangle()
+                                    .fill(.white)
+                                    .frame(width: 40, height: 28)
+                                Rectangle()
+                                    .fill(index == vm.currentFrameIndex ? Color(hex: "E03030") : .white.opacity(0.15))
+                                    .frame(width: 40, height: 10)
+                                    .overlay(
+                                        Text("\(index + 1)")
+                                            .font(.system(size: 7, weight: .bold))
+                                            .foregroundStyle(index == vm.currentFrameIndex ? .white : Color(hex: "666666"))
+                                    )
                             }
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(index == vm.currentFrameIndex ? Color(hex: "E03030") : .white.opacity(0.1), lineWidth: 2)
+                            )
                         }
-                        .padding(.horizontal, 4)
-                    }
-                    .onChange(of: vm.currentFrameIndex) { newVal in
-                        withAnimation { proxy.scrollTo(newVal, anchor: .center) }
                     }
                 }
-
-                Button {
-                    vm.addFrame()
-                    HapticManager.shared.buttonTap()
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.red)
-                        .frame(width: 36, height: 36)
-                        .background(Color.red.opacity(0.15))
-                        .clipShape(Circle())
-                }
-                .padding(.trailing, 8)
             }
-            .frame(height: 48)
-            .background(.ultraThinMaterial)
+
+            // Add frame
+            Button { vm.addFrame() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.3))
+                    .frame(width: 28, height: 28)
+            }
+
+            // Counter
+            Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(.white.opacity(0.4))
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 56)
+        .background(Color(hex: "111111"))
+        .overlay(alignment: .top) {
+            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+        }
+    }
+
+    // MARK: - Action Bar
+    var actionBar: some View {
+        HStack(spacing: 0) {
+            actionBarItem(icon: "music.note", label: "AUDIO") { activePanel = .audio }
+            actionBarItem(icon: "arrow.uturn.backward", label: "UNDO") { vm.undo() }
+            actionBarItem(icon: "arrow.uturn.forward", label: "REDO") { vm.redo() }
+            actionBarItem(icon: "doc.on.doc", label: "COPY") { /* copy */ }
+            actionBarItem(icon: "doc.on.clipboard", label: "PASTE") { /* paste */ }
+            actionBarItem(icon: "square.3.layers.3d", label: "LAYER", badge: currentLayerCount) {
+                activePanel = activePanel == .layers ? .none : .layers
+            }
+        }
+        .frame(height: 56)
+        .background(Color(hex: "111111"))
+        .overlay(alignment: .top) {
+            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+        }
+    }
+
+    func actionBarItem(icon: String, label: String, badge: Int? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 18))
+                        .foregroundStyle(.white.opacity(0.6))
+                    if let badge = badge {
+                        Text("\(badge)")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 12, minHeight: 12)
+                            .background(Circle().fill(Color(hex: "E03030")))
+                            .offset(x: 6, y: -4)
+                    }
+                }
+                Text(label)
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+            .frame(maxWidth: .infinity)
         }
     }
 
     // MARK: - Helpers
-
-    func drawToolButton(_ tool: DrawingTool) -> some View {
-        Button { vm.drawState.tool = tool } label: {
-            Image(systemName: tool.icon)
-                .font(.system(size: 13))
-                .foregroundStyle(vm.drawState.tool == tool ? .red : .white.opacity(0.6))
-                .frame(width: 30, height: 30)
-                .background(vm.drawState.tool == tool ? Color.red.opacity(0.2) : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
+    var currentLayerCount: Int {
+        guard vm.currentFrameIndex < vm.frames.count else { return 1 }
+        return max(1, vm.frames[vm.currentFrameIndex].drawnElements.isEmpty ? 1 : 1) // Simplified - 1 layer per frame in current model
     }
 
-    func actionButton(icon: String, label: String, active: Bool = false, tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(active ? tint : .white.opacity(0.7))
-                    .frame(width: 36, height: 36)
-                    .background(active ? tint.opacity(0.2) : .white.opacity(0.08))
-                    .clipShape(Circle())
-                Text(label)
-                    .font(.system(size: 8))
-                    .foregroundStyle(active ? tint : .white.opacity(0.5))
+    var canvasGesture: some Gesture {
+        SimultaneousGesture(
+            MagnificationGesture()
+                .onChanged { scale in
+                    vm.canvasScale = max(0.3, min(5.0, scale))
+                },
+            DragGesture()
+                .onChanged { value in
+                    if vm.mode != .draw {
+                        vm.canvasOffset = value.translation
+                    }
+                }
+        )
+    }
+
+    var textInputOverlay: some View {
+        VStack {
+            Spacer()
+            HStack {
+                TextField("Enter text", text: $vm.drawState.textInput)
+                    .font(.custom("SpecialElite-Regular", size: 18))
+                    .textFieldStyle(.plain)
+                    .padding(12)
+                    .background(.ultraThinMaterial)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .frame(maxWidth: 300)
+
+                Button("Done") {
+                    vm.commitTextElement(vm.drawState.textInput)
+                    vm.drawState.showTextInput = false
+                }
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Color(hex: "E03030"))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
             }
+            .padding()
+            Spacer()
         }
+        .background(.black.opacity(0.5))
     }
 }
 
-// MARK: - Frame Thumbnail (compact)
-struct FrameThumb: View {
-    let index: Int
-    let isSelected: Bool
-    let figureCount: Int
-    var hasDrawing: Bool = false
-    var hasImages: Bool = false
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(isSelected ? Color.red.opacity(0.3) : Color.white.opacity(0.08))
-                .frame(width: 36, height: 36)
-            RoundedRectangle(cornerRadius: 4)
-                .stroke(isSelected ? Color.red : Color.clear, lineWidth: 1.5)
-                .frame(width: 36, height: 36)
-            VStack(spacing: 1) {
-                Text("\(index + 1)")
-                    .font(.system(size: 10, weight: isSelected ? .bold : .regular, design: .monospaced))
-                    .foregroundStyle(isSelected ? .red : .white.opacity(0.6))
-                HStack(spacing: 2) {
-                    if hasDrawing { Circle().fill(Color.orange).frame(width: 4, height: 4) }
-                    if hasImages { Circle().fill(Color.green).frame(width: 4, height: 4) }
-                }
-            }
-        }
-    }
+// MARK: - Panel Enum
+enum StudioPanel {
+    case none
+    case colorPicker
+    case audio
+    case soundLibrary
+    case layers
+    case export
+    case settings
+    case framesViewer
+    case assetVault
+    case importVideo
 }

@@ -77,6 +77,26 @@
 		A2806E1C74D3286A73264DBF /* StudioToolKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26407EBAA053256BF2D77FB1; };
 		B7EC05909553CC6D66445875 /* StudioUserGuide.swift in Sources */ = {isa = PBXBuildFile; fileRef = 973F7DD8381BAE9F694593A7; };
 		513E54BDD43E3CAA10DC78F3 /* StudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAE57C8194340B9B10037A11; };
+				C3D26CF3B120AB8E5646F8BF /* FloatingToolbar.swift in Sources */,
+				4FF027FEC10AD7ED32E49CC5 /* ToolSettingsSheet.swift in Sources */,
+				41A798A506AB1310147713C5 /* StudioAudioTimeline.swift in Sources */,
+				5656DC41D9A144BCDC8F53FC /* StudioSoundLibrary.swift in Sources */,
+				C4E147216CC6C6B3936741E8 /* StudioLayerManager.swift in Sources */,
+				EB6C3F4839AFF3E1467E4013 /* StudioExportPanel.swift in Sources */,
+				0E9C9C20B13E53AE76B82263 /* StudioSettingsMenu.swift in Sources */,
+				C7194DEF86C87489ABC74AFC /* StudioAssetVault.swift in Sources */,
+				B7B750FEB51EC32AEFA390F2 /* StudioImportVideo.swift in Sources */,
+				FFBF1588EF3CE438BB476562 /* StudioFramesViewer.swift in Sources */,
+		C3D26CF3B120AB8E5646F8BF /* FloatingToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A1264F9E618B8AEFD5DFB70; };
+		4FF027FEC10AD7ED32E49CC5 /* ToolSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8433846A638BE0A38A4167E; };
+		41A798A506AB1310147713C5 /* StudioAudioTimeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3028A34A24CC41725EBB74C; };
+		5656DC41D9A144BCDC8F53FC /* StudioSoundLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA441619E77B712D24E8AF5B; };
+		C4E147216CC6C6B3936741E8 /* StudioLayerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A170727BF131C475C2626E1B; };
+		EB6C3F4839AFF3E1467E4013 /* StudioExportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09B985523EFBE0095120E029; };
+		0E9C9C20B13E53AE76B82263 /* StudioSettingsMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = E63E6D633074E3FB1F03D48B; };
+		C7194DEF86C87489ABC74AFC /* StudioAssetVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = FACCC49828E96AB4B4FCB800; };
+		B7B750FEB51EC32AEFA390F2 /* StudioImportVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = F303E11FCD24AC67018ADA4F; };
+		FFBF1588EF3CE438BB476562 /* StudioFramesViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01A8C053FB92918404993C9F; };
 		9FAA2A79524048F317340206 /* TemplatesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13C0B4488E888DD72D0A700E; };
 		368557365C1BEF620E9B2F14 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E0CAC79A41E16C91B8D9419; };
 		92B86C870C36C12F12F53A0E /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 106DDC5E3884629131F462D6; };
@@ -157,6 +177,16 @@
 		26407EBAA053256BF2D77FB1 /* StudioToolKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioToolKey.swift; sourceTree = "<group>"; };
 		973F7DD8381BAE9F694593A7 /* StudioUserGuide.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioUserGuide.swift; sourceTree = "<group>"; };
 		EAE57C8194340B9B10037A11 /* StudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioView.swift; sourceTree = "<group>"; };
+		2A1264F9E618B8AEFD5DFB70 /* FloatingToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingToolbar.swift; sourceTree = "<group>"; };
+		D8433846A638BE0A38A4167E /* ToolSettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ToolSettingsSheet.swift; sourceTree = "<group>"; };
+		E3028A34A24CC41725EBB74C /* StudioAudioTimeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioAudioTimeline.swift; sourceTree = "<group>"; };
+		EA441619E77B712D24E8AF5B /* StudioSoundLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSoundLibrary.swift; sourceTree = "<group>"; };
+		A170727BF131C475C2626E1B /* StudioLayerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioLayerManager.swift; sourceTree = "<group>"; };
+		09B985523EFBE0095120E029 /* StudioExportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioExportPanel.swift; sourceTree = "<group>"; };
+		E63E6D633074E3FB1F03D48B /* StudioSettingsMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSettingsMenu.swift; sourceTree = "<group>"; };
+		FACCC49828E96AB4B4FCB800 /* StudioAssetVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioAssetVault.swift; sourceTree = "<group>"; };
+		F303E11FCD24AC67018ADA4F /* StudioImportVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioImportVideo.swift; sourceTree = "<group>"; };
+		01A8C053FB92918404993C9F /* StudioFramesViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioFramesViewer.swift; sourceTree = "<group>"; };
 		13C0B4488E888DD72D0A700E /* TemplatesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TemplatesView.swift; sourceTree = "<group>"; };
 		6E0CAC79A41E16C91B8D9419 /* TimelinePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TimelinePanel.swift; sourceTree = "<group>"; };
 		BB4707C0C118BBB8614037E3 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = file; path = README.md; sourceTree = "<group>"; };
@@ -371,6 +401,16 @@
 				26407EBAA053256BF2D77FB1 /* StudioToolKey.swift */,
 				973F7DD8381BAE9F694593A7 /* StudioUserGuide.swift */,
 				EAE57C8194340B9B10037A11 /* StudioView.swift */,
+				2A1264F9E618B8AEFD5DFB70 /* FloatingToolbar.swift */,
+				D8433846A638BE0A38A4167E /* ToolSettingsSheet.swift */,
+				E3028A34A24CC41725EBB74C /* StudioAudioTimeline.swift */,
+				EA441619E77B712D24E8AF5B /* StudioSoundLibrary.swift */,
+				A170727BF131C475C2626E1B /* StudioLayerManager.swift */,
+				09B985523EFBE0095120E029 /* StudioExportPanel.swift */,
+				E63E6D633074E3FB1F03D48B /* StudioSettingsMenu.swift */,
+				FACCC49828E96AB4B4FCB800 /* StudioAssetVault.swift */,
+				F303E11FCD24AC67018ADA4F /* StudioImportVideo.swift */,
+				01A8C053FB92918404993C9F /* StudioFramesViewer.swift */,
 				13C0B4488E888DD72D0A700E /* TemplatesView.swift */,
 				6E0CAC79A41E16C91B8D9419 /* TimelinePanel.swift */,
 			);
