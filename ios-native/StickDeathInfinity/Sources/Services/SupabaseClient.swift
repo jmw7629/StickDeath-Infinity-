@@ -9,6 +9,10 @@ enum AppConfig {
     static let supabaseURL = URL(string: "https://iohubnamsqnzyburydxr.supabase.co")!
     static let supabaseAnonKey = "sb_publishable_wYHTtPsLEEXP9tFuzoeRQw_j6UuoJWl"
     
+    // ── Google Sign-In (OAuth client ID from Google Cloud Console) ──
+    // Replace with your actual iOS client ID from Google Cloud Console
+    static let googleClientID = "YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com"
+    
     // ── Stripe (publishable key only — safe in client) ──
     static let stripePublishableKey = "pk_test_51SsnuxFLiSxiZ8KHvW6Rv8LOCjMUQ9eZdeGqFq8b8v4p2IpQcBWNX6Pz1uK7HGXVWoG6IIcXTlU4nIMaIBMzSPOt00gR6XxiKZ"
     

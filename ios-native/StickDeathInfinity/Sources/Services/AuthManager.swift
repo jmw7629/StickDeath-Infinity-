@@ -1,12 +1,13 @@
 // AuthManager.swift
 // Handles all authentication — sign up, login, logout, session management
-// v5: + Apple Sign-In via ASAuthorizationController + 3-second splash timeout
+// v6: + Apple Sign-In + Google Sign-In via GoogleSignIn SDK
 
 import Foundation
 import SwiftUI
 import Supabase
 import AuthenticationServices
 import CryptoKit
+import GoogleSignIn
 
 @MainActor
 class AuthManager: ObservableObject {
@@ -124,6 +125,37 @@ class AuthManager: ObservableObject {
 
     /// Return the raw nonce for Supabase verification
     var rawNonce: String? { currentNonce }
+
+    // MARK: - Sign In with Google
+    func signInWithGoogle() async throws {
+        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+              let rootVC = scene.windows.first?.rootViewController else {
+            throw NSError(domain: "GoogleSignIn", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "No root view controller found"])
+        }
+
+        // Configure Google Sign-In client ID
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: AppConfig.googleClientID)
+
+        // Present Google Sign-In flow
+        let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: rootVC)
+
+        guard let idToken = result.user.idToken?.tokenString else {
+            throw NSError(domain: "GoogleSignIn", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "Missing Google ID token"])
+        }
+
+        // Use the Google ID token + access token to sign in with Supabase
+        session = try await supabase.auth.signInWithIdToken(
+            credentials: .init(
+                provider: .google,
+                idToken: idToken,
+                accessToken: result.user.accessToken.tokenString
+            )
+        )
+        isLoggedIn = true
+        await fetchProfile()
+    }
 
     private func randomNonceString(length: Int = 32) -> String {
         let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")

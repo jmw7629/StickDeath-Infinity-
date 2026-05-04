@@ -1,5 +1,5 @@
 // LoginView.swift
-// v2: + Sign In with Apple button
+// v3: Apple Sign-In + Google Sign-In buttons
 
 import SwiftUI
 import AuthenticationServices
@@ -12,7 +12,6 @@ struct LoginView: View {
     @State private var password = ""
     @State private var error: String?
     @State private var loading = false
-    @State private var appleSignInCoordinator = AppleSignInCoordinator()
 
     var body: some View {
         NavigationStack {
@@ -31,17 +30,38 @@ struct LoginView: View {
                         }
                         .padding(.top, 40)
 
-                        // Sign In with Apple
-                        SignInWithAppleButton(.signIn) { request in
-                            let _ = auth.generateNonce()
-                            request.requestedScopes = [.fullName, .email]
-                            request.nonce = auth.sha256Nonce()
-                        } onCompletion: { result in
-                            handleAppleSignIn(result)
+                        // Social sign-in buttons
+                        VStack(spacing: 12) {
+                            // Sign In with Apple
+                            SignInWithAppleButton(.signIn) { request in
+                                let _ = auth.generateNonce()
+                                request.requestedScopes = [.fullName, .email]
+                                request.nonce = auth.sha256Nonce()
+                            } onCompletion: { result in
+                                handleAppleSignIn(result)
+                            }
+                            .signInWithAppleButtonStyle(.white)
+                            .frame(height: 50)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+
+                            // Sign In with Google
+                            Button {
+                                Task { await handleGoogleSignIn() }
+                            } label: {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "g.circle.fill")
+                                        .font(.title2)
+                                        .foregroundStyle(.blue, .white)
+                                    Text("Sign in with Google")
+                                        .font(.headline)
+                                        .foregroundStyle(.black)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 50)
+                                .background(.white)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
                         }
-                        .signInWithAppleButtonStyle(.white)
-                        .frame(height: 50)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
                         .padding(.horizontal, 24)
 
                         // Divider
@@ -110,6 +130,7 @@ struct LoginView: View {
         }
     }
 
+    // MARK: - Email/Password Login
     func login() async {
         loading = true
         error = nil
@@ -122,6 +143,7 @@ struct LoginView: View {
         loading = false
     }
 
+    // MARK: - Apple Sign In
     func handleAppleSignIn(_ result: Result<ASAuthorization, Error>) {
         switch result {
         case .success(let authorization):
@@ -147,5 +169,18 @@ struct LoginView: View {
                 error = err.localizedDescription
             }
         }
+    }
+
+    // MARK: - Google Sign In
+    func handleGoogleSignIn() async {
+        loading = true
+        error = nil
+        do {
+            try await auth.signInWithGoogle()
+            dismiss()
+        } catch {
+            self.error = error.localizedDescription
+        }
+        loading = false
     }
 }

@@ -1,8 +1,9 @@
 // StickDeathInfinityApp.swift
 // Main entry point — supports iPhone, iPad, Mac Catalyst
-// v3: + Realtime subscriptions + onOpenURL deep links + Sign In with Apple
+// v4: + Realtime subscriptions + onOpenURL deep links + Apple & Google Sign-In
 
 import SwiftUI
+import GoogleSignIn
 
 @main
 struct StickDeathInfinityApp: App {
@@ -25,6 +26,8 @@ struct StickDeathInfinityApp: App {
                     PushNotificationManager.shared.requestPermission()
                 }
                 .onOpenURL { url in
+                    // Let Google Sign-In handle its callback URL first
+                    if GIDSignIn.sharedInstance.handle(url) { return }
                     handleDeepLink(url)
                 }
                 .onChange(of: authManager.isLoggedIn) { _, isAuth in

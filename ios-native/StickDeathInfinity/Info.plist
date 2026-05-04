@@ -30,7 +30,7 @@
         <string>SpecialElite-Regular.ttf</string>
     </array>
 
-    <!-- URL Schemes (deep linking) -->
+    <!-- URL Schemes (deep linking + Google Sign-In) -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -40,6 +40,16 @@
             </array>
             <key>CFBundleURLName</key>
             <string>com.willisnmb.stickdeath-infinity</string>
+        </dict>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <!-- Replace with your reversed Google client ID -->
+                <!-- e.g. com.googleusercontent.apps.123456789-abcdef -->
+                <string>com.googleusercontent.apps.YOUR_GOOGLE_CLIENT_ID</string>
+            </array>
         </dict>
     </array>
 
