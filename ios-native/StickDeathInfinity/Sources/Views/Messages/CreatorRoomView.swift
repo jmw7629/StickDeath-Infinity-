@@ -177,12 +177,12 @@ struct CreatorRoomView: View {
                         VStack {
                             HStack {
                                 Spacer()
-                                cursorLabel("StickNinja42", color: .green)
+                                cursorLabel("" /* clean slate */, color: .green)
                                     .offset(x: -40, y: 80)
                             }
                             Spacer()
                             HStack {
-                                cursorLabel("xBoneBreaker", color: .blue)
+                                cursorLabel("" /* clean slate */, color: .blue)
                                     .offset(x: 30, y: -40)
                                 Spacer()
                             }

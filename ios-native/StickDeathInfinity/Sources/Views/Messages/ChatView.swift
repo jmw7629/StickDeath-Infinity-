@@ -15,6 +15,7 @@ struct ChatView: View {
     @State private var showPinned = false
     @State private var showMembers = false
     @State private var searchQuery = ""
+    @State private var showSidebar = false
 
     var body: some View {
         ZStack {
@@ -51,6 +52,10 @@ struct ChatView: View {
                 typingIndicator
                 messageInput
             }
+                // Teams-style sidebar overlay
+            if showSidebar {
+                sidebarOverlay
+            }
         }
         .navigationBarHidden(true)
     }
@@ -72,15 +77,109 @@ struct ChatView: View {
         }
     }
 
+    // MARK: - Sidebar Overlay
+    var sidebarOverlay: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                // Header
+                HStack(spacing: 10) {
+                    Text("💀").font(.system(size: 20))
+                    Text("StickDeath ∞")
+                        .font(.custom("Special Elite", size: 16))
+                        .fontWeight(.bold)
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Button { showSidebar = false } label: {
+                        Text("✕")
+                            .font(.system(size: 18))
+                            .foregroundStyle(Color(hex: "#9090a8"))
+                    }
+                }
+                .padding(16)
+                .padding(.bottom, 4)
+                .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .bottom)
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text("CHANNELS")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(hex: "#72728a"))
+                            .padding(.horizontal, 16)
+                            .padding(.top, 12)
+                            .padding(.bottom, 8)
+
+                        ForEach(["💬 #general", "🎨 #show-and-tell", "💡 #tips-tricks", "🏆 #challenges", "🌐 #off-topic"], id: \.self) { ch in
+                            let isActive = ch.contains(otherUsername)
+                            HStack(spacing: 10) {
+                                Text(String(ch.prefix(2)))
+                                Text(String(ch.dropFirst(3)))
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(isActive ? .white : Color(hex: "#9090a8"))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(isActive ? Color(hex: "#1a1a24") : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .padding(.horizontal, 8)
+                        }
+
+                        Text("QUICK ACTIONS")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(hex: "#72728a"))
+                            .padding(.horizontal, 16)
+                            .padding(.top, 16)
+                            .padding(.bottom, 8)
+
+                        ForEach(["📞 Voice Call", "🎬 Watch Together", "🎨 Creator Room", "⚔️ War Room"], id: \.self) { action in
+                            HStack(spacing: 10) {
+                                Text(String(action.prefix(2)))
+                                Text(String(action.dropFirst(3)))
+                                    .font(.system(size: 14))
+                                    .foregroundStyle(Color(hex: "#9090a8"))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                        }
+                    }
+                }
+
+                // All Messages footer
+                Button { dismiss() } label: {
+                    HStack(spacing: 8) {
+                        Text("←").foregroundStyle(Color(hex: "#72728a"))
+                        Text("All Messages")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color(hex: "#72728a"))
+                    }
+                    .padding(16)
+                    .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .top)
+                }
+            }
+            .frame(width: 270)
+            .background(ThemeManager.card)
+            .overlay(Rectangle().fill(ThemeManager.border).frame(width: 0.5), alignment: .trailing)
+
+            // Backdrop
+            Color.black.opacity(0.5)
+                .onTapGesture { showSidebar = false }
+        }
+        .ignoresSafeArea()
+        .transition(.move(edge: .leading))
+        .animation(.easeInOut(duration: 0.25), value: showSidebar)
+    }
+
     // MARK: - Channel Header (matches reference: ≡ # general 👥 23 / subtitle / 🔍 📌 👥)
     var channelHeader: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                // Hamburger / back
-                Button { dismiss() } label: {
+                // Hamburger — toggles sidebar
+                Button { showSidebar.toggle() } label: {
                     Text("≡")
                         .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
+                        .foregroundStyle(showSidebar ? .white : .white.opacity(0.6))
                 }
 
                 VStack(alignment: .leading, spacing: 1) {
@@ -94,7 +193,7 @@ struct ChatView: View {
                         HStack(spacing: 3) {
                             Text("👥")
                                 .font(.system(size: 12))
-                            Text("23")
+                            Text("0")
                                 .font(.system(size: 12))
                                 .foregroundStyle(Color(hex: "#72728a"))
                         }
@@ -176,7 +275,7 @@ struct ChatView: View {
     // MARK: - Members Panel
     var membersPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("MEMBERS — 7")
+            Text("MEMBERS — 0")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(Color(hex: "#72728a"))
 
@@ -226,7 +325,7 @@ struct ChatView: View {
     // MARK: - Typing Indicator
     var typingIndicator: some View {
         HStack(spacing: 0) {
-            Text("StickMasterFlex is typing...")
+            Text(""  // Clean slate — no mock typing)
                 .font(.system(size: 13).italic())
                 .foregroundStyle(Color(hex: "#72728a"))
             Spacer()
@@ -450,13 +549,7 @@ struct ChatMember: Identifiable {
     let status: String // online, idle, offline
 
     static let allMembers: [ChatMember] = [
-        ChatMember(initials: "AD", name: "AnimateOrDie", color: Color(hex: "#8b5cf6"), status: "online"),
-        ChatMember(initials: "NS", name: "NeonStick", color: Color(hex: "#3b82f6"), status: "online"),
-        ChatMember(initials: "XB", name: "xBladeRunner", color: Color(hex: "#ef4444"), status: "online"),
-        ChatMember(initials: "JW", name: "joe_willis", color: Color(hex: "#22c55e"), status: "online"),
-        ChatMember(initials: "SM", name: "StickMasterFlex", color: Color(hex: "#f59e0b"), status: "online"),
-        ChatMember(initials: "SP", name: "ShadowPuppet", color: Color(hex: "#6366f1"), status: "idle"),
-        ChatMember(initials: "NE", name: "NeonGhost", color: Color(hex: "#14b8a6"), status: "offline"),
+        // Clean slate — no mock members
     ]
 }
 
@@ -483,7 +576,9 @@ struct ChatMessage: Identifiable {
 }
 
 extension ChatMessage {
-    static let sampleMessages: [ChatMessage] = [
+    static let sampleMessages: [ChatMessage] = [] /* Clean slate — no mock messages */
+
+    static let _exampleMessages: [ChatMessage] = [
         ChatMessage(id: 1, initials: "AD", author: "AnimateOrDie",
                     text: "Just submitted my Free Fall entry. 60fps smooth baby 🥳",
                     time: "11:42 AM",

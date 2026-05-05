@@ -9,8 +9,8 @@ struct WarRoomView: View {
     @Environment(\.dismiss) var dismiss
     @State private var selectedTab = 0 // 0=Battle, 1=Board, 2=Chat
     @State private var timeRemaining: TimeInterval = 845 // 14:05
-    @State private var votesRed = 342
-    @State private var votesBlue = 289
+    @State private var votesRed = 0
+    @State private var votesBlue = 0
 
     struct Spectator: Identifiable {
         let id = UUID()

@@ -18,8 +18,8 @@ struct MessagesListView: View {
     }
 
     @State private var channels: [Channel] = [
-        Channel(id: 1, name: "general", emoji: "#", memberCount: 23, lastMessage: "StickMasterFlex: yo that fight scene was insane", timeAgo: "2m", unread: 3),
-        Channel(id: 2, name: "show-off", emoji: "🎬", memberCount: 45, lastMessage: "AnimateOrDie shared a new animation", timeAgo: "5m", unread: 1),
+        Channel(id: 1, name: "general", emoji: "#", memberCount: 23, lastMessage: "StickMasterFlex: yo that fight scene was insane", timeAgo: "2m", unread: 0),
+        Channel(id: 2, name: "show-off", emoji: "🎬", memberCount: 45, lastMessage: "AnimateOrDie shared a new animation", timeAgo: "5m", unread: 0),
         Channel(id: 3, name: "feedback", emoji: "💬", memberCount: 18, lastMessage: "xBladeRunner: can someone review my walk cycle?", timeAgo: "12m", unread: 0),
         Channel(id: 4, name: "collabs", emoji: "🤝", memberCount: 31, lastMessage: "BoneBreaker: looking for a partner for the challenge", timeAgo: "25m", unread: 0),
         Channel(id: 5, name: "tips-tricks", emoji: "💡", memberCount: 67, lastMessage: "FlipMaster: pro tip — use onion skinning for walk cycles", timeAgo: "1h", unread: 0),

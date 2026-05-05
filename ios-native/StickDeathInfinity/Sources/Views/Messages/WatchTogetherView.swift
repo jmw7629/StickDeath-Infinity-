@@ -138,10 +138,10 @@ struct WatchTogetherView: View {
                     VStack(spacing: 8) {
                         Text("⚔️")
                             .font(.system(size: 64))
-                        Text("Epic Sword Fight")
+                        Text("No video queued")
                             .font(.system(size: 16))
                             .foregroundStyle(Color(hex: "#9090a8"))
-                        Text("by xBoneBreaker")
+                        Text("Tap to add a video")
                             .font(.system(size: 13))
                             .foregroundStyle(Color(hex: "#5a5a6e"))
                     }

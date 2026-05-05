@@ -1,203 +1,398 @@
 // VoiceCallView.swift
-// Voice/Video call — matches reference exactly
-// Voice/Video tabs, participant circles with initials, mute/speaker/screen controls
+// Pay-As-You-Go taxi-meter billing for voice & video calls
 
 import SwiftUI
 
 struct VoiceCallView: View {
-    let channelName: String
     @Environment(\.dismiss) var dismiss
-    @State private var isVoice = true
-    @State private var isMuted = false
-    @State private var isSpeaker = false
-    @State private var callDuration: TimeInterval = 2
+    let channelName: String
 
-    struct Participant: Identifiable {
-        let id = UUID()
-        let initials: String
-        let name: String
-        let ringColor: Color
-        let isMuted: Bool
-    }
+    @State private var activeTab: CallTab = .voice
+    @State private var muted = false
+    @State private var speaker = false
+    @State private var screenShare = false
+    @State private var elapsed: Int = 0
+    @State private var callActive = false
+    @State private var showBillingSummary = false
+    @State private var showRateCard = true
+    @State private var timer: Timer?
 
-    let participants: [Participant] = [
-        Participant(initials: "YO", name: "You", ringColor: .red, isMuted: false),
-        Participant(initials: "XB", name: "xBoneBreaker", ringColor: Color(hex: "#2a2a3a"), isMuted: false),
-        Participant(initials: "SN", name: "StickNinja42", ringColor: .green, isMuted: false),
-        Participant(initials: "DF", name: "DeathFrame", ringColor: Color(hex: "#2a2a3a"), isMuted: true),
-    ]
+    enum CallTab: String, CaseIterable { case voice, video }
+
+    private let voiceRate: Double = 0.02
+    private let videoRate: Double = 0.08
+    private var currentRate: Double { activeTab == .video ? videoRate : voiceRate }
+    private var currentCost: Double { (Double(elapsed) / 60.0) * currentRate }
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // ── Header ──
-                HStack {
-                    Button { dismiss() } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.left")
-                                .font(.system(size: 16))
-                            Text("Back")
-                                .font(.system(size: 16))
-                        }
-                        .foregroundStyle(.white)
-                    }
-
-                    Spacer()
-
-                    // Timer
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(.green)
-                            .frame(width: 8, height: 8)
-                        Text(formatTime(callDuration))
-                            .font(.system(size: 14, design: .monospaced))
-                            .foregroundStyle(.white)
-                    }
-
-                    Spacer()
-
-                    // Participant count
-                    HStack(spacing: 4) {
-                        Image(systemName: "person.2.fill")
-                            .font(.system(size: 14))
-                        Text("\(participants.count)")
-                            .font(.system(size: 14, weight: .bold))
-                    }
-                    .foregroundStyle(.white)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 14)
-
-                // ── Voice / Video Toggle ──
-                HStack(spacing: 0) {
-                    tabPill("🎙 Voice", isActive: isVoice) { isVoice = true }
-                    tabPill("🎥 Video", isActive: !isVoice) { isVoice = false }
-                }
-                .padding(4)
-                .background(ThemeManager.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
-
-                // ── Participants ──
-                Spacer()
-
-                LazyVGrid(columns: [
-                    GridItem(.flexible(), spacing: 20),
-                    GridItem(.flexible(), spacing: 20),
-                    GridItem(.flexible(), spacing: 20),
-                ], spacing: 24) {
-                    ForEach(participants) { p in
-                        participantCircle(p)
-                    }
-                }
-                .padding(.horizontal, 40)
-
-                Spacer()
-
-                // Channel name
-                Text("#\(channelName) · \(participants.count) participants")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color(hex: "#9090a8"))
-                    .padding(.bottom, 24)
-
-                // ── Controls ──
-                HStack(spacing: 28) {
-                    controlButton(icon: "mic.slash.fill", label: "Mute", isActive: isMuted) {
-                        isMuted.toggle()
-                    }
-                    controlButton(icon: "speaker.wave.2.fill", label: "Speaker", isActive: isSpeaker) {
-                        isSpeaker.toggle()
-                    }
-                    controlButton(icon: "rectangle.on.rectangle", label: "Screen", isActive: false) {}
-
-                    // End call (red)
-                    Button { dismiss() } label: {
-                        VStack(spacing: 4) {
-                            ZStack {
-                                Circle()
-                                    .fill(ThemeManager.brand)
-                                    .frame(width: 56, height: 56)
-                                Image(systemName: "phone.down.fill")
-                                    .font(.system(size: 22))
-                                    .foregroundStyle(.white)
-                                    .rotationEffect(.degrees(135))
-                            }
-                            Text("")
-                                .font(.system(size: 10))
-                        }
-                    }
-                }
-                .padding(.bottom, 40)
+            if showBillingSummary {
+                billingSummaryView
+            } else if showRateCard {
+                rateCardView
+            } else {
+                activeCallView
             }
         }
         .navigationBarHidden(true)
-        .onAppear {
-            Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-                callDuration += 1
-            }
-        }
     }
 
-    func tabPill(_ label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(isActive ? .white : Color(hex: "#9090a8"))
-                .frame(maxWidth: .infinity, minHeight: 38)
-                .background(isActive ? ThemeManager.brand : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-    }
-
-    func participantCircle(_ p: Participant) -> some View {
-        VStack(spacing: 6) {
-            ZStack {
-                Circle()
-                    .stroke(p.ringColor, lineWidth: 3)
-                    .frame(width: 72, height: 72)
-                Circle()
-                    .fill(ThemeManager.surface)
-                    .frame(width: 64, height: 64)
-                Text(p.initials)
-                    .font(.system(size: 22, weight: .bold))
+    // MARK: - Rate Card (before call starts)
+    var rateCardView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            VStack(spacing: 20) {
+                Text(activeTab == .video ? "📹" : "📞")
+                    .font(.system(size: 48))
+                Text("Start a Call")
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.white)
-            }
-            Text(p.name)
-                .font(.system(size: 13))
-                .foregroundStyle(Color(hex: "#9090a8"))
-                .lineLimit(1)
-            if p.isMuted {
-                Text("Muted")
+                Text(channelName)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(hex: "#72728a"))
+
+                // Tab toggle
+                HStack(spacing: 4) {
+                    ForEach(CallTab.allCases, id: \.self) { tab in
+                        Button {
+                            activeTab = tab
+                        } label: {
+                            Text(tab == .voice ? "🎙️ Voice" : "📹 Video")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(activeTab == tab ? .white : Color(hex: "#72728a"))
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(activeTab == tab ? ThemeManager.card : .clear)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(activeTab == tab ? ThemeManager.border : .clear, lineWidth: 1)
+                                )
+                        }
+                    }
+                }
+                .padding(4)
+                .background(Color(hex: "#1a1a24"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                // Rate info
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Text("🚕")
+                            .font(.system(size: 20))
+                        Text("Pay-As-You-Go")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                        Spacer()
+                    }
+                    .padding(.bottom, 12)
+
+                    rateRow(emoji: "🎙️", label: "Voice calls", rate: "$0.02")
+                    Divider().overlay(ThemeManager.border)
+                    rateRow(emoji: "📹", label: "Video calls", rate: "$0.08")
+                }
+                .padding(16)
+                .background(Color(hex: "#1a1a24"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Text("You'll only be charged for the time you use. No minimums.")
                     .font(.system(size: 11))
-                    .foregroundStyle(ThemeManager.brand)
+                    .foregroundStyle(Color(hex: "#72728a"))
+                    .multilineTextAlignment(.center)
+
+                HStack(spacing: 10) {
+                    Button { dismiss() } label: {
+                        Text("Cancel")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color(hex: "#9090a8"))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(Color(hex: "#1a1a24"))
+                            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ThemeManager.border, lineWidth: 1))
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    Button { startCall() } label: {
+                        Text("Start \(activeTab == .video ? "Video" : "Voice") Call")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(ThemeManager.brand)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
             }
+            .padding(28)
+            .background(ThemeManager.card)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(ThemeManager.border, lineWidth: 1))
+            .padding(.horizontal, 32)
+            Spacer()
         }
     }
 
-    func controlButton(icon: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 4) {
+    // MARK: - Active Call with Taxi Meter
+    var activeCallView: some View {
+        VStack(spacing: 0) {
+            // Header with live billing badge
+            HStack(spacing: 12) {
+                Button { endCall() } label: {
+                    Text("←")
+                        .font(.system(size: 20))
+                        .foregroundStyle(.white)
+                }
+                Text("\(activeTab == .voice ? "Voice" : "Video") Call")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(.white)
+                Spacer()
+                // Live cost badge
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color(hex: "#22c55e"))
+                        .frame(width: 6, height: 6)
+                    Text(String(format: "$%.4f", currentCost))
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        .foregroundStyle(Color(hex: "#22c55e"))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
+                .background(Color(hex: "#22c55e").opacity(0.15))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color(hex: "#22c55e").opacity(0.3), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 20))
+            }
+            .padding(16)
+
+            // Voice/Video toggle
+            HStack(spacing: 4) {
+                ForEach(CallTab.allCases, id: \.self) { tab in
+                    Button { activeTab = tab } label: {
+                        Text(tab.rawValue.capitalized)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(activeTab == tab ? .white : Color(hex: "#72728a"))
+                            .padding(.horizontal, 24)
+                            .padding(.vertical, 8)
+                            .background(activeTab == tab ? ThemeManager.card : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+            }
+            .padding(4)
+            .background(Color(hex: "#1a1a24"))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(.top, 16)
+
+            // Waiting for others
+            Spacer()
+            VStack(spacing: 16) {
                 ZStack {
                     Circle()
-                        .fill(isActive ? ThemeManager.surface : ThemeManager.card)
-                        .frame(width: 52, height: 52)
-                    Image(systemName: icon)
-                        .font(.system(size: 20))
-                        .foregroundStyle(isActive ? ThemeManager.brand : .white)
+                        .stroke(ThemeManager.brand, lineWidth: 3)
+                        .frame(width: 100, height: 100)
+                        .shadow(color: ThemeManager.brand.opacity(0.25), radius: 10)
+                    Text(activeTab == .video ? "📹" : "🎙️")
+                        .font(.system(size: 36))
                 }
-                Text(label)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Color(hex: "#9090a8"))
+                Text("Waiting for others...")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("Share the room link to invite")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color(hex: "#72728a"))
             }
+            Spacer()
+
+            // Taxi meter
+            VStack(spacing: 12) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("DURATION")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(hex: "#72728a"))
+                        Text(formatTime(elapsed))
+                            .font(.system(size: 28, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(.white)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("RUNNING COST")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Color(hex: "#72728a"))
+                        Text(String(format: "$%.2f", currentCost))
+                            .font(.system(size: 28, weight: .heavy, design: .monospaced))
+                            .foregroundStyle(Color(hex: "#22c55e"))
+                    }
+                }
+                Divider().overlay(ThemeManager.border)
+                HStack {
+                    Text("Rate: $\(String(format: "%.2f", currentRate))/min (\(activeTab.rawValue))")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: "#72728a"))
+                    Spacer()
+                    Text("🚕 Metered")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: "#72728a"))
+                }
+            }
+            .padding(16)
+            .background(ThemeManager.card)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(ThemeManager.border, lineWidth: 1))
+            .padding(.horizontal, 24)
+
+            // Controls
+            HStack(spacing: 20) {
+                callControl(icon: muted ? "🔇" : "🎙️", label: muted ? "Unmute" : "Mute", active: muted) {
+                    muted.toggle()
+                }
+                callControl(icon: speaker ? "🔈" : "🔊", label: "Speaker", active: speaker) {
+                    speaker.toggle()
+                }
+                callControl(icon: "📱", label: "Screen", active: screenShare) {
+                    screenShare.toggle()
+                }
+            }
+            .padding(.vertical, 16)
+
+            // End call
+            Button { endCall() } label: {
+                Circle()
+                    .fill(ThemeManager.brand)
+                    .frame(width: 64, height: 64)
+                    .overlay(Text("📞").font(.system(size: 24)))
+            }
+            .padding(.bottom, 24)
         }
     }
 
-    func formatTime(_ seconds: TimeInterval) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
+    // MARK: - Billing Summary
+    var billingSummaryView: some View {
+        VStack(spacing: 0) {
+            Spacer()
+            VStack(spacing: 20) {
+                Text("📞").font(.system(size: 48))
+                Text("Call Ended")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                Text(channelName)
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(hex: "#72728a"))
+
+                VStack(spacing: 12) {
+                    billRow(label: "Duration", value: formatTime(elapsed))
+                    billRow(label: "Type", value: activeTab == .video ? "📹 Video" : "🎙️ Voice")
+                    billRow(label: "Rate", value: activeTab == .video ? "$0.08/min" : "$0.02/min")
+                    Divider().overlay(ThemeManager.border)
+                    HStack {
+                        Text("Total")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Text(String(format: "$%.2f", currentCost))
+                            .font(.system(size: 18, weight: .heavy))
+                            .foregroundStyle(Color(hex: "#22c55e"))
+                    }
+                }
+                .padding(16)
+                .background(Color(hex: "#1a1a24"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Text("Charged to your account balance")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(hex: "#72728a"))
+
+                Button { dismiss() } label: {
+                    Text("Done")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(ThemeManager.brand)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+            .padding(28)
+            .background(ThemeManager.card)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay(RoundedRectangle(cornerRadius: 20).stroke(ThemeManager.border, lineWidth: 1))
+            .padding(.horizontal, 32)
+            Spacer()
+        }
+    }
+
+    // MARK: - Helpers
+    func rateRow(emoji: String, label: String, rate: String) -> some View {
+        HStack {
+            Text("\(emoji) \(label)")
+                .font(.system(size: 13))
+                .foregroundStyle(Color(hex: "#9090a8"))
+            Spacer()
+            HStack(spacing: 0) {
+                Text(rate)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Color(hex: "#22c55e"))
+                Text("/min")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(hex: "#72728a"))
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    func billRow(label: String, value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundStyle(Color(hex: "#9090a8"))
+            Spacer()
+            Text(value)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+    }
+
+    func callControl(icon: String, label: String, active: Bool, action: @escaping () -> Void) -> some View {
+        VStack(spacing: 6) {
+            Button(action: action) {
+                Circle()
+                    .fill(active ? ThemeManager.brand : Color(hex: "#1a1a24"))
+                    .frame(width: 56, height: 56)
+                    .overlay(
+                        Circle().stroke(active ? ThemeManager.brand : ThemeManager.border, lineWidth: 1)
+                    )
+                    .overlay(Text(icon).font(.system(size: 22)))
+            }
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(active ? .white : Color(hex: "#72728a"))
+        }
+    }
+
+    func formatTime(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
         return String(format: "%02d:%02d", m, s)
+    }
+
+    func startCall() {
+        showRateCard = false
+        callActive = true
+        elapsed = 0
+        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+            elapsed += 1
+        }
+    }
+
+    func endCall() {
+        callActive = false
+        timer?.invalidate()
+        timer = nil
+        showBillingSummary = true
     }
 }
