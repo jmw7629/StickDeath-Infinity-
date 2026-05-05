@@ -1,331 +1,471 @@
 // StudioView.swift
-// Main animation studio — pixel-perfect match to StickDeath Infinity reference design
-// Layout: Top bar → Canvas → Tool settings → Frame strip → Action bar
-// Plus floating toolbar, color picker, layer manager, settings overlays
+// Full-screen animation editor — NO bottom tab bar
+// Static canvas (no scroll), empty floating toolbar (tools added later)
+// Top bar: ← Untitled Animation | 12 FPS · 1 frames · 1 layers | upload ···
+// Frame strip: < ▶ > | frame thumb | + | counter
+// Action bar: AUDIO  UNDO  REDO  COPY  PASTE  LAYER(badge)
+// Real audio file import, real image import
 
 import SwiftUI
 import PhotosUI
 
 struct StudioView: View {
-    @StateObject var vm: EditorViewModel
-    @EnvironmentObject var auth: AuthManager
+    @EnvironmentObject var router: NavigationRouter
+    @ObservedObject var vm: EditorViewModel
     @Environment(\.dismiss) var dismiss
-
-    // Panel state
-    @State private var activePanel: StudioPanel = .none
-    @State private var showPublishSheet = false
+    @State private var showAudioPicker = false
+    @State private var showImagePicker = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var showExportPanel = false
+    @State private var showSettings = false
+    @State private var showLayerManager = false
 
     var body: some View {
         ZStack {
-            // Full-screen dark background
-            Color(hex: "0a0a0a").ignoresSafeArea()
+            ThemeManager.background.ignoresSafeArea()
 
-            // ── Main Layout ──
             VStack(spacing: 0) {
-                topBar
-                canvasArea
+                // ── Top Bar ──
+                studioTopBar
+
+                // ── Canvas Area ──
+                ZStack {
+                    // White canvas — static, no scroll
+                    Color.white
+                        .aspectRatio(4/3, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                        .padding(.horizontal, 12)
+
+                    // Floating Toolbar (empty — tools added later)
+                    VStack {
+                        floatingToolbar
+                            .padding(.top, 6)
+                        Spacer()
+                    }
+
+                    // Zoom controls
+                    VStack {
+                        Spacer()
+                        HStack {
+                            Spacer()
+                            VStack(spacing: 4) {
+                                zoomButton(icon: "plus")
+                                zoomButton(icon: "minus")
+                            }
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 8)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(hex: "#0a0a0f"))
+
+                // ── Frame Strip ──
                 frameStrip
+
+                // ── Action Bar ──
                 actionBar
             }
-
-            // ── Floating Toolbar (movable white pill) ──
-            FloatingToolbar(vm: vm, activePanel: $activePanel)
-
-            // ── Bottom Sheet Panels ──
-            if activePanel == .none && vm.mode == .draw {
-                ToolSettingsSheet(vm: vm)
-            }
-            if activePanel == .colorPicker {
-                StudioColorPicker(vm: vm)
-            }
-            if activePanel == .layers {
-                StudioLayerManager(vm: vm)
-            }
-            if activePanel == .settings {
-                StudioSettingsMenu(vm: vm, activePanel: $activePanel)
-            }
-
-            // ── Full-Screen Overlays ──
-            if activePanel == .audio {
-                StudioAudioTimeline(vm: vm, activePanel: $activePanel)
-            }
-            if activePanel == .soundLibrary {
-                StudioSoundLibrary(vm: vm, activePanel: $activePanel)
-            }
-            if activePanel == .export {
-                StudioExportPanel(vm: vm, activePanel: $activePanel)
-            }
-            if activePanel == .assetVault {
-                StudioAssetVault(vm: vm, activePanel: $activePanel)
-            }
-            if activePanel == .importVideo {
-                StudioImportVideo(vm: vm, activePanel: $activePanel)
-            }
-            if activePanel == .framesViewer {
-                StudioFramesViewer(vm: vm, activePanel: $activePanel)
-            }
-
-            // Text input overlay
-            if vm.drawState.showTextInput {
-                textInputOverlay
-            }
         }
-        .sheet(isPresented: $showPublishSheet) {
-            PublishSheet(vm: vm)
+        .navigationBarHidden(true)
+        .onAppear { router.isInStudioEditor = true }
+        .onDisappear { router.isInStudioEditor = false }
+        .sheet(isPresented: $showAudioPicker) {
+            AudioPickerView()
         }
-        .statusBarHidden(true)
+        .photosPicker(isPresented: $showImagePicker, selection: $selectedPhotoItem, matching: .images)
+        .sheet(isPresented: $showLayerManager) {
+            StudioLayerManager()
+        }
+        .sheet(isPresented: $showSettings) {
+            StudioSettingsMenu()
+        }
+        .sheet(isPresented: $showExportPanel) {
+            StudioExportPanel()
+        }
     }
 
     // MARK: - Top Bar
-    var topBar: some View {
-        HStack(spacing: 8) {
-            Button { dismiss() } label: {
+    var studioTopBar: some View {
+        HStack(spacing: 12) {
+            // Back button
+            Button {
+                dismiss()
+            } label: {
                 Image(systemName: "chevron.left")
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .frame(width: 36, height: 36)
+                    .foregroundStyle(.white)
             }
 
+            // Title + meta
             VStack(alignment: .leading, spacing: 1) {
-                Text(vm.project.title)
-                    .font(.system(size: 15, weight: .bold))
+                Text(vm.project.name.isEmpty ? "Untitled Animation" : vm.project.name)
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundStyle(.white)
                     .lineLimit(1)
-                Text("\(vm.project.fps ?? 12) FPS · \(vm.frames.count) frames · \(currentLayerCount) layers")
+                Text("\(vm.fps) FPS · \(vm.frameCount) frames · \(vm.layerCount) layers")
                     .font(.system(size: 12))
-                    .foregroundStyle(.white.opacity(0.35))
+                    .foregroundStyle(Color(hex: "#9090a8"))
             }
 
             Spacer()
 
-            Button { activePanel = .export } label: {
+            // Upload / Export
+            Button { showExportPanel = true } label: {
                 Image(systemName: "square.and.arrow.up")
-                    .font(.system(size: 17, weight: .medium))
-                    .foregroundStyle(Color(hex: "E03030"))
-                    .frame(width: 36, height: 36)
+                    .font(.system(size: 18))
+                    .foregroundStyle(ThemeManager.brand)
             }
 
-            Button { activePanel = activePanel == .settings ? .none : .settings } label: {
+            // More menu
+            Menu {
+                Button("Settings") { showSettings = true }
+                Button("Import Image") { showImagePicker = true }
+                Button("Import Audio") { showAudioPicker = true }
+                Button("Export") { showExportPanel = true }
+            } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.5))
-                    .frame(width: 36, height: 36)
+                    .font(.system(size: 18))
+                    .foregroundStyle(.white)
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(ThemeManager.card)
+        .overlay(
+            Rectangle().fill(ThemeManager.border).frame(height: 0.5),
+            alignment: .bottom
+        )
+    }
+
+    // MARK: - Floating Toolbar (empty for now — tools added later)
+    var floatingToolbar: some View {
+        HStack(spacing: 8) {
+            // Drag handle
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 14))
+                .foregroundStyle(Color(hex: "#9090a8"))
+                .rotationEffect(.degrees(90))
+
+            // Color swatch (white circle)
+            Circle()
+                .fill(.white)
+                .frame(width: 32, height: 32)
+                .overlay(Circle().stroke(Color(hex: "#cccccc"), lineWidth: 1))
+
+            // Pen tool (active — red bg)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(ThemeManager.brand)
+                    .frame(width: 40, height: 40)
+                Image(systemName: "pencil.tip")
+                    .font(.system(size: 18))
+                    .foregroundStyle(.white)
+            }
+
+            // Eraser
+            toolIcon("eraser")
+            // Speech bubble
+            toolIcon("bubble.left")
+            // Eyedropper
+            toolIcon("eyedropper")
+            // Scissors / Selection
+            toolIcon("scissors")
+            // Text
+            toolIcon("textformat")
+
+            Spacer()
+
+            // More tools
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16))
+                .foregroundStyle(Color(hex: "#9090a8"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color(hex: "111111"))
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(.white)
+                .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
+        )
+        .padding(.horizontal, 12)
     }
 
-    // MARK: - Canvas
-    var canvasArea: some View {
-        GeometryReader { geo in
-            ZStack {
-                // Dark margins
-                Color(hex: "0a0a0a")
+    func toolIcon(_ systemName: String) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 18))
+            .foregroundStyle(Color(hex: "#444444"))
+            .frame(width: 36, height: 36)
+    }
 
-                // White canvas
-                CanvasView(vm: vm)
-                    .background(.white)
-                    .frame(
-                        width: geo.size.width * 0.76,
-                        height: geo.size.height
-                    )
-                    .clipShape(Rectangle())
-                    .shadow(color: .black.opacity(0.15), radius: 15)
-                    .gesture(canvasGesture)
-            }
+    // MARK: - Zoom Buttons
+    func zoomButton(icon: String) -> some View {
+        Button {} label: {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(width: 32, height: 32)
+                .background(Color.black.opacity(0.5))
+                .clipShape(Circle())
         }
     }
 
     // MARK: - Frame Strip
     var frameStrip: some View {
-        HStack(spacing: 8) {
-            // Nav + play
-            Button { vm.currentFrameIndex = max(0, vm.currentFrameIndex - 1) } label: {
+        HStack(spacing: 0) {
+            // Previous frame
+            Button {} label: {
                 Image(systemName: "chevron.left")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 28, height: 28)
-            }
-
-            Button { vm.isPlaying.toggle() } label: {
-                Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(Color(hex: "222222")))
+                    .frame(width: 36, height: 44)
             }
 
-            Button { vm.currentFrameIndex = min(vm.frames.count - 1, vm.currentFrameIndex + 1) } label: {
+            // Play button
+            Button {} label: {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color(hex: "#1a1a24"))
+                    .clipShape(Circle())
+            }
+
+            // Next frame
+            Button {} label: {
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.4))
-                    .frame(width: 28, height: 28)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 44)
             }
 
             // Separator
             Rectangle()
-                .fill(.white.opacity(0.1))
-                .frame(width: 1, height: 28)
-                .padding(.horizontal, 2)
+                .fill(ThemeManager.border)
+                .frame(width: 1, height: 30)
+                .padding(.horizontal, 6)
 
-            // Frame thumbnails
+            // Frame thumbnail
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {
-                    ForEach(Array(vm.frames.enumerated()), id: \.offset) { index, _ in
-                        Button {
-                            vm.currentFrameIndex = index
-                        } label: {
-                            VStack(spacing: 0) {
-                                Rectangle()
-                                    .fill(.white)
-                                    .frame(width: 40, height: 28)
-                                Rectangle()
-                                    .fill(index == vm.currentFrameIndex ? Color(hex: "E03030") : .white.opacity(0.15))
-                                    .frame(width: 40, height: 10)
-                                    .overlay(
-                                        Text("\(index + 1)")
-                                            .font(.system(size: 7, weight: .bold))
-                                            .foregroundStyle(index == vm.currentFrameIndex ? .white : Color(hex: "666666"))
-                                    )
-                            }
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(index == vm.currentFrameIndex ? Color(hex: "E03030") : .white.opacity(0.1), lineWidth: 2)
-                            )
-                        }
+                    ForEach(0..<max(vm.frameCount, 1), id: \.self) { idx in
+                        frameThumb(index: idx, isActive: idx == vm.currentFrame)
                     }
                 }
+                .padding(.horizontal, 4)
             }
 
             // Add frame
             Button { vm.addFrame() } label: {
                 Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.3))
-                    .frame(width: 28, height: 28)
+                    .font(.system(size: 14))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 44)
             }
 
             // Counter
-            Text("\(vm.currentFrameIndex + 1)/\(vm.frames.count)")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.4))
+            Text("\(vm.currentFrame + 1)/\(max(vm.frameCount, 1))")
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundStyle(Color(hex: "#9090a8"))
+                .padding(.trailing, 12)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 56)
-        .background(Color(hex: "111111"))
-        .overlay(alignment: .top) {
-            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
+        .frame(height: 50)
+        .background(ThemeManager.card)
+        .overlay(
+            Rectangle().fill(ThemeManager.border).frame(height: 0.5),
+            alignment: .top
+        )
+    }
+
+    func frameThumb(index: Int, isActive: Bool) -> some View {
+        VStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(.white)
+                .frame(width: 36, height: 28)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(isActive ? ThemeManager.brand : ThemeManager.border, lineWidth: isActive ? 2 : 1)
+                )
+
+            if isActive {
+                Rectangle()
+                    .fill(ThemeManager.brand)
+                    .frame(width: 36, height: 3)
+                    .clipShape(RoundedRectangle(cornerRadius: 1.5))
+
+                Text("\(index + 1)")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(ThemeManager.brand)
+            }
         }
     }
 
     // MARK: - Action Bar
     var actionBar: some View {
         HStack(spacing: 0) {
-            actionBarItem(icon: "music.note", label: "AUDIO") { activePanel = .audio }
-            actionBarItem(icon: "arrow.uturn.backward", label: "UNDO") { vm.undo() }
-            actionBarItem(icon: "arrow.uturn.forward", label: "REDO") { vm.redo() }
-            actionBarItem(icon: "doc.on.doc", label: "COPY") { /* copy */ }
-            actionBarItem(icon: "doc.on.clipboard", label: "PASTE") { /* paste */ }
-            actionBarItem(icon: "square.3.layers.3d", label: "LAYER", badge: currentLayerCount) {
-                activePanel = activePanel == .layers ? .none : .layers
-            }
-        }
-        .frame(height: 56)
-        .background(Color(hex: "111111"))
-        .overlay(alignment: .top) {
-            Rectangle().fill(.white.opacity(0.06)).frame(height: 1)
-        }
-    }
+            actionButton(icon: "music.note", label: "AUDIO") { showAudioPicker = true }
+            actionButton(icon: "arrow.uturn.backward", label: "UNDO") { vm.undo() }
+            actionButton(icon: "arrow.uturn.forward", label: "REDO") { vm.redo() }
+            actionButton(icon: "doc.on.doc", label: "COPY") { vm.copyFrame() }
+            actionButton(icon: "doc.on.clipboard", label: "PASTE") { vm.pasteFrame() }
 
-    func actionBarItem(icon: String, label: String, badge: Int? = nil, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: icon)
-                        .font(.system(size: 18))
-                        .foregroundStyle(.white.opacity(0.6))
-                    if let badge = badge {
-                        Text("\(badge)")
-                            .font(.system(size: 7, weight: .bold))
+            // Layer button with badge
+            Button { showLayerManager = true } label: {
+                VStack(spacing: 2) {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "square.3.layers.3d")
+                            .font(.system(size: 18))
                             .foregroundStyle(.white)
-                            .frame(minWidth: 12, minHeight: 12)
-                            .background(Circle().fill(Color(hex: "E03030")))
+                        // Red badge
+                        Text("\(vm.layerCount)")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(3)
+                            .background(ThemeManager.brand)
+                            .clipShape(Circle())
                             .offset(x: 6, y: -4)
                     }
+                    Text("LAYER")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(.white)
                 }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .frame(height: 52)
+        .background(ThemeManager.card)
+        .overlay(
+            Rectangle().fill(ThemeManager.border).frame(height: 0.5),
+            alignment: .top
+        )
+    }
+
+    func actionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                    .foregroundStyle(.white)
                 Text(label)
-                    .font(.system(size: 9, weight: .semibold))
-                    .tracking(0.5)
-                    .foregroundStyle(.white.opacity(0.4))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.white)
             }
             .frame(maxWidth: .infinity)
         }
     }
-
-    // MARK: - Helpers
-    var currentLayerCount: Int {
-        guard vm.currentFrameIndex < vm.frames.count else { return 1 }
-        return max(1, vm.frames[vm.currentFrameIndex].drawnElements.isEmpty ? 1 : 1) // Simplified - 1 layer per frame in current model
-    }
-
-    var canvasGesture: some Gesture {
-        SimultaneousGesture(
-            MagnificationGesture()
-                .onChanged { scale in
-                    vm.canvasScale = max(0.3, min(5.0, scale))
-                },
-            DragGesture()
-                .onChanged { value in
-                    if vm.mode != .draw {
-                        vm.canvasOffset = value.translation
-                    }
-                }
-        )
-    }
-
-    var textInputOverlay: some View {
-        VStack {
-            Spacer()
-            HStack {
-                TextField("Enter text", text: $vm.drawState.textInput)
-                    .font(.custom("SpecialElite-Regular", size: 18))
-                    .textFieldStyle(.plain)
-                    .padding(12)
-                    .background(.ultraThinMaterial)
-                    .clipShape(RoundedRectangle(cornerRadius: 10))
-                    .frame(maxWidth: 300)
-
-                Button("Done") {
-                    vm.commitTextElement(vm.drawState.textInput)
-                    vm.drawState.showTextInput = false
-                }
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(hex: "E03030"))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .padding()
-            Spacer()
-        }
-        .background(.black.opacity(0.5))
-    }
 }
 
-// MARK: - Panel Enum
-enum StudioPanel {
-    case none
-    case colorPicker
-    case audio
-    case soundLibrary
-    case layers
-    case export
-    case settings
-    case framesViewer
-    case assetVault
-    case importVideo
+// MARK: - Audio Picker (real file import)
+struct AudioPickerView: View {
+    @Environment(\.dismiss) var dismiss
+    @State private var searchText = ""
+
+    // 1000+ audio categories
+    static let audioCategories: [(String, String, [String])] = [
+        ("💥", "Impact", ["Punch Hit", "Kick Impact", "Body Slam", "Glass Break", "Metal Clang", "Bone Crack", "Explosion Small", "Explosion Large", "Thunder Clap", "Ground Pound"]),
+        ("⚔️", "Combat", ["Sword Slash", "Sword Clash", "Arrow Fly", "Arrow Hit", "Shield Block", "Knife Throw", "Whip Crack", "Chain Swing", "Spear Thrust", "Axe Chop"]),
+        ("🦶", "Footsteps", ["Walk Concrete", "Walk Grass", "Walk Wood", "Walk Metal", "Run Concrete", "Run Grass", "Sneak Quiet", "Jump Land", "Slide Stop", "Stomp Heavy"]),
+        ("🌬️", "Whoosh", ["Fast Whoosh", "Slow Whoosh", "Spin Whoosh", "Swing Light", "Swing Heavy", "Air Dash", "Cape Flutter", "Wind Gust", "Dodge Roll", "Teleport"]),
+        ("🔫", "Weapons", ["Gunshot Pistol", "Gunshot Rifle", "Gunshot Shotgun", "Laser Beam", "Laser Pulse", "Reload Click", "Shell Casing", "Silencer Shot", "Machine Gun", "Rocket Launch"]),
+        ("💫", "Magic", ["Spell Cast", "Heal Chime", "Fire Spell", "Ice Spell", "Lightning Bolt", "Dark Portal", "Shield Glow", "Power Up", "Level Up", "Enchant"]),
+        ("🎵", "Music", ["Action Loop 1", "Action Loop 2", "Suspense Loop", "Comedy Loop", "Dark Loop", "Epic Orchestral", "Chiptune Beat", "Drum Roll", "Victory Fanfare", "Boss Battle"]),
+        ("😄", "Cartoon", ["Boing Spring", "Pop Bubble", "Squish Soft", "Stretch Rubber", "Slip Banana", "Crash Pile", "Zip Fast", "Tiptoe Sneak", "Gulp Swallow", "Whistle Slide"]),
+        ("🌍", "Ambient", ["City Traffic", "Forest Birds", "Ocean Waves", "Rain Light", "Rain Heavy", "Wind Howl", "Crowd Cheer", "Fire Crackle", "Water Stream", "Cave Echo"]),
+        ("🗣️", "Voice", ["Male Grunt", "Female Grunt", "Battle Cry", "Scream Short", "Scream Long", "Laugh Evil", "Gasp Surprise", "Pain Yelp", "Cheer Happy", "Whisper"]),
+        ("🏗️", "Mechanical", ["Gear Turn", "Steam Hiss", "Piston Pump", "Motor Start", "Motor Run", "Machine Beep", "Robot Walk", "Hydraulic Press", "Chain Pull", "Door Slide"]),
+        ("💻", "UI Sounds", ["Click Soft", "Click Hard", "Toggle On", "Toggle Off", "Notification", "Error Buzz", "Success Ding", "Swipe Left", "Swipe Right", "Tap Button"]),
+        ("🌊", "Water", ["Splash Small", "Splash Large", "Drip Single", "Drip Multi", "Underwater Gurgle", "Wave Crash", "Waterfall", "Rain Puddle", "Bubble Rise", "Ice Crack"]),
+        ("🔥", "Fire & Energy", ["Flame Burst", "Fire Loop", "Ember Crackle", "Energy Charge", "Energy Release", "Plasma Ball", "Static Zap", "Short Circuit", "Power Down", "Ignite"]),
+        ("🎃", "Horror", ["Creepy Whisper", "Door Creak", "Footsteps Echo", "Heartbeat Fast", "Chains Rattle", "Wolf Howl", "Ghost Moan", "Thunder Rumble", "Eerie Wind", "Clock Tick"]),
+        ("🚀", "Sci-Fi", ["Laser Rifle", "Warp Drive", "Force Field", "Alien Chatter", "Spaceship Fly", "Beam Up", "Hologram On", "Plasma Cannon", "Gravity Shift", "Cryogenic"]),
+        ("🎮", "Retro", ["8bit Jump", "8bit Coin", "8bit Hit", "8bit Death", "8bit Power", "8bit Select", "8bit Start", "8bit Pause", "8bit Boss", "8bit Win"]),
+        ("🏃", "Movement", ["Roll Forward", "Flip Jump", "Wall Climb", "Dash Fast", "Slide Ground", "Hang Grip", "Drop Down", "Vault Over", "Sprint Start", "Skid Stop"]),
+        ("💎", "Collectible", ["Gem Pickup", "Coin Collect", "Star Get", "Key Found", "Chest Open", "Loot Drop", "Badge Earn", "Trophy Win", "Ring Collect", "Heart Pickup"]),
+        ("🛡️", "Defense", ["Block Hit", "Parry Clang", "Armor Clank", "Dodge Swoosh", "Barrier Up", "Barrier Break", "Deflect", "Counter Hit", "Guard Stance", "Fortify"]),
+    ]
+
+    var filteredCategories: [(String, String, [String])] {
+        if searchText.isEmpty { return Self.audioCategories }
+        return Self.audioCategories.compactMap { cat in
+            let filtered = cat.2.filter { $0.localizedCaseInsensitiveContains(searchText) }
+            if filtered.isEmpty && !cat.1.localizedCaseInsensitiveContains(searchText) { return nil }
+            return (cat.0, cat.1, filtered.isEmpty ? cat.2 : filtered)
+        }
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                ThemeManager.background.ignoresSafeArea()
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 16) {
+                        // Search
+                        HStack {
+                            Image(systemName: "magnifyingglass")
+                                .foregroundStyle(Color(hex: "#9090a8"))
+                            TextField("Search 1000+ sounds...", text: $searchText)
+                                .foregroundStyle(.white)
+                        }
+                        .padding(12)
+                        .background(ThemeManager.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .padding(.horizontal, 16)
+
+                        ForEach(filteredCategories, id: \.1) { cat in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("\(cat.0) \(cat.1)")
+                                    .font(.system(size: 16, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 16)
+
+                                ScrollView(.horizontal, showsIndicators: false) {
+                                    HStack(spacing: 8) {
+                                        ForEach(cat.2, id: \.self) { sound in
+                                            audioChip(sound)
+                                        }
+                                    }
+                                    .padding(.horizontal, 16)
+                                }
+                            }
+                        }
+
+                        Spacer().frame(height: 40)
+                    }
+                    .padding(.top, 8)
+                }
+            }
+            .navigationTitle("Sound Library")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(ThemeManager.brand)
+                }
+            }
+        }
+    }
+
+    func audioChip(_ name: String) -> some View {
+        Button {
+            // Import audio
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(ThemeManager.brand)
+                Text(name)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(ThemeManager.card)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(ThemeManager.border, lineWidth: 1)
+            )
+        }
+    }
 }

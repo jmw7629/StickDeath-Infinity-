@@ -43,6 +43,9 @@ struct StudioProject: Codable, Identifiable {
     var background_type: String?
     var background_value: String?
 
+    // Convenience display name
+    var name: String { title }
+
     enum CodingKeys: String, CodingKey {
         case id, user_id
         case title = "name"  // DB column is "name", Swift uses "title"
@@ -80,11 +83,64 @@ struct FeedItem: Codable, Identifiable {
     let view_count: Int?
     let users: FeedUser?
 
+    // Display-only fields (not from DB)
+    var authorName: String
+    var authorEmoji: String
+    var timeAgo: String
+    var duration: String
+    var frameCount: Int
+    var likes: Int
+    var comments: Int
+    var views: Int
+
     enum CodingKeys: String, CodingKey {
         case id
         case title = "name"  // DB column is "name"
         case status, created_at, thumbnail_url
         case like_count, view_count, users
+    }
+
+    // DB initializer (from Codable)
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        status = try c.decodeIfPresent(String.self, forKey: .status)
+        created_at = try c.decodeIfPresent(String.self, forKey: .created_at)
+        thumbnail_url = try c.decodeIfPresent(String.self, forKey: .thumbnail_url)
+        like_count = try c.decodeIfPresent(Int.self, forKey: .like_count)
+        view_count = try c.decodeIfPresent(Int.self, forKey: .view_count)
+        users = try c.decodeIfPresent(FeedUser.self, forKey: .users)
+        authorName = users?.username ?? "Unknown"
+        authorEmoji = "💀"
+        timeAgo = ""
+        duration = "0:00"
+        frameCount = 0
+        likes = like_count ?? 0
+        comments = 0
+        views = view_count ?? 0
+    }
+
+    // Local display initializer
+    init(id: Int, title: String, authorName: String, authorEmoji: String,
+         timeAgo: String, duration: String, frameCount: Int,
+         likes: Int, comments: Int, views: Int) {
+        self.id = id
+        self.title = title
+        self.status = nil
+        self.created_at = nil
+        self.thumbnail_url = nil
+        self.like_count = likes
+        self.view_count = views
+        self.users = nil
+        self.authorName = authorName
+        self.authorEmoji = authorEmoji
+        self.timeAgo = timeAgo
+        self.duration = duration
+        self.frameCount = frameCount
+        self.likes = likes
+        self.comments = comments
+        self.views = views
     }
 }
 
@@ -302,19 +358,88 @@ struct AnimationTemplate: Identifiable {
     let isPro: Bool
 }
 
+// MARK: - Challenge Status
+enum ChallengeStatus: String, Codable {
+    case active, voting, completed
+
+    var label: String {
+        switch self {
+        case .active: return "ACTIVE"
+        case .voting: return "VOTING"
+        case .completed: return "COMPLETED"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .active: return .green
+        case .voting: return .yellow
+        case .completed: return Color(hex: "#5a5a6e")
+        }
+    }
+}
+
 // MARK: - Challenge (Supabase: challenges table)
 struct Challenge: Codable, Identifiable, Hashable {
     let id: Int
     var title: String
-    var description: String?
+    var description: String
     var theme: String?
     var start_date: String?
     var end_date: String?
-    var status: String?             // "active", "voting", "completed"
     var prize_description: String?
     var entry_count: Int?
     var thumbnail_url: String?
     var created_by: String?
+
+    // Display fields
+    var entries: Int
+    var prize: String
+    var endDate: String
+    var status: ChallengeStatus
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, description, theme, start_date, end_date
+        case prize_description, entry_count, thumbnail_url, created_by
+    }
+
+    // DB initializer
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(Int.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        description = try c.decodeIfPresent(String.self, forKey: .description) ?? ""
+        theme = try c.decodeIfPresent(String.self, forKey: .theme)
+        start_date = try c.decodeIfPresent(String.self, forKey: .start_date)
+        end_date = try c.decodeIfPresent(String.self, forKey: .end_date)
+        prize_description = try c.decodeIfPresent(String.self, forKey: .prize_description)
+        entry_count = try c.decodeIfPresent(Int.self, forKey: .entry_count)
+        thumbnail_url = try c.decodeIfPresent(String.self, forKey: .thumbnail_url)
+        created_by = try c.decodeIfPresent(String.self, forKey: .created_by)
+        entries = entry_count ?? 0
+        prize = prize_description ?? ""
+        endDate = end_date ?? ""
+        status = .active
+    }
+
+    // Local display initializer
+    init(id: Int, title: String, description: String, entries: Int,
+         prize: String, endDate: String, status: ChallengeStatus) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.theme = nil
+        self.start_date = nil
+        self.end_date = endDate
+        self.prize_description = prize
+        self.entry_count = entries
+        self.thumbnail_url = nil
+        self.created_by = nil
+        self.entries = entries
+        self.prize = prize
+        self.endDate = endDate
+        self.status = status
+    }
 
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (lhs: Challenge, rhs: Challenge) -> Bool { lhs.id == rhs.id }
@@ -359,4 +484,9 @@ struct PostComment: Codable, Identifiable {
 extension FeedItem: Hashable {
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
     static func == (lhs: FeedItem, rhs: FeedItem) -> Bool { lhs.id == rhs.id }
+}
+
+extension StudioProject: Hashable {
+    func hash(into hasher: inout Hasher) { hasher.combine(id) }
+    static func == (lhs: StudioProject, rhs: StudioProject) -> Bool { lhs.id == rhs.id }
 }

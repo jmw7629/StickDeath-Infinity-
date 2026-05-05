@@ -93,4 +93,5 @@ extension Notification.Name {
     static let deepLinkPost = Notification.Name("deepLinkPost")
     static let deepLinkChallenge = Notification.Name("deepLinkChallenge")
     static let deepLinkProfile = Notification.Name("deepLinkProfile")
+    static let replayOnboarding = Notification.Name("replayOnboarding")
 }

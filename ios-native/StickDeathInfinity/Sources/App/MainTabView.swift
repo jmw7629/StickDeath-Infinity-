@@ -1,8 +1,7 @@
 // MainTabView.swift
-// Layer 1 — ROOT NAVIGATION
-// 4 destination tabs: Home · Challenges · Studio · Profile
-// Custom tab bar matching web BottomNav design
-// Each tab owns its NavigationStack + NavigationPath
+// 5 tabs: Home · Challenges · Studio · Messages · Profile
+// Custom tab bar with emoji icons matching reference exactly
+// Studio hides the tab bar entirely
 
 import SwiftUI
 
@@ -18,92 +17,69 @@ struct MainTabView: View {
                 case .home: HomeTab()
                 case .challenges: ChallengesTab()
                 case .studio: StudioTab()
+                case .messages: MessagesTab()
                 case .profile: ProfileTab()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            // ── Custom Bottom Nav (matches web) ──
-            customTabBar
+            // ── Custom Bottom Nav (hidden in Studio editor) ──
+            if !router.isInStudioEditor {
+                customTabBar
+            }
 
-            // ── Spatter FAB (blood drop) ──
-            spatterFAB
-        }
-        .ignoresSafeArea(.keyboard)
-        .onChange(of: router.selectedTab) { _, newTab in
-            switch newTab {
-            case .home: router.spatterContext = .home
-            case .challenges: router.spatterContext = .challenges
-            case .studio: router.spatterContext = .studio(nil)
-            case .profile: router.spatterContext = .profile
+            // ── Spatter FAB (blood drop) — hidden in Studio ──
+            if !router.isInStudioEditor {
+                spatterFAB
             }
         }
+        .ignoresSafeArea(.keyboard)
     }
 
-    // MARK: - Custom Tab Bar
+    // MARK: - Custom Tab Bar (matches reference exactly)
     var customTabBar: some View {
         HStack(spacing: 0) {
-            tabButton(.home, icon: "flame.fill", label: "Home")
-            tabButton(.challenges, icon: "trophy.fill", label: "Challenges")
-            studioTabButton
-            tabButton(.profile, icon: "person.fill", label: "Profile")
+            ForEach(AppTab.allCases) { tab in
+                tabButton(tab)
+            }
         }
-        .frame(height: 56)
+        .frame(height: 60)
         .background(
             ThemeManager.card.opacity(0.95)
                 .background(.ultraThinMaterial)
         )
         .overlay(
-            Rectangle().fill(ThemeManager.border).frame(height: 1),
+            Rectangle().fill(ThemeManager.border).frame(height: 0.5),
             alignment: .top
         )
     }
 
-    func tabButton(_ tab: AppTab, icon: String, label: String) -> some View {
+    func tabButton(_ tab: AppTab) -> some View {
         let isActive = router.selectedTab == tab
         return Button {
             router.selectedTab = tab
         } label: {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 20, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? .white : ThemeManager.textDim)
-                Text(label)
-                    .font(.system(size: 10, weight: isActive ? .semibold : .regular))
-                    .foregroundStyle(isActive ? .white : ThemeManager.textDim)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    // Studio tab — special red pill capsule when active
-    var studioTabButton: some View {
-        let isActive = router.selectedTab == .studio
-        return Button {
-            router.selectedTab = .studio
-        } label: {
-            VStack(spacing: 2) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isActive ? ThemeManager.brand : ThemeManager.surface)
-                        .frame(width: 40, height: 28)
-                        .overlay(
-                            Group {
-                                if !isActive {
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .strokeBorder(ThemeManager.border, lineWidth: 1)
-                                }
-                            }
-                        )
-                        .shadow(color: isActive ? ThemeManager.brand.opacity(0.3) : .clear, radius: 8)
-
-                    Image(systemName: "pencil")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(isActive ? .white : ThemeManager.textDim)
+            VStack(spacing: 3) {
+                // Studio tab: red highlight capsule when active
+                if tab == .studio {
+                    ZStack {
+                        if isActive {
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(ThemeManager.brand)
+                                .frame(width: 44, height: 30)
+                                .shadow(color: ThemeManager.brand.opacity(0.4), radius: 8)
+                        }
+                        Text(tab.emoji)
+                            .font(.system(size: isActive ? 16 : 20))
+                    }
+                    .frame(height: 30)
+                } else {
+                    Text(tab.emoji)
+                        .font(.system(size: 20))
+                        .frame(height: 30)
                 }
-                .offset(y: -2)
 
-                Text("Studio")
+                Text(tab.title)
                     .font(.system(size: 10, weight: isActive ? .semibold : .regular))
                     .foregroundStyle(isActive ? .white : ThemeManager.textDim)
             }
@@ -111,14 +87,14 @@ struct MainTabView: View {
         }
     }
 
-    // MARK: - Spatter FAB (Blood Drop Button)
+    // MARK: - Spatter FAB
     var spatterFAB: some View {
         VStack {
             Spacer()
             HStack {
                 Spacer()
                 Button {
-                    router.openSpatter(context: router.spatterContext)
+                    router.openSpatter(context: .home)
                 } label: {
                     ZStack {
                         Circle()
@@ -126,20 +102,19 @@ struct MainTabView: View {
                             .frame(width: 52, height: 52)
                             .shadow(color: ThemeManager.brand.opacity(0.4), radius: 10)
 
-                        // Blood drop icon
-                        Image(systemName: "drop.fill")
+                        Text("🩸")
                             .font(.system(size: 22))
-                            .foregroundStyle(.white)
                     }
                 }
                 .padding(.trailing, 16)
-                .padding(.bottom, 72) // above tab bar
+                .padding(.bottom, 76)
             }
         }
     }
 }
 
-// MARK: - Tab Views (NavigationStack wrappers)
+// MARK: - Tab NavigationStack Wrappers
+
 struct HomeTab: View {
     @EnvironmentObject var router: NavigationRouter
 
@@ -190,6 +165,30 @@ struct StudioTab: View {
                         StudioView(vm: EditorViewModel(project: project))
                     case .templates:
                         TemplatesView()
+                    }
+                }
+        }
+    }
+}
+
+struct MessagesTab: View {
+    @EnvironmentObject var router: NavigationRouter
+
+    var body: some View {
+        NavigationStack(path: $router.messagesPath) {
+            MessagesListView()
+                .navigationDestination(for: MessagesDestination.self) { dest in
+                    switch dest {
+                    case .chat(let id, let username):
+                        ChatView(conversationId: id, otherUsername: username)
+                    case .voiceCall(let channel):
+                        VoiceCallView(channelName: channel)
+                    case .watchTogether(let channel):
+                        WatchTogetherView(channelName: channel)
+                    case .creatorRoom(let channel):
+                        CreatorRoomView(channelName: channel)
+                    case .warRoom(let channel):
+                        WarRoomView(channelName: channel)
                     }
                 }
         }

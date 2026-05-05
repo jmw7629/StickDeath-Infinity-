@@ -1,8 +1,6 @@
 // RootView.swift
-// Routes: Splash → Onboarding → Auth → Main
-// Injects NavigationRouter as environment object (shared across all tabs)
-// Adds SpatterOverlay at ZStack top level (Layer 4 — never changes navigation)
-// Wrapped in ResponsiveContainer for universal device support
+// Flow: Splash (tap anywhere) → Welcome → Auth → Main App
+// No audit bar. Pixel-perfect to reference.
 
 import SwiftUI
 
@@ -10,64 +8,103 @@ struct RootView: View {
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var offline: OfflineManager
     @StateObject private var router = NavigationRouter()
+    @State private var showSplash = true
     @State private var hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
 
     var body: some View {
-        ResponsiveContainer { ctx in
-            ZStack {
-                // Main content
-                Group {
-                    if auth.isLoading {
-                        SplashView()
-                    } else if !hasCompletedOnboarding {
-                        OnboardingView(isComplete: $hasCompletedOnboarding)
-                    } else if auth.isLoggedIn {
-                        MainTabView()
-                            .environmentObject(router)
-                    } else {
-                        WelcomeView()
-                    }
-                }
-                .animation(.easeInOut(duration: 0.3), value: auth.isLoggedIn)
-                .animation(.easeInOut(duration: 0.3), value: hasCompletedOnboarding)
-
-                // Offline banner
-                if !offline.isOnline {
-                    VStack {
-                        OfflineBanner(pendingActions: offline.pendingActions)
-                        Spacer()
-                    }
-                }
-
-                // Sync indicator
-                if offline.isSyncing {
-                    VStack {
-                        HStack {
-                            Spacer()
-                            Label("Syncing...", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.caption2)
-                                .padding(6)
-                                .background(.ultraThinMaterial)
-                                .clipShape(Capsule())
-                                .padding(8)
-                        }
-                        Spacer()
-                    }
-                }
-
-                // ── Layer 4: Spatter AI Overlay ──
-                // Never changes navigation state. Sits on top of everything.
-                // Closing returns user exactly where they were.
-                if router.showSpatter {
-                    SpatterOverlay()
+        ZStack {
+            Group {
+                if showSplash {
+                    SplashView(showSplash: $showSplash)
+                } else if auth.isLoading {
+                    loadingView
+                } else if !hasCompletedOnboarding {
+                    OnboardingView(isComplete: $hasCompletedOnboarding)
+                } else if auth.isLoggedIn {
+                    MainTabView()
                         .environmentObject(router)
-                        .transition(.opacity.combined(with: .move(edge: .bottom)))
-                        .zIndex(100)
+                } else {
+                    WelcomeView()
                 }
+            }
+            .animation(.easeInOut(duration: 0.3), value: showSplash)
+            .animation(.easeInOut(duration: 0.3), value: auth.isLoggedIn)
+
+            // Offline banner
+            if !offline.isOnline {
+                VStack {
+                    OfflineBanner(pendingActions: offline.pendingActions)
+                    Spacer()
+                }
+            }
+
+            // Spatter overlay
+            if router.showSpatter {
+                SpatterOverlay()
+                    .environmentObject(router)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                    .zIndex(100)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .replayOnboarding)) { _ in
             hasCompletedOnboarding = false
+        }
+    }
+
+    var loadingView: some View {
+        ZStack {
+            ThemeManager.background.ignoresSafeArea()
+            ProgressView()
+                .tint(.red)
+        }
+    }
+}
+
+// MARK: - Splash Screen (tap anywhere to continue)
+struct SplashView: View {
+    @Binding var showSplash: Bool
+    @State private var opacity: Double = 0
+    @State private var scale: CGFloat = 0.85
+
+    var body: some View {
+        ZStack {
+            Color(hex: "#0a0a0f").ignoresSafeArea()
+
+            VStack(spacing: 8) {
+                Text("💀")
+                    .font(.system(size: 48))
+
+                HStack(spacing: 0) {
+                    Text("STICK")
+                        .foregroundStyle(ThemeManager.brand)
+                    Text("DEATH")
+                        .foregroundStyle(.white)
+                    Text(" ∞")
+                        .foregroundStyle(.white)
+                }
+                .font(.custom("SpecialElite-Regular", size: 28, relativeTo: .title))
+                .fontWeight(.black)
+                .tracking(2)
+
+                Text("Create. Animate. Annihilate.")
+                    .font(.custom("SpecialElite-Regular", size: 14, relativeTo: .caption))
+                    .foregroundStyle(ThemeManager.textSecondary)
+                    .tracking(1)
+            }
+            .scaleEffect(scale)
+            .opacity(opacity)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.3)) {
+                showSplash = false
+            }
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.6)) {
+                opacity = 1.0
+                scale = 1.0
+            }
         }
     }
 }
@@ -91,52 +128,5 @@ struct OfflineBanner: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color.red.opacity(0.85))
-    }
-}
-
-// MARK: - Splash Screen (matches Joe's original design)
-struct SplashView: View {
-    @State private var opacity: Double = 0
-    @State private var scale: CGFloat = 0.8
-
-    var body: some View {
-        ZStack {
-            Color(hex: "#0a0a0f").ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                Image(systemName: "skull.fill")
-                    .font(.system(size: 60))
-                    .foregroundStyle(ThemeManager.brand)
-
-                HStack(spacing: 0) {
-                    Text("STICK")
-                        .foregroundStyle(ThemeManager.brand)
-                    Text("DEATH")
-                        .foregroundStyle(.white)
-                    Text(" ∞")
-                        .foregroundStyle(.white)
-                }
-                .font(.custom("SpecialElite-Regular", size: 28, relativeTo: .title))
-                .fontWeight(.black)
-                .tracking(2)
-
-                Text("Create. Animate. Annihilate.")
-                    .font(.custom("SpecialElite-Regular", size: 14, relativeTo: .caption))
-                    .foregroundStyle(ThemeManager.textSecondary)
-                    .tracking(1)
-
-                ProgressView()
-                    .tint(.red)
-                    .padding(.top, 20)
-            }
-            .scaleEffect(scale)
-            .opacity(opacity)
-        }
-        .onAppear {
-            withAnimation(.easeOut(duration: 0.6)) {
-                opacity = 1.0
-                scale = 1.0
-            }
-        }
     }
 }

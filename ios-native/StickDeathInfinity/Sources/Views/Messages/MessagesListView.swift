@@ -1,224 +1,152 @@
 // MessagesListView.swift
-// Chat/DM list — community messaging
+// Channel list → tapping opens ChatView
+// Matches reference: channels with member counts, DMs, action buttons for Call/Watch/Creator/WarRoom
 
 import SwiftUI
 
 struct MessagesListView: View {
-    @State private var conversations: [ConversationPreview] = []
-    @State private var loading = true
-    @State private var searchText = ""
+    @EnvironmentObject var router: NavigationRouter
+
+    struct Channel: Identifiable {
+        let id: Int
+        let name: String
+        let emoji: String
+        let memberCount: Int
+        let lastMessage: String
+        let timeAgo: String
+        let unread: Int
+    }
+
+    @State private var channels: [Channel] = [
+        Channel(id: 1, name: "general", emoji: "#", memberCount: 23, lastMessage: "StickMasterFlex: yo that fight scene was insane", timeAgo: "2m", unread: 3),
+        Channel(id: 2, name: "show-off", emoji: "🎬", memberCount: 45, lastMessage: "AnimateOrDie shared a new animation", timeAgo: "5m", unread: 1),
+        Channel(id: 3, name: "feedback", emoji: "💬", memberCount: 18, lastMessage: "xBladeRunner: can someone review my walk cycle?", timeAgo: "12m", unread: 0),
+        Channel(id: 4, name: "collabs", emoji: "🤝", memberCount: 31, lastMessage: "BoneBreaker: looking for a partner for the challenge", timeAgo: "25m", unread: 0),
+        Channel(id: 5, name: "tips-tricks", emoji: "💡", memberCount: 67, lastMessage: "FlipMaster: pro tip — use onion skinning for walk cycles", timeAgo: "1h", unread: 0),
+        Channel(id: 6, name: "off-topic", emoji: "🎲", memberCount: 42, lastMessage: "DeathFrame: anyone else hyped for the new update?", timeAgo: "2h", unread: 0),
+    ]
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                ThemeManager.background.ignoresSafeArea()
+        ZStack {
+            ThemeManager.background.ignoresSafeArea()
 
-                if loading {
-                    ProgressView().tint(.red)
-                } else if conversations.isEmpty {
-                    VStack(spacing: 12) {
-                        Image(systemName: "bubble.left.and.bubble.right")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.gray)
-                        Text("No messages yet")
-                            .font(.title3.bold())
-                        Text("Start a conversation with another creator")
-                            .font(.subheadline)
-                            .foregroundStyle(.gray)
-                    }
-                } else {
-                    List {
-                        ForEach(conversations) { convo in
-                            NavigationLink {
-                                ConversationChatView(conversationId: convo.id, otherUsername: convo.username)
-                            } label: {
-                                HStack(spacing: 12) {
-                                    // Avatar
-                                    Circle()
-                                        .fill(ThemeManager.surface)
-                                        .frame(width: 44, height: 44)
-                                        .overlay(
-                                            Text(String(convo.username.prefix(1)).uppercased())
-                                                .font(.headline)
-                                                .foregroundStyle(.red)
-                                        )
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    // ── Header ──
+                    HStack {
+                        Text("Messages")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(.white)
+                        Spacer()
 
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(convo.username)
-                                            .font(.subheadline.bold())
-                                        Text(convo.lastMessage)
-                                            .font(.caption)
-                                            .foregroundStyle(.gray)
-                                            .lineLimit(1)
-                                    }
-
-                                    Spacer()
-
-                                    if convo.unread {
-                                        Circle()
-                                            .fill(.red)
-                                            .frame(width: 8, height: 8)
-                                    }
-                                }
-                                .padding(.vertical, 4)
+                        // Action buttons row
+                        HStack(spacing: 12) {
+                            quickAction("📞", "Call") {
+                                router.push(MessagesDestination.voiceCall("general"))
                             }
-                            .listRowBackground(ThemeManager.background)
+                            quickAction("🎬", "Watch") {
+                                router.push(MessagesDestination.watchTogether("general"))
+                            }
+                            quickAction("🎨", "Create") {
+                                router.push(MessagesDestination.creatorRoom("general"))
+                            }
+                            quickAction("⚔️", "Battle") {
+                                router.push(MessagesDestination.warRoom("general"))
+                            }
                         }
                     }
-                    .listStyle(.plain)
-                    .searchable(text: $searchText, prompt: "Search messages")
-                }
-            }
-            .navigationTitle("Messages")
-            .task { await loadConversations() }
-        }
-    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 12)
 
-    func loadConversations() async {
-        loading = true
-        // Load from Supabase conversations table
-        do {
-            guard let userId = AuthManager.shared.session?.user.id else { return }
-            struct ConvoRow: Decodable {
-                let id: Int
-                let user1_id: String
-                let user2_id: String
-                let last_message: String?
-                let updated_at: String?
-            }
-            let rows: [ConvoRow] = try await supabase
-                .from("conversations")
-                .select()
-                .or("user1_id.eq.\(userId.uuidString),user2_id.eq.\(userId.uuidString)")
-                .order("updated_at", ascending: false)
-                .execute()
-                .value
-
-            conversations = rows.map {
-                ConversationPreview(
-                    id: $0.id,
-                    username: "User",
-                    lastMessage: $0.last_message ?? "...",
-                    unread: false
-                )
-            }
-        } catch {
-            print("Messages error: \(error)")
-        }
-        loading = false
-    }
-}
-
-struct ConversationPreview: Identifiable {
-    let id: Int
-    let username: String
-    let lastMessage: String
-    let unread: Bool
-}
-
-// MARK: - Chat View
-struct ConversationChatView: View {
-    let conversationId: Int
-    let otherUsername: String
-    @State private var messages: [Message] = []
-    @State private var newMessage = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(messages) { msg in
-                            ChatBubble(
-                                text: msg.content,
-                                isOwn: msg.sender_id == AuthManager.shared.session?.user.id.uuidString,
-                                time: String(msg.created_at.suffix(8).prefix(5))
-                            )
-                            .id(msg.id)
-                        }
+                    // ── Search ──
+                    HStack(spacing: 10) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(Color(hex: "#9090a8"))
+                        Text("Search messages...")
+                            .font(.system(size: 15))
+                            .foregroundStyle(Color(hex: "#5a5a6e"))
+                        Spacer()
                     }
-                    .padding()
-                }
-                .onChange(of: messages.count) { _, _ in
-                    if let last = messages.last {
-                        proxy.scrollTo(last.id, anchor: .bottom)
-                    }
-                }
-            }
-
-            // Input
-            HStack(spacing: 8) {
-                TextField("Message...", text: $newMessage)
-                    .padding(10)
+                    .padding(12)
                     .background(ThemeManager.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
 
-                Button {
-                    Task { await sendMessage() }
-                } label: {
-                    Image(systemName: "paperplane.fill")
-                        .foregroundStyle(.red)
-                        .padding(10)
+                    // ── Channels ──
+                    ForEach(channels) { channel in
+                        Button {
+                            router.push(MessagesDestination.chat(channel.id, channel.name))
+                        } label: {
+                            channelRow(channel)
+                        }
+                    }
+
+                    Spacer().frame(height: 80)
                 }
-                .disabled(newMessage.isEmpty)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(ThemeManager.surfaceLight)
         }
-        .navigationTitle(otherUsername)
-        .navigationBarTitleDisplayMode(.inline)
-        .task { await loadMessages() }
+        .navigationBarHidden(true)
     }
 
-    func loadMessages() async {
-        messages = (try? await supabase
-            .from("messages")
-            .select()
-            .eq("conversation_id", value: conversationId)
-            .order("created_at")
-            .execute()
-            .value) ?? []
-    }
-
-    func sendMessage() async {
-        guard let userId = AuthManager.shared.session?.user.id else { return }
-        let text = newMessage
-        newMessage = ""
-        _ = try? await supabase
-            .from("messages")
-            .insert([
-                "conversation_id": "\(conversationId)",
-                "sender_id": userId.uuidString,
-                "content": text
-            ])
-            .execute()
-        await loadMessages()
-    }
-}
-
-struct ChatBubble: View {
-    let text: String
-    let isOwn: Bool
-    let time: String
-
-    var body: some View {
-        HStack {
-            if isOwn { Spacer() }
-            VStack(alignment: isOwn ? .trailing : .leading, spacing: 2) {
-                Text(text)
-                    .font(.subheadline)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(isOwn ? Color.red : ThemeManager.surface)
-                    .foregroundStyle(isOwn ? .black : .white)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-                Text(time)
-                    .font(.system(size: 10))
-                    .foregroundStyle(.gray)
+    func quickAction(_ emoji: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Text(emoji)
+                    .font(.system(size: 16))
+                Text(label)
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(Color(hex: "#9090a8"))
             }
-            if !isOwn { Spacer() }
+            .frame(width: 42, height: 42)
+            .background(ThemeManager.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
+    }
+
+    func channelRow(_ channel: Channel) -> some View {
+        HStack(spacing: 12) {
+            // Channel icon
+            ZStack {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(ThemeManager.surface)
+                    .frame(width: 44, height: 44)
+                Text(channel.emoji)
+                    .font(.system(size: channel.emoji == "#" ? 20 : 22))
+                    .foregroundStyle(channel.emoji == "#" ? Color(hex: "#9090a8") : .white)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(channel.name)
+                        .font(.system(size: 16, weight: channel.unread > 0 ? .bold : .semibold))
+                        .foregroundStyle(.white)
+                    Text("· \(channel.memberCount)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: "#9090a8"))
+                    Spacer()
+                    Text(channel.timeAgo)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: "#9090a8"))
+                }
+                Text(channel.lastMessage)
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color(hex: "#9090a8"))
+                    .lineLimit(1)
+            }
+
+            if channel.unread > 0 {
+                Text("\(channel.unread)")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(ThemeManager.brand)
+                    .clipShape(Circle())
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Color.clear)
     }
 }

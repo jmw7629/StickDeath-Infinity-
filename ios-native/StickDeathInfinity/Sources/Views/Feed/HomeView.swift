@@ -1,371 +1,157 @@
 // HomeView.swift
-// Layer 1 ROOT — Home tab — matches web design
-// Challenge banner → Continue creating → Community chat feed → Message input
+// "Community Feed" — matches reference exactly
+// Post cards with avatar, play button overlay, duration badge, stats row
 
 import SwiftUI
 
-// Seed messages (matches web app exactly)
-private struct CommunityMsg: Identifiable {
-    let id: String
-    let username: String
-    let avatar: String
-    let isBot: Bool
-    let text: String
-    let time: String
-    let likes: Int
-    let replies: Int
-    let isAnnouncement: Bool
-}
-
-private let seedMessages: [CommunityMsg] = [
-    .init(id: "1", username: "Spatter", avatar: "🩸", isBot: true,
-          text: "Welcome to StickDeath ∞! 🎨 Share your animations, get feedback, and connect with other creators. The bloodier the better. 💀",
-          time: "2m ago", likes: 12, replies: 3, isAnnouncement: false),
-    .init(id: "2", username: "StickMaster99", avatar: "💀", isBot: false,
-          text: "Just finished my first fight scene! 6 frames of pure chaos. How do you guys do smooth walk cycles?",
-          time: "5m ago", likes: 8, replies: 5, isAnnouncement: false),
-    .init(id: "3", username: "Spatter", avatar: "🩸", isBot: true,
-          text: "🔥 Weekly Challenge is LIVE: \"Epic Death Scene\" — Create the most creative death animation. Winner gets featured! Ends in 3 days.",
-          time: "15m ago", likes: 24, replies: 11, isAnnouncement: true),
-    .init(id: "4", username: "AnimateOrDie", avatar: "⚔️", isBot: false,
-          text: "Pro tip: use onion skinning set to 2 frames before/after for fight scenes. Changes everything.",
-          time: "22m ago", likes: 31, replies: 7, isAnnouncement: false),
-    .init(id: "5", username: "BoneBreaker", avatar: "🦴", isBot: false,
-          text: "Anyone else obsessed with the stick figure tool? I\'ve been posing for like an hour 😂",
-          time: "45m ago", likes: 15, replies: 4, isAnnouncement: false),
-]
-
 struct HomeView: View {
     @EnvironmentObject var router: NavigationRouter
-    @EnvironmentObject var offline: OfflineManager
-    @State private var items: [FeedItem] = []
-    @State private var loading = true
-    @State private var newMessage = ""
-    @State private var likedMessages: Set<String> = []
+    @State private var feedItems = FeedItem.sampleFeed
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // ── Header: STICKDEATH ∞ ──
-                stickyHeader
-
-                ScrollView {
-                    VStack(spacing: 12) {
-                        // ── Featured Challenge Banner ──
-                        challengeBanner
-                            .padding(.horizontal, 16)
-
-                        // ── Continue Creating ──
-                        continueCard
-                            .padding(.horizontal, 16)
-
-                        // ── COMMUNITY header ──
-                        HStack {
-                            Text("COMMUNITY")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.white)
-                                .tracking(1)
-                            Spacer()
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(.green)
-                                    .frame(width: 6, height: 6)
-                                Text("142 online")
-                                    .font(.system(size: 10))
-                                    .foregroundStyle(.green)
-                            }
-                        }
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 0) {
+                    // ── Header ──
+                    Text("Community Feed")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 16)
-                        .padding(.top, 4)
+                        .padding(.top, 16)
+                        .padding(.bottom, 12)
 
-                        // ── Messages ──
-                        ForEach(seedMessages) { msg in
-                            communityMessageCard(msg)
-                                .padding(.horizontal, 16)
-                        }
-
-                        // Spacer for input bar
-                        Color.clear.frame(height: 60)
+                    // ── Feed Posts ──
+                    ForEach(feedItems) { item in
+                        FeedPostCard(item: item)
+                            .onTapGesture {
+                                router.push(HomeDestination.postDetail(item))
+                            }
+                        Divider()
+                            .background(ThemeManager.border)
                     }
-                    .padding(.top, 12)
-                }
 
-                // ── Message Input ──
-                messageInput
+                    // Bottom padding for tab bar
+                    Spacer().frame(height: 80)
+                }
             }
         }
         .navigationBarHidden(true)
     }
+}
 
-    // MARK: - Header
-    var stickyHeader: some View {
-        HStack {
-            HStack(spacing: 0) {
-                Text("STICK")
-                    .foregroundStyle(ThemeManager.brand)
-                Text("DEATH")
-                    .foregroundStyle(.white)
-                Text(" ∞")
-                    .foregroundStyle(Color(hex: "#ef4444"))
-                    .font(.system(size: 12))
-            }
-            .font(.custom("SpecialElite-Regular", size: 18, relativeTo: .headline))
-            .fontWeight(.black)
+// MARK: - Feed Post Card (matches reference)
+struct FeedPostCard: View {
+    let item: FeedItem
 
-            Spacer()
-
-            Button {
-                router.selectedTab = .profile
-            } label: {
-                Circle()
-                    .fill(ThemeManager.surface)
-                    .frame(width: 32, height: 32)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .strokeBorder(ThemeManager.border, lineWidth: 1)
-                    )
-                    .overlay(
-                        Image(systemName: "person")
-                            .font(.system(size: 13))
-                            .foregroundStyle(ThemeManager.textMuted)
-                    )
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(ThemeManager.background.opacity(0.9))
-        .overlay(
-            Rectangle().fill(ThemeManager.border).frame(height: 1),
-            alignment: .bottom
-        )
-    }
-
-    // MARK: - Challenge Banner
-    var challengeBanner: some View {
-        Button {
-            router.selectedTab = .challenges
-        } label: {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(ThemeManager.brand.opacity(0.2))
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        Image(systemName: "trophy.fill")
-                            .font(.system(size: 16))
-                            .foregroundStyle(ThemeManager.brand)
-                    )
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Epic Death Scene")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("47 entries · 3 days left · Prize: Featured Creator")
-                        .font(.system(size: 10))
-                        .foregroundStyle(ThemeManager.textSecondary)
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // ── Author Row ──
+            HStack(spacing: 10) {
+                // Avatar
+                ZStack {
+                    Circle()
+                        .fill(ThemeManager.surface)
+                        .frame(width: 36, height: 36)
+                    Text(item.authorEmoji)
+                        .font(.system(size: 18))
                 }
 
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.authorName)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                    Text(item.timeAgo)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color(hex: "#9090a8"))
+                }
                 Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ThemeManager.textDim)
             }
-            .padding(12)
-            .background(
-                LinearGradient(
-                    colors: [ThemeManager.brand.opacity(0.15), Color(hex: "#7f1d1d").opacity(0.08)],
-                    startPoint: .leading, endPoint: .trailing
-                )
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(ThemeManager.brand.opacity(0.3), lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .padding(.bottom, 10)
 
-    // MARK: - Continue Creating Card
-    var continueCard: some View {
-        Button {
-            router.selectedTab = .studio
-        } label: {
-            HStack(spacing: 12) {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(ThemeManager.surface)
-                    .frame(width: 40, height: 40)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(ThemeManager.border, lineWidth: 1)
-                    )
+            // ── Video Thumbnail ──
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(hex: "#1a1a24"))
+                    .aspectRatio(16/10, contentMode: .fill)
+
+                // Play button
+                Circle()
+                    .fill(Color.white.opacity(0.15))
+                    .frame(width: 52, height: 52)
                     .overlay(
                         Image(systemName: "play.fill")
-                            .font(.system(size: 14))
-                            .foregroundStyle(ThemeManager.textMuted)
+                            .font(.system(size: 20))
+                            .foregroundStyle(.white)
+                            .offset(x: 2)
                     )
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Continue creating")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                    Text("Jump back into the studio")
-                        .font(.system(size: 10))
-                        .foregroundStyle(ThemeManager.textMuted)
-                }
-
-                Spacer()
-
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ThemeManager.textDim)
-            }
-            .padding(12)
-            .background(ThemeManager.card)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(ThemeManager.border, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: - Community Message Card
-    private func communityMessageCard(_ msg: CommunityMsg) -> some View {
-        let isLiked = likedMessages.contains(msg.id)
-
-        return VStack(alignment: .leading, spacing: 6) {
-            // User row
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(msg.isBot ? ThemeManager.brand.opacity(0.2) : ThemeManager.surface)
-                    .frame(width: 28, height: 28)
-                    .overlay(
-                        Group {
-                            if !msg.isBot {
-                                Circle().strokeBorder(ThemeManager.border, lineWidth: 1)
-                            }
-                        }
-                    )
-                    .overlay(Text(msg.avatar).font(.system(size: 13)))
-
-                HStack(spacing: 6) {
-                    Text(msg.username)
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(msg.isBot ? Color(hex: "#f87171") : .white)
-
-                    if msg.isBot {
-                        Text("AI")
-                            .font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(Color(hex: "#f87171"))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ThemeManager.brand.opacity(0.2))
-                            .clipShape(Capsule())
-                    }
-                }
-
-                Spacer()
-
-                Text(msg.time)
-                    .font(.system(size: 10))
-                    .foregroundStyle(ThemeManager.textDim)
-            }
-
-            // Text
-            Text(msg.text)
-                .font(.system(size: 12))
-                .foregroundStyle(Color(hex: "#c0c0d0"))
-                .lineSpacing(3)
-                .padding(.leading, 36)
-
-            // Actions
-            HStack(spacing: 16) {
-                Button {
-                    if likedMessages.contains(msg.id) { likedMessages.remove(msg.id) }
-                    else { likedMessages.insert(msg.id) }
-                } label: {
-                    HStack(spacing: 3) {
-                        Image(systemName: isLiked ? "heart.fill" : "heart")
-                            .font(.system(size: 11))
-                        Text("\(msg.likes + (isLiked ? 1 : 0))")
-                            .font(.system(size: 10))
-                    }
-                    .foregroundStyle(isLiked ? ThemeManager.brand : ThemeManager.textDim)
-                }
-
-                HStack(spacing: 3) {
-                    Image(systemName: "bubble.right")
-                        .font(.system(size: 11))
-                    Text("\(msg.replies)")
-                        .font(.system(size: 10))
-                }
-                .foregroundStyle(ThemeManager.textDim)
-
-                if msg.isAnnouncement {
+                // Duration badge
+                VStack {
                     Spacer()
-                    Button {
-                        router.selectedTab = .challenges
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "flame.fill")
-                                .font(.system(size: 11))
-                            Text("Join Challenge")
-                                .font(.system(size: 10, weight: .semibold))
-                        }
-                        .foregroundStyle(ThemeManager.brand)
+                    HStack {
+                        Spacer()
+                        Text(item.duration)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.7))
+                            .clipShape(RoundedRectangle(cornerRadius: 4))
                     }
                 }
+                .padding(8)
             }
-            .padding(.leading, 36)
-            .padding(.top, 2)
-        }
-        .padding(12)
-        .background(msg.isAnnouncement ? ThemeManager.brand.opacity(0.06) : ThemeManager.card.opacity(1))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(
-                    msg.isAnnouncement ? ThemeManager.brand.opacity(0.2) : ThemeManager.surface,
-                    lineWidth: 1
-                )
-        )
-    }
+            .padding(.horizontal, 16)
 
-    // MARK: - Message Input
-    var messageInput: some View {
-        HStack(spacing: 8) {
-            TextField("Message the community...", text: $newMessage)
-                .font(.system(size: 13))
+            // ── Title ──
+            Text("\(item.title) — \(item.frameCount) frames")
+                .font(.system(size: 14))
                 .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
 
-            Button {} label: {
-                Image(systemName: "paperplane.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(newMessage.isEmpty ? ThemeManager.border : ThemeManager.brand)
+            // ── Stats Row ──
+            HStack(spacing: 16) {
+                Label("\(item.likes)", systemImage: "heart.fill")
+                    .foregroundStyle(.red)
+                Label("\(item.comments)", systemImage: "bubble.left.fill")
+                    .foregroundStyle(Color(hex: "#9090a8"))
+                Label("\(item.views)", systemImage: "eye.fill")
+                    .foregroundStyle(Color(hex: "#9090a8"))
             }
-            .disabled(newMessage.isEmpty)
+            .font(.system(size: 13))
+            .padding(.horizontal, 16)
+            .padding(.top, 6)
+            .padding(.bottom, 14)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .background(ThemeManager.card)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(ThemeManager.border, lineWidth: 1)
-        )
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(ThemeManager.background.opacity(0.95))
     }
+}
 
-    // MARK: - Data loading
-    func loadFeed() async {
-        loading = true
-        items = (try? await ProjectService.shared.fetchFeed(page: 1)) ?? []
-        loading = false
-    }
+// MARK: - Sample Data
+extension FeedItem {
+    static let sampleFeed: [FeedItem] = [
+        FeedItem(id: 1, title: "Epic Sword Fight", authorName: "xBladeRunner", authorEmoji: "⚔️",
+                 timeAgo: "2h ago", duration: "0:04", frameCount: 48,
+                 likes: 342, comments: 28, views: 1240),
+        FeedItem(id: 2, title: "Parkour Chase Scene", authorName: "StickMasterFlex", authorEmoji: "💀",
+                 timeAgo: "4h ago", duration: "0:04", frameCount: 64,
+                 likes: 215, comments: 12, views: 890),
+        FeedItem(id: 3, title: "Ninja Star Throw", authorName: "AnimateOrDie", authorEmoji: "🔥",
+                 timeAgo: "6h ago", duration: "0:03", frameCount: 36,
+                 likes: 189, comments: 9, views: 720),
+        FeedItem(id: 4, title: "Matrix Dodge", authorName: "BoneBreaker", authorEmoji: "💥",
+                 timeAgo: "8h ago", duration: "0:05", frameCount: 60,
+                 likes: 456, comments: 34, views: 2100),
+        FeedItem(id: 5, title: "Stick Figure Dance", authorName: "FlipMaster", authorEmoji: "🕺",
+                 timeAgo: "12h ago", duration: "0:06", frameCount: 72,
+                 likes: 567, comments: 45, views: 3200),
+        FeedItem(id: 6, title: "Explosion Effect", authorName: "DeathFrame", authorEmoji: "💣",
+                 timeAgo: "1d ago", duration: "0:02", frameCount: 24,
+                 likes: 123, comments: 7, views: 450),
+    ]
 }

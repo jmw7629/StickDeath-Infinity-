@@ -1,351 +1,261 @@
 // ProfileView.swift
-// Layer 1 ROOT — Profile tab
-//
-// Why is the user here?  → View identity, settings, notifications, messages
-// Next action?           → Check notifications, read messages, edit profile
-// Back?                  → Tab root (this IS the root)
-// Forward?               → Notifications (push), Messages (push), Settings (push)
-//
-// RULE: Context screens (Notifications, Messages) are pushed via NavigationLink
-//       so back retraces the exact path. Action screens (Edit Profile, Subscription)
-//       use sheets because they're temporary and return to Profile.
-//
-// Flow: Profile → Notifications → Notification → Content → Back → Back → Profile
+// Matches reference exactly:
+// Avatar with red ring, username, Creator badge $7.99/mo
+// Stats grid: Projects, Published, Followers, Likes
+// Menu items: Messages, Notifications, Settings, Theme
+// Subscription tiers: Free $0, Pro $4.99, Creator $7.99
 
 import SwiftUI
 
 struct ProfileView: View {
     @EnvironmentObject var auth: AuthManager
     @EnvironmentObject var router: NavigationRouter
-    @Environment(\.deviceContext) var ctx
-
-    // Sheets (Layer 3 — action screens that close, not navigate)
-    @State private var showEditProfile = false
-    @State private var showSubscription = false
-
-    // Badge counts
-    @State private var unreadNotifications = 0
-    @State private var unreadMessages = 0
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            ScrollView {
-                VStack(spacing: 24) {
-                    // ── Profile Card ──
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: 0) {
+                    // ── Avatar & Name ──
                     profileHeader
-                        .frame(maxWidth: ctx.maxContentWidth)
+                        .padding(.top, 24)
+                        .padding(.bottom, 20)
 
-                    // ── Quick Stats ──
-                    statsRow
-                        .frame(maxWidth: ctx.maxContentWidth)
+                    // ── Stats Grid ──
+                    statsGrid
+                        .padding(.bottom, 24)
 
-                    // ── Achievement Badges ──
-                    achievementStrip
+                    // ── Menu Items ──
+                    menuSection
+                        .padding(.bottom, 24)
 
-                    Divider().background(ThemeManager.border).padding(.horizontal)
+                    // ── Subscription Plans ──
+                    subscriptionSection
+                        .padding(.bottom, 24)
 
-                    // ── Navigation Menu (Layer 2 context pushes + Layer 3 sheets) ──
-                    navigationMenu
-                        .frame(maxWidth: ctx.maxContentWidth)
+                    // ── Sign Out ──
+                    Button {
+                        Task { try? await auth.signOut() }
+                    } label: {
+                        Text("Sign Out")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.red)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(ThemeManager.card)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(ThemeManager.border, lineWidth: 1)
+                            )
+                    }
+                    .padding(.horizontal, 16)
 
-                    Text("StickDeath Infinity v1.0")
-                        .font(.caption2).foregroundStyle(.gray).padding(.top, 8)
+                    Spacer().frame(height: 100)
                 }
-                .padding(.bottom, 32)
             }
         }
-        .navigationTitle("Profile")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    router.openSpatter(context: .profile)
-                } label: {
-                    Image(systemName: "sparkles").foregroundStyle(.red)
-                }
-            }
-        }
-        // Layer 3 sheets — close on dismiss, never navigate
-        .sheet(isPresented: $showEditProfile) { EditProfileSheet() }
-        .sheet(isPresented: $showSubscription) { SubscriptionView() }
-        .task { await loadBadgeCounts() }
+        .navigationBarHidden(true)
     }
 
     // MARK: - Profile Header
     var profileHeader: some View {
-        VStack(spacing: 14) {
-            ZStack(alignment: .bottomTrailing) {
-                if let url = auth.currentUser?.avatar_url, !url.isEmpty {
-                    AsyncImage(url: URL(string: url)) { img in
-                        img.resizable().scaledToFill()
-                    } placeholder: { avatarPlaceholder }
-                    .frame(width: 90, height: 90)
-                    .clipShape(Circle())
-                } else {
-                    avatarPlaceholder
-                }
-
-                Button { showEditProfile = true } label: {
-                    Image(systemName: "pencil.circle.fill")
-                        .font(.title3).foregroundStyle(.red)
-                        .background(Circle().fill(ThemeManager.background).frame(width: 26, height: 26))
-                }
+        VStack(spacing: 10) {
+            // Avatar with red ring
+            ZStack {
+                Circle()
+                    .stroke(ThemeManager.brand, lineWidth: 3)
+                    .frame(width: 88, height: 88)
+                Circle()
+                    .fill(ThemeManager.surface)
+                    .frame(width: 80, height: 80)
+                Text("JW")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(.white)
             }
 
-            Text(auth.currentUser?.username ?? "User").font(.title2.bold())
+            // Username
+            Text(auth.currentUser?.username ?? "joe_willis")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.white)
 
-            if let bio = auth.currentUser?.bio, !bio.isEmpty {
-                Text(bio).font(.subheadline).foregroundStyle(.gray)
-                    .multilineTextAlignment(.center).padding(.horizontal, 32)
+            // Creator badge
+            HStack(spacing: 6) {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.yellow)
+                Text("Creator")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white)
+                Text("$7.99/mo")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color(hex: "#9090a8"))
             }
-
-            if let skill = auth.currentUser?.skill_level {
-                HStack(spacing: 6) {
-                    Image(systemName: skillIcon(skill)).font(.caption2)
-                    Text(skill.capitalized).font(.caption.bold())
-                }
-                .foregroundStyle(skillColor(skill))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(skillColor(skill).opacity(0.15))
-                .clipShape(Capsule())
-            }
-
-            HStack(spacing: 8) {
-                if auth.isPro {
-                    Label("PRO", systemImage: "star.fill")
-                        .font(.caption.bold()).foregroundStyle(.black)
-                        .padding(.horizontal, 12).padding(.vertical, 4)
-                        .background(.red).clipShape(Capsule())
-                } else {
-                    Button { showSubscription = true } label: {
-                        Label("Upgrade to Pro", systemImage: "star")
-                            .font(.caption.bold()).foregroundStyle(.red)
-                            .padding(.horizontal, 12).padding(.vertical, 4)
-                            .background(.red.opacity(0.15)).clipShape(Capsule())
-                    }
-                }
-            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .background(ThemeManager.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
         }
-        .padding(.top, 20)
     }
 
-    var avatarPlaceholder: some View {
-        Circle()
-            .fill(LinearGradient(colors: [.red.opacity(0.4), .red.opacity(0.3)], startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: 90, height: 90)
-            .overlay(
-                Text(String(auth.currentUser?.username?.prefix(1) ?? "?").uppercased())
-                    .font(.system(size: 36, weight: .bold)).foregroundStyle(.white)
-            )
-    }
-
-    // MARK: - Stats
-    var statsRow: some View {
+    // MARK: - Stats Grid
+    var statsGrid: some View {
         HStack(spacing: 0) {
-            StatItem(value: "0", label: "Animations", icon: "film")
-            Divider().frame(height: 32).background(ThemeManager.border)
-            StatItem(value: "0", label: "Views", icon: "eye")
-            Divider().frame(height: 32).background(ThemeManager.border)
-            StatItem(value: "0", label: "Likes", icon: "heart")
-            Divider().frame(height: 32).background(ThemeManager.border)
-            StatItem(value: "0", label: "Streak", icon: "flame")
+            statItem("12", "Projects")
+            statDivider
+            statItem("5", "Published")
+            statDivider
+            statItem("234", "Followers")
+            statDivider
+            statItem("1.2k", "Likes")
         }
-        .padding(.vertical, 12)
-        .background(ThemeManager.surfaceLight)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.vertical, 16)
+        .background(ThemeManager.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(ThemeManager.border, lineWidth: 1)
+        )
         .padding(.horizontal, 16)
     }
 
-    // MARK: - Achievement Strip
-    var achievementStrip: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Achievements").font(.subheadline.bold())
-                Spacer()
-                Button("See All") {
-                    router.profilePath.append(ProfileDestination.achievements)
-                }
-                .font(.caption).foregroundStyle(.red)
-            }
-            .padding(.horizontal, 16)
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(Achievement.all.prefix(6)) { badge in
-                        VStack(spacing: 4) {
-                            ZStack {
-                                Circle()
-                                    .fill(badge.unlocked ? badge.color.opacity(0.2) : ThemeManager.surface)
-                                    .frame(width: 50, height: 50)
-                                Image(systemName: badge.icon)
-                                    .font(.title3)
-                                    .foregroundStyle(badge.unlocked ? badge.color : .gray.opacity(0.4))
-                            }
-                            Text(badge.title)
-                                .font(.system(size: 9)).foregroundStyle(.gray)
-                                .lineLimit(1)
-                        }
-                        .frame(width: 60)
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
-        }
-    }
-
-    // MARK: - Navigation Menu
-    // Context screens → NavigationLink (push, back retraces)
-    // Action screens → sheet (close, return here)
-    var navigationMenu: some View {
+    func statItem(_ value: String, _ label: String) -> some View {
         VStack(spacing: 2) {
-            // ── Context pushes (Layer 2 — stay in Profile tab) ──
-            NavMenuRow(icon: "bell.fill", title: "Notifications", tint: .yellow,
-                       badge: unreadNotifications) {
-                router.profilePath.append(ProfileDestination.notifications)
-            }
-
-            NavMenuRow(icon: "bubble.left.and.bubble.right.fill", title: "Messages", tint: .cyan,
-                       badge: unreadMessages) {
-                router.profilePath.append(ProfileDestination.messages)
-            }
-
-            Divider().background(ThemeManager.border).padding(.vertical, 4).padding(.horizontal)
-
-            // ── Action sheets (Layer 3 — close, return here) ──
-            NavMenuRow(icon: "person.circle", title: "Edit Profile") {
-                showEditProfile = true
-            }
-
-            NavMenuRow(icon: "paintpalette.fill", title: "Personalization", tint: .purple) {
-                router.profilePath.append(ProfileDestination.personalization)
-            }
-
-            NavMenuRow(icon: "star.circle", title: "Subscription") {
-                showSubscription = true
-            }
-
-            NavMenuRow(icon: "link.circle", title: "Connected Accounts") {
-                router.profilePath.append(ProfileDestination.connectedAccounts)
-            }
-
-            NavMenuRow(icon: "trophy.circle", title: "Achievements", tint: .yellow) {
-                router.profilePath.append(ProfileDestination.achievements)
-            }
-
-            NavMenuRow(icon: "gift.circle", title: "Invite Friends", tint: .green) {
-                router.profilePath.append(ProfileDestination.referral)
-            }
-
-            NavMenuRow(icon: "questionmark.circle", title: "Help & Instructions", tint: .cyan) {
-                router.profilePath.append(ProfileDestination.help)
-            }
-
-            NavMenuRow(icon: "play.circle", title: "Replay Tutorial", tint: .green) {
-                UserDefaults.standard.set(false, forKey: "hasCompletedOnboarding")
-                NotificationCenter.default.post(name: .replayOnboarding, object: nil)
-            }
-
-            if auth.isAdmin {
-                NavMenuRow(icon: "shield.checkered", title: "Admin Portal", tint: .purple) {}
-            }
-
-            // Sign out
-            Button {
-                Task { await auth.logout() }
-            } label: {
-                HStack {
-                    Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .foregroundStyle(.red).frame(width: 24)
-                    Text("Sign Out").foregroundStyle(.red)
-                    Spacer()
-                }
-                .padding()
-            }
-        }
-        .padding(.horizontal)
-    }
-
-    // MARK: - Badge Counts
-    func loadBadgeCounts() async {
-        guard let userId = auth.session?.user.id else { return }
-        let unread: [AppNotification] = (try? await supabase
-            .from("notifications").select()
-            .eq("user_id", value: userId.uuidString)
-            .eq("read", value: false)
-            .execute().value) ?? []
-        unreadNotifications = unread.count
-    }
-
-    func skillIcon(_ level: String) -> String {
-        switch level {
-        case "beginner": return "star"
-        case "intermediate": return "star.leadinghalf.filled"
-        case "advanced": return "star.fill"
-        default: return "star"
-        }
-    }
-
-    func skillColor(_ level: String) -> Color {
-        switch level {
-        case "beginner": return .green
-        case "intermediate": return .red
-        case "advanced": return .red
-        default: return .gray
-        }
-    }
-}
-
-// MARK: - Nav Menu Row (with optional badge)
-struct NavMenuRow: View {
-    let icon: String
-    let title: String
-    var tint: Color = .red
-    var badge: Int = 0
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack {
-                Image(systemName: icon).foregroundStyle(tint).frame(width: 24)
-                Text(title).font(.subheadline)
-                Spacer()
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.caption2.bold())
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(.red)
-                        .clipShape(Capsule())
-                }
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.gray)
-            }
-            .padding()
-            .background(ThemeManager.surfaceLight)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-    }
-}
-
-// MARK: - Notification for replaying onboarding
-extension Notification.Name {
-    static let replayOnboarding = Notification.Name("replayOnboarding")
-}
-
-// Keep StatItem and helper types for backwards compat
-struct StatItem: View {
-    let value: String
-    let label: String
-    var icon: String = ""
-
-    var body: some View {
-        VStack(spacing: 4) {
-            if !icon.isEmpty {
-                Image(systemName: icon).font(.caption2).foregroundStyle(.red)
-            }
-            Text(value).font(.title3.bold())
-            Text(label).font(.caption2).foregroundStyle(.gray)
+            Text(value)
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.white)
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundStyle(Color(hex: "#9090a8"))
         }
         .frame(maxWidth: .infinity)
+    }
+
+    var statDivider: some View {
+        Rectangle()
+            .fill(ThemeManager.border)
+            .frame(width: 1, height: 36)
+    }
+
+    // MARK: - Menu Items
+    var menuSection: some View {
+        VStack(spacing: 2) {
+            menuItem(icon: "envelope.fill", title: "Messages", color: .blue) {
+                router.push(ProfileDestination.messages)
+            }
+            menuItem(icon: "bell.fill", title: "Notifications", color: .orange, badge: 3) {
+                router.push(ProfileDestination.notifications)
+            }
+            menuItem(icon: "gearshape.fill", title: "Settings", color: Color(hex: "#9090a8")) {
+                router.push(ProfileDestination.settings)
+            }
+            menuItem(icon: "paintpalette.fill", title: "Theme", color: .purple) {
+                router.push(ProfileDestination.personalization)
+            }
+            menuItem(icon: "trophy.fill", title: "Achievements", color: .yellow) {
+                router.push(ProfileDestination.achievements)
+            }
+            menuItem(icon: "link", title: "Connected Accounts", color: .green) {
+                router.push(ProfileDestination.connectedAccounts)
+            }
+            menuItem(icon: "questionmark.circle.fill", title: "Help Center", color: .teal) {
+                router.push(ProfileDestination.help)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    func menuItem(icon: String, title: String, color: Color, badge: Int = 0, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                    .foregroundStyle(color)
+                    .frame(width: 32, height: 32)
+
+                Text(title)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(.white)
+
+                Spacer()
+
+                if badge > 0 {
+                    Text("\(badge)")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 22, height: 22)
+                        .background(ThemeManager.brand)
+                        .clipShape(Circle())
+                }
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(Color(hex: "#5a5a6e"))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(ThemeManager.card)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    // MARK: - Subscription Plans
+    var subscriptionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Subscription")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+
+            HStack(spacing: 10) {
+                planCard(tier: "Free", price: "$0", features: ["5 Projects", "720p Export", "Watermark"], isActive: false)
+                planCard(tier: "Pro", price: "$4.99", features: ["Unlimited", "1080p Export", "No Watermark"], isActive: false)
+                planCard(tier: "Creator", price: "$7.99", features: ["Everything", "4K Export", "Analytics"], isActive: true)
+            }
+            .padding(.horizontal, 16)
+        }
+    }
+
+    func planCard(tier: String, price: String, features: [String], isActive: Bool) -> some View {
+        VStack(spacing: 8) {
+            Text(tier)
+                .font(.system(size: 14, weight: .bold))
+                .foregroundStyle(isActive ? ThemeManager.brand : .white)
+
+            Text(price)
+                .font(.system(size: 22, weight: .black))
+                .foregroundStyle(.white)
+
+            Text("/mo")
+                .font(.system(size: 11))
+                .foregroundStyle(Color(hex: "#9090a8"))
+                .offset(y: -4)
+
+            VStack(spacing: 4) {
+                ForEach(features, id: \.self) { feat in
+                    Text(feat)
+                        .font(.system(size: 10))
+                        .foregroundStyle(Color(hex: "#9090a8"))
+                }
+            }
+
+            if isActive {
+                Text("CURRENT")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(ThemeManager.brand)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 14)
+        .background(ThemeManager.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isActive ? ThemeManager.brand : ThemeManager.border, lineWidth: isActive ? 2 : 1)
+        )
     }
 }

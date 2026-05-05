@@ -85,7 +85,41 @@ class AuthManager: ObservableObject {
         await fetchProfile()
     }
 
+    // MARK: - Sign Up (with name)
+    func signUp(email: String, password: String, name: String, username: String) async throws {
+        let response = try await supabase.auth.signUp(
+            email: email,
+            password: password,
+            data: ["username": .string(username), "full_name": .string(name)]
+        )
+        session = response.session
+        isLoggedIn = true
+        await fetchProfile()
+    }
+
     // MARK: - Login
+    func signIn(email: String, password: String) async throws {
+        try await login(email: email, password: password)
+    }
+
+    func signOut() async throws {
+        await logout()
+    }
+
+    /// Handle ASAuthorization result from SignInWithAppleButton
+    func handleAppleSignIn(result: Result<ASAuthorization, Error>) async {
+        switch result {
+        case .success(let auth):
+            guard let credential = auth.credential as? ASAuthorizationAppleIDCredential,
+                  let tokenData = credential.identityToken,
+                  let idToken = String(data: tokenData, encoding: .utf8) else { return }
+            let nonce = rawNonce ?? generateNonce()
+            try? await signInWithApple(idToken: idToken, nonce: nonce)
+        case .failure(let error):
+            print("Apple Sign-In failed: \(error)")
+        }
+    }
+
     func login(email: String, password: String) async throws {
         session = try await supabase.auth.signIn(
             email: email,

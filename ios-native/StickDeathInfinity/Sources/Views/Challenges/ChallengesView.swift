@@ -1,209 +1,129 @@
 // ChallengesView.swift
-// Layer 1 ROOT — Challenges tab
-//
-// Why is the user here?  → Browse & join community challenges
-// Next action?           → Tap a challenge → see details → join → create
-// Back?                  → Tab root (this IS the root)
-// Forward?               → ChallengeDetail → Join → Editor
-//
-// Flow: Challenges → Detail → Join → Create → Back → Detail (not Home)
+// "Challenges" — "Compete. Create. Win."
+// Cards with ACTIVE (green), VOTING (yellow), COMPLETED (gray) badges
 
 import SwiftUI
 
 struct ChallengesView: View {
     @EnvironmentObject var router: NavigationRouter
-    @State private var challenges: [Challenge] = []
-    @State private var loading = true
-    @State private var filter: ChallengeFilter = .active
-
-    enum ChallengeFilter: String, CaseIterable {
-        case active = "Active"
-        case voting = "Voting"
-        case completed = "Past"
-        case all = "All"
-    }
-
-    var filteredChallenges: [Challenge] {
-        switch filter {
-        case .all: return challenges
-        case .active: return challenges.filter { $0.status == "active" }
-        case .voting: return challenges.filter { $0.status == "voting" }
-        case .completed: return challenges.filter { $0.status == "completed" }
-        }
-    }
+    @State private var challenges = Challenge.sampleChallenges
 
     var body: some View {
         ZStack {
             ThemeManager.background.ignoresSafeArea()
 
-            if loading && challenges.isEmpty {
-                ProgressView().tint(.red)
-            } else if challenges.isEmpty {
-                emptyState
-            } else {
-                VStack(spacing: 0) {
-                    // ── Filter pills ──
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(ChallengeFilter.allCases, id: \.self) { f in
-                                Button {
-                                    filter = f
-                                    HapticManager.shared.buttonTap()
-                                } label: {
-                                    Text(f.rawValue)
-                                        .font(.caption.bold())
-                                        .foregroundStyle(filter == f ? .black : .white)
-                                        .padding(.horizontal, 14).padding(.vertical, 8)
-                                        .background(filter == f ? Color.red : ThemeManager.surface)
-                                        .clipShape(Capsule())
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 16) {
+                    // ── Header ──
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Challenges")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundStyle(.white)
+                        Text("Compete. Create. Win.")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color(hex: "#9090a8"))
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
 
                     // ── Challenge Cards ──
-                    ScrollView {
-                        LazyVStack(spacing: 14) {
-                            ForEach(filteredChallenges) { challenge in
-                                ChallengeCard(challenge: challenge) {
-                                    router.challengesPath.append(
-                                        ChallengesDestination.challengeDetail(challenge)
-                                    )
-                                }
+                    ForEach(challenges) { challenge in
+                        ChallengeCard(challenge: challenge)
+                            .onTapGesture {
+                                router.push(ChallengesDestination.challengeDetail(challenge))
                             }
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 32)
                     }
-                    .refreshable { await loadChallenges() }
+
+                    // Bottom padding for tab bar
+                    Spacer().frame(height: 80)
                 }
             }
         }
-        .navigationTitle("Challenges")
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    router.openSpatter(context: .challenges)
-                } label: {
-                    Image(systemName: "sparkles").foregroundStyle(.red)
-                }
-            }
-        }
-        .task { await loadChallenges() }
-    }
-
-    var emptyState: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "trophy.fill")
-                .font(.system(size: 56)).foregroundStyle(.red.opacity(0.5))
-            Text("No challenges yet")
-                .font(.title3.bold())
-            Text("Check back soon for community challenges!")
-                .font(.subheadline).foregroundStyle(.gray)
-                .multilineTextAlignment(.center)
-        }
-        .padding(32)
-    }
-
-    func loadChallenges() async {
-        loading = true
-        challenges = (try? await supabase
-            .from("challenges")
-            .select()
-            .order("created_at", ascending: false)
-            .execute()
-            .value) ?? []
-        loading = false
+        .navigationBarHidden(true)
     }
 }
 
-// MARK: - Challenge Card (tappable → forward to detail)
+// MARK: - Challenge Card
 struct ChallengeCard: View {
     let challenge: Challenge
-    let onTap: () -> Void
 
     var body: some View {
-        Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 12) {
-                // Header with status badge
-                HStack {
-                    statusBadge
-                    Spacer()
-                    if let entries = challenge.entry_count, entries > 0 {
-                        Label("\(entries) entries", systemImage: "person.3.fill")
-                            .font(.caption2).foregroundStyle(.gray)
-                    }
-                }
-
-                // Title + theme
+        VStack(alignment: .leading, spacing: 10) {
+            // ── Title + Badge ──
+            HStack {
                 Text(challenge.title)
-                    .font(.title3.bold())
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.white)
-                    .multilineTextAlignment(.leading)
+                Spacer()
+                statusBadge
+            }
 
-                if let theme = challenge.theme, !theme.isEmpty {
-                    Text(theme)
-                        .font(.subheadline)
-                        .foregroundStyle(.red.opacity(0.8))
-                }
+            // ── Description ──
+            Text(challenge.description)
+                .font(.system(size: 14))
+                .foregroundStyle(Color(hex: "#9090a8"))
 
-                if let desc = challenge.description, !desc.isEmpty {
-                    Text(desc)
-                        .font(.caption)
-                        .foregroundStyle(.gray)
-                        .lineLimit(2)
-                }
+            // ── Stats Row ──
+            HStack(spacing: 16) {
+                Label("\(challenge.entries) entries", systemImage: "person.2.fill")
+                    .foregroundStyle(Color(hex: "#9090a8"))
+                Label(challenge.prize, systemImage: "trophy.fill")
+                    .foregroundStyle(Color.yellow)
+                Spacer()
+                Text(challenge.endDate)
+                    .foregroundStyle(Color(hex: "#9090a8"))
+            }
+            .font(.system(size: 12))
 
-                // Footer: dates + prize
-                HStack {
-                    if let prize = challenge.prize_description, !prize.isEmpty {
-                        Label(prize, systemImage: "gift.fill")
-                            .font(.caption2).foregroundStyle(.yellow)
-                    }
-                    Spacer()
-                    if let end = challenge.end_date?.prefix(10) {
-                        Label("Ends \(end)", systemImage: "clock")
-                            .font(.caption2).foregroundStyle(.gray)
-                    }
-                }
-
-                // CTA: clear forward action
-                HStack {
-                    Spacer()
-                    HStack(spacing: 6) {
-                        Text("View Challenge")
-                            .font(.caption.bold())
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 10))
-                    }
-                    .foregroundStyle(.red)
+            // ── Enter Button (only for active) ──
+            if challenge.status == .active {
+                Button {
+                    // Enter challenge
+                } label: {
+                    Text("Enter Challenge")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 42)
+                        .background(ThemeManager.brand)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
             }
-            .padding(16)
-            .background(ThemeManager.surfaceLight)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
         }
-        .buttonStyle(.plain)
+        .padding(16)
+        .background(ThemeManager.card)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(ThemeManager.border, lineWidth: 1)
+        )
+        .padding(.horizontal, 16)
     }
 
-    @ViewBuilder
     var statusBadge: some View {
-        let (text, color): (String, Color) = {
-            switch challenge.status {
-            case "active": return ("Active", .green)
-            case "voting": return ("Voting", .yellow)
-            case "completed": return ("Completed", .gray)
-            default: return ("Upcoming", .cyan)
-            }
-        }()
-
-        Text(text)
-            .font(.caption2.bold())
-            .foregroundStyle(color)
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(color.opacity(0.15))
-            .clipShape(Capsule())
+        Text(challenge.status.label)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .background(challenge.status.color)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
     }
+}
+
+// MARK: - Sample Data
+extension Challenge {
+    static let sampleChallenges: [Challenge] = [
+        Challenge(id: 1, title: "Free Fall", description: "Gravity-defying action",
+                  entries: 47, prize: "Featured + Pro badge", endDate: "Ends Apr 20",
+                  status: .active),
+        Challenge(id: 2, title: "Epic Showdown", description: "2-figure fight scenes",
+                  entries: 83, prize: "1 month Creator", endDate: "Ended Apr 13",
+                  status: .voting),
+        Challenge(id: 3, title: "Walk This Way", description: "Best walk cycle loop",
+                  entries: 121, prize: "Community spotlight", endDate: "Ended Apr 6",
+                  status: .completed),
+        Challenge(id: 4, title: "Speed Run", description: "Complete in under 60 seconds",
+                  entries: 65, prize: "Pro badge", endDate: "Ended Mar 30",
+                  status: .completed),
+    ]
 }

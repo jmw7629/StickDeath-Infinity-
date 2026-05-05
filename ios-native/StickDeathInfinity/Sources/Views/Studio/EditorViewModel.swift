@@ -76,6 +76,40 @@ class EditorViewModel: ObservableObject {
         rig.bones.first { $0.id == selectedBoneId }
     }
 
+    // Convenience computed properties for StudioView
+    var fps: Int { project.fps ?? 12 }
+    var frameCount: Int { max(frames.count, 1) }
+    var layerCount: Int { figures.count }
+    var currentFrame: Int { currentFrameIndex }
+
+    // Clipboard
+    private var copiedFrame: AnimationFrame?
+
+    func copyFrame() {
+        guard currentFrameIndex < frames.count else { return }
+        copiedFrame = frames[currentFrameIndex]
+    }
+
+    func pasteFrame() {
+        guard let frame = copiedFrame else { return }
+        var newFrame = frame
+        newFrame = AnimationFrame(
+            id: UUID(),
+            figureStates: frame.figureStates,
+            duration: frame.duration,
+            placedObjects: frame.placedObjects,
+            drawnElements: frame.drawnElements,
+            importedImages: frame.importedImages
+        )
+        if currentFrameIndex < frames.count {
+            frames.insert(newFrame, at: currentFrameIndex + 1)
+            currentFrameIndex += 1
+        } else {
+            frames.append(newFrame)
+            currentFrameIndex = frames.count - 1
+        }
+    }
+
     // Auto-save timer
     private var autoSaveTask: Task<Void, Never>?
     private var isDirty = false

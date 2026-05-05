@@ -1,75 +1,87 @@
 // WelcomeView.swift
-// First screen users see — sign up or log in
+// Pixel-perfect match to reference: skull 💀, STICKDEATH ∞, Sign In + Create Account
+// Background: #0a0a0f, brand red: #dc2626
 
 import SwiftUI
 
 struct WelcomeView: View {
     @State private var showLogin = false
     @State private var showSignUp = false
+    @State private var opacity: Double = 0
 
     var body: some View {
         ZStack {
-            // Background
-            LinearGradient(
-                colors: [Color.black, Color(hex: "#1a0a00")],
-                startPoint: .top, endPoint: .bottom
-            ).ignoresSafeArea()
+            Color(hex: "#0a0a0f").ignoresSafeArea()
 
-            VStack(spacing: 32) {
+            VStack(spacing: 0) {
                 Spacer()
 
-                // Logo
-                VStack(spacing: 12) {
-                    Image(systemName: "figure.run")
-                        .font(.system(size: 80))
-                        .foregroundStyle(.red)
-                    Text("STICKDEATH")
-                        .font(.system(size: 40, weight: .black))
-                        .foregroundStyle(.white)
-                    Text("∞")
-                        .font(.system(size: 48, weight: .ultraLight))
-                        .foregroundStyle(.red)
-                    Text("Create. Animate. Annihilate.")
-                        .font(.subheadline)
-                        .foregroundStyle(.gray)
-                }
+                // ── Branding ──
+                VStack(spacing: 8) {
+                    Text("💀")
+                        .font(.system(size: 48))
 
-                Spacer()
-
-                // Buttons
-                VStack(spacing: 12) {
-                    Button {
-                        showSignUp = true
-                    } label: {
-                        Text("Get Started")
-                            .font(.headline)
-                            .foregroundStyle(.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(.red)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    HStack(spacing: 0) {
+                        Text("STICK")
+                            .foregroundStyle(ThemeManager.brand)
+                        Text("DEATH")
+                            .foregroundStyle(.white)
+                        Text(" ∞")
+                            .foregroundStyle(.white)
                     }
+                    .font(.custom("SpecialElite-Regular", size: 28, relativeTo: .title))
+                    .fontWeight(.black)
+                    .tracking(2)
 
+                    Text("Create. Animate. Annihilate.")
+                        .font(.custom("SpecialElite-Regular", size: 14, relativeTo: .caption))
+                        .foregroundStyle(Color(hex: "#9090a8"))
+                        .tracking(1)
+                }
+                .padding(.bottom, 48)
+
+                // ── Buttons ──
+                VStack(spacing: 14) {
                     Button {
                         showLogin = true
                     } label: {
-                        Text("I already have an account")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(Color.red.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                        Text("Sign In")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 280, height: 48)
+                            .background(ThemeManager.brand)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    }
+
+                    Button {
+                        showSignUp = true
+                    } label: {
+                        Text("Create Account")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 280, height: 48)
+                            .background(Color.clear)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color(hex: "#2a2a3a"), lineWidth: 1)
+                            )
                     }
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 40)
+
+                Spacer()
+                    .frame(height: 120)
+            }
+            .opacity(opacity)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.4)) {
+                opacity = 1.0
             }
         }
-        .sheet(isPresented: $showLogin) {
+        .fullScreenCover(isPresented: $showLogin) {
             LoginView()
         }
-        .sheet(isPresented: $showSignUp) {
+        .fullScreenCover(isPresented: $showSignUp) {
             SignUpView()
         }
     }
