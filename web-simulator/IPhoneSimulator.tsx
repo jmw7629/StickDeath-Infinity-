@@ -2100,6 +2100,19 @@ function StudioTab() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// ═══ MSG NAV BUTTON HELPER ═══
+function MsgNavBtn({ icon, label, onClick, active, isReturn }: { icon: string; label: string; onClick: ()=>void; active?: boolean; isReturn?: boolean }) {
+  return (
+    <button onClick={onClick} style={{
+      display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+      background: "none", border: "none", cursor: "pointer", padding: "4px 12px",
+    }}>
+      <span style={{ fontSize: 18 }}>{icon}</span>
+      <span style={{ fontSize: 8, color: isReturn ? C.red : active ? C.red : C.textMuted, fontFamily: FONT, fontWeight: isReturn ? 700 : 400 }}>{label}</span>
+    </button>
+  );
+}
+
 // MESSAGES TAB — Teams-style layout (no bottom nav)
 // ═══════════════════════════════════════════════════════════════════
 function MessagesTab({ tab, setTab, showChatRoom: _showChatRoom, setShowChatRoom: _setShowChatRoom, onBack }: {
@@ -2110,6 +2123,7 @@ function MessagesTab({ tab, setTab, showChatRoom: _showChatRoom, setShowChatRoom
   const [localMessages, setLocalMessages] = useState<{text: string; isUser: boolean; time: string}[]>([]);
   const [collabsOpen, setCollabsOpen] = useState(false);
   const [collabView, setCollabView] = useState<string | null>(null);
+  const [msgSubView, setMsgSubView] = useState<string | null>(null);
   const [warVoteLeft, setWarVoteLeft] = useState(45);
   const [warVoteRight, setWarVoteRight] = useState(38);
   const [warTimer, setWarTimer] = useState(165); // 2:45 in seconds
@@ -2248,14 +2262,287 @@ function MessagesTab({ tab, setTab, showChatRoom: _showChatRoom, setShowChatRoom
     return <WatchTogetherView onBack={() => setCollabView(null)} />;
   }
 
-  // Reset collabView when going back to channel list
-  if (collabView && collabView !== "warroom" && collabView !== "watchtogether" && collabView !== "challenge") {
-    // For creator/collab/leaderboard, open as channel for now
-    const channelMap: Record<string, string> = { creator: "tips", collab: "general", leaderboard: "assets" };
-    if (channelMap[collabView]) {
-      setSelectedChannel(channelMap[collabView]);
-      setCollabView(null);
+  // ─── Creator Room ───
+  if (collabView === "creator") {
+    // Creator room state
+    const sessions = [
+      { host: "PixelFury", topic: "Advanced Sword Combos", viewers: 42, live: true },
+      { host: "AnimKing", topic: "Smooth Walk Cycles", viewers: 28, live: true },
+      { host: "NeonBlade", topic: "Particle Effects 101", viewers: 0, live: false, scheduled: "Today 5 PM" },
+    ];
+    return (
+      <div style={{ height: "100%", background: C.bg, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "54px 16px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
+          <button onClick={() => setCollabView(null)} style={{ background: "none", border: "none", color: C.textSecondary, fontSize: 18, cursor: "pointer" }}>‹</button>
+          <span style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>🎙️ Creator Room</span>
+          <span style={{ marginLeft: "auto", fontSize: 10, background: C.red, color: "#fff", padding: "2px 8px", borderRadius: 8 }}>● LIVE</span>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: 16, paddingBottom: 80 }}>
+          {sessions.map((s, i) => (
+            <div key={i} style={{ background: C.surface, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 12 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontFamily: FONT, fontSize: 14, color: C.white, fontWeight: 600 }}>{s.topic}</div>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>Hosted by {s.host}</div>
+                </div>
+                {s.live ? (
+                  <span style={{ fontSize: 10, color: "#22C55E" }}>🟢 {s.viewers} watching</span>
+                ) : (
+                  <span style={{ fontSize: 10, color: C.orange }}>{s.scheduled}</span>
+                )}
+              </div>
+              <button style={{ marginTop: 10, background: s.live ? C.red : "rgba(255,255,255,0.06)", border: "none", borderRadius: 8, color: "#fff", padding: "8px 20px", fontSize: 12, cursor: "pointer", fontFamily: FONT, width: "100%" }}>
+                {s.live ? "Join Session →" : "Set Reminder 🔔"}
+              </button>
+            </div>
+          ))}
+          <button style={{ width: "100%", background: "rgba(220,38,38,0.15)", border: `1px dashed ${C.red}`, borderRadius: 12, color: C.red, padding: "16px", fontSize: 13, cursor: "pointer", fontFamily: FONT, marginTop: 8 }}>
+            + Start Your Own Session
+          </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "8px 0 24px", borderTop: `1px solid ${C.border}`, background: "rgba(10,10,10,0.98)" }}>
+          <MsgNavBtn icon="💬" label="Chat" onClick={() => { setCollabView(null); setSelectedChannel(null); }} />
+          <MsgNavBtn icon="📅" label="Calendar" onClick={() => { setCollabView(null); setMsgSubView("calendar"); }} />
+          <MsgNavBtn icon="👥" label="Collabs" onClick={() => setCollabView(null)} active />
+          <MsgNavBtn icon="📞" label="Calls" onClick={() => { setCollabView(null); setMsgSubView("calls"); }} />
+          <MsgNavBtn icon="⋯" label="Return" onClick={onBack || (() => {})} isReturn />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Collab Room ───
+  if (collabView === "collab") {
+    const collabProjects = [
+      { title: "Epic Duel Animation", members: ["PixelFury", "NeonBlade", "You"], progress: 68, frames: 48 },
+      { title: "Parkour Sequence", members: ["StickMaster", "You"], progress: 35, frames: 24 },
+    ];
+    return (
+      <div style={{ height: "100%", background: C.bg, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "54px 16px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
+          <button onClick={() => setCollabView(null)} style={{ background: "none", border: "none", color: C.textSecondary, fontSize: 18, cursor: "pointer" }}>‹</button>
+          <span style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>🤝 Collab Room</span>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: 16, paddingBottom: 80 }}>
+          <div style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>ACTIVE PROJECTS</div>
+          {collabProjects.map((p, i) => (
+            <div key={i} style={{ background: C.surface, borderRadius: 12, border: `1px solid ${C.border}`, padding: 16, marginBottom: 12 }}>
+              <div style={{ fontFamily: FONT, fontSize: 14, color: C.white, fontWeight: 600, marginBottom: 4 }}>{p.title}</div>
+              <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 8 }}>{p.members.join(" · ")} · {p.frames} frames</div>
+              <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", marginBottom: 6 }}>
+                <div style={{ height: "100%", width: `${p.progress}%`, background: `linear-gradient(90deg, ${C.red}, #EF4444)`, borderRadius: 3 }} />
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 10, color: C.textMuted }}>{p.progress}% complete</span>
+                <button style={{ background: C.red, border: "none", borderRadius: 6, color: "#fff", padding: "5px 12px", fontSize: 10, cursor: "pointer", fontFamily: FONT }}>Open →</button>
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2, marginTop: 16, marginBottom: 8 }}>LOOKING FOR COLLABS</div>
+          {["Needs animator for fight scene (3 frames left)", "Looking for BG artist for nature scene", "Need voice actor for 30s clip"].map((req, i) => (
+            <div key={i} style={{ background: C.surface, borderRadius: 8, padding: 12, marginBottom: 8, display: "flex", alignItems: "center", gap: 10, border: `1px solid ${C.borderDim}` }}>
+              <span style={{ fontSize: 11, color: C.white, flex: 1 }}>{req}</span>
+              <button style={{ background: "rgba(220,38,38,0.15)", border: "none", borderRadius: 6, color: C.red, padding: "4px 10px", fontSize: 10, cursor: "pointer" }}>Join</button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "8px 0 24px", borderTop: `1px solid ${C.border}`, background: "rgba(10,10,10,0.98)" }}>
+          <MsgNavBtn icon="💬" label="Chat" onClick={() => { setCollabView(null); setSelectedChannel(null); }} />
+          <MsgNavBtn icon="📅" label="Calendar" onClick={() => { setCollabView(null); setMsgSubView("calendar"); }} />
+          <MsgNavBtn icon="👥" label="Collabs" onClick={() => setCollabView(null)} active />
+          <MsgNavBtn icon="📞" label="Calls" onClick={() => { setCollabView(null); setMsgSubView("calls"); }} />
+          <MsgNavBtn icon="⋯" label="Return" onClick={onBack || (() => {})} isReturn />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Leaderboard ───
+  if (collabView === "leaderboard") {
+    const leaders = [
+      { rank: 1, name: "PixelFury", avatar: "🔥", xp: 12450, wins: 89, streak: 14 },
+      { rank: 2, name: "NeonBlade", avatar: "⚡", xp: 11200, wins: 76, streak: 8 },
+      { rank: 3, name: "AnimKing", avatar: "👑", xp: 10800, wins: 72, streak: 12 },
+      { rank: 4, name: "StickNinja99", avatar: "🥷", xp: 9600, wins: 65, streak: 5 },
+      { rank: 5, name: "xDeathArtist", avatar: "💀", xp: 8900, wins: 58, streak: 3 },
+      { rank: 6, name: "J_Willy_Style", avatar: "👑", xp: 8400, wins: 52, streak: 7 },
+      { rank: 7, name: "DeathDraw", avatar: "✏️", xp: 7200, wins: 45, streak: 2 },
+      { rank: 8, name: "StickMaster", avatar: "💀", xp: 6800, wins: 41, streak: 1 },
+    ];
+    return (
+      <div style={{ height: "100%", background: C.bg, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "54px 16px 12px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
+          <button onClick={() => setCollabView(null)} style={{ background: "none", border: "none", color: C.textSecondary, fontSize: 18, cursor: "pointer" }}>‹</button>
+          <span style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>🏆 Leaderboard</span>
+        </div>
+        {/* Top 3 podium */}
+        <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 12, padding: "20px 16px 16px" }}>
+          {[leaders[1], leaders[0], leaders[2]].map((l, i) => {
+            const heights = [90, 110, 70];
+            const medals = ["🥈", "🥇", "🥉"];
+            return (
+              <div key={i} style={{ textAlign: "center", flex: 1 }}>
+                <div style={{ fontSize: 24, marginBottom: 4 }}>{medals[i]}</div>
+                <div style={{ fontSize: 28, marginBottom: 2 }}>{l.avatar}</div>
+                <div style={{ fontFamily: FONT, fontSize: 10, color: C.white, fontWeight: 600, marginBottom: 4 }}>{l.name}</div>
+                <div style={{ height: heights[i], background: `linear-gradient(to top, ${C.red}, rgba(220,38,38,0.3))`, borderRadius: "8px 8px 0 0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontFamily: FONT, fontSize: 12, color: "#fff", fontWeight: 800 }}>{l.xp.toLocaleString()} XP</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Full list */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 16px", paddingBottom: 80 }}>
+          {leaders.slice(3).map(l => (
+            <div key={l.rank} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+              <span style={{ fontFamily: FONT, fontSize: 14, color: C.textMuted, width: 24, textAlign: "center" }}>#{l.rank}</span>
+              <span style={{ fontSize: 20 }}>{l.avatar}</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: FONT, fontSize: 12, color: C.white }}>{l.name}</div>
+                <div style={{ fontSize: 9, color: C.textMuted }}>{l.xp.toLocaleString()} XP · {l.wins} wins · 🔥 {l.streak}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "8px 0 24px", borderTop: `1px solid ${C.border}`, background: "rgba(10,10,10,0.98)" }}>
+          <MsgNavBtn icon="💬" label="Chat" onClick={() => { setCollabView(null); setSelectedChannel(null); }} />
+          <MsgNavBtn icon="📅" label="Calendar" onClick={() => { setCollabView(null); setMsgSubView("calendar"); }} />
+          <MsgNavBtn icon="👥" label="Collabs" onClick={() => setCollabView(null)} active />
+          <MsgNavBtn icon="📞" label="Calls" onClick={() => { setCollabView(null); setMsgSubView("calls"); }} />
+          <MsgNavBtn icon="⋯" label="Return" onClick={onBack || (() => {})} isReturn />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Calendar View ───
+  if (msgSubView === "calendar") {
+    const today = new Date();
+    const daysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1).getDay();
+    const monthName = today.toLocaleString("default", { month: "long", year: "numeric" });
+    const events = [
+      { day: today.getDate(), title: "War Room Battle", time: "3:00 PM", color: C.red },
+      { day: today.getDate() + 1, title: "Collab: Epic Duel", time: "11:00 AM", color: "#8B5CF6" },
+      { day: today.getDate() + 2, title: "Speed Run Challenge", time: "5:00 PM", color: C.orange },
+      { day: today.getDate() + 5, title: "Creator Session", time: "2:00 PM", color: "#22C55E" },
+    ];
+    const [selDay, setSelDay] = useState(today.getDate());
+    const dayEvents = events.filter(e => e.day === selDay);
+    return (
+      <div style={{ height: "100%", background: C.bg, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "54px 16px 12px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>📅 {monthName}</div>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2, marginBottom: 12 }}>
+            {["S","M","T","W","T","F","S"].map((d, i) => (
+              <div key={i} style={{ textAlign: "center", fontSize: 9, color: C.textMuted, padding: 4, fontFamily: FONT }}>{d}</div>
+            ))}
+            {Array.from({ length: firstDay }).map((_, i) => <div key={`e${i}`} />)}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const day = i + 1;
+              const hasEvent = events.some(e => e.day === day);
+              const isToday = day === today.getDate();
+              const isSelected = day === selDay;
+              return (
+                <button key={day} onClick={() => setSelDay(day)} style={{
+                  background: isSelected ? C.red : isToday ? "rgba(220,38,38,0.2)" : "transparent",
+                  border: "none", borderRadius: 8, padding: "8px 0", cursor: "pointer", position: "relative",
+                }}>
+                  <span style={{ fontSize: 12, color: isSelected ? "#fff" : isToday ? C.red : C.white, fontFamily: FONT, fontWeight: isToday ? 700 : 400 }}>{day}</span>
+                  {hasEvent && <div style={{ position: "absolute", bottom: 2, left: "50%", transform: "translateX(-50%)", width: 4, height: 4, borderRadius: 2, background: isSelected ? "#fff" : C.red }} />}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>EVENTS</div>
+          {dayEvents.length > 0 ? dayEvents.map((e, i) => (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", padding: "10px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+              <div style={{ width: 4, height: 36, borderRadius: 2, background: e.color }} />
+              <div>
+                <div style={{ fontFamily: FONT, fontSize: 13, color: C.white, fontWeight: 600 }}>{e.title}</div>
+                <div style={{ fontSize: 10, color: C.textMuted }}>{e.time}</div>
+              </div>
+            </div>
+          )) : (
+            <div style={{ textAlign: "center", padding: 20, color: C.textMuted, fontSize: 12 }}>No events on this day</div>
+          )}
+        </div>
+        <div style={{ marginTop: "auto", display: "flex", alignItems: "center", justifyContent: "space-around", padding: "8px 0 24px", borderTop: `1px solid ${C.border}`, background: "rgba(10,10,10,0.98)" }}>
+          <MsgNavBtn icon="💬" label="Chat" onClick={() => { setMsgSubView(null); setSelectedChannel(null); }} />
+          <MsgNavBtn icon="📅" label="Calendar" onClick={() => {}} active />
+          <MsgNavBtn icon="👥" label="Collabs" onClick={() => { setMsgSubView(null); setCollabsOpen(true); }} />
+          <MsgNavBtn icon="📞" label="Calls" onClick={() => setMsgSubView("calls")} />
+          <MsgNavBtn icon="⋯" label="Return" onClick={onBack || (() => {})} isReturn />
+        </div>
+      </div>
+    );
+  }
+
+  // ─── Calls View ───
+  if (msgSubView === "calls") {
+    const recentCalls = [
+      { name: "PixelFury", type: "video", direction: "incoming", time: "2 min ago", duration: "12:34", avatar: "🔥" },
+      { name: "AnimKing", type: "audio", direction: "outgoing", time: "1h ago", duration: "5:22", avatar: "👑" },
+      { name: "NeonBlade", type: "video", direction: "missed", time: "3h ago", duration: "-", avatar: "⚡" },
+      { name: "StickMaster", type: "audio", direction: "incoming", time: "Yesterday", duration: "8:45", avatar: "💀" },
+    ];
+    const [callActive, setCallActive] = useState(false);
+    const [callTimer, setCallTimer] = useState(0);
+    useEffect(() => {
+      if (!callActive) return;
+      const iv = setInterval(() => setCallTimer(t => t + 1), 1000);
+      return () => clearInterval(iv);
+    }, [callActive]);
+    if (callActive) {
+      const mins = Math.floor(callTimer / 60);
+      const secs = callTimer % 60;
+      return (
+        <div style={{ height: "100%", background: "linear-gradient(180deg, #1a0a0a, #0A0A14)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontSize: 64, marginBottom: 16 }}>🔥</div>
+          <div style={{ fontFamily: FONT, fontSize: 20, color: C.white, fontWeight: 700, marginBottom: 4 }}>PixelFury</div>
+          <div style={{ fontSize: 14, color: "#22C55E", fontFamily: FONT, marginBottom: 32 }}>{String(mins).padStart(2,"0")}:{String(secs).padStart(2,"0")}</div>
+          <div style={{ display: "flex", gap: 24 }}>
+            <button style={{ width: 56, height: 56, borderRadius: 28, background: "rgba(255,255,255,0.1)", border: "none", fontSize: 24, cursor: "pointer" }}>🎤</button>
+            <button style={{ width: 56, height: 56, borderRadius: 28, background: "rgba(255,255,255,0.1)", border: "none", fontSize: 24, cursor: "pointer" }}>📹</button>
+            <button onClick={() => { setCallActive(false); setCallTimer(0); }} style={{ width: 56, height: 56, borderRadius: 28, background: "#EF4444", border: "none", fontSize: 24, cursor: "pointer" }}>📞</button>
+          </div>
+        </div>
+      );
     }
+    return (
+      <div style={{ height: "100%", background: C.bg, display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "54px 16px 12px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${C.border}` }}>
+          <span style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>📞 Calls</span>
+          <button onClick={() => setCallActive(true)} style={{ background: "#22C55E", border: "none", borderRadius: 20, color: "#fff", padding: "6px 14px", fontSize: 11, cursor: "pointer", fontFamily: FONT }}>+ New Call</button>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "0 16px", paddingBottom: 80 }}>
+          {recentCalls.map((call, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: `1px solid ${C.borderDim}` }}>
+              <div style={{ fontSize: 24 }}>{call.avatar}</div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontFamily: FONT, fontSize: 13, color: C.white, fontWeight: 600 }}>{call.name}</div>
+                <div style={{ fontSize: 10, color: call.direction === "missed" ? "#EF4444" : C.textMuted }}>
+                  {call.direction === "incoming" ? "↙" : call.direction === "outgoing" ? "↗" : "✕"} {call.type === "video" ? "Video" : "Audio"} · {call.time} · {call.duration}
+                </div>
+              </div>
+              <button onClick={() => setCallActive(true)} style={{ background: "rgba(34,197,94,0.15)", border: "none", borderRadius: 20, padding: "6px 10px", cursor: "pointer" }}>
+                <span style={{ fontSize: 14 }}>{call.type === "video" ? "📹" : "📞"}</span>
+              </button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-around", padding: "8px 0 24px", borderTop: `1px solid ${C.border}`, background: "rgba(10,10,10,0.98)" }}>
+          <MsgNavBtn icon="💬" label="Chat" onClick={() => { setMsgSubView(null); setSelectedChannel(null); }} />
+          <MsgNavBtn icon="📅" label="Calendar" onClick={() => setMsgSubView("calendar")} />
+          <MsgNavBtn icon="👥" label="Collabs" onClick={() => { setMsgSubView(null); setCollabsOpen(true); }} />
+          <MsgNavBtn icon="📞" label="Calls" onClick={() => {}} active />
+          <MsgNavBtn icon="⋯" label="Return" onClick={onBack || (() => {})} isReturn />
+        </div>
+      </div>
+    );
   }
 
   if (selectedChannel) {
@@ -2430,9 +2717,9 @@ function MessagesTab({ tab, setTab, showChatRoom: _showChatRoom, setShowChatRoom
       }}>
         {[
           { icon: "💬", label: "Chat", active: true, action: () => { setSelectedChannel(null); setCollabsOpen(false); } },
-          { icon: "📅", label: "Calendar", active: false, action: () => {} },
+          { icon: "📅", label: "Calendar", active: false, action: () => setMsgSubView("calendar") },
           { icon: "👥", label: "Collabs", active: false, action: () => { setCollabsOpen(!collabsOpen); } },
-          { icon: "📞", label: "Calls", active: false, action: () => {} },
+          { icon: "📞", label: "Calls", active: false, action: () => setMsgSubView("calls") },
           { icon: "⋯", label: "Return", active: false, action: onBack || (() => {}) },
         ].map((item, i) => (
           <button key={i} onClick={item.action} style={{
@@ -2453,6 +2740,8 @@ function ProfileTab() {
   const [subPage, setSubPage] = useState<string | null>(null);
   const [notifEnabled, setNotifEnabled] = useState(true);
   const [darkMode, setDarkMode] = useState(true);
+  const [autoSave, setAutoSave] = useState(true);
+  const [soundEffects, setSoundEffects] = useState(true);
   const [editingBio, setEditingBio] = useState(false);
   const [bio, setBio] = useState("Stick figure animator | Creating epic battles 💀⚔️");
 
@@ -2467,8 +2756,8 @@ function ProfileTab() {
           {[
             { label: "Dark Mode", toggle: true, value: darkMode, action: () => setDarkMode(!darkMode) },
             { label: "Push Notifications", toggle: true, value: notifEnabled, action: () => setNotifEnabled(!notifEnabled) },
-            { label: "Auto-Save Projects", toggle: true, value: true, action: () => {} },
-            { label: "Sound Effects", toggle: true, value: true, action: () => {} },
+            { label: "Auto-Save Projects", toggle: true, value: autoSave, action: () => setAutoSave(!autoSave) },
+            { label: "Sound Effects", toggle: true, value: soundEffects, action: () => setSoundEffects(!soundEffects) },
           ].map((s, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", padding: "14px 0", borderBottom: `1px solid ${C.borderDim}` }}>
               <span style={{ fontFamily: FONT, fontSize: 13, color: C.white, flex: 1 }}>{s.label}</span>
@@ -2495,6 +2784,19 @@ function ProfileTab() {
                 <span style={{ marginLeft: "auto", color: C.textMuted, fontSize: 12 }}>›</span>
               </button>
             ))}
+          </div>
+          <div style={{ marginTop: 16 }}>
+            <span style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2 }}>STORAGE</span>
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 14, marginTop: 8 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 11, color: C.white }}>Device Storage</span>
+                <span style={{ fontSize: 11, color: C.textMuted }}>1.2 GB / 128 GB</span>
+              </div>
+              <div style={{ height: 6, background: "rgba(255,255,255,0.06)", borderRadius: 3, overflow: "hidden", marginBottom: 8 }}>
+                <div style={{ height: "100%", width: "1%", background: `linear-gradient(90deg, ${C.red}, #EF4444)`, borderRadius: 3 }} />
+              </div>
+              <div style={{ fontSize: 9, color: C.textMuted }}>All animations, messages & media stored on-device. Server handles auth & matchmaking only.</div>
+            </div>
           </div>
         </div>
       </div>
@@ -2559,6 +2861,66 @@ function ProfileTab() {
   }
 
   if (subPage === "subscription") {
+    const [showPurchase, setShowPurchase] = useState(false);
+    const [purchasing, setPurchasing] = useState(false);
+    const [purchased, setPurchased] = useState(false);
+    const [selectedPlan, setSelectedPlan] = useState<string>("pro_monthly");
+    const plans = [
+      { id: "pro_monthly", name: "Pro Monthly", price: "$9.99", period: "/month", savings: "", popular: true },
+      { id: "pro_annual", name: "Pro Annual", price: "$79.99", period: "/year", savings: "Save 33%", popular: false },
+      { id: "studio_monthly", name: "Studio", price: "$19.99", period: "/month", savings: "All features", popular: false },
+    ];
+    if (showPurchase) {
+      return (
+        <div style={{ height: "100%", background: C.bg, paddingTop: 54, paddingBottom: 80, overflowY: "auto" }}>
+          <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
+            <button onClick={() => setShowPurchase(false)} style={{ background: "none", border: "none", color: C.textSecondary, fontSize: 18, cursor: "pointer" }}>‹</button>
+            <span style={{ fontFamily: FONT, fontSize: 16, color: C.white, fontWeight: 700 }}>Choose Plan</span>
+          </div>
+          <div style={{ padding: 16 }}>
+            {plans.map(p => (
+              <button key={p.id} onClick={() => setSelectedPlan(p.id)} style={{
+                width: "100%", padding: 16, marginBottom: 10, background: selectedPlan === p.id ? "rgba(220,38,38,0.12)" : C.surface,
+                border: `2px solid ${selectedPlan === p.id ? C.red : C.border}`, borderRadius: 12, cursor: "pointer", textAlign: "left", position: "relative",
+              }}>
+                {p.popular && <span style={{ position: "absolute", top: -8, right: 12, background: C.red, color: "#fff", fontSize: 8, padding: "2px 8px", borderRadius: 8, fontFamily: FONT }}>POPULAR</span>}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontFamily: FONT, fontSize: 14, color: C.white, fontWeight: 600 }}>{p.name}</div>
+                    {p.savings && <div style={{ fontSize: 10, color: "#22C55E", marginTop: 2 }}>{p.savings}</div>}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <span style={{ fontFamily: FONT, fontSize: 20, color: C.white, fontWeight: 800 }}>{p.price}</span>
+                    <span style={{ fontSize: 10, color: C.textMuted }}>{p.period}</span>
+                  </div>
+                </div>
+              </button>
+            ))}
+            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, marginTop: 16, marginBottom: 16 }}>
+              <div style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>INCLUDED</div>
+              {["Unlimited projects & frames", "4K HD export (MP4, GIF, PNG)", "All brushes, tools & effects", "Spatter AI unlimited queries", "Live collab rooms", "Priority support", "No watermark", "Cloud backup (device-first storage)"].map((f, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0" }}>
+                  <span style={{ color: "#22C55E", fontSize: 12 }}>✓</span>
+                  <span style={{ fontSize: 11, color: C.textSecondary }}>{f}</span>
+                </div>
+              ))}
+            </div>
+            <button onClick={() => { setPurchasing(true); setTimeout(() => { setPurchasing(false); setPurchased(true); setTimeout(() => { setShowPurchase(false); setPurchased(false); }, 1500); }, 2000); }}
+              disabled={purchasing || purchased}
+              style={{
+                width: "100%", padding: 16, background: purchased ? "#22C55E" : C.red, border: "none", borderRadius: 12,
+                color: "#fff", fontFamily: FONT, fontSize: 15, fontWeight: 700, cursor: purchasing ? "wait" : "pointer", opacity: purchasing ? 0.7 : 1,
+              }}>
+              {purchasing ? "Processing..." : purchased ? "✓ Subscribed!" : `Subscribe — ${plans.find(p => p.id === selectedPlan)?.price}${plans.find(p => p.id === selectedPlan)?.period}`}
+            </button>
+            <div style={{ textAlign: "center", marginTop: 10 }}>
+              <div style={{ fontSize: 9, color: C.textMuted }}>Payment processed by Apple via StoreKit</div>
+              <div style={{ fontSize: 9, color: C.textMuted, marginTop: 2 }}>Cancel anytime in Settings → Apple ID</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div style={{ height: "100%", background: C.bg, paddingTop: 54, paddingBottom: 80, overflowY: "auto" }}>
         <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${C.border}` }}>
@@ -2568,16 +2930,19 @@ function ProfileTab() {
         <div style={{ padding: 16, textAlign: "center" }}>
           <div style={{ fontSize: 40, marginBottom: 8 }}>👑</div>
           <div style={{ fontFamily: FONT, fontSize: 20, color: C.white, marginBottom: 4 }}>Pro Plan</div>
-          <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 20 }}>$9.99/month · Renews Jun 15</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 4 }}>$9.99/month · Renews Jun 15</div>
+          <div style={{ fontSize: 10, color: "#22C55E", marginBottom: 20 }}>✓ Active</div>
           <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 12, padding: 16, textAlign: "left", marginBottom: 12 }}>
-            {["Unlimited projects", "HD export", "All brushes & tools", "Priority support", "No watermark"].map((f, i) => (
+            {["Unlimited projects", "HD export", "All brushes & tools", "Spatter AI unlimited", "Priority support", "No watermark"].map((f, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0" }}>
                 <span style={{ color: "#22C55E", fontSize: 14 }}>✓</span>
                 <span style={{ fontSize: 12, color: C.textSecondary }}>{f}</span>
               </div>
             ))}
           </div>
-          <button style={{ width: "100%", padding: 14, background: "rgba(220,38,38,0.15)", border: `1px solid rgba(220,38,38,0.3)`, borderRadius: 12, color: C.red, fontFamily: FONT, fontSize: 13, cursor: "pointer" }}>Manage Subscription</button>
+          <button onClick={() => setShowPurchase(true)} style={{ width: "100%", padding: 14, background: C.red, border: "none", borderRadius: 12, color: "#fff", fontFamily: FONT, fontSize: 13, cursor: "pointer", fontWeight: 600, marginBottom: 8 }}>Change Plan</button>
+          <button style={{ width: "100%", padding: 14, background: "rgba(255,255,255,0.06)", border: `1px solid rgba(255,255,255,0.1)`, borderRadius: 12, color: C.textMuted, fontFamily: FONT, fontSize: 13, cursor: "pointer" }}>Restore Purchases</button>
+          <div style={{ fontSize: 9, color: C.textMuted, marginTop: 12 }}>Managed via Apple StoreKit · All data stored on device</div>
         </div>
       </div>
     );
