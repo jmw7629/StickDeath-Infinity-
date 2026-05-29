@@ -1,261 +1,428 @@
-// ProfileView.swift
-// Matches reference exactly:
-// Avatar with red ring, username, Creator badge $7.99/mo
-// Stats grid: Projects, Published, Followers, Likes
-// Menu items: Messages, Notifications, Settings, Theme
-// Subscription tiers: Free $0, Pro $4.99, Creator $7.99
+// ═══════════════════════════════════════════════════════════════════
+// ProfileView — User profile with stats, menu items, subscription
+// Matches: ProfileScreen.tsx exactly
+// Avatar with red ring + initials, username, tier badge
+// Stats: Projects / Published / Followers / Likes
+// Menu: Messages, Notifications, Invite to SD∞, Settings, Theme, Admin, Sign Out
+// ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
 struct ProfileView: View {
-    @EnvironmentObject var auth: AuthManager
-    @EnvironmentObject var router: NavigationRouter
+    @EnvironmentObject var authVM: AuthViewModel
+
+    @State private var subScreen: ProfileSubScreen = .main
+    @State private var stats = ProfileStats()
+
+    enum ProfileSubScreen {
+        case main, notifications, achievements, subscription, settings, theme, admin
+    }
 
     var body: some View {
-        ZStack {
-            ThemeManager.background.ignoresSafeArea()
+        Group {
+            switch subScreen {
+            case .main:
+                mainProfileView
+            case .notifications:
+                NotificationCenterView(onBack: { subScreen = .main })
+            case .settings:
+                SettingsView(onBack: { subScreen = .main })
+            case .theme:
+                ThemeView(onBack: { subScreen = .main })
+            case .admin:
+                AdminDashboardView(onBack: { subScreen = .main })
+            default:
+                mainProfileView
+            }
+        }
+    }
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
-                    // ── Avatar & Name ──
-                    profileHeader
-                        .padding(.top, 24)
-                        .padding(.bottom, 20)
+    // MARK: - Main Profile
+    private var mainProfileView: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                // Profile Header
+                HStack(spacing: 14) {
+                    // Avatar with red ring + initials
+                    ZStack {
+                        Circle()
+                            .stroke(Color.sdRed, lineWidth: 3)
+                            .frame(width: 64, height: 64)
 
-                    // ── Stats Grid ──
-                    statsGrid
-                        .padding(.bottom, 24)
+                        Circle()
+                            .fill(Color.sdSurface2)
+                            .frame(width: 58, height: 58)
 
-                    // ── Menu Items ──
-                    menuSection
-                        .padding(.bottom, 24)
-
-                    // ── Subscription Plans ──
-                    subscriptionSection
-                        .padding(.bottom, 24)
-
-                    // ── Sign Out ──
-                    Button {
-                        Task { try? await auth.signOut() }
-                    } label: {
-                        Text("Sign Out")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(.red)
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                            .background(ThemeManager.card)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(ThemeManager.border, lineWidth: 1)
-                            )
+                        Text(initials)
+                            .font(.specialElite(24))
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
                     }
-                    .padding(.horizontal, 16)
 
-                    Spacer().frame(height: 100)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(username)
+                            .font(.specialElite(20))
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+
+                        HStack(spacing: 8) {
+                            // Tier badge
+                            Text(tierDisplay)
+                                .font(.specialElite(11))
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 2)
+                                .background(Color.sdRed)
+                                .cornerRadius(4)
+
+                            if tier != "free" {
+                                Text(tierPrice)
+                                    .font(.specialElite(13))
+                                    .foregroundColor(.sdTextSecondary)
+                            }
+                        }
+                    }
+
+                    Spacer()
                 }
-            }
-        }
-        .navigationBarHidden(true)
-    }
+                .padding(.horizontal, 16)
+                .padding(.top, 24)
+                .padding(.bottom, 20)
 
-    // MARK: - Profile Header
-    var profileHeader: some View {
-        VStack(spacing: 10) {
-            // Avatar with red ring
-            ZStack {
-                Circle()
-                    .stroke(ThemeManager.brand, lineWidth: 3)
-                    .frame(width: 88, height: 88)
-                Circle()
-                    .fill(ThemeManager.surface)
-                    .frame(width: 80, height: 80)
-                Text("JW")
-                    .font(.system(size: 28, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-
-            // Username
-            Text(auth.currentUser?.username ?? "joe_willis")
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.white)
-
-            // Creator badge
-            HStack(spacing: 6) {
-                Image(systemName: "star.fill")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.yellow)
-                Text("Creator")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.white)
-                Text("$7.99/mo")
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color(hex: "#9090a8"))
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 6)
-            .background(ThemeManager.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-        }
-    }
-
-    // MARK: - Stats Grid
-    var statsGrid: some View {
-        HStack(spacing: 0) {
-            statItem("12", "Projects")
-            statDivider
-            statItem("5", "Published")
-            statDivider
-            statItem("234", "Followers")
-            statDivider
-            statItem("1.2k", "Likes")
-        }
-        .padding(.vertical, 16)
-        .background(ThemeManager.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(ThemeManager.border, lineWidth: 1)
-        )
-        .padding(.horizontal, 16)
-    }
-
-    func statItem(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.system(size: 20, weight: .bold))
-                .foregroundStyle(.white)
-            Text(label)
-                .font(.system(size: 12))
-                .foregroundStyle(Color(hex: "#9090a8"))
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    var statDivider: some View {
-        Rectangle()
-            .fill(ThemeManager.border)
-            .frame(width: 1, height: 36)
-    }
-
-    // MARK: - Menu Items
-    var menuSection: some View {
-        VStack(spacing: 2) {
-            menuItem(icon: "envelope.fill", title: "Messages", color: .blue) {
-                router.push(ProfileDestination.messages)
-            }
-            menuItem(icon: "bell.fill", title: "Notifications", color: .orange, badge: 3) {
-                router.push(ProfileDestination.notifications)
-            }
-            menuItem(icon: "gearshape.fill", title: "Settings", color: Color(hex: "#9090a8")) {
-                router.push(ProfileDestination.settings)
-            }
-            menuItem(icon: "paintpalette.fill", title: "Theme", color: .purple) {
-                router.push(ProfileDestination.personalization)
-            }
-            menuItem(icon: "trophy.fill", title: "Achievements", color: .yellow) {
-                router.push(ProfileDestination.achievements)
-            }
-            menuItem(icon: "link", title: "Connected Accounts", color: .green) {
-                router.push(ProfileDestination.connectedAccounts)
-            }
-            menuItem(icon: "questionmark.circle.fill", title: "Help Center", color: .teal) {
-                router.push(ProfileDestination.help)
-            }
-        }
-        .padding(.horizontal, 16)
-    }
-
-    func menuItem(icon: String, title: String, color: Color, badge: Int = 0, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                Image(systemName: icon)
-                    .font(.system(size: 18))
-                    .foregroundStyle(color)
-                    .frame(width: 32, height: 32)
-
-                Text(title)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 22, height: 22)
-                        .background(ThemeManager.brand)
-                        .clipShape(Circle())
+                // Stats Row
+                HStack(spacing: 0) {
+                    ProfileStatItem(value: "\(stats.projects)", label: "Projects", showDivider: true)
+                    ProfileStatItem(value: "\(stats.published)", label: "Published", showDivider: true)
+                    ProfileStatItem(value: stats.followers >= 1000 ? String(format: "%.1fk", Double(stats.followers) / 1000) : "\(stats.followers)", label: "Followers", showDivider: true)
+                    ProfileStatItem(value: stats.likes >= 1000 ? String(format: "%.1fk", Double(stats.likes) / 1000) : "\(stats.likes)", label: "Likes", showDivider: false)
                 }
+                .background(Color.sdSurface)
+                .cornerRadius(12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.sdBorder, lineWidth: 1)
+                )
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
 
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Color(hex: "#5a5a6e"))
+                // Menu Items
+                VStack(spacing: 8) {
+                    ProfileMenuItem(icon: "💬", label: "Messages") {
+                        // Navigate to messages
+                    }
+
+                    ProfileMenuItem(icon: "🔔", label: "Notifications") {
+                        subScreen = .notifications
+                    }
+
+                    ProfileMenuItem(icon: "💀", label: "Invite to SD∞", badge: "⚡ 50 XP", isHighlighted: true) {
+                        // Share invite link
+                    }
+
+                    ProfileMenuItem(icon: "⚙️", label: "Settings") {
+                        subScreen = .settings
+                    }
+
+                    ProfileMenuItem(icon: "🎨", label: "Theme") {
+                        subScreen = .theme
+                    }
+
+                    ProfileMenuItem(icon: "🛡️", label: "Admin Dashboard") {
+                        subScreen = .admin
+                    }
+
+                    ProfileMenuItem(icon: "🚪", label: "Sign Out") {
+                        Task { await authVM.signOut() }
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                // Subscription Section
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Subscription")
+                        .font(.specialElite(16))
+                        .foregroundColor(.sdTextSecondary)
+                        .italic()
+                        .padding(.top, 16)
+
+                    ForEach(subscriptionPlans, id: \.id) { plan in
+                        SubscriptionPlanRow(plan: plan, isCurrent: plan.id == "creator")
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 100)
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .background(ThemeManager.card)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .background(Color.sdBackground)
+        .task { await loadStats() }
+    }
+
+    // MARK: - Computed
+    private var username: String {
+        authVM.currentUser?.username ?? "Guest"
+    }
+
+    private var initials: String {
+        let name = username
+        if name.count >= 2 {
+            return String(name.prefix(2)).uppercased()
+        }
+        return String(name.prefix(1)).uppercased()
+    }
+
+    private var tier: String {
+        authVM.currentUser?.subscriptionTier ?? "free"
+    }
+
+    private var tierDisplay: String {
+        tier.prefix(1).uppercased() + tier.dropFirst()
+    }
+
+    private var tierPrice: String {
+        switch tier {
+        case "creator": return "$4.99/mo"
+        case "pro": return "$9.99/mo"
+        case "studio": return "$19.99/mo"
+        default: return ""
+        }
+    }
+
+    // MARK: - Load Stats
+    private func loadStats() async {
+        let supabase = SupabaseManager.shared.client
+        guard let userId = authVM.currentUser?.id else { return }
+        do {
+            let projects: [StudioProject] = try await supabase
+                .from("studio_projects")
+                .select("*")
+                .eq("user_id", value: userId)
+                .execute()
+                .value
+            stats.projects = projects.count
+            stats.published = projects.filter { $0.thumbnailURL != nil }.count
+        } catch {
+            print("[Profile] Stats error: \(error)")
+        }
     }
 
     // MARK: - Subscription Plans
-    var subscriptionSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Subscription")
-                .font(.system(size: 18, weight: .bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
+    private var subscriptionPlans: [SubscriptionPlan] {
+        [
+            SubscriptionPlan(id: "free", name: "Free", price: "$0", period: "", tags: ["5 projects", "720p export", "Basic tools"]),
+            SubscriptionPlan(id: "pro", name: "Pro", price: "$4.99", period: "/mo", tags: ["Unlimited projects", "1080p export", "All tools", "No ads"]),
+            SubscriptionPlan(id: "creator", name: "Creator", price: "$7.99", period: "/mo", tags: ["Everything in Pro", "4K export", "Priority support", "Creator badge"]),
+        ]
+    }
+}
 
-            HStack(spacing: 10) {
-                planCard(tier: "Free", price: "$0", features: ["5 Projects", "720p Export", "Watermark"], isActive: false)
-                planCard(tier: "Pro", price: "$4.99", features: ["Unlimited", "1080p Export", "No Watermark"], isActive: false)
-                planCard(tier: "Creator", price: "$7.99", features: ["Everything", "4K Export", "Analytics"], isActive: true)
+// MARK: - Profile Stats
+struct ProfileStats {
+    var projects = 0
+    var published = 0
+    var followers = 0
+    var likes = 0
+}
+
+// MARK: - Profile Stat Item
+struct ProfileStatItem: View {
+    let value: String
+    let label: String
+    let showDivider: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(spacing: 2) {
+                Text(value)
+                    .font(.specialElite(18))
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+                Text(label)
+                    .font(.specialElite(11))
+                    .foregroundColor(.sdTextSecondary)
             }
-            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+
+            if showDivider {
+                Rectangle()
+                    .fill(Color.sdBorder)
+                    .frame(width: 1)
+                    .padding(.vertical, 8)
+            }
         }
     }
+}
 
-    func planCard(tier: String, price: String, features: [String], isActive: Bool) -> some View {
-        VStack(spacing: 8) {
-            Text(tier)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundStyle(isActive ? ThemeManager.brand : .white)
+// MARK: - Menu Item
+struct ProfileMenuItem: View {
+    let icon: String
+    let label: String
+    var badge: String? = nil
+    var isHighlighted: Bool = false
+    let action: () -> Void
 
-            Text(price)
-                .font(.system(size: 22, weight: .black))
-                .foregroundStyle(.white)
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Text(icon)
+                    .font(.system(size: 20))
 
-            Text("/mo")
-                .font(.system(size: 11))
-                .foregroundStyle(Color(hex: "#9090a8"))
-                .offset(y: -4)
+                Text(label)
+                    .font(.specialElite(15))
+                    .foregroundColor(.white)
 
-            VStack(spacing: 4) {
-                ForEach(features, id: \.self) { feat in
-                    Text(feat)
-                        .font(.system(size: 10))
-                        .foregroundStyle(Color(hex: "#9090a8"))
+                Spacer()
+
+                if let badge = badge {
+                    Text(badge)
+                        .font(.specialElite(11))
+                        .fontWeight(.bold)
+                        .foregroundColor(.sdRed)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.sdRed.opacity(0.15))
+                        .cornerRadius(10)
+                }
+
+                Text("›")
+                    .font(.specialElite(18))
+                    .foregroundColor(.sdTextMuted)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 15)
+            .background(isHighlighted ? Color.sdRed.opacity(0.08) : Color.sdSurface)
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isHighlighted ? Color.sdRed.opacity(0.25) : Color.sdBorder, lineWidth: 1)
+            )
+        }
+    }
+}
+
+// MARK: - Subscription Plan
+struct SubscriptionPlan: Identifiable {
+    let id: String
+    let name: String
+    let price: String
+    let period: String
+    let tags: [String]
+}
+
+struct SubscriptionPlanRow: View {
+    let plan: SubscriptionPlan
+    let isCurrent: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(plan.name)
+                    .font(.specialElite(16))
+                    .fontWeight(.bold)
+                    .foregroundColor(.white)
+
+                Spacer()
+
+                HStack(spacing: 0) {
+                    Text(plan.price)
+                        .font(.specialElite(16))
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                    Text(plan.period)
+                        .font(.specialElite(12))
+                        .foregroundColor(.sdTextSecondary)
+                }
+
+                if isCurrent {
+                    Text("Current")
+                        .font(.specialElite(11))
+                        .fontWeight(.bold)
+                        .foregroundColor(.sdRed)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(Color.sdRed.opacity(0.15))
+                        .cornerRadius(8)
                 }
             }
 
-            if isActive {
-                Text("CURRENT")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(ThemeManager.brand)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            // Tag pills
+            FlowLayout(spacing: 6) {
+                ForEach(plan.tags, id: \.self) { tag in
+                    Text(tag)
+                        .font(.specialElite(11))
+                        .foregroundColor(.sdTextSecondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.white.opacity(0.05))
+                        .cornerRadius(6)
+                }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 14)
-        .background(ThemeManager.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(14)
+        .background(Color.sdSurface)
+        .cornerRadius(12)
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(isActive ? ThemeManager.brand : ThemeManager.border, lineWidth: isActive ? 2 : 1)
+                .stroke(isCurrent ? Color.sdRed : Color.sdBorder, lineWidth: isCurrent ? 2 : 1)
         )
+    }
+}
+
+// MARK: - Placeholder Sub-screens
+struct NotificationCenterView: View {
+    let onBack: () -> Void
+    var body: some View {
+        VStack {
+            HStack {
+                Button { onBack() } label: {
+                    Text("← Back").font(.specialElite(14)).foregroundColor(.white)
+                }
+                Spacer()
+                Text("🔔 Notifications").font(.specialElite(18)).fontWeight(.bold).foregroundColor(.white)
+                Spacer()
+            }.padding(16).background(Color.sdSurface)
+            Spacer()
+            Text("No new notifications").font(.specialElite(14)).foregroundColor(.sdTextSecondary)
+            Spacer()
+        }.background(Color.sdBackground)
+    }
+}
+
+struct ThemeView: View {
+    let onBack: () -> Void
+    var body: some View {
+        VStack {
+            HStack {
+                Button { onBack() } label: {
+                    Text("← Back").font(.specialElite(14)).foregroundColor(.white)
+                }
+                Spacer()
+                Text("🎨 Theme").font(.specialElite(18)).fontWeight(.bold).foregroundColor(.white)
+                Spacer()
+            }.padding(16).background(Color.sdSurface)
+            Spacer()
+            Text("Dark theme only — as it should be 💀").font(.specialElite(14)).foregroundColor(.sdTextSecondary)
+            Spacer()
+        }.background(Color.sdBackground)
+    }
+}
+
+struct AdminDashboardView: View {
+    let onBack: () -> Void
+    var body: some View {
+        VStack {
+            HStack {
+                Button { onBack() } label: {
+                    Text("← Back").font(.specialElite(14)).foregroundColor(.white)
+                }
+                Spacer()
+                Text("🛡️ Admin Dashboard").font(.specialElite(18)).fontWeight(.bold).foregroundColor(.white)
+                Spacer()
+            }.padding(16).background(Color.sdSurface)
+            Spacer()
+            Text("Admin controls").font(.specialElite(14)).foregroundColor(.sdTextSecondary)
+            Spacer()
+        }.background(Color.sdBackground)
     }
 }

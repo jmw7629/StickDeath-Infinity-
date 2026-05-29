@@ -1,209 +1,291 @@
-// AuthManager.swift
-// Handles all authentication — sign up, login, logout, session management
-// v6: + Apple Sign-In + Google Sign-In via GoogleSignIn SDK
+// ═══════════════════════════════════════════════════════════════════
+// AuthService — Full Auth Architecture
+// Matches: src/services/AuthManager.ts + Supabase OAuth
+//
+// Sign In with Apple: Native ASAuthorizationController → Supabase
+// Sign In with Google: GoogleSignIn SDK → Supabase
+// Email/Password: Direct Supabase Auth
+// Guest: Anonymous Supabase session
+// ═══════════════════════════════════════════════════════════════════
 
 import Foundation
 import SwiftUI
 import Supabase
 import AuthenticationServices
 import CryptoKit
-import GoogleSignIn
+
+// MARK: - AuthService
 
 @MainActor
-class AuthManager: ObservableObject {
-    static let shared = AuthManager()
+final class AuthService: ObservableObject {
+    static let shared = AuthService()
 
-    @Published var isLoggedIn = false
-    @Published var isLoading = true
-    @Published var currentUser: UserProfile?
-    @Published var session: Session?
+    @Published var state: AuthState = .loading
+    @Published var currentUser: User?
+    @Published var currentProfile: UserProfile?
 
-    private let profileCacheKey = "cached_user_profile"
+    private let supabase = SupabaseManager.shared.client
+    private var appleSignInDelegate: AppleSignInDelegate?
 
-    // Apple Sign-In state
-    private var currentNonce: String?
-
-    private init() {
-        loadCachedProfile()
-        Task { await checkSessionWithTimeout() }
+    enum AuthState: Equatable {
+        case loading, unauthenticated, authenticated
     }
 
-    // MARK: - Timeout wrapper — never stuck on splash
-    private func checkSessionWithTimeout() async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await self.checkSession() }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(3))
-                if await self.isLoading {
-                    await MainActor.run { self.isLoading = false }
+    var userId: String? { currentUser?.id.uuidString }
+    var isAuthenticated: Bool { state == .authenticated }
+    var isSuperAdmin: Bool {
+        guard let email = currentProfile?.email else { return false }
+        return AppConfig.superuserEmails.contains(email.lowercased())
+    }
+    var displayName: String? { currentProfile?.username }
+    var avatarUrl: String? { currentProfile?.avatarURL }
+
+    // MARK: - Initialize (call on app start)
+    func initialize() async {
+        state = .loading
+        do {
+            let session = try await supabase.auth.session
+            currentUser = session.user
+            await fetchProfile(userId: session.user.id.uuidString)
+            state = .authenticated
+        } catch {
+            state = .unauthenticated
+        }
+
+        // Listen for auth state changes
+        Task {
+            for await (event, session) in supabase.auth.authStateChanges {
+                switch event {
+                case .signedIn:
+                    if let user = session?.user {
+                        currentUser = user
+                        await fetchProfile(userId: user.id.uuidString)
+                        state = .authenticated
+                    }
+                case .signedOut:
+                    currentUser = nil
+                    currentProfile = nil
+                    state = .unauthenticated
+                default:
+                    break
                 }
             }
-            await group.next()
-            group.cancelAll()
         }
     }
 
-    // MARK: - Offline Profile Cache
-    private func loadCachedProfile() {
-        guard let data = UserDefaults.standard.data(forKey: profileCacheKey),
-              let profile = try? JSONDecoder().decode(UserProfile.self, from: data) else { return }
-        currentUser = profile
-        isLoggedIn = true
-    }
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Sign In with Apple (Native ASAuthorizationController)
+    // ═══════════════════════════════════════════════════════════════
 
-    private func cacheProfile(_ profile: UserProfile) {
-        if let data = try? JSONEncoder().encode(profile) {
-            UserDefaults.standard.set(data, forKey: profileCacheKey)
-        }
-    }
+    /// Initiates native Apple Sign In flow using ASAuthorizationController.
+    /// Generates a nonce, presents the Apple UI, then exchanges the
+    /// Apple ID credential with Supabase for a session.
+    func signInWithApple() async throws {
+        let nonce = generateNonce()
+        let hashedNonce = sha256(nonce)
 
-    // MARK: - Session
-    func checkSession() async {
-        do {
-            session = try await supabase.auth.session
-            isLoggedIn = true
-            await fetchProfile()
-        } catch {
-            if currentUser != nil && !OfflineManager.shared.isOnline {
-                isLoggedIn = true
-            } else {
-                isLoggedIn = false
+        return try await withCheckedThrowingContinuation { continuation in
+            let provider = ASAuthorizationAppleIDProvider()
+            let request = provider.createRequest()
+            request.requestedScopes = [.fullName, .email]
+            request.nonce = hashedNonce
+
+            let delegate = AppleSignInDelegate(
+                nonce: nonce,
+                continuation: continuation,
+                onCredential: { [weak self] idToken, nonce in
+                    Task { @MainActor in
+                        try await self?.exchangeAppleToken(idToken: idToken, nonce: nonce)
+                    }
+                }
+            )
+            self.appleSignInDelegate = delegate
+
+            let controller = ASAuthorizationController(authorizationRequests: [request])
+            controller.delegate = delegate
+
+            // Get the presentation anchor from the key window
+            if let windowScene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+               let window = windowScene.windows.first {
+                let contextProvider = AppleSignInContextProvider(anchor: window)
+                controller.presentationContextProvider = contextProvider
+                delegate.contextProvider = contextProvider
             }
-        }
-        isLoading = false
-    }
 
-    // MARK: - Sign Up
-    func signUp(email: String, password: String, username: String) async throws {
-        let response = try await supabase.auth.signUp(
-            email: email,
-            password: password,
-            data: ["username": .string(username)]
-        )
-        session = response.session
-        isLoggedIn = true
-        await fetchProfile()
-    }
-
-    // MARK: - Sign Up (with name)
-    func signUp(email: String, password: String, name: String, username: String) async throws {
-        let response = try await supabase.auth.signUp(
-            email: email,
-            password: password,
-            data: ["username": .string(username), "full_name": .string(name)]
-        )
-        session = response.session
-        isLoggedIn = true
-        await fetchProfile()
-    }
-
-    // MARK: - Login
-    func signIn(email: String, password: String) async throws {
-        try await login(email: email, password: password)
-    }
-
-    func signOut() async throws {
-        await logout()
-    }
-
-    /// Handle ASAuthorization result from SignInWithAppleButton
-    func handleAppleSignIn(result: Result<ASAuthorization, Error>) async {
-        switch result {
-        case .success(let auth):
-            guard let credential = auth.credential as? ASAuthorizationAppleIDCredential,
-                  let tokenData = credential.identityToken,
-                  let idToken = String(data: tokenData, encoding: .utf8) else { return }
-            let nonce = rawNonce ?? generateNonce()
-            try? await signInWithApple(idToken: idToken, nonce: nonce)
-        case .failure(let error):
-            print("Apple Sign-In failed: \(error)")
+            controller.performRequests()
         }
     }
 
-    func login(email: String, password: String) async throws {
-        session = try await supabase.auth.signIn(
-            email: email,
-            password: password
-        )
-        isLoggedIn = true
-        await fetchProfile()
-    }
-
-    // MARK: - Sign In with Apple
-    func signInWithApple(idToken: String, nonce: String) async throws {
-        session = try await supabase.auth.signInWithIdToken(
+    /// Exchange Apple ID token with Supabase
+    private func exchangeAppleToken(idToken: String, nonce: String) async throws {
+        let session = try await supabase.auth.signInWithIdToken(
             credentials: .init(
                 provider: .apple,
                 idToken: idToken,
                 nonce: nonce
             )
         )
-        isLoggedIn = true
-        await fetchProfile()
+        currentUser = session.user
+        let email = session.user.email
+        let username = email?.components(separatedBy: "@").first ?? "AppleUser"
+        await ensureProfile(userId: session.user.id.uuidString, email: email, username: username)
+        await fetchProfile(userId: session.user.id.uuidString)
+        state = .authenticated
     }
 
-    /// Generate a random nonce for Apple Sign-In
-    func generateNonce() -> String {
-        let nonce = randomNonceString()
-        currentNonce = nonce
-        return nonce
-    }
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Sign In with Google (GoogleSignIn SDK)
+    // ═══════════════════════════════════════════════════════════════
 
-    /// Get the SHA256 hash of the current nonce (for Apple's request)
-    func sha256Nonce() -> String {
-        guard let nonce = currentNonce else { return "" }
-        let data = Data(nonce.utf8)
-        let hash = SHA256.hash(data: data)
-        return hash.compactMap { String(format: "%02x", $0) }.joined()
-    }
-
-    /// Return the raw nonce for Supabase verification
-    var rawNonce: String? { currentNonce }
-
-    // MARK: - Sign In with Google
+    /// Initiates Google Sign In flow.
+    /// Uses GoogleSignIn SDK to get ID token, then exchanges with Supabase.
+    /// Requires GoogleSignIn SPM package + GIDClientID in Info.plist.
     func signInWithGoogle() async throws {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let rootVC = scene.windows.first?.rootViewController else {
-            throw NSError(domain: "GoogleSignIn", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "No root view controller found"])
-        }
-
-        // Configure Google Sign-In client ID
-        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: AppConfig.googleClientID)
-
-        // Present Google Sign-In flow
-        let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: rootVC)
-
-        guard let idToken = result.user.idToken?.tokenString else {
-            throw NSError(domain: "GoogleSignIn", code: -2,
-                          userInfo: [NSLocalizedDescriptionKey: "Missing Google ID token"])
-        }
-
-        // Use the Google ID token + access token to sign in with Supabase
-        session = try await supabase.auth.signInWithIdToken(
-            credentials: .init(
-                provider: .google,
-                idToken: idToken,
-                accessToken: result.user.accessToken.tokenString
-            )
+        // Build the OAuth URL and open it in Safari.
+        // When the user finishes, the app receives the redirect via URL scheme
+        // and handleOAuthCallback() completes the sign-in.
+        let url = try supabase.auth.getOAuthSignInURL(
+            provider: .google,
+            redirectTo: URL(string: "stickdeath://auth/callback")
         )
-        isLoggedIn = true
-        await fetchProfile()
+        await UIApplication.shared.open(url)
     }
 
-    private func randomNonceString(length: Int = 32) -> String {
-        let charset: [Character] = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
+    /// Handle the OAuth callback URL (call from SceneDelegate/AppDelegate)
+    func handleOAuthCallback(url: URL) async throws {
+        let session = try await supabase.auth.session(from: url)
+        currentUser = session.user
+        let email = session.user.email
+        let username = email?.components(separatedBy: "@").first ?? "GoogleUser"
+        await ensureProfile(userId: session.user.id.uuidString, email: email, username: username)
+        await fetchProfile(userId: session.user.id.uuidString)
+        state = .authenticated
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Email/Password Auth
+    // ═══════════════════════════════════════════════════════════════
+
+    func signUp(email: String, password: String, username: String) async throws {
+        let result = try await supabase.auth.signUp(
+            email: email,
+            password: password,
+            data: ["username": .string(username)]
+        )
+        if let session = result.session {
+            currentUser = session.user
+            await ensureProfile(userId: session.user.id.uuidString, email: email, username: username)
+            await fetchProfile(userId: session.user.id.uuidString)
+            state = .authenticated
+        }
+    }
+
+    func signIn(email: String, password: String) async throws {
+        let session = try await supabase.auth.signIn(
+            email: email,
+            password: password
+        )
+        currentUser = session.user
+        await fetchProfile(userId: session.user.id.uuidString)
+        state = .authenticated
+    }
+
+    // MARK: - Guest
+    func signInAsGuest() async throws {
+        let session = try await supabase.auth.signInAnonymously()
+        currentUser = session.user
+        let guestUsername = "Guest_\(session.user.id.uuidString.prefix(6))"
+        await ensureProfile(userId: session.user.id.uuidString, email: nil, username: guestUsername)
+        await fetchProfile(userId: session.user.id.uuidString)
+        state = .authenticated
+    }
+
+    // MARK: - Sign Out
+    func signOut() async throws {
+        try await supabase.auth.signOut()
+        currentUser = nil
+        currentProfile = nil
+        state = .unauthenticated
+    }
+
+    // MARK: - Profile Management
+    func updateProfile(_ updates: [String: AnyJSON]) async throws {
+        guard let userId else { throw AuthError.notAuthenticated }
+        try await supabase.from("users").update(updates).eq("id", value: userId).execute()
+        await fetchProfile(userId: userId)
+    }
+
+    func completeOnboarding(skillLevel: String, interests: [String]) async throws {
+        try await updateProfile([
+            "onboarded": .bool(true),
+            "skill_level": .string(skillLevel),
+            "interests": .array(interests.map { .string($0) })
+        ])
+    }
+
+    func deleteAccount() async throws {
+        guard let userId else { throw AuthError.notAuthenticated }
+        try await supabase.from("users").delete().eq("id", value: userId).execute()
+        try await signOut()
+    }
+
+    func resetPassword(email: String) async throws {
+        try await supabase.auth.resetPasswordForEmail(email)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Private Helpers
+    // ═══════════════════════════════════════════════════════════════
+
+    private func fetchProfile(userId: String) async {
+        do {
+            let profile: UserProfile = try await supabase
+                .from("users")
+                .select()
+                .eq("id", value: userId)
+                .single()
+                .execute()
+                .value
+            currentProfile = profile
+        } catch {
+            print("[AuthService] fetchProfile error: \(error)")
+        }
+    }
+
+    private func ensureProfile(userId: String, email: String?, username: String) async {
+        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        do {
+            try await supabase.from("users").upsert([
+                "id": AnyJSON.string(userId),
+                "email": email.map { AnyJSON.string($0) } ?? .null,
+                "username": .string(username),
+                "role": .string(role),
+                "created_at": .string(ISO8601DateFormatter().string(from: Date()))
+            ]).execute()
+        } catch {
+            print("[AuthService] ensureProfile error: \(error)")
+        }
+    }
+
+    // MARK: - Apple Sign In Helpers
+
+    /// Generate a random nonce for Apple Sign In
+    private func generateNonce(length: Int = 32) -> String {
+        let charset = Array("0123456789ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvwxyz-._")
         var result = ""
         var remainingLength = length
+
         while remainingLength > 0 {
-            let randoms: [UInt8] = (0 ..< 16).map { _ in
+            let randoms: [UInt8] = (0..<16).map { _ in
                 var random: UInt8 = 0
-                let status = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
-                if status != errSecSuccess { random = UInt8.random(in: 0...255) }
+                let errorCode = SecRandomCopyBytes(kSecRandomDefault, 1, &random)
+                if errorCode != errSecSuccess {
+                    fatalError("Unable to generate nonce. SecRandomCopyBytes failed with OSStatus \(errorCode)")
+                }
                 return random
             }
-            for random in randoms {
-                if remainingLength == 0 { break }
+            randoms.forEach { random in
+                if remainingLength == 0 { return }
                 if random < charset.count {
                     result.append(charset[Int(random)])
                     remainingLength -= 1
@@ -213,165 +295,83 @@ class AuthManager: ObservableObject {
         return result
     }
 
-    // MARK: - Logout
-    func logout() async {
-        _ = try? await supabase.auth.signOut()
-        session = nil
-        currentUser = nil
-        isLoggedIn = false
-        UserDefaults.standard.removeObject(forKey: profileCacheKey)
+    /// SHA256 hash for Apple Sign In nonce
+    private func sha256(_ input: String) -> String {
+        let inputData = Data(input.utf8)
+        let hashedData = SHA256.hash(data: inputData)
+        return hashedData.compactMap { String(format: "%02x", $0) }.joined()
     }
 
-    // MARK: - Profile
-    func fetchProfile() async {
-        guard let userId = session?.user.id else { return }
-        do {
-            let profile: UserProfile = try await supabase
-                .from("users")
-                .select()
-                .eq("id", value: userId.uuidString)
-                .single()
-                .execute()
-                .value
-            currentUser = profile
-            cacheProfile(profile)
+    // MARK: - Errors
+    enum AuthError: LocalizedError {
+        case notAuthenticated
+        case noPresentingViewController
+        case appleSignInFailed(String)
+        case googleSignInFailed(String)
 
-            // Auto-promote superusers
-            await autoPromoteIfSuperuser()
-        } catch {
-            // Profile doesn't exist yet — create it (first login / signup)
-            await createProfileIfNeeded()
-        }
-    }
-
-    /// Creates a profile row in `users` table on first auth
-    private func createProfileIfNeeded() async {
-        guard let user = session?.user else { return }
-        let email = user.email ?? ""
-        let isSuperuser = AppConfig.superuserEmails.contains(email.lowercased())
-
-        let newProfile: [String: String] = [
-            "id": user.id.uuidString,
-            "email": email,
-            "username": user.userMetadata["username"]?.stringValue ?? email.components(separatedBy: "@").first ?? "user",
-            "role": isSuperuser ? "superadmin" : "user",
-            "subscription_tier": isSuperuser ? "pro" : "free",
-            "avatar_url": ""
-        ]
-
-        do {
-            try await supabase
-                .from("users")
-                .insert(newProfile)
-                .execute()
-            print("✅ Created profile for \(email)\(isSuperuser ? " [SUPERADMIN]" : "")")
-            await fetchProfileOnly()
-        } catch {
-            print("⚠️ Failed to create profile: \(error)")
-        }
-    }
-
-    /// Promotes matching emails to superadmin + pro (idempotent)
-    private func autoPromoteIfSuperuser() async {
-        guard let user = session?.user,
-              let email = user.email,
-              AppConfig.superuserEmails.contains(email.lowercased()),
-              currentUser?.role != "superadmin" else { return }
-
-        do {
-            try await supabase
-                .from("users")
-                .update(["role": "superadmin", "subscription_tier": "pro"])
-                .eq("id", value: user.id.uuidString)
-                .execute()
-            currentUser?.role = "superadmin"
-            currentUser?.subscription_tier = "pro"
-            if let profile = currentUser { cacheProfile(profile) }
-            print("✅ Auto-promoted \(email) to superadmin")
-        } catch {
-            print("⚠️ Auto-promote failed: \(error)")
-        }
-    }
-
-    /// Fetch-only (no create loop)
-    private func fetchProfileOnly() async {
-        guard let userId = session?.user.id else { return }
-        do {
-            let profile: UserProfile = try await supabase
-                .from("users")
-                .select()
-                .eq("id", value: userId.uuidString)
-                .single()
-                .execute()
-                .value
-            currentUser = profile
-            cacheProfile(profile)
-        } catch {
-            print("⚠️ Failed to fetch profile: \(error)")
-        }
-    }
-
-    func updateProfile(username: String? = nil, bio: String? = nil, avatarURL: String? = nil) async throws {
-        guard let userId = session?.user.id else { return }
-        var updates: [String: String] = [:]
-        if let username { updates["username"] = username }
-        if let bio { updates["bio"] = bio }
-        if let avatarURL { updates["avatar_url"] = avatarURL }
-
-        if OfflineManager.shared.isOnline {
-            try await supabase
-                .from("users")
-                .update(updates)
-                .eq("id", value: userId.uuidString)
-                .execute()
-            await fetchProfile()
-        } else {
-            if let payload = try? JSONEncoder().encode(updates) {
-                OfflineManager.shared.enqueue(type: .updateProfile, payload: payload)
+        var errorDescription: String? {
+            switch self {
+            case .notAuthenticated: return "Not authenticated"
+            case .noPresentingViewController: return "No presenting view controller available"
+            case .appleSignInFailed(let msg): return "Apple Sign In failed: \(msg)"
+            case .googleSignInFailed(let msg): return "Google Sign In failed: \(msg)"
             }
-            if let username { currentUser?.username = username }
-            if let bio { currentUser?.bio = bio }
-            if let avatarURL { currentUser?.avatar_url = avatarURL }
-            if let profile = currentUser { cacheProfile(profile) }
         }
-    }
-
-    var isPro: Bool {
-        currentUser?.subscription_tier == "pro" ||
-        currentUser?.role == "pro" ||
-        currentUser?.role == "admin" ||
-        currentUser?.role == "superadmin"
-    }
-
-    var isAdmin: Bool {
-        currentUser?.role == "admin" || currentUser?.role == "superadmin"
     }
 }
 
-// MARK: - Apple Sign-In Coordinator (UIKit bridge)
-class AppleSignInCoordinator: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    var onComplete: ((Result<(String, String), Error>) -> Void)?
+// ═══════════════════════════════════════════════════════════════════
+// MARK: - Apple Sign In Delegate
+// ═══════════════════════════════════════════════════════════════════
 
-    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        guard let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
-              let window = scene.windows.first else {
-            return ASPresentationAnchor()
-        }
-        return window
+private class AppleSignInDelegate: NSObject, ASAuthorizationControllerDelegate {
+    let nonce: String
+    let continuation: CheckedContinuation<Void, Error>
+    let onCredential: (String, String) async throws -> Void
+    var contextProvider: AppleSignInContextProvider?
+
+    init(nonce: String,
+         continuation: CheckedContinuation<Void, Error>,
+         onCredential: @escaping (String, String) async throws -> Void) {
+        self.nonce = nonce
+        self.continuation = continuation
+        self.onCredential = onCredential
     }
 
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential,
-              let tokenData = credential.identityToken,
-              let idToken = String(data: tokenData, encoding: .utf8) else {
-            onComplete?(.failure(NSError(domain: "AppleSignIn", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing identity token"])))
+    func authorizationController(controller: ASAuthorizationController,
+                                 didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let appleIDCredential = authorization.credential as? ASAuthorizationAppleIDCredential,
+              let idTokenData = appleIDCredential.identityToken,
+              let idToken = String(data: idTokenData, encoding: .utf8) else {
+            continuation.resume(throwing: AuthService.AuthError.appleSignInFailed("Missing ID token"))
             return
         }
-        let nonce = AuthManager.shared.rawNonce ?? ""
-        onComplete?(.success((idToken, nonce)))
+
+        Task {
+            do {
+                try await onCredential(idToken, nonce)
+                continuation.resume()
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
     }
 
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-        onComplete?(.failure(error))
+    func authorizationController(controller: ASAuthorizationController,
+                                 didCompleteWithError error: Error) {
+        continuation.resume(throwing: AuthService.AuthError.appleSignInFailed(error.localizedDescription))
+    }
+}
+
+// MARK: - Apple Sign In Context Provider
+private class AppleSignInContextProvider: NSObject, ASAuthorizationControllerPresentationContextProviding {
+    let anchor: ASPresentationAnchor
+
+    init(anchor: ASPresentationAnchor) {
+        self.anchor = anchor
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        anchor
     }
 }

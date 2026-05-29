@@ -1,190 +1,240 @@
-// LoginView.swift
-// Pixel-perfect to reference: skull 💀, "Welcome Back", dark input fields, red Sign In
+// ═══════════════════════════════════════════════════════════════════
+// LoginView — Email/password login
+// Matches: src/pages/LoginView.tsx exactly
+// - Back button top-left
+// - Skull + "Welcome Back" + subtitle
+// - Apple/Google SSO buttons first
+// - "or sign in with email" divider
+// - Email + Password fields
+// - Red gradient Sign In button
+// - Forgot Password link
+// ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
-import GoogleSignIn
-import AuthenticationServices
 
 struct LoginView: View {
-    @EnvironmentObject var auth: AuthManager
-    @Environment(\.dismiss) var dismiss
+    let onBack: () -> Void
+    let onSuccess: () -> Void
+
+    @EnvironmentObject var authVM: AuthViewModel
     @State private var email = ""
     @State private var password = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
+    @State private var showPassword = false
+    @State private var showError = false
+    @State private var visible = false
 
     var body: some View {
         ZStack {
-            Color(hex: "#0a0a0f").ignoresSafeArea()
+            Color.sdBackground.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                Spacer()
-
-                // ── Header ──
-                VStack(spacing: 8) {
-                    Text("💀")
-                        .font(.system(size: 40))
-
-                    Text("Welcome Back")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundStyle(.white)
-
-                    Text("Sign in to continue")
-                        .font(.system(size: 14))
-                        .foregroundStyle(Color(hex: "#9090a8"))
-                }
-                .padding(.bottom, 40)
-
-                // ── Apple Sign In ──
-                SignInWithAppleButton(.signIn) { request in
-                    request.requestedScopes = [.email, .fullName]
-                } onCompletion: { result in
-                    Task { await auth.handleAppleSignIn(result: result) }
-                }
-                .signInWithAppleButtonStyle(.white)
-                .frame(height: 48)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal, 40)
-                .padding(.bottom, 10)
-
-                // ── Google Sign In ──
-                Button {
-                    Task { await auth.signInWithGoogle() }
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "g.circle.fill")
-                            .font(.system(size: 20))
-                        Text("Sign in with Google")
-                            .font(.system(size: 16, weight: .semibold))
-                    }
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .padding(.horizontal, 40)
-                .padding(.bottom, 16)
-
-                // ── Divider ──
+                // Top bar with back button
                 HStack {
-                    Rectangle().fill(Color(hex: "#2a2a3a")).frame(height: 1)
-                    Text("or")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color(hex: "#9090a8"))
-                        .padding(.horizontal, 8)
-                    Rectangle().fill(Color(hex: "#2a2a3a")).frame(height: 1)
+                    Button(action: onBack) {
+                        Text("‹")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                    }
+                    Spacer()
                 }
-                .padding(.horizontal, 40)
-                .padding(.bottom, 16)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .overlay(
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1),
+                    alignment: .bottom
+                )
 
-                // ── Form Fields ──
-                VStack(spacing: 12) {
-                    StyledTextField(placeholder: "Email", text: $email, keyboardType: .emailAddress)
-                    StyledSecureField(placeholder: "Password", text: $password)
-                }
-                .padding(.horizontal, 40)
-                .padding(.bottom, 20)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // Header
+                        VStack(spacing: 6) {
+                            Text("☠️")
+                                .font(.system(size: 56))
+                                .padding(.top, 16)
 
-                // ── Error ──
-                if let error = errorMessage {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.bottom, 8)
-                }
+                            Text("Welcome Back")
+                                .font(.specialElite(28))
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.top, 12)
 
-                // ── Sign In Button ──
-                Button {
-                    Task { await signIn() }
-                } label: {
-                    Group {
-                        if isLoading {
-                            ProgressView().tint(.white)
-                        } else {
-                            Text("Sign In")
-                                .font(.system(size: 16, weight: .semibold))
+                            Text("Sign in to StickDeath ∞")
+                                .font(.system(size: 15))
+                                .foregroundColor(.sdTextSecondary)
                         }
-                    }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 48)
-                    .background(ThemeManager.brand)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .disabled(isLoading)
-                .padding(.horizontal, 40)
-                .padding(.bottom, 16)
+                        .padding(.bottom, 32)
 
-                // ── Switch to Sign Up ──
-                HStack(spacing: 4) {
-                    Text("Don't have an account?")
-                        .foregroundStyle(Color(hex: "#9090a8"))
-                    Button("Sign Up") {
-                        dismiss()
-                    }
-                    .foregroundStyle(ThemeManager.brand)
-                }
-                .font(.system(size: 14))
+                        // SSO Buttons (first, matching React order)
+                        VStack(spacing: 12) {
+                            SocialAuthButton(
+                                icon: "apple.logo",
+                                title: "Continue with Apple",
+                                action: { Task { await authVM.signInWithApple() } }
+                            )
+                            SocialAuthButton(
+                                icon: "g.circle.fill",
+                                title: "Continue with Google",
+                                action: { Task { await authVM.signInWithGoogle() } }
+                            )
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
 
-                Spacer()
-                    .frame(height: 80)
+                        // Divider
+                        HStack(spacing: 12) {
+                            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+                            Text("or sign in with email")
+                                .font(.specialElite(12))
+                                .foregroundColor(.sdTextMuted)
+                            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 24)
+
+                        // Email / Password fields
+                        VStack(spacing: 16) {
+                            // Email
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Email")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
+
+                                SDTextField(
+                                    placeholder: "user@stickdeath.com",
+                                    text: $email,
+                                    icon: "envelope"
+                                )
+                                .textContentType(.emailAddress)
+                                .autocapitalization(.none)
+                            }
+
+                            // Password
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Password")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
+
+                                SDTextField(
+                                    placeholder: "••••••••",
+                                    text: $password,
+                                    icon: "lock",
+                                    isSecure: !showPassword
+                                )
+                                .textContentType(.password)
+                                .overlay(
+                                    Button {
+                                        showPassword.toggle()
+                                    } label: {
+                                        Text(showPassword ? "🙈" : "👁")
+                                            .font(.system(size: 16))
+                                    }
+                                    .padding(.trailing, 12),
+                                    alignment: .trailing
+                                )
+                            }
+                        }
+                        .padding(.horizontal, 24)
+
+                        // Error
+                        if let error = authVM.error, showError {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundColor(.sdDestructive)
+                                .padding(.top, 12)
+                        }
+
+                        // Sign In button
+                        Button {
+                            showError = true
+                            Task {
+                                await authVM.signIn(email: email, password: password)
+                                if authVM.isAuthenticated {
+                                    onSuccess()
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if authVM.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Text("Sign In")
+                                        .font(.specialElite(16))
+                                        .fontWeight(.semibold)
+                                        .tracking(1)
+                                    Text("→")
+                                        .font(.system(size: 18))
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(hex: "#CC1100"), Color(hex: "#FF3322")],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .cornerRadius(14)
+                        }
+                        .disabled(authVM.isLoading || email.isEmpty || password.isEmpty)
+                        .opacity(email.isEmpty || password.isEmpty ? 0.6 : 1)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 24)
+
+                        // Forgot Password
+                        Button {
+                            if !email.isEmpty {
+                                Task { try? await AuthService.shared.resetPassword(email: email) }
+                            }
+                        } label: {
+                            Text("Forgot Password?")
+                                .font(.specialElite(14))
+                                .foregroundColor(Color(hex: "#CC1100"))
+                                .padding(.vertical, 12)
+                        }
+                        .padding(.top, 8)
+                    }
+                }
             }
+            .frame(maxWidth: 400)
+            .opacity(visible ? 1 : 0)
+            .offset(y: visible ? 0 : 20)
+            .animation(.easeOut(duration: 0.4), value: visible)
         }
-    }
-
-    private func signIn() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            try await auth.signIn(email: email, password: password)
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
+        .onAppear { visible = true }
     }
 }
 
-// MARK: - Styled Input Fields (dark theme, matching reference)
-
-struct StyledTextField: View {
-    let placeholder: String
-    @Binding var text: String
-    var keyboardType: UIKeyboardType = .default
-    var autocap: TextInputAutocapitalization = .never
+// MARK: - Social Auth Button
+struct SocialAuthButton: View {
+    let icon: String
+    let title: String
+    let action: () -> Void
 
     var body: some View {
-        TextField("", text: $text, prompt: Text(placeholder).foregroundStyle(Color(hex: "#5a5a6e")))
-            .keyboardType(keyboardType)
-            .textInputAutocapitalization(autocap)
-            .autocorrectionDisabled()
-            .font(.system(size: 16))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .frame(height: 50)
-            .background(Color(hex: "#111118"))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 18))
+                Text(title)
+                    .font(.specialElite(15))
+                    .fontWeight(.semibold)
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color.white.opacity(0.05))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color(hex: "#2a2a3a"), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
             )
-    }
-}
-
-struct StyledSecureField: View {
-    let placeholder: String
-    @Binding var text: String
-
-    var body: some View {
-        SecureField("", text: $text, prompt: Text(placeholder).foregroundStyle(Color(hex: "#5a5a6e")))
-            .font(.system(size: 16))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .frame(height: 50)
-            .background(Color(hex: "#111118"))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color(hex: "#2a2a3a"), lineWidth: 1)
-            )
+            .cornerRadius(10)
+        }
     }
 }

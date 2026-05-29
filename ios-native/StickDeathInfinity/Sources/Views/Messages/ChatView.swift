@@ -1,608 +1,442 @@
-// ChatView.swift
-// Pixel-perfect match to reference #general — colored initial-circle avatars,
-// colored reaction badges, thread replies, typing indicator, hamburger menu header
+// ═══════════════════════════════════════════════════════════════════
+// ChatRoomView — Individual chat conversation
+// Matches: MessagesScreen.tsx MessageBubble exactly
+// - Sender name (red for channel), message content, time
+// - Reactions (emoji + count), quick reaction bar on tap
+// - Reply quotes, voice messages, images, videos
+// - Read receipts (✓ ✓✓ colored)
+// - Input bar: attach button, text field, send button
+// ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
-struct ChatView: View {
-    let conversationId: Int
-    let otherUsername: String
-    @Environment(\.dismiss) var dismiss
-    @EnvironmentObject var router: NavigationRouter
-    @State private var messageText = ""
-    @State private var messages = ChatMessage.sampleMessages
-    @State private var showSearch = false
-    @State private var showPinned = false
-    @State private var showMembers = false
-    @State private var searchQuery = ""
-    @State private var showSidebar = false
+struct ChatRoomView: View {
+    let room: ChatRoom
+    @EnvironmentObject var authVM: AuthViewModel
+    @State private var messages: [ChatMessage] = []
+    @State private var input = ""
+    @State private var isLoading = true
+    @State private var replyTo: ChatMessage? = nil
 
     var body: some View {
         ZStack {
-            ThemeManager.background.ignoresSafeArea()
+            Color.sdBackground.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                channelHeader
+                // Header
+                HStack(spacing: 12) {
+                    // Room name/icon
+                    if let emoji = room.emoji {
+                        Text(emoji)
+                            .font(.system(size: 24))
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(room.name ?? "Chat")
+                            .font(.specialElite(16))
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                        if let members = room.memberCount {
+                            Text("\(members) members")
+                                .font(.system(size: 12))
+                                .foregroundColor(.sdTextSecondary)
+                        }
+                    }
+                    Spacer()
+                    // Phone / Video buttons
+                    Button {} label: {
+                        Image(systemName: "phone.fill")
+                            .foregroundColor(.sdTextSecondary)
+                    }
+                    Button {} label: {
+                        Image(systemName: "video.fill")
+                            .foregroundColor(.sdTextSecondary)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.sdSurface)
+                .overlay(
+                    Rectangle().fill(Color.sdBorder).frame(height: 1),
+                    alignment: .bottom
+                )
 
-                if showSearch { searchBar }
-                if showPinned { pinnedPanel }
-                if showMembers { membersPanel }
-
-                dateDivider
-
+                // Messages
                 ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredMessages) { msg in
-                                MessageBubble(message: msg, onReact: { emoji in
-                                    toggleReaction(msgId: msg.id, emoji: emoji)
-                                })
+                    ScrollView {
+                        LazyVStack(spacing: 8) {
+                            if isLoading {
+                                ProgressView()
+                                    .tint(.sdRed)
+                                    .padding(40)
+                            }
+
+                            ForEach(messages) { msg in
+                                MessageBubble(
+                                    message: msg,
+                                    isMe: msg.senderID == authVM.user?.id,
+                                    onReact: { emoji in reactToMessage(msg, emoji: emoji) },
+                                    onReply: { replyTo = msg }
+                                )
                                 .id(msg.id)
                             }
                         }
-                        .padding(.vertical, 4)
+                        .padding(16)
                     }
-                    .onChange(of: messages.count) { _, _ in
-                        withAnimation {
-                            proxy.scrollTo(messages.last?.id, anchor: .bottom)
+                    .onChange(of: messages.count) { _ in
+                        if let last = messages.last {
+                            withAnimation {
+                                proxy.scrollTo(last.id, anchor: .bottom)
+                            }
                         }
                     }
                 }
 
-                typingIndicator
-                messageInput
-            }
-                // Teams-style sidebar overlay
-            if showSidebar {
-                sidebarOverlay
+                // Reply preview
+                if let reply = replyTo {
+                    HStack(spacing: 8) {
+                        Rectangle()
+                            .fill(Color.sdRed)
+                            .frame(width: 3)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(reply.senderUsername ?? "User")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundColor(.sdRed)
+                            Text(reply.content)
+                                .font(.system(size: 11))
+                                .foregroundColor(.sdTextSecondary)
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        Button { replyTo = nil } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.sdTextMuted)
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.05))
+                }
+
+                // Input bar
+                HStack(spacing: 12) {
+                    Button {} label: {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.sdTextMuted)
+                    }
+
+                    TextField("Message...", text: $input)
+                        .font(.system(size: 14))
+                        .foregroundColor(.sdTextPrimary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.sdSurface2)
+                        .cornerRadius(20)
+
+                    // Voice record button
+                    Button {} label: {
+                        Image(systemName: "mic.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.sdTextMuted)
+                    }
+
+                    // Send
+                    Button { sendMessage() } label: {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(input.isEmpty ? .sdTextMuted : .sdRed)
+                    }
+                    .disabled(input.isEmpty)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Color.sdSurface)
             }
         }
         .navigationBarHidden(true)
+        .task { await loadMessages() }
     }
 
-    var filteredMessages: [ChatMessage] {
-        guard !searchQuery.isEmpty else { return messages }
-        return messages.filter {
-            $0.text.localizedCaseInsensitiveContains(searchQuery) ||
-            $0.author.localizedCaseInsensitiveContains(searchQuery)
+    private func loadMessages() async {
+        do {
+            messages = try await MessageService.shared.fetchMessages(roomID: room.id)
+            isLoading = false
+        } catch {
+            isLoading = false
         }
     }
 
-    func toggleReaction(msgId: Int, emoji: String) {
-        guard let idx = messages.firstIndex(where: { $0.id == msgId }) else { return }
-        if let rIdx = messages[idx].reactions.firstIndex(where: { $0.emoji == emoji }) {
-            messages[idx].reactions[rIdx].count += 1
-        } else {
-            messages[idx].reactions.append(ChatMessage.Reaction(emoji: emoji, count: 1))
-        }
-    }
+    private func sendMessage() {
+        guard !input.trimmingCharacters(in: .whitespaces).isEmpty,
+              let userID = authVM.user?.id else { return }
 
-    // MARK: - Sidebar Overlay
-    var sidebarOverlay: some View {
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                // Header
-                HStack(spacing: 10) {
-                    Text("💀").font(.system(size: 20))
-                    Text("StickDeath ∞")
-                        .font(.custom("Special Elite", size: 16))
-                        .fontWeight(.bold)
-                        .foregroundStyle(.white)
-                    Spacer()
-                    Button { showSidebar = false } label: {
-                        Text("✕")
-                            .font(.system(size: 18))
-                            .foregroundStyle(Color(hex: "#9090a8"))
-                    }
-                }
-                .padding(16)
-                .padding(.bottom, 4)
-                .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .bottom)
+        let text = input
+        input = ""
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text("CHANNELS")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color(hex: "#72728a"))
-                            .padding(.horizontal, 16)
-                            .padding(.top, 12)
-                            .padding(.bottom, 8)
-
-                        ForEach(["💬 #general", "🎨 #show-and-tell", "💡 #tips-tricks", "🏆 #challenges", "🌐 #off-topic"], id: \.self) { ch in
-                            let isActive = ch.contains(otherUsername)
-                            HStack(spacing: 10) {
-                                Text(String(ch.prefix(2)))
-                                Text(String(ch.dropFirst(3)))
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(isActive ? .white : Color(hex: "#9090a8"))
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(isActive ? Color(hex: "#1a1a24") : .clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .padding(.horizontal, 8)
-                        }
-
-                        Text("QUICK ACTIONS")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Color(hex: "#72728a"))
-                            .padding(.horizontal, 16)
-                            .padding(.top, 16)
-                            .padding(.bottom, 8)
-
-                        ForEach(["📞 Voice Call", "🎬 Watch Together", "🎨 Creator Room", "⚔️ War Room"], id: \.self) { action in
-                            HStack(spacing: 10) {
-                                Text(String(action.prefix(2)))
-                                Text(String(action.dropFirst(3)))
-                                    .font(.system(size: 14))
-                                    .foregroundStyle(Color(hex: "#9090a8"))
-                            }
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 8)
-                        }
-                    }
-                }
-
-                // All Messages footer
-                Button { dismiss() } label: {
-                    HStack(spacing: 8) {
-                        Text("←").foregroundStyle(Color(hex: "#72728a"))
-                        Text("All Messages")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color(hex: "#72728a"))
-                    }
-                    .padding(16)
-                    .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .top)
-                }
-            }
-            .frame(width: 270)
-            .background(ThemeManager.card)
-            .overlay(Rectangle().fill(ThemeManager.border).frame(width: 0.5), alignment: .trailing)
-
-            // Backdrop
-            Color.black.opacity(0.5)
-                .onTapGesture { showSidebar = false }
-        }
-        .ignoresSafeArea()
-        .transition(.move(edge: .leading))
-        .animation(.easeInOut(duration: 0.25), value: showSidebar)
-    }
-
-    // MARK: - Channel Header (matches reference: ≡ # general 👥 23 / subtitle / 🔍 📌 👥)
-    var channelHeader: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 10) {
-                // Hamburger — toggles sidebar
-                Button { showSidebar.toggle() } label: {
-                    Text("≡")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundStyle(showSidebar ? .white : .white.opacity(0.6))
-                }
-
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 6) {
-                        Text("#")
-                            .font(.system(size: 15, weight: .semibold))
-                            .foregroundStyle(Color(hex: "#9090a8"))
-                        Text(otherUsername)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                        HStack(spacing: 3) {
-                            Text("👥")
-                                .font(.system(size: 12))
-                            Text("0")
-                                .font(.system(size: 12))
-                                .foregroundStyle(Color(hex: "#72728a"))
-                        }
-                    }
-                    Text("General community chat")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color(hex: "#72728a"))
-                }
-
-                Spacer()
-
-                // Header icons
-                Button { showSearch.toggle(); showPinned = false; showMembers = false } label: {
-                    Text("🔍")
-                        .font(.system(size: 18))
-                        .opacity(showSearch ? 1.0 : 0.6)
-                }
-                Button { showPinned.toggle(); showSearch = false; showMembers = false } label: {
-                    Text("📌")
-                        .font(.system(size: 18))
-                        .opacity(showPinned ? 1.0 : 0.6)
-                }
-                Button { showMembers.toggle(); showSearch = false; showPinned = false } label: {
-                    Text("👥")
-                        .font(.system(size: 18))
-                        .opacity(showMembers ? 1.0 : 0.6)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(ThemeManager.card)
-
-            Rectangle().fill(ThemeManager.border).frame(height: 0.5)
-        }
-    }
-
-    // MARK: - Search Bar
-    var searchBar: some View {
-        HStack(spacing: 8) {
-            TextField("", text: $searchQuery, prompt: Text("Search messages...").foregroundStyle(Color(hex: "#5a5a6e")))
-                .font(.system(size: 14))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color(hex: "#1a1a24"))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            Button { showSearch = false; searchQuery = "" } label: {
-                Text("✕").foregroundStyle(Color(hex: "#72728a"))
+        Task {
+            if let msg = try? await MessageService.shared.sendMessage(
+                roomID: room.id,
+                senderID: userID,
+                content: text,
+                replyToID: replyTo?.id
+            ) {
+                messages.append(msg)
+                replyTo = nil
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(ThemeManager.card)
-        .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .bottom)
     }
 
-    // MARK: - Pinned Panel
-    var pinnedPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("PINNED MESSAGES")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color(hex: "#72728a"))
-
-            ForEach(["📌 Challenge rules: Max 120 frames, original work only",
-                      "📌 Export fix coming in next update — stay tuned!",
-                      "📌 Welcome new members! Read #tips-tricks to get started"], id: \.self) { pin in
-                Text(pin)
-                    .font(.system(size: 13))
-                    .foregroundStyle(Color(hex: "#9090a8"))
-                    .padding(.vertical, 4)
-            }
+    private func reactToMessage(_ msg: ChatMessage, emoji: String) {
+        // Toggle reaction
+        Task {
+            try? await MessageService.shared.toggleReaction(messageID: msg.id, emoji: emoji)
         }
-        .padding(12)
-        .background(ThemeManager.card)
-        .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .bottom)
     }
+}
 
-    // MARK: - Members Panel
-    var membersPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("MEMBERS — 0")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundStyle(Color(hex: "#72728a"))
+// MARK: - Message Bubble (matches MessageBubble from React)
+private struct MessageBubble: View {
+    let message: ChatMessage
+    let isMe: Bool
+    let onReact: (String) -> Void
+    let onReply: () -> Void
 
-            ForEach(ChatMember.allMembers) { member in
-                HStack(spacing: 10) {
-                    ZStack(alignment: .bottomTrailing) {
-                        Circle()
-                            .fill(member.color)
-                            .frame(width: 28, height: 28)
-                            .overlay(
-                                Text(member.initials)
+    @State private var showReactions = false
+
+    private let quickReactions = ["👍", "❤️", "😂", "💀", "🔥", "😮"]
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack {
+                if isMe { Spacer(minLength: 60) }
+
+                VStack(alignment: isMe ? .trailing : .leading, spacing: 4) {
+                    // Reply quote
+                    if let reply = message.replyTo {
+                        HStack(spacing: 6) {
+                            Rectangle()
+                                .fill(Color.sdRed)
+                                .frame(width: 3)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(reply.sender)
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.white)
-                            )
-                        Circle()
-                            .fill(member.status == "online" ? .green :
-                                  member.status == "idle" ? .yellow : Color(hex: "#5a5a6e"))
-                            .frame(width: 10, height: 10)
-                            .overlay(Circle().stroke(ThemeManager.card, lineWidth: 2))
-                            .offset(x: 2, y: 2)
+                                    .foregroundColor(.sdRed)
+                                Text(reply.content)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.sdTextSecondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(6)
+                        .background(Color.white.opacity(0.05))
+                        .cornerRadius(6)
                     }
-                    Text(member.name)
-                        .font(.system(size: 13))
-                        .foregroundStyle(member.status == "offline" ? Color(hex: "#72728a") : .white)
+
+                    // Sender name (for channel messages)
+                    if !isMe, let username = message.senderUsername {
+                        Text(username)
+                            .font(.specialElite(12))
+                            .fontWeight(.bold)
+                            .foregroundColor(.sdRed)
+                    }
+
+                    // Content
+                    if message.type == .voice {
+                        VoiceMessageBubble(duration: message.voiceDuration ?? 5, isMe: isMe)
+                    } else {
+                        Text(message.content)
+                            .font(.specialElite(14))
+                            .foregroundColor(.white)
+                            .lineSpacing(4)
+                    }
+
+                    // Reactions
+                    if !message.reactions.isEmpty {
+                        HStack(spacing: 3) {
+                            ForEach(Array(message.reactions.keys.sorted()), id: \.self) { emoji in
+                                if let data = message.reactions[emoji] {
+                                    Button { onReact(emoji) } label: {
+                                        HStack(spacing: 2) {
+                                            Text(emoji).font(.system(size: 11))
+                                            Text("\(data.count)")
+                                                .font(.specialElite(10))
+                                                .foregroundColor(data.reacted ? .sdRed : .sdTextMuted)
+                                        }
+                                        .padding(.horizontal, 5)
+                                        .padding(.vertical, 1)
+                                        .background(
+                                            data.reacted
+                                                ? Color.sdRed.opacity(0.15)
+                                                : Color.white.opacity(0.05)
+                                        )
+                                        .cornerRadius(10)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 10)
+                                                .stroke(
+                                                    data.reacted ? Color.sdRed : Color.sdBorder,
+                                                    lineWidth: 1
+                                                )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
+
+                    // Footer: time + read receipt
+                    HStack(spacing: 4) {
+                        if message.edited == true {
+                            Text("Edited")
+                                .font(.system(size: 9))
+                                .italic()
+                                .foregroundColor(.sdTextMuted)
+                        }
+                        Text(message.timeString)
+                            .font(.specialElite(10))
+                            .foregroundColor(.sdTextMuted)
+                        if isMe {
+                            ReadReceiptView(status: message.readStatus ?? .sent)
+                        }
+                    }
                 }
+                .padding(12)
+                .background(
+                    isMe
+                        ? Color.sdRed.opacity(0.25)
+                        : Color.sdSurfaceLight
+                )
+                .cornerRadius(12, corners: isMe ? [.topLeft, .bottomLeft, .bottomRight] : [.topRight, .bottomLeft, .bottomRight])
+                .onTapGesture { showReactions.toggle() }
+                .onLongPressGesture { showReactions = true }
+
+                if !isMe { Spacer(minLength: 60) }
+            }
+
+            // Quick reactions
+            if showReactions {
+                HStack(spacing: 2) {
+                    ForEach(quickReactions, id: \.self) { emoji in
+                        Button {
+                            onReact(emoji)
+                            showReactions = false
+                        } label: {
+                            Text(emoji)
+                                .font(.system(size: 14))
+                                .frame(width: 30, height: 30)
+                                .background(Color.sdSurfaceLight)
+                                .clipShape(Circle())
+                        }
+                    }
+
+                    Button {
+                        onReply()
+                        showReactions = false
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("↩️")
+                            Text("Reply")
+                                .font(.specialElite(11))
+                                .foregroundColor(.sdBlue)
+                        }
+                        .padding(.horizontal, 10)
+                        .frame(height: 30)
+                        .background(Color.sdSurfaceLight)
+                        .cornerRadius(15)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: isMe ? .trailing : .leading)
+                .padding(.horizontal, 4)
             }
         }
-        .padding(12)
-        .frame(maxHeight: 200)
-        .background(ThemeManager.card)
-        .overlay(Rectangle().fill(ThemeManager.border).frame(height: 0.5), alignment: .bottom)
     }
+}
 
-    // MARK: - Date Divider
-    var dateDivider: some View {
-        HStack(spacing: 12) {
-            Rectangle().fill(ThemeManager.border).frame(height: 0.5)
-            Text("Today")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color(hex: "#72728a"))
-            Rectangle().fill(ThemeManager.border).frame(height: 0.5)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-    }
+// MARK: - Voice Message Bubble
+private struct VoiceMessageBubble: View {
+    let duration: Int
+    let isMe: Bool
 
-    // MARK: - Typing Indicator
-    var typingIndicator: some View {
-        HStack(spacing: 0) {
-            Text(""  // Clean slate — no mock typing)
-                .font(.system(size: 13).italic())
-                .foregroundStyle(Color(hex: "#72728a"))
-            Spacer()
+    @State private var playing = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { playing.toggle() } label: {
+                Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundColor(isMe ? .white : .sdRed)
+            }
+
+            // Waveform bars
+            HStack(spacing: 2) {
+                ForEach(0..<20, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(isMe ? Color.white.opacity(0.6) : Color.sdRed.opacity(0.5))
+                        .frame(width: 3, height: CGFloat.random(in: 6...24))
+                }
+            }
+
+            Text(formatDuration(duration))
+                .font(.specialElite(12))
+                .foregroundColor(isMe ? .white.opacity(0.7) : .sdTextSecondary)
         }
-        .padding(.horizontal, 16)
         .padding(.vertical, 4)
     }
 
-    // MARK: - Message Input (📎 · input · 😀 · ▶)
-    var messageInput: some View {
-        HStack(spacing: 8) {
-            Button {} label: {
-                Text("📎").font(.system(size: 20))
-            }
-
-            ZStack(alignment: .trailing) {
-                TextField("", text: $messageText, prompt: Text("Message #\(otherUsername)").foregroundStyle(Color(hex: "#5a5a6e")))
-                    .font(.system(size: 14))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16)
-                    .padding(.trailing, 32)
-                    .padding(.vertical, 10)
-                    .background(Color(hex: "#1a1a24"))
-                    .clipShape(RoundedRectangle(cornerRadius: 20))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20)
-                            .stroke(ThemeManager.border, lineWidth: 0.5)
-                    )
-
-                Button {} label: {
-                    Text("😀")
-                        .font(.system(size: 18))
-                }
-                .padding(.trailing, 10)
-            }
-
-            Button {
-                guard !messageText.isEmpty else { return }
-                let now = Date()
-                let formatter = DateFormatter()
-                formatter.dateFormat = "h:mm a"
-                let msg = ChatMessage(
-                    id: messages.count + 100,
-                    initials: "JW", author: "joe_willis",
-                    text: messageText, time: formatter.string(from: now),
-                    reactions: [], thread: nil
-                )
-                messages.append(msg)
-                messageText = ""
-            } label: {
-                Circle()
-                    .fill(messageText.isEmpty ? Color(hex: "#1a1a24") : ThemeManager.brand)
-                    .frame(width: 36, height: 36)
-                    .overlay(
-                        Text("▶")
-                            .font(.system(size: 14))
-                            .foregroundStyle(.white)
-                    )
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+    private func formatDuration(_ seconds: Int) -> String {
+        let m = seconds / 60
+        let s = seconds % 60
+        return String(format: "%d:%02d", m, s)
     }
+}
 
-    // MARK: - Message Bubble (colored initial avatar, colored reactions, thread replies)
-    struct MessageBubble: View {
-        let message: ChatMessage
-        let onReact: (String) -> Void
-        @State private var showEmojiPicker = false
+// MARK: - Read Receipt
+private struct ReadReceiptView: View {
+    let status: MessageReadStatus
 
-        static let avatarColors: [String: Color] = [
-            "AD": Color(hex: "#8b5cf6"), "NS": Color(hex: "#3b82f6"),
-            "XB": Color(hex: "#ef4444"), "JW": Color(hex: "#22c55e"),
-            "SM": Color(hex: "#f59e0b"), "AO": Color(hex: "#ec4899"),
-            "SP": Color(hex: "#6366f1"), "NE": Color(hex: "#14b8a6"),
-        ]
-
-        static let reactionColors: [String: Color] = [
-            "👍": Color(hex: "#3b82f6"), "🔥": Color(hex: "#ef4444"),
-            "😁": Color(hex: "#eab308"), "👏": Color(hex: "#22c55e"),
-            "⚔️": Color(hex: "#8b5cf6"), "🤖": Color(hex: "#6366f1"),
-            "😮": Color(hex: "#f59e0b"), "💯": Color(hex: "#ef4444"),
-        ]
-
-        var avatarColor: Color {
-            Self.avatarColors[message.initials] ?? Color(hex: "#1a1a24")
-        }
-
-        var body: some View {
-            HStack(alignment: .top, spacing: 10) {
-                // Colored initial circle avatar
-                Circle()
-                    .fill(avatarColor)
-                    .frame(width: 38, height: 38)
-                    .overlay(
-                        Text(message.initials)
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(.white)
-                    )
-
-                VStack(alignment: .leading, spacing: 3) {
-                    // Author + time
-                    HStack(spacing: 8) {
-                        Text(message.author)
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(.white)
-                        Text(message.time)
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(hex: "#5a5a6e"))
-                    }
-
-                    // Message text
-                    Text(message.text)
-                        .font(.system(size: 15))
-                        .foregroundStyle(.white.opacity(0.85))
-                        .lineSpacing(3)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    // Colored reactions
-                    if !message.reactions.isEmpty {
-                        HStack(spacing: 6) {
-                            ForEach(message.reactions) { reaction in
-                                let color = Self.reactionColors[reaction.emoji] ?? .white
-                                Button { onReact(reaction.emoji) } label: {
-                                    HStack(spacing: 4) {
-                                        Text(reaction.emoji)
-                                            .font(.system(size: 14))
-                                        Text("\(reaction.count)")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(.white)
-                                    }
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 3)
-                                    .background(color.opacity(0.12))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 20)
-                                            .stroke(color.opacity(0.25), lineWidth: 1)
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 20))
-                                }
-                            }
-
-                            // Add reaction +
-                            Button { showEmojiPicker.toggle() } label: {
-                                Circle()
-                                    .fill(Color(hex: "#1a1a24"))
-                                    .frame(width: 28, height: 28)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 14)
-                                            .stroke(ThemeManager.border, lineWidth: 1)
-                                    )
-                                    .overlay(
-                                        Text("+")
-                                            .font(.system(size: 14))
-                                            .foregroundStyle(Color(hex: "#72728a"))
-                                    )
-                            }
-                        }
-                        .padding(.top, 4)
-                    }
-
-                    // Thread replies
-                    if let thread = message.thread {
-                        HStack(spacing: 6) {
-                            Text("💬")
-                                .font(.system(size: 13))
-                            Text("\(thread.replies) replies")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(Color(hex: "#3b82f6"))
-                            Text("·")
-                                .foregroundStyle(Color(hex: "#5a5a6e"))
-                            Text(thread.lastReply)
-                                .font(.system(size: 13))
-                                .foregroundStyle(Color(hex: "#5a5a6e"))
-                        }
-                        .padding(.top, 4)
-                    }
-
-                    // Emoji picker
-                    if showEmojiPicker {
-                        let emojis = ["👍","🔥","😁","👏","💯","❤️","😮","💀","⚔️","🤖","😂","🙏"]
-                        LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 4) {
-                            ForEach(emojis, id: \.self) { e in
-                                Button {
-                                    onReact(e)
-                                    showEmojiPicker = false
-                                } label: {
-                                    Text(e)
-                                        .font(.system(size: 18))
-                                        .frame(width: 34, height: 34)
-                                        .background(Color(hex: "#1a1a24"))
-                                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                                }
-                            }
-                        }
-                        .padding(8)
-                        .background(ThemeManager.card)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(ThemeManager.border, lineWidth: 0.5)
-                        )
-                        .padding(.top, 4)
-                    }
-                }
-
-                Spacer(minLength: 0)
+    var body: some View {
+        switch status {
+        case .sent:
+            Image(systemName: "checkmark")
+                .font(.system(size: 10))
+                .foregroundColor(.sdTextMuted)
+        case .delivered:
+            HStack(spacing: -4) {
+                Image(systemName: "checkmark").font(.system(size: 10))
+                Image(systemName: "checkmark").font(.system(size: 10))
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            .foregroundColor(.sdTextMuted)
+        case .read:
+            HStack(spacing: -4) {
+                Image(systemName: "checkmark").font(.system(size: 10))
+                Image(systemName: "checkmark").font(.system(size: 10))
+            }
+            .foregroundColor(.sdBlue)
         }
     }
 }
 
-// MARK: - Chat Member
-struct ChatMember: Identifiable {
-    let id = UUID()
-    let initials: String
-    let name: String
-    let color: Color
-    let status: String // online, idle, offline
-
-    static let allMembers: [ChatMember] = [
-        // Clean slate — no mock members
-    ]
-}
-
-// MARK: - Chat Message Model
-struct ChatMessage: Identifiable {
-    let id: Int
-    let initials: String
-    let author: String
-    let text: String
-    let time: String
-    var reactions: [Reaction]
-    let thread: ThreadInfo?
-
-    struct Reaction: Identifiable {
-        let id = UUID()
-        let emoji: String
-        var count: Int
-    }
-
-    struct ThreadInfo {
-        let replies: Int
-        let lastReply: String
+// MARK: - Corner radius helper
+extension View {
+    func cornerRadius(_ radius: CGFloat, corners: UIRectCorner) -> some View {
+        clipShape(RoundedCorner(radius: radius, corners: corners))
     }
 }
 
-extension ChatMessage {
-    static let sampleMessages: [ChatMessage] = [] /* Clean slate — no mock messages */
+struct RoundedCorner: Shape {
+    var radius: CGFloat = .infinity
+    var corners: UIRectCorner = .allCorners
 
-    static let _exampleMessages: [ChatMessage] = [
-        ChatMessage(id: 1, initials: "AD", author: "AnimateOrDie",
-                    text: "Just submitted my Free Fall entry. 60fps smooth baby 🥳",
-                    time: "11:42 AM",
-                    reactions: [Reaction(emoji: "👍", count: 4), Reaction(emoji: "🔥", count: 2), Reaction(emoji: "😁", count: 1)],
-                    thread: nil),
-        ChatMessage(id: 2, initials: "NS", author: "NeonStick",
-                    text: "Anyone else having trouble with the export? Keeps dropping to 480p even on Pro tier",
-                    time: "11:45 AM",
-                    reactions: [],
-                    thread: ThreadInfo(replies: 3, lastReply: "Last reply 5 min ago")),
-        ChatMessage(id: 3, initials: "XB", author: "xBladeRunner",
-                    text: "yo anyone doing the challenge? need a collab partner for a two-person fight scene",
-                    time: "11:48 AM",
-                    reactions: [Reaction(emoji: "⚔️", count: 1)],
-                    thread: nil),
-        ChatMessage(id: 4, initials: "JW", author: "joe_willis",
-                    text: "I'm down. DM me the storyboard @xBladeRunner",
-                    time: "11:50 AM",
-                    reactions: [],
-                    thread: nil),
-        ChatMessage(id: 5, initials: "SM", author: "StickMasterFlex",
-                    text: "bruh the Spatter AI just gave me a perfect walk cycle suggestion. game changer 🤖",
-                    time: "11:53 AM",
-                    reactions: [Reaction(emoji: "🤖", count: 6), Reaction(emoji: "😮", count: 3)],
-                    thread: nil),
-    ]
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: radius, height: radius))
+        return Path(path.cgPath)
+    }
+}
+
+// MARK: - Color extension
+private extension Color {
+    static let sdBlue = Color(hex: "#3B82F6")
 }

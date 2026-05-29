@@ -1,21 +1,12 @@
 // ═══════════════════════════════════════════════════════════════════
-// SupabaseManager — Supabase client singleton
-// Matches: src/lib/supabase.ts
+// ThemeViewModel — Theme state
+// Matches: src/contexts/ThemeContext.tsx
 // ═══════════════════════════════════════════════════════════════════
 
-import Foundation
-import Supabase
+import SwiftUI
 
 @MainActor
-final class SupabaseManager {
-    static let shared = SupabaseManager()
-
-    let client: SupabaseClient
-
-    private init() {
-        client = SupabaseClient(
-            supabaseURL: URL(string: AppConfig.supabaseURL)!,
-            supabaseKey: AppConfig.supabaseAnonKey
-        )
-    }
+final class ThemeViewModel: ObservableObject {
+    @Published var isDarkMode = true
+    @Published var accentColor: Color = .sdRed
 }

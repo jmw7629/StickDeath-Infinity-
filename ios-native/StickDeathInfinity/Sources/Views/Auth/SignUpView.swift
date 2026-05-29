@@ -1,150 +1,234 @@
-// SignUpView.swift
-// Pixel-perfect to reference: skull 💀, "Create Account", Name/Username/Email/Password
+// ═══════════════════════════════════════════════════════════════════
+// SignUpView — Account creation
+// Matches: src/pages/SignUpView.tsx exactly
+// - Back button top-left
+// - Skull + "Join the Carnage" + "Create your StickDeath ∞ account"
+// - Apple/Google SSO first
+// - "or create with email" divider
+// - Username, Email, Password, Confirm Password fields
+// - Red gradient "Create Account 👤+" button
+// - Terms text at bottom
+// ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
-import GoogleSignIn
-import AuthenticationServices
 
 struct SignUpView: View {
-    @EnvironmentObject var auth: AuthManager
-    @Environment(\.dismiss) var dismiss
-    @State private var name = ""
+    let onBack: () -> Void
+    let onSuccess: () -> Void
+
+    @EnvironmentObject var authVM: AuthViewModel
     @State private var username = ""
     @State private var email = ""
     @State private var password = ""
-    @State private var isLoading = false
-    @State private var errorMessage: String?
+    @State private var confirmPassword = ""
+    @State private var showPw = false
+    @State private var showCpw = false
+    @State private var showError = false
+    @State private var visible = false
+
+    private var passwordsMatch: Bool { password == confirmPassword && !password.isEmpty }
+    private var canSubmit: Bool {
+        !username.isEmpty && !email.isEmpty && passwordsMatch && password.count >= 6 && !authVM.isLoading
+    }
 
     var body: some View {
         ZStack {
-            Color(hex: "#0a0a0f").ignoresSafeArea()
+            Color.sdBackground.ignoresSafeArea()
 
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 60)
-
-                    // ── Header ──
-                    VStack(spacing: 8) {
-                        Text("💀")
-                            .font(.system(size: 40))
-
-                        Text("Create Account")
+            VStack(spacing: 0) {
+                // Top bar
+                HStack {
+                    Button(action: onBack) {
+                        Text("‹")
                             .font(.system(size: 24, weight: .bold))
-                            .foregroundStyle(.white)
-
-                        Text("Join the StickDeath community")
-                            .font(.system(size: 14))
-                            .foregroundStyle(Color(hex: "#9090a8"))
+                            .foregroundColor(.white)
+                            .frame(width: 44, height: 44)
                     }
-                    .padding(.bottom, 32)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .overlay(
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1),
+                    alignment: .bottom
+                )
 
-                    // ── Apple Sign Up ──
-                    SignInWithAppleButton(.signUp) { request in
-                        request.requestedScopes = [.email, .fullName]
-                    } onCompletion: { result in
-                        Task { await auth.handleAppleSignIn(result: result) }
-                    }
-                    .signInWithAppleButtonStyle(.white)
-                    .frame(height: 48)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal, 40)
-                    .padding(.bottom, 10)
+                ScrollView {
+                    VStack(spacing: 0) {
+                        // Header
+                        VStack(spacing: 6) {
+                            Text("☠️")
+                                .font(.system(size: 56))
+                                .padding(.top, 16)
 
-                    // ── Google Sign Up ──
-                    Button {
-                        Task { await auth.signInWithGoogle() }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "g.circle.fill")
-                                .font(.system(size: 20))
-                            Text("Sign up with Google")
-                                .font(.system(size: 16, weight: .semibold))
+                            Text("Join the Carnage")
+                                .font(.specialElite(28))
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.top, 12)
+
+                            Text("Create your StickDeath ∞ account")
+                                .font(.system(size: 15))
+                                .foregroundColor(.sdTextSecondary)
                         }
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .background(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .padding(.horizontal, 40)
-                    .padding(.bottom, 16)
+                        .padding(.bottom, 24)
 
-                    // ── Divider ──
-                    HStack {
-                        Rectangle().fill(Color(hex: "#2a2a3a")).frame(height: 1)
-                        Text("or")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(hex: "#9090a8"))
-                            .padding(.horizontal, 8)
-                        Rectangle().fill(Color(hex: "#2a2a3a")).frame(height: 1)
-                    }
-                    .padding(.horizontal, 40)
-                    .padding(.bottom, 16)
+                        // SSO Buttons (first, matching React order)
+                        VStack(spacing: 12) {
+                            SocialAuthButton(
+                                icon: "apple.logo",
+                                title: "Continue with Apple",
+                                action: { Task { await authVM.signInWithApple() } }
+                            )
+                            SocialAuthButton(
+                                icon: "g.circle.fill",
+                                title: "Continue with Google",
+                                action: { Task { await authVM.signInWithGoogle() } }
+                            )
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 20)
 
-                    // ── Form Fields ──
-                    VStack(spacing: 12) {
-                        StyledTextField(placeholder: "Name", text: $name, autocap: .words)
-                        StyledTextField(placeholder: "Username", text: $username)
-                        StyledTextField(placeholder: "Email", text: $email, keyboardType: .emailAddress)
-                        StyledSecureField(placeholder: "Password", text: $password)
-                    }
-                    .padding(.horizontal, 40)
-                    .padding(.bottom, 20)
+                        // Divider
+                        HStack(spacing: 12) {
+                            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+                            Text("or create with email")
+                                .font(.specialElite(12))
+                                .foregroundColor(.sdTextMuted)
+                            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 20)
 
-                    // ── Error ──
-                    if let error = errorMessage {
-                        Text(error)
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                            .padding(.bottom, 8)
-                    }
+                        // Form fields
+                        VStack(spacing: 16) {
+                            // Username
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Username")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
 
-                    // ── Create Account Button ──
-                    Button {
-                        Task { await createAccount() }
-                    } label: {
-                        Group {
-                            if isLoading {
-                                ProgressView().tint(.white)
-                            } else {
-                                Text("Create Account")
-                                    .font(.system(size: 16, weight: .semibold))
+                                SDTextField(placeholder: "Choose a username", text: $username, icon: "person")
+                                    .autocapitalization(.none)
+                            }
+
+                            // Email
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Email")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
+
+                                SDTextField(placeholder: "your@email.com", text: $email, icon: "envelope")
+                                    .textContentType(.emailAddress)
+                                    .autocapitalization(.none)
+                            }
+
+                            // Password
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Password")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
+
+                                SDTextField(placeholder: "••••••••", text: $password, icon: "lock", isSecure: !showPw)
+                                    .textContentType(.newPassword)
+                                    .overlay(
+                                        Button { showPw.toggle() } label: {
+                                            Text(showPw ? "🙈" : "👁").font(.system(size: 16))
+                                        }.padding(.trailing, 12),
+                                        alignment: .trailing
+                                    )
+                            }
+
+                            // Confirm Password
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Confirm Password")
+                                    .font(.specialElite(13))
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.sdTextSecondary)
+
+                                SDTextField(placeholder: "••••••••", text: $confirmPassword, icon: "lock.fill", isSecure: !showCpw)
+                                    .textContentType(.newPassword)
+                                    .overlay(
+                                        Button { showCpw.toggle() } label: {
+                                            Text(showCpw ? "🙈" : "👁").font(.system(size: 16))
+                                        }.padding(.trailing, 12),
+                                        alignment: .trailing
+                                    )
+                            }
+
+                            if !confirmPassword.isEmpty && !passwordsMatch {
+                                Text("Passwords don't match")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.sdDestructive)
                             }
                         }
-                        .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, minHeight: 48)
-                        .background(ThemeManager.brand)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .disabled(isLoading)
-                    .padding(.horizontal, 40)
-                    .padding(.bottom, 16)
+                        .padding(.horizontal, 24)
 
-                    // ── Switch to Sign In ──
-                    HStack(spacing: 4) {
-                        Text("Already have an account?")
-                            .foregroundStyle(Color(hex: "#9090a8"))
-                        Button("Sign In") {
-                            dismiss()
+                        // Error
+                        if let error = authVM.error, showError {
+                            Text(error)
+                                .font(.system(size: 13))
+                                .foregroundColor(.sdDestructive)
+                                .padding(.top, 12)
                         }
-                        .foregroundStyle(ThemeManager.brand)
-                    }
-                    .font(.system(size: 14))
 
-                    Spacer(minLength: 40)
+                        // Create Account button
+                        Button {
+                            showError = true
+                            Task {
+                                await authVM.signUp(email: email, password: password, username: username)
+                                if authVM.isAuthenticated { onSuccess() }
+                            }
+                        } label: {
+                            HStack(spacing: 8) {
+                                if authVM.isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                        .scaleEffect(0.8)
+                                } else {
+                                    Text("Create Account 👤+")
+                                        .font(.specialElite(16))
+                                        .fontWeight(.semibold)
+                                        .tracking(1)
+                                }
+                            }
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(
+                                LinearGradient(
+                                    colors: [Color(hex: "#CC1100"), Color(hex: "#FF3322")],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .cornerRadius(14)
+                        }
+                        .disabled(!canSubmit)
+                        .opacity(canSubmit ? 1 : 0.5)
+                        .padding(.horizontal, 24)
+                        .padding(.top, 24)
+
+                        // Terms
+                        Text("By creating an account, you agree to our Terms of Service")
+                            .font(.system(size: 12))
+                            .foregroundColor(.sdTextMuted)
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(2)
+                            .padding(.horizontal, 40)
+                            .padding(.top, 16)
+                            .padding(.bottom, 32)
+                    }
                 }
             }
+            .frame(maxWidth: 400)
+            .opacity(visible ? 1 : 0)
+            .offset(y: visible ? 0 : 20)
+            .animation(.easeOut(duration: 0.4), value: visible)
         }
-    }
-
-    private func createAccount() async {
-        isLoading = true
-        errorMessage = nil
-        do {
-            try await auth.signUp(email: email, password: password, name: name, username: username)
-            dismiss()
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-        isLoading = false
+        .onAppear { visible = true }
     }
 }
