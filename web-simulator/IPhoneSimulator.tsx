@@ -1184,14 +1184,28 @@ function StudioTab() {
 
   // Tool-specific settings content
   const getToolSettings = () => {
+    const toolPanelStyle: React.CSSProperties = {
+      position: "absolute", top: 0, left: 8, right: 8, zIndex: 10,
+      padding: "10px 14px", background: "rgba(30,30,38,0.97)", borderRadius: "0 0 14px 14px",
+      boxShadow: "0 8px 24px rgba(0,0,0,0.5)", border: `1px solid ${C.border}`, borderTop: "none",
+    };
+    const toolHeader = (icon: string, name: string) => (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 16 }}>{icon}</span>
+        <span style={{ fontFamily: FONT, fontSize: 14, color: C.white, fontWeight: 600 }}>{name}</span>
+        <div style={{ flex: 1 }} />
+        <button onClick={() => setShowToolSettings(false)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer" }}>✕</button>
+      </div>
+    );
     switch (selectedTool) {
-      case "pencil": case "pen": case "brush": case "marker": case "crayon":
+      case "pencil": case "pen": case "brush": case "marker":
         return (
-          <div style={{ padding: "8px 12px", background: "rgba(20,20,28,0.95)", borderBottom: `1px solid ${C.border}` }}>
+          <div style={toolPanelStyle}>
+            {toolHeader(toolDef.icon, toolDef.label)}
             <SliderRow label="Size" value={brushSize} min={1} max={50} unit="px" onChange={setBrushSize} />
             <SliderRow label="Opacity" value={brushOpacity} min={1} max={100} unit="%" onChange={setBrushOpacity} />
             <SliderRow label="Smoothing" value={smoothing} min={0} max={100} unit="" onChange={setSmoothing} />
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
               <span style={{ fontSize: 10, color: C.textMuted, fontFamily: FONT }}>Pressure Sensitivity</span>
               <button onClick={() => setPressureSensitivity(!pressureSensitivity)} style={{
                 width: 36, height: 20, borderRadius: 10, border: "none", cursor: "pointer",
@@ -1200,12 +1214,20 @@ function StudioTab() {
                 <div style={{ width: 16, height: 16, borderRadius: 8, background: C.white, position: "absolute", top: 2, left: pressureSensitivity ? 18 : 2, transition: "left 0.2s" }} />
               </button>
             </div>
-            <div style={{ fontSize: 9, color: C.textMuted, marginTop: 6, fontFamily: FONT }}>Shortcut: {toolDef.shortcut}</div>
+            <div style={{ fontSize: 9, color: C.textMuted, marginTop: 8, fontFamily: FONT }}>Shortcut: {toolDef.shortcut}</div>
+          </div>
+        );
+      case "crayon":
+        return (
+          <div style={toolPanelStyle}>
+            {toolHeader("🖍", "Crayon")}
+            <div style={{ fontSize: 9, color: C.textMuted, fontFamily: FONT }}>Shortcut: Y</div>
           </div>
         );
       case "fill":
         return (
-          <div style={{ padding: "8px 12px", background: "rgba(20,20,28,0.95)", borderBottom: `1px solid ${C.border}` }}>
+          <div style={toolPanelStyle}>
+            {toolHeader("🪣", "Fill")}
             <SliderRow label="Tolerance" value={fillTolerance} min={0} max={255} unit="" onChange={setFillTolerance} />
             <SliderRow label="Opacity" value={brushOpacity} min={1} max={100} unit="%" onChange={setBrushOpacity} />
             <SliderRow label="Expand" value={fillExpand} min={0} max={20} unit="px" onChange={setFillExpand} />
@@ -1219,16 +1241,35 @@ function StudioTab() {
         );
       case "eraser":
         return (
-          <div style={{ padding: "8px 12px", background: "rgba(20,20,28,0.95)", borderBottom: `1px solid ${C.border}` }}>
+          <div style={toolPanelStyle}>
+            {toolHeader("◻️", "Eraser")}
             <SliderRow label="Size" value={brushSize} min={1} max={80} unit="px" onChange={setBrushSize} />
             <SliderRow label="Opacity" value={brushOpacity} min={1} max={100} unit="%" onChange={setBrushOpacity} />
             <div style={{ fontSize: 9, color: C.textMuted, marginTop: 6, fontFamily: FONT }}>Shortcut: E</div>
           </div>
         );
+      case "smudge":
+        return (
+          <div style={toolPanelStyle}>
+            {toolHeader("👆", "Smudge")}
+            <SliderRow label="Size" value={brushSize} min={1} max={50} unit="px" onChange={setBrushSize} />
+            <SliderRow label="Strength" value={brushOpacity} min={1} max={100} unit="%" onChange={setBrushOpacity} />
+            <div style={{ fontSize: 9, color: C.textMuted, marginTop: 6, fontFamily: FONT }}>Shortcut: R</div>
+          </div>
+        );
+      case "text":
+        return (
+          <div style={toolPanelStyle}>
+            {toolHeader("T", "Text")}
+            <SliderRow label="Size" value={brushSize} min={8} max={120} unit="pt" onChange={setBrushSize} />
+            <div style={{ fontSize: 9, color: C.textMuted, marginTop: 6, fontFamily: FONT }}>Shortcut: T</div>
+          </div>
+        );
       default:
         return (
-          <div style={{ padding: "8px 12px", background: "rgba(20,20,28,0.95)", borderBottom: `1px solid ${C.border}` }}>
-            <div style={{ fontSize: 10, color: C.textMuted, fontFamily: FONT }}>Shortcut: {toolDef.shortcut}</div>
+          <div style={toolPanelStyle}>
+            {toolHeader(toolDef.icon, toolDef.label)}
+            <div style={{ fontSize: 9, color: C.textMuted, fontFamily: FONT }}>Shortcut: {toolDef.shortcut}</div>
           </div>
         );
     }
@@ -1277,25 +1318,25 @@ function StudioTab() {
             style={{
               display: "flex", flexDirection: "column", alignItems: "center", gap: 1,
               padding: "6px 8px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: selectedTool === t.id ? `${t.topColor}30` : "transparent",
+              background: selectedTool === t.id ? `${t.topColor}CC` : "transparent",
               minWidth: 48, flexShrink: 0,
-              boxShadow: selectedTool === t.id ? `0 0 8px ${t.glowColor}40` : "none",
+              boxShadow: selectedTool === t.id ? `0 0 10px ${t.glowColor}60` : "none",
               transition: "all 0.15s",
             }}>
             <span style={{ fontSize: 18 }}>{t.icon}</span>
             <span style={{
               fontSize: 8, fontFamily: FONT, letterSpacing: 0.5,
-              color: selectedTool === t.id ? t.glowColor : C.textMuted,
+              color: selectedTool === t.id ? "#FFFFFF" : C.textMuted,
+              fontWeight: selectedTool === t.id ? 600 : 400,
             }}>{t.label}</span>
           </button>
         ))}
       </div>
 
-      {/* ─── Tool Settings Dropdown (NOT bottom sheet) ─── */}
-      {showToolSettings && getToolSettings()}
-
       {/* ─── Canvas Area ─── */}
       <div style={{ flex: 1, position: "relative", overflow: "hidden", background: "#0D0D12" }}>
+        {/* ─── Tool Settings Dropdown (floating over canvas) ─── */}
+        {showToolSettings && getToolSettings()}
         <canvas
           ref={canvasRef}
           width={340}
@@ -1413,7 +1454,7 @@ function StudioTab() {
           <div style={{ padding: "12px 16px" }}>
             <div style={{ fontFamily: FONT, fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>PROJECT NAME</div>
             <input value={projectName} onChange={e => setProjectName(e.target.value)} style={{ width: "100%", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.white, fontSize: 13, padding: "8px 12px", fontFamily: FONT, outline: "none", marginBottom: 16 }} />
-            <div style={{ fontFamily: FONT, fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>FRAME RATE</div>
+            <div style={{ fontFamily: FONT, fontSize: 9, color: C.red, letterSpacing: 2, marginBottom: 8 }}>FRAME RATE — {fps} FPS</div>
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 16 }}>
               {FPS_OPTIONS.map(f => (
                 <button key={f} onClick={() => setFps(f)} style={{
@@ -1423,7 +1464,7 @@ function StudioTab() {
                 }}>{f}</button>
               ))}
             </div>
-            <div style={{ fontFamily: FONT, fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>CANVAS SIZE</div>
+            <div style={{ fontFamily: FONT, fontSize: 9, color: C.red, letterSpacing: 2, marginBottom: 8 }}>CANVAS SIZE — {canvasW} × {canvasH}</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <div style={{ flex: 1 }}>
                 <label style={{ fontSize: 9, color: C.textMuted, fontFamily: FONT }}>Width</label>
@@ -1702,29 +1743,52 @@ function StudioTab() {
             <div style={{ width: 100, overflowY: "auto", borderRight: `1px solid ${C.borderDim}`, padding: "4px 0", scrollbarWidth: "none" }}>
               {BG_CATEGORIES.map(cat => (
                 <button key={cat.id} onClick={() => setBgCat(cat.id)} style={{
-                  width: "100%", padding: "6px 8px", border: "none", cursor: "pointer", textAlign: "left",
-                  background: bgCat === cat.id ? "rgba(200,0,0,0.1)" : "transparent",
-                  borderLeft: bgCat === cat.id ? `2px solid ${C.red}` : "2px solid transparent",
+                  width: "100%", padding: "8px 8px", border: "none", cursor: "pointer", textAlign: "left",
+                  display: "flex", alignItems: "center", gap: 6,
+                  background: bgCat === cat.id ? C.red : "transparent",
+                  borderRadius: bgCat === cat.id ? 6 : 0,
                 }}>
-                  <div style={{ fontSize: 12 }}>{cat.icon}</div>
-                  <div style={{ fontSize: 8, color: bgCat === cat.id ? C.red : C.textMuted, fontFamily: FONT }}>{cat.name}</div>
-                  <div style={{ fontSize: 7, color: C.textMuted }}>{cat.count}</div>
+                  <span style={{ fontSize: 14 }}>{cat.icon}</span>
+                  <span style={{ fontSize: 9, color: bgCat === cat.id ? "#fff" : C.textMuted, fontFamily: FONT, lineHeight: 1.2 }}>
+                    {cat.name} ({cat.count})
+                  </span>
                 </button>
               ))}
             </div>
             {/* Grid */}
             <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                {Array.from({ length: BG_CATEGORIES.find(c => c.id === bgCat)?.count || 8 }, (_, i) => (
-                  <div key={i} style={{
-                    height: 80, borderRadius: 8, cursor: "pointer",
-                    background: `hsl(${(i * 37) % 360}, 40%, ${20 + (i % 3) * 10}%)`,
-                    border: `1px solid ${C.border}`,
-                    display: "flex", alignItems: "flex-end", padding: 4,
-                  }}>
-                    <span style={{ fontSize: 7, color: "rgba(255,255,255,0.6)", fontFamily: FONT }}>BG {i + 1}</span>
-                  </div>
-                ))}
+                {(() => {
+                  const bgNames: Record<string, string[]> = {
+                    all: ["Alpine Peaks","Misty Mountains","Snowy Summit","Valley Vista","Sunrise Peak","Cloud Mountains","Dark Woods","Neon Alley","Starfield","Red Desert","Ocean Sunset","Castle Gate"],
+                    forest: ["Dark Woods","Pine Trail","Foggy Canopy","Mossy Rocks","Autumn Path","Enchanted","Twilight"],
+                    cyber: ["Neon Alley","Rain District","Holo Market","Night Drive","Rooftop","Grid City","Data Stream"],
+                    mountain: ["Alpine Peaks","Misty Mountains","Snowy Summit","Valley Vista","Sunrise Peak","Cloud Mountains","Glacier"],
+                    abstract: ["Gradient Flow","Paint Splash","Marble","Fractal","Noise","Bokeh","Ink Drop"],
+                    space: ["Starfield","Nebula","Saturn","Aurora","Galaxy","Moon Surface","Solar Flare"],
+                    urban: ["Brick Wall","Subway","Rooftop","Graffiti","Night Market","Train Yard","Parking Lot"],
+                    desert: ["Red Desert","Sand Dunes","Oasis","Canyon","Mesa","Sunset Plain","Salt Flat"],
+                  };
+                  const names = bgNames[bgCat] || bgNames.all;
+                  const gradients = [
+                    "linear-gradient(135deg, #2d3436, #636e72)","linear-gradient(135deg, #dfe6e9, #b2bec3)",
+                    "linear-gradient(135deg, #2c3e50, #4ca1af)","linear-gradient(135deg, #bdc3c7, #ecf0f1)",
+                    "linear-gradient(135deg, #e17055, #fdcb6e)","linear-gradient(135deg, #0c2461, #4834d4)",
+                    "linear-gradient(135deg, #6c5ce7, #a29bfe)","linear-gradient(135deg, #00b894, #55efc4)",
+                    "linear-gradient(135deg, #fd79a8, #e84393)","linear-gradient(135deg, #ffeaa7, #dfe6e9)",
+                    "linear-gradient(135deg, #74b9ff, #0984e3)","linear-gradient(135deg, #636e72, #2d3436)",
+                  ];
+                  return names.map((name, i) => (
+                    <div key={i} style={{
+                      height: 80, borderRadius: 8, cursor: "pointer",
+                      background: gradients[i % gradients.length],
+                      border: `1px solid ${C.border}`,
+                      display: "flex", alignItems: "flex-end", padding: 6,
+                    }}>
+                      <span style={{ fontSize: 8, color: "rgba(255,255,255,0.8)", fontFamily: FONT, textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>{name}</span>
+                    </div>
+                  ));
+                })()}
               </div>
               <div style={{ textAlign: "center", padding: "12px 0", fontSize: 10, color: C.textMuted, fontFamily: FONT }}>
                 {BG_CATEGORIES.find(c => c.id === bgCat)?.count || 101} backgrounds available
@@ -1799,9 +1863,10 @@ function StudioTab() {
         <PanelOverlay onClose={() => setActivePanel("settings")} height="65%">
           <PanelHeader title="🗣️ AI Voice Maker" onClose={() => setActivePanel("settings")} />
           <div style={{ padding: "12px 16px" }}>
+            <div style={{ fontFamily: FONT, fontSize: 9, color: C.textMuted, letterSpacing: 1, marginBottom: 4 }}>Script / Dialogue</div>
             <textarea value={voiceScript} onChange={e => setVoiceScript(e.target.value)}
-              placeholder="Enter your script or dialogue..."
-              style={{ width: "100%", height: 60, background: "#1a1028", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 8, color: C.white, fontSize: 12, padding: 10, resize: "none", fontFamily: "inherit" }} />
+              placeholder="Type your voiceover text here..."
+              style={{ width: "100%", height: 80, background: "#1a1028", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 8, color: C.white, fontSize: 12, padding: 10, resize: "none", fontFamily: "inherit" }} />
             <div style={{ textAlign: "right", fontSize: 9, color: C.textMuted, marginTop: 2 }}>{voiceScript.split(/\s+/).filter(Boolean).length} words</div>
             
             <div style={{ fontFamily: FONT, fontSize: 9, color: C.textMuted, letterSpacing: 2, marginTop: 8, marginBottom: 6 }}>VOICE PRESETS</div>
@@ -1830,7 +1895,7 @@ function StudioTab() {
 
             <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
               <button style={{ flex: 1, padding: "8px", borderRadius: 8, border: "1px solid rgba(168,85,247,0.3)", background: "rgba(168,85,247,0.1)", color: C.purple, fontSize: 11, fontFamily: FONT, cursor: "pointer" }}>▶ Preview</button>
-              <button style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: C.purple, color: C.white, fontSize: 11, fontFamily: FONT, cursor: "pointer" }}>Add to Timeline</button>
+              <button style={{ flex: 1, padding: "8px", borderRadius: 8, border: "none", background: C.purple, color: C.white, fontSize: 11, fontFamily: FONT, cursor: "pointer" }}>🎙️ Add to Timeline</button>
             </div>
           </div>
         </PanelOverlay>
@@ -1900,26 +1965,30 @@ function StudioTab() {
               <div style={{ flex: 1 }} />
               <button onClick={() => setActivePanel("none")} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer" }}>✕</button>
             </div>
-            <input placeholder="Search assets..." style={{ ...searchInputStyle, marginBottom: 8 }} />
-            <div style={{ display: "flex", gap: 4, marginBottom: 12 }}>
-              {(["browse","recent","favorites"] as const).map(t => (
-                <button key={t} onClick={() => setVaultTab(t)} style={{
-                  flex: 1, padding: "6px", borderRadius: 6, border: "none", cursor: "pointer",
-                  background: vaultTab === t ? C.red : C.surface, color: vaultTab === t ? C.white : C.textMuted,
-                  fontSize: 10, fontFamily: FONT, textTransform: "capitalize",
-                }}>{t}</button>
+            <input placeholder="Search assets by name, tag, type..." style={{ ...searchInputStyle, marginBottom: 8 }} />
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              {([{id:"browse",icon:"🎨",label:"Browse"},{id:"recent",icon:"⏱",label:"Recent"},{id:"favorites",icon:"❤️",label:"Favorites"}] as const).map(t => (
+                <button key={t.id} onClick={() => setVaultTab(t.id as any)} style={{
+                  padding: "6px 12px", borderRadius: 16, border: "none", cursor: "pointer",
+                  background: vaultTab === t.id ? "rgba(50,50,60,0.9)" : "transparent",
+                  color: vaultTab === t.id ? C.white : C.textMuted,
+                  fontSize: 11, fontFamily: FONT, display: "flex", alignItems: "center", gap: 4,
+                }}>{t.icon} {t.label}</button>
               ))}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               {ASSET_VAULT_CATS.map(cat => (
-                <div key={cat.id} style={{
-                  padding: 12, borderRadius: 10, background: C.surface, border: `1px solid ${C.border}`,
-                  cursor: "pointer", textAlign: "center",
+                <button key={cat.id} style={{
+                  padding: "14px 16px", borderRadius: 12, background: C.surface, border: `1px solid ${C.border}`,
+                  cursor: "pointer", display: "flex", alignItems: "center", gap: 14, width: "100%", textAlign: "left",
                 }}>
-                  <span style={{ fontSize: 28 }}>{cat.icon}</span>
-                  <div style={{ fontFamily: FONT, fontSize: 10, color: C.white, marginTop: 4 }}>{cat.name}</div>
-                  <div style={{ fontSize: 9, color: C.textMuted }}>{cat.count}</div>
-                </div>
+                  <div style={{ width: 44, height: 44, borderRadius: 10, background: "rgba(40,40,50,0.8)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>{cat.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontFamily: FONT, fontSize: 13, color: C.white, fontWeight: 600 }}>{cat.name}</div>
+                    <div style={{ fontSize: 10, color: C.red, fontFamily: FONT }}>{cat.count} assets</div>
+                  </div>
+                  <span style={{ color: C.textMuted, fontSize: 14 }}>›</span>
+                </button>
               ))}
             </div>
           </div>
