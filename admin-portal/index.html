@@ -1,13 +1,411 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>StickDeath Infinity — Admin Portal</title>
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-  </head>
-  <body class="bg-gray-950 text-white">
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StickDeath ∞ Admin Portal</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0A0A14; color: #E0E0E0; display: flex; min-height: 100vh; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0E0E1A; } ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+  /* Sidebar */
+  .sidebar { width: 240px; background: #0E0E1A; border-right: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column; position: fixed; top: 0; left: 0; height: 100vh; z-index: 10; }
+  .sidebar-header { padding: 20px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .sidebar-header h1 { font-size: 18px; color: #DC2626; font-weight: 800; letter-spacing: 1px; }
+  .sidebar-header p { font-size: 11px; color: #888; margin-top: 4px; }
+  .sidebar-nav { flex: 1; padding: 12px 0; overflow-y: auto; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 10px 20px; cursor: pointer; border: none; background: none; width: 100%; text-align: left; color: #999; font-size: 13px; transition: all 0.15s; }
+  .nav-item:hover { background: rgba(220,38,38,0.08); color: #fff; }
+  .nav-item.active { background: rgba(220,38,38,0.12); color: #DC2626; border-right: 3px solid #DC2626; }
+  .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+  .nav-item .badge { margin-left: auto; background: #DC2626; color: #fff; font-size: 9px; padding: 2px 6px; border-radius: 10px; }
+  .sidebar-footer { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,0.06); }
+  .sidebar-footer .user { display: flex; align-items: center; gap: 10px; }
+  .sidebar-footer .avatar { width: 32px; height: 32px; border-radius: 16px; background: linear-gradient(135deg, #DC2626, #991B1B); display: flex; align-items: center; justify-content: center; font-size: 14px; }
+  .sidebar-footer .name { font-size: 12px; color: #fff; font-weight: 600; }
+  .sidebar-footer .role { font-size: 10px; color: #DC2626; }
+
+  /* Main */
+  .main { margin-left: 240px; flex: 1; min-height: 100vh; }
+  .topbar { padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; align-items: center; justify-content: space-between; background: #0A0A14; position: sticky; top: 0; z-index: 5; }
+  .topbar h2 { font-size: 20px; color: #fff; font-weight: 700; }
+  .topbar .status { display: flex; align-items: center; gap: 8px; }
+  .topbar .dot { width: 8px; height: 8px; border-radius: 4px; background: #22C55E; }
+  .topbar .status-text { font-size: 12px; color: #888; }
+  .content { padding: 24px; }
+
+  /* Cards */
+  .stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: #0E0E1A; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; padding: 20px; }
+  .stat-card .label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+  .stat-card .value { font-size: 28px; font-weight: 800; color: #fff; margin-top: 8px; }
+  .stat-card .change { font-size: 11px; margin-top: 4px; }
+  .stat-card .change.up { color: #22C55E; }
+  .stat-card .change.down { color: #EF4444; }
+
+  /* Panels */
+  .panel { background: #0E0E1A; border: 1px solid rgba(255,255,255,0.06); border-radius: 12px; margin-bottom: 16px; }
+  .panel-header { padding: 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.04); display: flex; justify-content: space-between; align-items: center; }
+  .panel-header h3 { font-size: 14px; color: #fff; font-weight: 600; }
+  .panel-body { padding: 16px 20px; }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 10px; color: #888; text-transform: uppercase; letter-spacing: 1px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  td { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.03); font-size: 13px; color: #ccc; }
+  tr:hover td { color: #fff; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+  .tag-active { background: rgba(34,197,94,0.15); color: #22C55E; }
+  .tag-ban { background: rgba(239,68,68,0.15); color: #EF4444; }
+  .tag-pending { background: rgba(234,179,8,0.15); color: #EAB308; }
+  .tag-pro { background: rgba(139,92,246,0.15); color: #8B5CF6; }
+
+  /* Bot Activity */
+  .bot-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+  .bot-dot { width: 8px; height: 8px; border-radius: 4px; }
+  .bot-name { font-size: 13px; color: #fff; flex: 1; }
+  .bot-status { font-size: 11px; color: #22C55E; }
+
+  /* Tab content */
+  .tab-content { display: none; } .tab-content.active { display: block; }
+
+  /* Buttons */
+  .btn { padding: 8px 16px; border-radius: 8px; border: none; cursor: pointer; font-size: 12px; font-weight: 600; }
+  .btn-primary { background: #DC2626; color: #fff; }
+  .btn-secondary { background: rgba(255,255,255,0.06); color: #999; border: 1px solid rgba(255,255,255,0.1); }
+  .btn:hover { opacity: 0.9; }
+
+  /* Charts placeholder */
+  .chart-bar { display: flex; align-items: flex-end; gap: 6px; height: 120px; padding: 0 4px; }
+  .chart-bar .bar { flex: 1; background: linear-gradient(to top, #DC2626, #EF4444); border-radius: 4px 4px 0 0; min-width: 16px; transition: height 0.3s; position: relative; }
+  .chart-bar .bar:hover { opacity: 0.8; }
+  .chart-bar .bar-label { position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 8px; color: #666; white-space: nowrap; }
+
+  /* Iframe */
+  .iframe-wrap { width: 100%; height: calc(100vh - 130px); border: none; border-radius: 8px; }
+
+  @media (max-width: 900px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } .sidebar { width: 60px; } .sidebar .nav-item span:not(.icon) { display: none; } .main { margin-left: 60px; } }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>STICKDEATH ∞</h1>
+    <p>Admin Portal v2.0</p>
+  </div>
+  <div class="sidebar-nav">
+    <button class="nav-item active" onclick="switchTab('dashboard')"><span class="icon">📊</span><span>Dashboard</span></button>
+    <button class="nav-item" onclick="switchTab('users')"><span class="icon">👥</span><span>Users</span><span class="badge">48</span></button>
+    <button class="nav-item" onclick="switchTab('content')"><span class="icon">🎬</span><span>Content</span></button>
+    <button class="nav-item" onclick="switchTab('challenges')"><span class="icon">⚔️</span><span>Challenges</span><span class="badge">3</span></button>
+    <button class="nav-item" onclick="switchTab('spatter')"><span class="icon">🧠</span><span>Spatter AI</span></button>
+    <button class="nav-item" onclick="switchTab('bots')"><span class="icon">🤖</span><span>AI Bots</span></button>
+    <button class="nav-item" onclick="switchTab('analytics')"><span class="icon">📈</span><span>Analytics</span></button>
+    <button class="nav-item" onclick="switchTab('moderation')"><span class="icon">🛡️</span><span>Moderation</span><span class="badge">5</span></button>
+    <button class="nav-item" onclick="switchTab('settings')"><span class="icon">⚙️</span><span>Settings</span></button>
+    <button class="nav-item" onclick="switchTab('billing')"><span class="icon">💳</span><span>Billing</span></button>
+  </div>
+  <div class="sidebar-footer">
+    <div class="user">
+      <div class="avatar">👑</div>
+      <div><div class="name">J_Willy_Style</div><div class="role">Superuser</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <h2 id="page-title">Dashboard</h2>
+    <div class="status"><div class="dot"></div><span class="status-text">All systems operational</span></div>
+  </div>
+  <div class="content">
+
+    <!-- DASHBOARD -->
+    <div id="tab-dashboard" class="tab-content active">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">Total Users</div><div class="value">1,247</div><div class="change up">↑ 12% this week</div></div>
+        <div class="stat-card"><div class="label">Active Today</div><div class="value">342</div><div class="change up">↑ 8% vs yesterday</div></div>
+        <div class="stat-card"><div class="label">Animations Created</div><div class="value">8,456</div><div class="change up">↑ 24% this month</div></div>
+        <div class="stat-card"><div class="label">Revenue (MTD)</div><div class="value">$4,890</div><div class="change up">↑ 18% vs last month</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;">
+        <div class="panel">
+          <div class="panel-header"><h3>User Growth (Last 7 Days)</h3></div>
+          <div class="panel-body">
+            <div class="chart-bar" id="userChart"></div>
+            <div style="display:flex;justify-content:space-between;margin-top:24px;font-size:10px;color:#666;padding:0 4px;">
+              <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="panel" style="margin-bottom:16px;">
+            <div class="panel-header"><h3>Active Bots</h3></div>
+            <div class="panel-body">
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">AnimBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">BattleBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">StyleBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">TutorBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">ChallengeBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">MemeBot</span><span class="bot-status">Online</span></div>
+              <div class="bot-row"><div class="bot-dot" style="background:#22C55E"></div><span class="bot-name">NewsBot</span><span class="bot-status">Online</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><h3>Quick Actions</h3></div>
+            <div class="panel-body" style="display:flex;flex-direction:column;gap:8px;">
+              <button class="btn btn-primary" style="width:100%">🚀 Push Update</button>
+              <button class="btn btn-secondary" style="width:100%">📢 Send Notification</button>
+              <button class="btn btn-secondary" style="width:100%">🔄 Sync Database</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Recent Users</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>User</th><th>Email</th><th>Plan</th><th>Status</th><th>Joined</th></tr>
+            <tr><td>J_Willy_Style</td><td>joseph@willisnmb.com</td><td><span class="tag tag-pro">Superuser</span></td><td><span class="tag tag-active">Active</span></td><td>May 28</td></tr>
+            <tr><td>NeonBlade</td><td>neon@example.com</td><td><span class="tag tag-pro">Pro</span></td><td><span class="tag tag-active">Active</span></td><td>May 27</td></tr>
+            <tr><td>StickMaster</td><td>stick@example.com</td><td>Free</td><td><span class="tag tag-active">Active</span></td><td>May 26</td></tr>
+            <tr><td>PixelFury</td><td>pixel@example.com</td><td><span class="tag tag-pro">Pro</span></td><td><span class="tag tag-active">Active</span></td><td>May 25</td></tr>
+            <tr><td>xDeathArtist</td><td>xdeath@example.com</td><td>Free</td><td><span class="tag tag-pending">Pending</span></td><td>May 24</td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- USERS -->
+    <div id="tab-users" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">Total</div><div class="value">1,247</div></div>
+        <div class="stat-card"><div class="label">Pro</div><div class="value">342</div></div>
+        <div class="stat-card"><div class="label">Free</div><div class="value">905</div></div>
+        <div class="stat-card"><div class="label">Banned</div><div class="value">12</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>All Users</h3><input placeholder="Search users..." style="background:#0A0A14;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:6px 12px;font-size:12px;outline:none;width:200px;"></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>User</th><th>Email</th><th>Plan</th><th>Animations</th><th>Status</th><th>Actions</th></tr>
+            <tr><td>J_Willy_Style</td><td>joseph@willisnmb.com</td><td><span class="tag tag-pro">Superuser</span></td><td>42</td><td><span class="tag tag-active">Active</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+            <tr><td>NeonBlade</td><td>neon@example.com</td><td><span class="tag tag-pro">Pro</span></td><td>87</td><td><span class="tag tag-active">Active</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+            <tr><td>StickMaster</td><td>stick@example.com</td><td>Free</td><td>23</td><td><span class="tag tag-active">Active</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+            <tr><td>PixelFury</td><td>pixel@example.com</td><td><span class="tag tag-pro">Pro</span></td><td>156</td><td><span class="tag tag-active">Active</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+            <tr><td>DeathDraw</td><td>dd@example.com</td><td>Free</td><td>12</td><td><span class="tag tag-active">Active</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+            <tr><td>BadActor99</td><td>bad@example.com</td><td>Free</td><td>0</td><td><span class="tag tag-ban">Banned</span></td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">View</button></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CONTENT -->
+    <div id="tab-content" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">Total Animations</div><div class="value">8,456</div></div>
+        <div class="stat-card"><div class="label">Published Today</div><div class="value">134</div></div>
+        <div class="stat-card"><div class="label">Flagged</div><div class="value">8</div></div>
+        <div class="stat-card"><div class="label">Avg Duration</div><div class="value">4.2s</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Recent Animations</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>Title</th><th>Creator</th><th>Frames</th><th>Views</th><th>Likes</th><th>Status</th></tr>
+            <tr><td>Neon Duel</td><td>NeonBlade</td><td>48</td><td>1,243</td><td>342</td><td><span class="tag tag-active">Published</span></td></tr>
+            <tr><td>Epic Fall</td><td>StickMaster</td><td>24</td><td>856</td><td>128</td><td><span class="tag tag-active">Published</span></td></tr>
+            <tr><td>Sword Fight III</td><td>PixelFury</td><td>72</td><td>2,104</td><td>567</td><td><span class="tag tag-active">Published</span></td></tr>
+            <tr><td>NSFW Content</td><td>BadActor99</td><td>12</td><td>45</td><td>2</td><td><span class="tag tag-ban">Removed</span></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHALLENGES -->
+    <div id="tab-challenges" class="tab-content">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <h3 style="color:#fff;font-size:16px;">Active Challenges</h3>
+        <button class="btn btn-primary">+ New Challenge</button>
+      </div>
+      <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="panel"><div class="panel-body" style="text-align:center;">
+          <div style="font-size:32px;margin-bottom:8px;">⚔️</div>
+          <h4 style="color:#fff;font-size:14px;margin-bottom:4px;">Death Battle Royale</h4>
+          <p style="color:#888;font-size:11px;margin-bottom:8px;">156 entries · 3d left</p>
+          <span class="tag tag-active">Active</span>
+        </div></div>
+        <div class="panel"><div class="panel-body" style="text-align:center;">
+          <div style="font-size:32px;margin-bottom:8px;">🏃</div>
+          <h4 style="color:#fff;font-size:14px;margin-bottom:4px;">Speed Run Challenge</h4>
+          <p style="color:#888;font-size:11px;margin-bottom:8px;">89 entries · 1h left</p>
+          <span class="tag tag-pending">Ending</span>
+        </div></div>
+        <div class="panel"><div class="panel-body" style="text-align:center;">
+          <div style="font-size:32px;margin-bottom:8px;">💥</div>
+          <h4 style="color:#fff;font-size:14px;margin-bottom:4px;">Epic Combo Contest</h4>
+          <p style="color:#888;font-size:11px;margin-bottom:8px;">312 entries · 2d left</p>
+          <span class="tag tag-active">Active</span>
+        </div></div>
+      </div>
+    </div>
+
+    <!-- SPATTER AI -->
+    <div id="tab-spatter" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">Brain Modules</div><div class="value">51,100</div></div>
+        <div class="stat-card"><div class="label">Categories</div><div class="value">20</div></div>
+        <div class="stat-card"><div class="label">Queries Today</div><div class="value">2,456</div></div>
+        <div class="stat-card"><div class="label">Avg Response</div><div class="value">0.8s</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Spatter Admin Dashboard</h3></div>
+        <div class="panel-body" style="padding:0;">
+          <iframe src="https://preview-spatter-admin-6d87f104.viktor.space/dashboard" class="iframe-wrap" style="height:600px;"></iframe>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI BOTS -->
+    <div id="tab-bots" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">Active Bots</div><div class="value">7</div></div>
+        <div class="stat-card"><div class="label">Messages Today</div><div class="value">1,892</div></div>
+        <div class="stat-card"><div class="label">Avg Response</div><div class="value">1.2s</div></div>
+        <div class="stat-card"><div class="label">Uptime</div><div class="value">99.9%</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Bot Management</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>Bot</th><th>Type</th><th>Messages</th><th>Status</th><th>Model</th><th>Actions</th></tr>
+            <tr><td>🎨 AnimBot</td><td>Animation Tips</td><td>342</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>⚔️ BattleBot</td><td>Challenge AI</td><td>256</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>🎭 StyleBot</td><td>Style Advisor</td><td>189</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>📚 TutorBot</td><td>Learning</td><td>278</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>🏆 ChallengeBot</td><td>Challenges</td><td>312</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>😂 MemeBot</td><td>Memes</td><td>234</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+            <tr><td>📰 NewsBot</td><td>Updates</td><td>281</td><td><span class="tag tag-active">Running</span></td><td>Pollinations</td><td><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Configure</button></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ANALYTICS -->
+    <div id="tab-analytics" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">DAU</div><div class="value">342</div><div class="change up">↑ 18%</div></div>
+        <div class="stat-card"><div class="label">WAU</div><div class="value">1,089</div><div class="change up">↑ 12%</div></div>
+        <div class="stat-card"><div class="label">MAU</div><div class="value">1,247</div><div class="change up">↑ 24%</div></div>
+        <div class="stat-card"><div class="label">Retention (D7)</div><div class="value">42%</div><div class="change up">↑ 3%</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Engagement Metrics</h3></div>
+        <div class="panel-body">
+          <div class="chart-bar" id="engChart"></div>
+          <div style="display:flex;justify-content:space-between;margin-top:24px;font-size:10px;color:#666;padding:0 4px;">
+            <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODERATION -->
+    <div id="tab-moderation" class="tab-content">
+      <div class="panel">
+        <div class="panel-header"><h3>Flagged Content (5)</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>Content</th><th>Reporter</th><th>Reason</th><th>Date</th><th>Actions</th></tr>
+            <tr><td>Animation #4521</td><td>NeonBlade</td><td>NSFW</td><td>Today</td><td><button class="btn btn-primary" style="padding:4px 8px;font-size:10px;margin-right:4px;">Remove</button><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Dismiss</button></td></tr>
+            <tr><td>Comment #8901</td><td>Auto-filter</td><td>Spam</td><td>Today</td><td><button class="btn btn-primary" style="padding:4px 8px;font-size:10px;margin-right:4px;">Remove</button><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Dismiss</button></td></tr>
+            <tr><td>Profile #234</td><td>StickMaster</td><td>Impersonation</td><td>Yesterday</td><td><button class="btn btn-primary" style="padding:4px 8px;font-size:10px;margin-right:4px;">Remove</button><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Dismiss</button></td></tr>
+            <tr><td>Animation #4499</td><td>Auto-filter</td><td>Violence</td><td>Yesterday</td><td><button class="btn btn-primary" style="padding:4px 8px;font-size:10px;margin-right:4px;">Remove</button><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Dismiss</button></td></tr>
+            <tr><td>Comment #8856</td><td>PixelFury</td><td>Harassment</td><td>May 26</td><td><button class="btn btn-primary" style="padding:4px 8px;font-size:10px;margin-right:4px;">Remove</button><button class="btn btn-secondary" style="padding:4px 8px;font-size:10px;">Dismiss</button></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div id="tab-settings" class="tab-content">
+      <div class="panel">
+        <div class="panel-header"><h3>App Settings</h3></div>
+        <div class="panel-body">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+            <div><label style="font-size:11px;color:#888;display:block;margin-bottom:6px;">App Name</label><input value="StickDeath ∞" style="background:#0A0A14;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:10px 12px;font-size:13px;width:100%;outline:none;"></div>
+            <div><label style="font-size:11px;color:#888;display:block;margin-bottom:6px;">Supabase URL</label><input value="https://iohubnamsqnzyburydxr.supabase.co" style="background:#0A0A14;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:10px 12px;font-size:13px;width:100%;outline:none;" readonly></div>
+            <div><label style="font-size:11px;color:#888;display:block;margin-bottom:6px;">Max Upload Size</label><input value="50 MB" style="background:#0A0A14;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:10px 12px;font-size:13px;width:100%;outline:none;"></div>
+            <div><label style="font-size:11px;color:#888;display:block;margin-bottom:6px;">Default FPS</label><input value="12" style="background:#0A0A14;border:1px solid rgba(255,255,255,0.1);border-radius:8px;color:#fff;padding:10px 12px;font-size:13px;width:100%;outline:none;"></div>
+          </div>
+          <div style="margin-top:16px;"><button class="btn btn-primary">Save Settings</button></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>API Keys</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>Service</th><th>Key</th><th>Status</th></tr>
+            <tr><td>LiveKit</td><td>••••••••••••</td><td><span class="tag tag-active">Active</span></td></tr>
+            <tr><td>Stripe</td><td>••••••••••••</td><td><span class="tag tag-active">Active</span></td></tr>
+            <tr><td>OpenAI</td><td>••••••••••••</td><td><span class="tag tag-active">Active</span></td></tr>
+            <tr><td>Pollinations</td><td>Free/Unlimited</td><td><span class="tag tag-active">Active</span></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- BILLING -->
+    <div id="tab-billing" class="tab-content">
+      <div class="stat-grid">
+        <div class="stat-card"><div class="label">MRR</div><div class="value">$4,890</div><div class="change up">↑ 18%</div></div>
+        <div class="stat-card"><div class="label">Pro Subscribers</div><div class="value">342</div><div class="change up">↑ 24 this week</div></div>
+        <div class="stat-card"><div class="label">Churn Rate</div><div class="value">2.1%</div><div class="change up">↓ 0.3%</div></div>
+        <div class="stat-card"><div class="label">LTV</div><div class="value">$47.20</div><div class="change up">↑ $3.40</div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-header"><h3>Recent Transactions</h3></div>
+        <div class="panel-body">
+          <table>
+            <tr><th>User</th><th>Amount</th><th>Plan</th><th>Date</th><th>Status</th></tr>
+            <tr><td>NeonBlade</td><td>$9.99</td><td>Pro Monthly</td><td>Today</td><td><span class="tag tag-active">Paid</span></td></tr>
+            <tr><td>PixelFury</td><td>$9.99</td><td>Pro Monthly</td><td>Today</td><td><span class="tag tag-active">Paid</span></td></tr>
+            <tr><td>AnimKing</td><td>$29.99</td><td>Pro Annual</td><td>Yesterday</td><td><span class="tag tag-active">Paid</span></td></tr>
+            <tr><td>StickLord</td><td>$9.99</td><td>Pro Monthly</td><td>Yesterday</td><td><span class="tag tag-pending">Pending</span></td></tr>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const tabs = ['dashboard','users','content','challenges','spatter','bots','analytics','moderation','settings','billing'];
+const titles = {dashboard:'Dashboard',users:'Users',content:'Content',challenges:'Challenges',spatter:'Spatter AI',bots:'AI Bots',analytics:'Analytics',moderation:'Moderation',settings:'Settings',billing:'Billing'};
+
+function switchTab(tab) {
+  tabs.forEach(t => {
+    document.getElementById('tab-'+t).classList.remove('active');
+  });
+  document.getElementById('tab-'+tab).classList.add('active');
+  document.getElementById('page-title').textContent = titles[tab];
+  document.querySelectorAll('.nav-item').forEach((el,i) => {
+    el.classList.toggle('active', tabs[i] === tab);
+  });
+}
+
+// Chart bars
+function renderChart(id, data) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const max = Math.max(...data);
+  el.innerHTML = data.map(v => `<div class="bar" style="height:${(v/max)*100}%"></div>`).join('');
+}
+renderChart('userChart', [45, 62, 38, 71, 85, 56, 92]);
+renderChart('engChart', [320, 450, 380, 520, 610, 490, 680]);
+</script>
+</body>
 </html>
