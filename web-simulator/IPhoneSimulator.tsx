@@ -647,7 +647,13 @@ function HomeTab({ feedFilter, setFeedFilter, showCreatePost, setShowCreatePost 
     <div style={{ height: "100%", background: C.bg, paddingTop: 54, paddingBottom: 80, overflowY: "auto" }}>
       <div style={{ padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <h2 style={{ fontFamily: FONT, fontSize: 20, color: C.white, margin: 0 }}>Feed</h2>
-        <button onClick={() => setShowCreatePost(true)} style={{ background: C.red, border: "none", borderRadius: 20, color: C.white, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: FONT }}>+ Create</button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button style={{ background: "none", border: "none", cursor: "pointer", position: "relative", padding: 4 }}>
+            <span style={{ fontSize: 18 }}>🔔</span>
+            <span style={{ position: "absolute", top: 0, right: 0, background: C.red, color: "#fff", fontSize: 7, width: 14, height: 14, borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 }}>3</span>
+          </button>
+          <button onClick={() => setShowCreatePost(true)} style={{ background: C.red, border: "none", borderRadius: 20, color: C.white, padding: "6px 14px", fontSize: 12, cursor: "pointer", fontFamily: FONT }}>+ Create</button>
+        </div>
       </div>
       <div style={{ display: "flex", gap: 8, padding: "0 16px", marginBottom: 12 }}>
         {["trending", "following", "new"].map(f => (
@@ -701,21 +707,50 @@ function HomeTab({ feedFilter, setFeedFilter, showCreatePost, setShowCreatePost 
       ))}
 
       {/* Create Post Modal */}
-      {showCreatePost && (
-        <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, top: "30%", background: C.surfaceDark, borderRadius: "20px 20px 0 0", padding: 20, border: `1px solid ${C.border}` }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <h3 style={{ fontFamily: FONT, fontSize: 16, color: C.white, margin: 0 }}>Create Post</h3>
-            <button onClick={() => setShowCreatePost(false)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 18, cursor: "pointer" }}>✕</button>
+      {showCreatePost && (() => {
+        const [mediaType, setMediaType] = useState<string | null>(null);
+        const [postVisibility, setPostVisibility] = useState("public");
+        return (
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, top: "25%", background: C.surfaceDark, borderRadius: "20px 20px 0 0", padding: 20, border: `1px solid ${C.border}`, overflowY: "auto" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <h3 style={{ fontFamily: FONT, fontSize: 16, color: C.white, margin: 0 }}>Create Post</h3>
+              <button onClick={() => setShowCreatePost(false)} style={{ background: "none", border: "none", color: C.textMuted, fontSize: 18, cursor: "pointer" }}>✕</button>
+            </div>
+            <textarea value={createText} onChange={e => setCreateText(e.target.value)} placeholder="What did you create?" style={{ width: "100%", height: 80, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.white, fontSize: 13, padding: 12, resize: "none", fontFamily: "inherit", outline: "none" }} />
+            <div style={{ display: "flex", gap: 8, margin: "10px 0" }}>
+              {[
+                { icon: "📷", label: "Photo", id: "photo" },
+                { icon: "🎬", label: "Animation", id: "animation" },
+                { icon: "🎵", label: "Audio", id: "audio" },
+                { icon: "🎥", label: "Video", id: "video" },
+              ].map(t => (
+                <button key={t.id} onClick={() => setMediaType(mediaType === t.id ? null : t.id)} style={{
+                  padding: "6px 12px", background: mediaType === t.id ? "rgba(220,38,38,0.15)" : C.surface,
+                  border: `1px solid ${mediaType === t.id ? C.red : C.border}`, borderRadius: 8,
+                  color: mediaType === t.id ? C.red : C.textMuted, fontSize: 10, cursor: "pointer",
+                }}>{t.icon} {t.label}</button>
+              ))}
+            </div>
+            {mediaType && (
+              <div style={{ padding: 12, background: C.surface, borderRadius: 8, border: `1px dashed ${C.border}`, textAlign: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 24, marginBottom: 4 }}>{mediaType === "photo" ? "📷" : mediaType === "animation" ? "🎬" : mediaType === "audio" ? "🎵" : "🎥"}</div>
+                <div style={{ fontSize: 10, color: C.textMuted }}>Tap to select {mediaType} from device</div>
+                <div style={{ fontSize: 8, color: C.textMuted, marginTop: 2 }}>Files stored on-device only</div>
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              {["public", "followers", "private"].map(v => (
+                <button key={v} onClick={() => setPostVisibility(v)} style={{
+                  padding: "4px 10px", borderRadius: 12, border: "none", cursor: "pointer", fontSize: 9,
+                  background: postVisibility === v ? C.red : "rgba(255,255,255,0.06)",
+                  color: postVisibility === v ? "#fff" : C.textMuted, textTransform: "capitalize",
+                }}>{v === "public" ? "🌍" : v === "followers" ? "👥" : "🔒"} {v}</button>
+              ))}
+            </div>
+            <Btn label="Post" onClick={() => { setShowCreatePost(false); setCreateText(""); }} primary />
           </div>
-          <textarea value={createText} onChange={e => setCreateText(e.target.value)} placeholder="What did you create?" style={{ width: "100%", height: 80, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.white, fontSize: 13, padding: 12, resize: "none", fontFamily: "inherit", outline: "none" }} />
-          <div style={{ display: "flex", gap: 8, margin: "10px 0" }}>
-            {["📷 Photo", "🎬 Animation", "🎵 Audio"].map(t => (
-              <button key={t} style={{ padding: "6px 12px", background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, color: C.textMuted, fontSize: 10, cursor: "pointer" }}>{t}</button>
-            ))}
-          </div>
-          <Btn label="Post" onClick={() => { setShowCreatePost(false); setCreateText(""); }} primary />
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -2073,6 +2108,44 @@ function StudioTab() {
                 if (aiResp) setSpatterMessages(prev => { const n = [...prev]; n[n.length - 1] = { text: aiResp, isSpatter: true }; return n; });
               }
             }} style={{ background: "none", border: "none", color: C.red, fontSize: 16, cursor: "pointer" }}>➤</button>
+          </div>
+        </PanelOverlay>
+      )}
+
+      {/* Rotoscope / Video Import */}
+      {activePanel === "importVideo" && (
+        <PanelOverlay onClose={() => setActivePanel("settings")} height="55%">
+          <PanelHeader title="🎬 Rotoscope / Video" onClose={() => setActivePanel("settings")} />
+          <div style={{ padding: 12 }}>
+            <div style={{ textAlign: "center", padding: "24px 16px", border: `2px dashed ${C.border}`, borderRadius: 12, marginBottom: 12 }}>
+              <div style={{ fontSize: 36, marginBottom: 8 }}>🎥</div>
+              <div style={{ fontSize: 12, color: C.white, fontFamily: FONT, fontWeight: 600, marginBottom: 4 }}>Import Video</div>
+              <div style={{ fontSize: 10, color: C.textMuted }}>Tap to select from device · MP4, MOV</div>
+              <div style={{ fontSize: 9, color: C.textMuted, marginTop: 4 }}>Video stored on-device only</div>
+            </div>
+            <div style={{ fontSize: 9, color: C.textMuted, letterSpacing: 2, marginBottom: 8 }}>ROTOSCOPE SETTINGS</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+                <span style={{ fontSize: 11, color: C.white }}>Opacity</span>
+                <input type="range" min="0" max="100" defaultValue="50" style={{ width: 120, accentColor: C.red }} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+                <span style={{ fontSize: 11, color: C.white }}>Frame Step</span>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {[1, 2, 3, 5].map(n => (
+                    <button key={n} style={{ padding: "4px 10px", borderRadius: 6, border: "none", cursor: "pointer", background: n === 1 ? C.red : C.surface, color: n === 1 ? "#fff" : C.textMuted, fontSize: 10, fontFamily: FONT }}>{n}x</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+                <span style={{ fontSize: 11, color: C.white }}>Auto-trace outlines</span>
+                <ToggleSwitch on={false} onToggle={() => {}} />
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0" }}>
+                <span style={{ fontSize: 11, color: C.white }}>Lock to canvas size</span>
+                <ToggleSwitch on={true} onToggle={() => {}} />
+              </div>
+            </div>
           </div>
         </PanelOverlay>
       )}
