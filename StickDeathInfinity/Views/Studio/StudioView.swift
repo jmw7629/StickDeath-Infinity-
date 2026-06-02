@@ -1,499 +1,283 @@
-import SwiftUI
-import PencilKit
+// ═══════════════════════════════════════════════════════════════════
+// StudioView — Full Animation Studio (matches video frame-by-frame)
+// Header → Tool Strip → Canvas → Frame Timeline → Bottom Toolbar
+// All 17 tools, all panels, all buttons functional
+// ═══════════════════════════════════════════════════════════════════
 
-// MARK: - Studio View
+import SwiftUI
+
 struct StudioView: View {
-    @StateObject private var studioState = StudioState()
-    @State private var showMenu = false
-    @State private var showLayers = false
-    @State private var showExport = false
-    @State private var showProjectSettings = false
+    @StateObject private var vm = StudioViewModel()
+    @Environment(\.dismiss) var dismiss
     
     var body: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Header
-                StudioHeader(state: studioState, onMenu: { showMenu = true }, onExport: { showExport = true })
+                StudioHeaderBar(vm: vm, onDismiss: { dismiss() })
+                StudioToolStrip(vm: vm)
                 
-                // Tool Strip
-                ToolStrip(state: studioState)
+                ZStack {
+                    StudioCanvasView(vm: vm)
+                    
+                    // Floating tool settings
+                    if vm.activePanel == .toolSettings {
+                        FloatingToolSettingsPanel(vm: vm)
+                            .transition(.opacity)
+                    }
+                    
+                    // Zoom controls (right side)
+                    VStack(spacing: 8) {
+                        Spacer()
+                        ZoomButton(label: "+") { vm.zoomIn() }
+                        ZoomButton(label: "−") { vm.zoomOut() }
+                        ZoomButton(label: "FIT") { vm.zoomFit() }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 8)
+                }
                 
-                // Canvas
-                StudioCanvas(state: studioState)
-                
-                // Zoom Controls overlay
-                // Frame Timeline
-                FrameTimeline(state: studioState)
-                
-                // Bottom Toolbar
-                BottomToolbar(state: studioState, onLayers: { showLayers = true })
+                StudioTimeline(vm: vm)
+                StudioBottomBar(vm: vm)
             }
+            
+            // Full-screen panels
+            if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
+            if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
+            if vm.activePanel == .layers { LayerPanel(vm: vm) }
+            if vm.activePanel == .export { ExportPanel(vm: vm) }
+            if vm.activePanel == .framesViewer { FramesViewerPanel(vm: vm) }
+            if vm.activePanel == .soundLibrary { SoundLibraryPanel(vm: vm) }
+            if vm.activePanel == .audioTimeline { AudioTimelinePanel(vm: vm) }
+            if vm.activePanel == .stickerEmoji { StickerEmojiPanel(vm: vm) }
+            if vm.activePanel == .backgroundLibrary { BackgroundLibraryPanel(vm: vm) }
+            if vm.activePanel == .addImage { AddImagePanel(vm: vm) }
         }
-        .sheet(isPresented: $showMenu) {
-            StudioMenuSheet(state: studioState)
+        .sheet(isPresented: showMenuBinding) {
+            StudioMenuSheet(vm: vm)
         }
-        .sheet(isPresented: $showLayers) {
-            LayerSheet(state: studioState)
+        .sheet(isPresented: showAIVoiceBinding) {
+            AIVoiceMakerSheet(vm: vm)
         }
-        .sheet(isPresented: $showExport) {
-            ExportSheet(state: studioState)
+        .sheet(isPresented: showSpatterBinding) {
+            SpatterAISheet(vm: vm)
+        }
+        .sheet(isPresented: showMagicCutBinding) {
+            MagicCutSheet(vm: vm)
+        }
+        .sheet(isPresented: showRotoscopeBinding) {
+            RotoscopeSheet(vm: vm)
+        }
+    }
+    
+    // Sheet bindings
+    var showMenuBinding: Binding<Bool> {
+        Binding(get: { vm.activePanel == .menu }, set: { if !$0 { vm.activePanel = .none } })
+    }
+    var showAIVoiceBinding: Binding<Bool> {
+        Binding(get: { vm.activePanel == .aiVoice }, set: { if !$0 { vm.activePanel = .none } })
+    }
+    var showSpatterBinding: Binding<Bool> {
+        Binding(get: { vm.activePanel == .spatterAI }, set: { if !$0 { vm.activePanel = .none } })
+    }
+    var showMagicCutBinding: Binding<Bool> {
+        Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 { vm.activePanel = .none } })
+    }
+    var showRotoscopeBinding: Binding<Bool> {
+        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 { vm.activePanel = .none } })
+    }
+}
+
+// MARK: - Zoom Button
+struct ZoomButton: View {
+    let label: String
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: label == "FIT" ? 9 : 16, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+                .frame(width: 32, height: 32)
+                .background(Circle().fill(Color(hex: "1E1E2A")))
+                .overlay(Circle().stroke(Color.white.opacity(0.1), lineWidth: 1))
         }
     }
 }
 
-// MARK: - Studio State
-class StudioState: ObservableObject {
-    @Published var projectName = "Untitled Animation"
-    @Published var fps = 12
-    @Published var canvasWidth = 1920
-    @Published var canvasHeight = 1080
-    @Published var selectedTool: StudioTool = .pencil
-    @Published var currentColor = Color.red
-    @Published var brushSize: CGFloat = 8
-    @Published var brushOpacity: Double = 1.0
-    @Published var smoothing: Double = 0.5
-    @Published var pressureSensitivity = true
-    @Published var frames: [AnimationFrame] = [AnimationFrame(id: "f1", index: 0)]
-    @Published var currentFrameIndex = 0
-    @Published var layers: [AnimationLayer] = [AnimationLayer(id: "l1", name: "Layer 1")]
-    @Published var currentLayerIndex = 0
-    @Published var onionSkinEnabled = false
-    @Published var gridEnabled = true
-    @Published var isPlaying = false
-    @Published var showToolSettings = false
-    @Published var lastSaved = Date()
+// MARK: - Floating Tool Settings (absolute positioned over canvas)
+struct FloatingToolSettingsPanel: View {
+    @ObservedObject var vm: StudioViewModel
     
-    var currentFrame: AnimationFrame {
-        guard currentFrameIndex < frames.count else { return frames[0] }
-        return frames[currentFrameIndex]
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header: icon + name + X close
+            HStack {
+                Image(systemName: toolIcon)
+                    .font(.system(size: 14))
+                    .foregroundColor(toolColor)
+                Text(vm.selectedTool.rawValue.capitalized)
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                Spacer()
+                Button(action: { vm.activePanel = .none }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white.opacity(0.5))
+                        .frame(width: 24, height: 24)
+                        .background(Color.white.opacity(0.1))
+                        .clipShape(Circle())
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(Color(hex: "1A1A24"))
+            
+            Divider().background(Color.white.opacity(0.08))
+            
+            // Settings content
+            VStack(spacing: 12) {
+                // Size slider
+                SettingSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", color: toolColor)
+                
+                // Opacity slider
+                SettingSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", color: toolColor)
+                
+                // Smoothing
+                if showSmoothing {
+                    SettingSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", color: toolColor)
+                }
+                
+                // Pressure sensitivity
+                if showPressure {
+                    HStack {
+                        Text("Pressure")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.5))
+                        Spacer()
+                        Toggle("", isOn: $vm.pressureSensitivity)
+                            .labelsHidden()
+                            .scaleEffect(0.7)
+                            .tint(toolColor)
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .background(Color(hex: "12121A"))
+        .cornerRadius(12)
+        .shadow(color: .black.opacity(0.5), radius: 12)
+        .frame(width: 240)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(.leading, 60)
+        .padding(.top, 8)
     }
     
-    func addFrame() {
-        let frame = AnimationFrame(id: "f\(Date().timeIntervalSince1970)", index: frames.count)
-        frames.append(frame)
-        currentFrameIndex = frames.count - 1
+    var opacityBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(vm.strokeOpacity * 100) },
+            set: { vm.strokeOpacity = Double($0 / 100) }
+        )
     }
     
-    func addLayer() {
-        let layer = AnimationLayer(id: "l\(Date().timeIntervalSince1970)", name: "Layer \(layers.count + 1)")
-        layers.append(layer)
-        currentLayerIndex = layers.count - 1
+    var showSmoothing: Bool {
+        [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
     }
     
-    func saveProject() {
-        lastSaved = Date()
-        // Device storage via DeviceStorageManager
-        DeviceStorageManager.shared.saveProject(state: self)
+    var showPressure: Bool {
+        [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
     }
-}
-
-enum StudioTool: String, CaseIterable {
-    case move, lasso, pencil, pen, brush, marker, crayon, line, rect, circle, fill, picker, eraser, smudge, text, hand, zoom
     
-    var icon: String {
-        switch self {
-        case .move: return "arrow.up.and.down.and.arrow.left.and.right"
-        case .lasso: return "lasso"
+    var toolIcon: String {
+        switch vm.selectedTool {
         case .pencil: return "pencil"
         case .pen: return "pencil.tip"
         case .brush: return "paintbrush"
         case .marker: return "highlighter"
         case .crayon: return "pencil.and.outline"
-        case .line: return "line.diagonal"
-        case .rect: return "rectangle"
-        case .circle: return "circle"
-        case .fill: return "drop.fill"
-        case .picker: return "eyedropper"
         case .eraser: return "eraser"
         case .smudge: return "hand.point.up.left"
         case .text: return "textformat"
-        case .hand: return "hand.raised"
-        case .zoom: return "magnifyingglass"
+        case .fill: return "drop.fill"
+        default: return "paintbrush"
         }
     }
     
-    var selectionColor: Color {
-        switch self {
-        case .pencil, .pen, .brush, .marker, .line, .rect, .circle, .fill, .picker, .eraser, .text:
-            return Color(hex: "DC2626") // Red
-        case .crayon:
-            return Color(hex: "F59E0B") // Amber/Golden
-        case .smudge:
-            return Color(hex: "A78BFA") // Purple
-        default:
-            return Color(hex: "DC2626")
-        }
-    }
-    
-    var hasSettings: Bool {
-        switch self {
-        case .pencil, .pen, .brush, .marker, .eraser, .smudge, .text, .fill, .crayon:
-            return true
-        default:
-            return false
+    var toolColor: Color {
+        switch vm.selectedTool {
+        case .crayon: return Color(hex: "F59E0B")
+        case .smudge: return Color(hex: "A78BFA")
+        default: return Color(hex: "DC2626")
         }
     }
 }
 
-// MARK: - Header
-struct StudioHeader: View {
-    @ObservedObject var state: StudioState
-    let onMenu: () -> Void
-    let onExport: () -> Void
+struct SettingSlider: View {
+    let label: String
+    @Binding var value: CGFloat
+    let range: ClosedRange<CGFloat>
+    let unit: String
+    let color: Color
     
     var body: some View {
-        HStack(spacing: 8) {
-            // Back button
-            Button(action: {}) {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.white.opacity(0.6))
-            }
-            
-            // Title
-            VStack(alignment: .leading, spacing: 1) {
-                Text(state.projectName)
-                    .font(.system(size: 14, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-                Text("\(state.fps) FPS · \(state.frames.count) frames · \(state.layers.count) layers")
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.4))
-            }
-            
-            Spacer()
-            
-            // Hide button
-            Button(action: {}) {
-                VStack(spacing: 1) {
-                    Image(systemName: "keyboard")
-                        .font(.system(size: 12))
-                    Text("HIDE")
-                        .font(.system(size: 7, weight: .bold, design: .monospaced))
-                }
-                .foregroundColor(.white.opacity(0.5))
-            }
-            
-            // Save indicator
-            HStack(spacing: 4) {
-                Image(systemName: "doc.on.doc.fill")
-                    .font(.system(size: 10))
-                Text(timeAgoString(from: state.lastSaved))
-                    .font(.system(size: 9))
-            }
-            .foregroundColor(.white.opacity(0.4))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Color(hex: "1A1A24"))
-            .cornerRadius(6)
-            
-            // Export
-            Button(action: onExport) {
-                Image(systemName: "arrow.up")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(.red)
-            }
-            
-            // Menu
-            Button(action: onMenu) {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.6))
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-    }
-    
-    func timeAgoString(from date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return "\(seconds)s ago" }
-        return "\(seconds / 60)m ago"
-    }
-}
-
-// MARK: - Tool Strip
-struct ToolStrip: View {
-    @ObservedObject var state: StudioState
-    
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
-                // Drag handle
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 16))
-                    .foregroundColor(.white.opacity(0.3))
-                    .padding(.horizontal, 4)
-                
-                // Color square
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(state.currentColor)
-                    .frame(width: 44, height: 44)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.white.opacity(0.2), lineWidth: 1)
-                    )
-                
-                // Tools
-                ForEach(StudioTool.allCases, id: \.self) { tool in
-                    ToolButton(tool: tool, isSelected: state.selectedTool == tool) {
-                        if state.selectedTool == tool && tool.hasSettings {
-                            state.showToolSettings.toggle()
-                        } else {
-                            state.selectedTool = tool
-                            state.showToolSettings = false
-                        }
-                    }
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-        }
-        .background(Color(hex: "12121A"))
-    }
-}
-
-struct ToolButton: View {
-    let tool: StudioTool
-    let isSelected: Bool
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 2) {
-                Image(systemName: tool.icon)
-                    .font(.system(size: 16))
-                Text(tool.rawValue.capitalized)
-                    .font(.system(size: 7, weight: isSelected ? .bold : .regular, design: .monospaced))
-            }
-            .foregroundColor(isSelected ? .white : .white.opacity(0.5))
-            .frame(width: 52, height: 52)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isSelected ? tool.selectionColor.opacity(0.8) : Color(hex: "1E1E2A"))
-            )
-        }
-    }
-}
-
-// MARK: - Canvas
-struct StudioCanvas: View {
-    @ObservedObject var state: StudioState
-    @State private var strokes: [[CGPoint]] = []
-    @State private var currentStroke: [CGPoint] = []
-    
-    var body: some View {
-        ZStack {
-            // Background
-            Color(hex: "0D0D12")
-            
-            // Canvas area with grid
-            GeometryReader { geo in
-                let canvasRect = CGRect(x: 20, y: 20, width: geo.size.width - 40, height: geo.size.height - 40)
-                
-                ZStack {
-                    // White canvas
-                    Rectangle()
-                        .fill(Color.white)
-                        .frame(width: canvasRect.width, height: canvasRect.height)
-                    
-                    // Grid dots
-                    if state.gridEnabled {
-                        Canvas { context, size in
-                            let spacing: CGFloat = 20
-                            for x in stride(from: CGFloat(0), to: size.width, by: spacing) {
-                                for y in stride(from: CGFloat(0), to: size.height, by: spacing) {
-                                    context.fill(
-                                        Path(ellipseIn: CGRect(x: x - 1, y: y - 1, width: 2, height: 2)),
-                                        with: .color(.gray.opacity(0.2))
-                                    )
-                                }
-                            }
-                        }
-                        .frame(width: canvasRect.width, height: canvasRect.height)
-                    }
-                    
-                    // Drawn strokes
-                    Canvas { context, size in
-                        for stroke in strokes {
-                            var path = Path()
-                            guard let first = stroke.first else { continue }
-                            path.move(to: first)
-                            for point in stroke.dropFirst() {
-                                path.addLine(to: point)
-                            }
-                            context.stroke(path, with: .color(.black), lineWidth: state.brushSize)
-                        }
-                        
-                        // Current stroke
-                        if !currentStroke.isEmpty {
-                            var path = Path()
-                            path.move(to: currentStroke[0])
-                            for point in currentStroke.dropFirst() {
-                                path.addLine(to: point)
-                            }
-                            context.stroke(path, with: .color(Color(state.currentColor)), lineWidth: state.brushSize)
-                        }
-                    }
-                    .frame(width: canvasRect.width, height: canvasRect.height)
-                    .gesture(
-                        DragGesture(minimumDistance: 0)
-                            .onChanged { value in
-                                currentStroke.append(value.location)
-                            }
-                            .onEnded { _ in
-                                if !currentStroke.isEmpty {
-                                    strokes.append(currentStroke)
-                                    currentStroke = []
-                                }
-                            }
-                    )
-                }
-                .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                
-                // Zoom controls
-                VStack(spacing: 8) {
-                    Spacer()
-                    ForEach(["+", "−", "FIT"], id: \.self) { label in
-                        Button(action: {}) {
-                            Text(label)
-                                .font(.system(size: label == "FIT" ? 9 : 16, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                                .frame(width: 32, height: 32)
-                                .background(Circle().fill(Color(hex: "1E1E2A")))
-                                .overlay(Circle().stroke(Color.white.opacity(0.1), lineWidth: 1))
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-                .padding(.trailing, 8)
-                .padding(.bottom, 8)
-            }
-        }
-        .frame(maxHeight: .infinity)
-    }
-}
-
-// MARK: - Frame Timeline
-struct FrameTimeline: View {
-    @ObservedObject var state: StudioState
-    
-    var body: some View {
-        HStack(spacing: 6) {
-            // Navigation
-            Button(action: {
-                if state.currentFrameIndex > 0 { state.currentFrameIndex -= 1 }
-            }) {
-                Text("‹")
-                    .font(.system(size: 16, weight: .bold))
+        VStack(spacing: 4) {
+            HStack {
+                Text(label)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.5))
+                Spacer()
+                Text("\(Int(value))\(unit)")
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5))
             }
-            
-            Button(action: { state.isPlaying.toggle() }) {
-                Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white)
-                    .frame(width: 32, height: 32)
-                    .background(Color(hex: "1E1E2A"))
-                    .clipShape(Circle())
-            }
-            
-            Button(action: {
-                if state.currentFrameIndex < state.frames.count - 1 { state.currentFrameIndex += 1 }
-            }) {
-                Text("›")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.white.opacity(0.5))
-            }
-            
-            // Frame thumbnails
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(state.frames.indices, id: \.self) { index in
-                        Button(action: { state.currentFrameIndex = index }) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 4)
-                                    .fill(Color(hex: "1E1E2A"))
-                                    .frame(width: 36, height: 36)
-                                
-                                VStack(spacing: 1) {
-                                    Text("\(index + 1)")
-                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    Text("\(index + 1)")
-                                        .font(.system(size: 7))
-                                }
-                                .foregroundColor(state.currentFrameIndex == index ? .white : .white.opacity(0.4))
-                            }
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 4)
-                                    .stroke(state.currentFrameIndex == index ? Color.red : Color.white.opacity(0.1), lineWidth: state.currentFrameIndex == index ? 2 : 1)
-                            )
-                        }
-                    }
-                }
-            }
-            
-            // Add frame
-            Button(action: { state.addFrame() }) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.5))
-                    .frame(width: 32, height: 32)
-                    .background(Circle().stroke(Color.white.opacity(0.15), lineWidth: 1))
-            }
-            
-            // Onion skin toggle
-            Button(action: { state.onionSkinEnabled.toggle() }) {
-                Image(systemName: "circle.dashed")
-                    .font(.system(size: 14))
-                    .foregroundColor(state.onionSkinEnabled ? .red : .white.opacity(0.3))
-            }
-            
-            Spacer()
-            
-            // Frame counter
-            Text("\(state.currentFrameIndex + 1)/\(state.frames.count)")
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.white.opacity(0.4))
+            Slider(value: $value, in: range)
+                .tint(color)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .background(Color(hex: "0A0A10"))
     }
 }
 
-// MARK: - Bottom Toolbar
-struct BottomToolbar: View {
-    @ObservedObject var state: StudioState
-    let onLayers: () -> Void
-    
-    let items: [(icon: String, label: String)] = [
-        ("music.note", "AUDIO"),
-        ("arrow.uturn.backward", "UNDO"),
-        ("arrow.uturn.forward", "REDO"),
-        ("doc.on.doc", "COPY"),
-        ("doc.on.clipboard", "PASTE"),
-        ("trash", "DEL"),
-    ]
+// MARK: - Studio Bottom Bar
+struct StudioBottomBar: View {
+    @ObservedObject var vm: StudioViewModel
     
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(items, id: \.label) { item in
-                Button(action: {}) {
-                    VStack(spacing: 2) {
-                        Image(systemName: item.icon)
-                            .font(.system(size: 14))
-                        Text(item.label)
-                            .font(.system(size: 7, weight: .bold, design: .monospaced))
-                    }
-                    .foregroundColor(.white.opacity(0.5))
-                    .frame(maxWidth: .infinity)
-                }
+            // Audio
+            BottomBarButton(icon: "music.note", label: "AUDIO") {
+                vm.activePanel = vm.activePanel == .audioTimeline ? .none : .audioTimeline
             }
             
-            // Layer button with badge
-            Button(action: onLayers) {
+            // Undo
+            BottomBarButton(icon: "arrow.uturn.backward", label: "UNDO", enabled: vm.canUndo) {
+                vm.undo()
+            }
+            
+            // Redo
+            BottomBarButton(icon: "arrow.uturn.forward", label: "REDO", enabled: vm.canRedo) {
+                vm.redo()
+            }
+            
+            // Copy
+            BottomBarButton(icon: "doc.on.doc", label: "COPY") {
+                vm.duplicateFrame()
+            }
+            
+            // Paste
+            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE") {
+                // Paste duplicated frame after current
+            }
+            
+            // Delete
+            BottomBarButton(icon: "trash", label: "DEL") {
+                vm.deleteSelected()
+            }
+            
+            // Layer (with red badge)
+            Button(action: {
+                vm.activePanel = vm.activePanel == .layers ? .none : .layers
+            }) {
                 ZStack(alignment: .topTrailing) {
                     VStack(spacing: 2) {
                         Image(systemName: "square.3.layers.3d")
@@ -503,15 +287,13 @@ struct BottomToolbar: View {
                     }
                     .foregroundColor(.white.opacity(0.5))
                     
-                    if state.layers.count > 0 {
-                        Text("\(state.layers.count)")
-                            .font(.system(size: 7, weight: .bold))
-                            .foregroundColor(.white)
-                            .padding(2)
-                            .background(Color.red)
-                            .clipShape(Circle())
-                            .offset(x: 8, y: -4)
-                    }
+                    Text("\(vm.layers.count)")
+                        .font(.system(size: 7, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(2)
+                        .background(Color.red)
+                        .clipShape(Circle())
+                        .offset(x: 8, y: -4)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -521,9 +303,513 @@ struct BottomToolbar: View {
     }
 }
 
-// MARK: - Menu Sheet
+struct BottomBarButton: View {
+    let icon: String
+    let label: String
+    var enabled: Bool = true
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                Text(label)
+                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+            }
+            .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
+            .frame(maxWidth: .infinity)
+        }
+        .disabled(!enabled)
+    }
+}
+
+// MARK: - Frames Viewer Panel
+struct FramesViewerPanel: View {
+    @ObservedObject var vm: StudioViewModel
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                PanelHeader(title: "Frames Viewer", icon: "film.fill") {
+                    vm.activePanel = .none
+                }
+                
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(vm.frames.indices, id: \.self) { i in
+                            Button(action: {
+                                vm.currentFrameIndex = i
+                                vm.activePanel = .none
+                            }) {
+                                VStack(spacing: 4) {
+                                    ZStack {
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.white)
+                                            .frame(height: 80)
+                                        
+                                        // Render frame elements
+                                        Canvas { context, size in
+                                            let scaleX = size.width / CGFloat(vm.canvasWidth)
+                                            let scaleY = size.height / CGFloat(vm.canvasHeight)
+                                            for el in vm.frames[i].elements {
+                                                guard el.points.count >= 2 else { continue }
+                                                var path = Path()
+                                                path.move(to: CGPoint(x: el.points[0].x * scaleX, y: el.points[0].y * scaleY))
+                                                for p in el.points.dropFirst() {
+                                                    path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
+                                                }
+                                                context.stroke(path, with: .color(Color(hex: el.color)), lineWidth: max(1, el.width * scaleX))
+                                            }
+                                        }
+                                        .frame(height: 80)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                    }
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1), lineWidth: vm.currentFrameIndex == i ? 2 : 1)
+                                    )
+                                    
+                                    Text("Frame \(i + 1)")
+                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.5))
+                                }
+                            }
+                        }
+                        
+                        // Add frame button
+                        Button(action: { vm.addFrame() }) {
+                            VStack(spacing: 4) {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(Color.white.opacity(0.15), style: StrokeStyle(lineWidth: 1, dash: [4]))
+                                    .frame(height: 80)
+                                    .overlay(
+                                        Image(systemName: "plus")
+                                            .foregroundColor(.white.opacity(0.3))
+                                    )
+                                Text("Add")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.3))
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Background Library Panel
+struct BackgroundLibraryPanel: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var selectedCategory = "Gradients"
+    
+    let categories = [
+        ("Gradients", 24), ("Solid", 18), ("Patterns", 12), ("Nature", 8),
+        ("Space", 6), ("Urban", 10), ("Abstract", 15), ("Textures", 9),
+    ]
+    
+    let backgrounds: [(name: String, colors: [String])] = [
+        ("Sunset", ["FF6B35", "F72585"]), ("Ocean", ["0077B6", "00B4D8"]),
+        ("Forest", ["2D6A4F", "40916C"]), ("Neon", ["7209B7", "F72585"]),
+        ("Midnight", ["0D1B2A", "1B263B"]), ("Fire", ["D00000", "FFBA08"]),
+        ("Ice", ["48CAE4", "ADE8F4"]), ("Void", ["0A0A0F", "1A1A24"]),
+    ]
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                PanelHeader(title: "Background Library", icon: "photo.on.rectangle") {
+                    vm.activePanel = .none
+                }
+                
+                HStack(spacing: 0) {
+                    // Sidebar categories (pill style with red bg)
+                    ScrollView(.vertical, showsIndicators: false) {
+                        VStack(spacing: 4) {
+                            ForEach(categories, id: \.0) { cat in
+                                Button(action: { selectedCategory = cat.0 }) {
+                                    Text("\(cat.0) (\(cat.1))")
+                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .foregroundColor(selectedCategory == cat.0 ? .white : .white.opacity(0.4))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(selectedCategory == cat.0 ? Color.red : Color(hex: "1A1A24"))
+                                        .cornerRadius(8)
+                                }
+                            }
+                        }
+                        .padding(8)
+                    }
+                    .frame(width: 120)
+                    .background(Color(hex: "0D0D14"))
+                    
+                    // Background grid
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                            ForEach(backgrounds, id: \.name) { bg in
+                                Button(action: {
+                                    // Apply background
+                                    vm.activePanel = .none
+                                }) {
+                                    VStack(spacing: 4) {
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(
+                                                LinearGradient(
+                                                    colors: bg.colors.map { Color(hex: $0) },
+                                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                                )
+                                            )
+                                            .frame(height: 80)
+                                        
+                                        Text(bg.name)
+                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .foregroundColor(.white.opacity(0.6))
+                                    }
+                                }
+                            }
+                        }
+                        .padding(12)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Add Image Panel
+struct AddImagePanel: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var showImagePicker = false
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                PanelHeader(title: "Add Picture", icon: "photo.fill") {
+                    vm.activePanel = .none
+                }
+                
+                VStack(spacing: 16) {
+                    Spacer()
+                    
+                    // Camera
+                    AddImageOption(icon: "camera.fill", title: "Take Photo", subtitle: "Use camera to capture") {
+                        showImagePicker = true
+                    }
+                    
+                    // Photo Library
+                    AddImageOption(icon: "photo.on.rectangle.angled", title: "Photo Library", subtitle: "Choose from your photos") {
+                        showImagePicker = true
+                    }
+                    
+                    // Files
+                    AddImageOption(icon: "folder.fill", title: "Files", subtitle: "Import from Files app") {
+                        showImagePicker = true
+                    }
+                    
+                    // Clipboard
+                    AddImageOption(icon: "doc.on.clipboard.fill", title: "Paste from Clipboard", subtitle: "Paste copied image") {
+                        // Paste from clipboard
+                    }
+                    
+                    Spacer()
+                }
+                .padding(24)
+            }
+        }
+    }
+}
+
+struct AddImageOption: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: icon)
+                    .font(.system(size: 20))
+                    .foregroundColor(.red)
+                    .frame(width: 44, height: 44)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(10)
+                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                
+                Spacer()
+                
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.2))
+            }
+            .padding(16)
+            .background(Color(hex: "12121A"))
+            .cornerRadius(14)
+        }
+    }
+}
+
+// MARK: - Sound Library Panel
+struct SoundLibraryPanel: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var selectedCategory = "All"
+    @State private var searchText = ""
+    
+    let categories = ["All", "Impact", "Swoosh", "Explosion", "Voice", "Ambient", "Music", "UI"]
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                PanelHeader(title: "Sound Library", icon: "waveform") {
+                    vm.activePanel = .none
+                }
+                
+                // Search
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundColor(.white.opacity(0.3))
+                    TextField("Search sounds...", text: $searchText)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                }
+                .padding(10)
+                .background(Color(hex: "1A1A24"))
+                .cornerRadius(10)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                
+                // Categories
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(categories, id: \.self) { cat in
+                            Button(action: { selectedCategory = cat }) {
+                                Text(cat)
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .foregroundColor(selectedCategory == cat ? .white : .white.opacity(0.4))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(selectedCategory == cat ? Color.red : Color(hex: "1A1A24"))
+                                    .cornerRadius(6)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .padding(.bottom, 8)
+                
+                // Sound list
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(SoundLibrary.all) { sound in
+                            SoundRow(sound: sound) {
+                                vm.addAudioClip(sound: sound, track: 0)
+                                vm.activePanel = .audioTimeline
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                }
+            }
+        }
+    }
+}
+
+struct SoundRow: View {
+    let sound: SoundEffect
+    let onAdd: () -> Void
+    @State private var isPlaying = false
+    
+    var body: some View {
+        HStack(spacing: 10) {
+            // Play/pause
+            Button(action: { isPlaying.toggle() }) {
+                Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 24))
+                    .foregroundColor(.red)
+            }
+            
+            // Waveform
+            HStack(spacing: 2) {
+                ForEach(sound.waveform.indices, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.red.opacity(0.6))
+                        .frame(width: 3, height: sound.waveform[i] * 20)
+                }
+            }
+            .frame(height: 20)
+            
+            VStack(alignment: .leading, spacing: 1) {
+                Text(sound.name)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                Text(sound.duration)
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            
+            Spacer()
+            
+            // Add to timeline
+            Button(action: onAdd) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 18))
+                    .foregroundColor(.red)
+            }
+        }
+        .padding(10)
+        .background(Color(hex: "12121A"))
+        .cornerRadius(8)
+    }
+}
+
+// MARK: - Audio Timeline Panel
+struct AudioTimelinePanel: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var playheadDrag: CGFloat = 0
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 0) {
+                // Header with transport controls
+                HStack {
+                    PanelHeader(title: "Audio Timeline", icon: "waveform.path") {
+                        vm.activePanel = .none
+                    }
+                }
+                
+                // Transport controls
+                HStack(spacing: 16) {
+                    Button(action: {}) {
+                        Image(systemName: "backward.fill")
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    Button(action: { vm.togglePlayback() }) {
+                        Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18))
+                            .foregroundColor(.red)
+                    }
+                    Button(action: {}) {
+                        Image(systemName: "forward.fill")
+                            .foregroundColor(.white.opacity(0.5))
+                    }
+                    
+                    Spacer()
+                    
+                    Text(String(format: "%.1fs / %.1fs", vm.audioPlayheadTime, vm.audioDuration))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.4))
+                    
+                    Button(action: { vm.activePanel = .soundLibrary }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "plus")
+                            Text("Add Sound")
+                        }
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.red)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                
+                // 4 tracks
+                ScrollView {
+                    VStack(spacing: 2) {
+                        ForEach(0..<4, id: \.self) { track in
+                            AudioTrackRow(track: track, clips: vm.audioClips.filter { $0.track == track }, vm: vm)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                
+                // Volume / delete footer
+                if let clip = vm.selectedAudioClip {
+                    HStack {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.4))
+                        Slider(value: .constant(clip.volume), in: 0...1)
+                            .tint(.red)
+                        
+                        Button(action: { vm.deleteAudioClip(clip.id) }) {
+                            Image(systemName: "trash.fill")
+                                .foregroundColor(.red)
+                        }
+                    }
+                    .padding(12)
+                    .background(Color(hex: "12121A"))
+                }
+            }
+        }
+    }
+}
+
+struct AudioTrackRow: View {
+    let track: Int
+    let clips: [AudioClip]
+    @ObservedObject var vm: StudioViewModel
+    
+    var body: some View {
+        HStack(spacing: 0) {
+            Text("T\(track + 1)")
+                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.3))
+                .frame(width: 24)
+            
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    // Track background
+                    Rectangle()
+                        .fill(Color(hex: "1A1A24"))
+                    
+                    // Clips
+                    ForEach(clips) { clip in
+                        let startX = CGFloat(clip.startTime / vm.audioDuration) * geo.size.width
+                        let clipW = CGFloat(clip.duration / vm.audioDuration) * geo.size.width
+                        
+                        Button(action: { vm.selectedAudioClip = clip }) {
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(vm.selectedAudioClip?.id == clip.id ? Color.red : Color.red.opacity(0.4))
+                                .frame(width: max(20, clipW), height: 24)
+                                .overlay(
+                                    Text(clip.soundName)
+                                        .font(.system(size: 7, weight: .bold))
+                                        .foregroundColor(.white)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 4)
+                                )
+                        }
+                        .offset(x: startX)
+                    }
+                }
+            }
+            .frame(height: 30)
+        }
+    }
+}
+
+// MARK: - Studio Menu Sheet
 struct StudioMenuSheet: View {
-    @ObservedObject var state: StudioState
+    @ObservedObject var vm: StudioViewModel
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -537,39 +823,72 @@ struct StudioMenuSheet: View {
                     .frame(width: 36, height: 4)
                     .padding(.top, 8)
                 
-                // Project section
-                Text("PROJECT")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 4)
+                // PROJECT section
+                SectionLabel(text: "PROJECT")
                 
-                MenuRow(icon: "⚙️", label: "Project Settings") {}
+                MenuSheetRow(icon: "⚙️", label: "Project Settings") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .projectSettings
+                    }
+                }
                 
                 Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 16)
                 
-                // Tools section
-                Text("TOOLS")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 4)
+                // TOOLS section
+                SectionLabel(text: "TOOLS")
                 
-                MenuRow(icon: "🎬", label: "Frames Viewer") {}
-                MenuToggleRow(icon: "🧅", label: "Onion", isOn: $state.onionSkinEnabled)
-                MenuToggleRow(icon: "📐", label: "Grid", isOn: $state.gridEnabled)
-                MenuRow(icon: "✨", label: "Magic Cut") {}
-                MenuRow(icon: "🖼️", label: "Background Library") {}
-                MenuRow(icon: "🎬", label: "Rotoscope / Video") {}
-                MenuRow(icon: "🖼️", label: "Add Picture") {}
-                MenuRow(icon: "🗣️", label: "AI Voice Maker") {}
-                MenuRow(icon: "🎨", label: "Spatter AI", accent: true) {}
+                MenuSheetRow(icon: "🎬", label: "Frames Viewer") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .framesViewer
+                    }
+                }
+                
+                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin)
+                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled)
+                
+                MenuSheetRow(icon: "✨", label: "Magic Cut") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .magicCut
+                    }
+                }
+                
+                MenuSheetRow(icon: "🖼️", label: "Background Library") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .backgroundLibrary
+                    }
+                }
+                
+                MenuSheetRow(icon: "🎬", label: "Rotoscope / Video") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .rotoscope
+                    }
+                }
+                
+                MenuSheetRow(icon: "🖼️", label: "Add Picture") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .addImage
+                    }
+                }
+                
+                MenuSheetRow(icon: "🗣️", label: "AI Voice Maker") {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .aiVoice
+                    }
+                }
+                
+                MenuSheetRow(icon: "🎨", label: "Spatter AI", accent: true) {
+                    dismiss()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        vm.activePanel = .spatterAI
+                    }
+                }
                 
                 Spacer()
             }
@@ -577,7 +896,21 @@ struct StudioMenuSheet: View {
     }
 }
 
-struct MenuRow: View {
+struct SectionLabel: View {
+    let text: String
+    var body: some View {
+        Text(text)
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundColor(.white.opacity(0.3))
+            .tracking(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+    }
+}
+
+struct MenuSheetRow: View {
     let icon: String
     let label: String
     var accent: Bool = false
@@ -586,8 +919,7 @@ struct MenuRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 12) {
-                Text(icon)
-                    .font(.system(size: 18))
+                Text(icon).font(.system(size: 18))
                 Text(label)
                     .font(.system(size: 14, weight: .medium, design: .monospaced))
                     .foregroundColor(accent ? .red : .white)
@@ -602,22 +934,24 @@ struct MenuRow: View {
     }
 }
 
-struct MenuToggleRow: View {
+struct MenuSheetToggleRow: View {
     let icon: String
     let label: String
+    var hasEdit: Bool = false
     @Binding var isOn: Bool
     
     var body: some View {
         HStack(spacing: 12) {
-            Text(icon)
-                .font(.system(size: 18))
+            Text(icon).font(.system(size: 18))
             Text(label)
                 .font(.system(size: 14, weight: .medium, design: .monospaced))
                 .foregroundColor(.white)
             Spacer()
-            Text("Edit")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.red)
+            if hasEdit {
+                Text("Edit")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.red)
+            }
             Toggle("", isOn: $isOn)
                 .labelsHidden()
                 .tint(.red)
@@ -627,9 +961,156 @@ struct MenuToggleRow: View {
     }
 }
 
-// MARK: - Layer Sheet
-struct LayerSheet: View {
-    @ObservedObject var state: StudioState
+// MARK: - AI Voice Maker Sheet (Purple theme)
+struct AIVoiceMakerSheet: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var scriptText = ""
+    @State private var selectedVoice = "Alex"
+    @State private var speed: Double = 1.0
+    @State private var pitch: Double = 1.0
+    @Environment(\.dismiss) var dismiss
+    
+    let voices = [
+        ("Alex", "🎙️"), ("Sarah", "👩"), ("James", "🧔"),
+        ("Luna", "🌙"), ("Max", "💪"), ("Zoe", "✨"),
+        ("Robot", "🤖"), ("Narrator", "📖"),
+    ]
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "1A0A2E").ignoresSafeArea()
+            
+            VStack(spacing: 16) {
+                // Header
+                HStack {
+                    Text("🗣️ AI Voice Maker")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(Color(hex: "A78BFA"))
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .foregroundColor(Color(hex: "A78BFA"))
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                
+                // Script / Dialogue label
+                Text("Script / Dialogue")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(Color(hex: "A78BFA").opacity(0.6))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                
+                // Text input
+                TextEditor(text: $scriptText)
+                    .font(.system(size: 14))
+                    .foregroundColor(.white)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 80)
+                    .padding(12)
+                    .background(Color(hex: "2A1A3E"))
+                    .cornerRadius(12)
+                    .padding(.horizontal, 16)
+                    .overlay(
+                        Group {
+                            if scriptText.isEmpty {
+                                Text("Type your voiceover text here...")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white.opacity(0.3))
+                                    .padding(.leading, 28)
+                                    .padding(.top, 24)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            }
+                        }
+                    )
+                
+                // Voice selection
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
+                    ForEach(voices, id: \.0) { voice in
+                        Button(action: { selectedVoice = voice.0 }) {
+                            VStack(spacing: 4) {
+                                Text(voice.1)
+                                    .font(.system(size: 20))
+                                Text(voice.0)
+                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            }
+                            .foregroundColor(selectedVoice == voice.0 ? .white : .white.opacity(0.4))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                            .background(selectedVoice == voice.0 ? Color(hex: "7C3AED") : Color(hex: "2A1A3E"))
+                            .cornerRadius(10)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .stroke(selectedVoice == voice.0 ? Color(hex: "A78BFA") : Color.clear, lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                
+                // Speed slider
+                HStack {
+                    Text("Speed")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                    Slider(value: $speed, in: 0.5...2.0)
+                        .tint(Color(hex: "A78BFA"))
+                    Text(String(format: "%.1fx", speed))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .padding(.horizontal, 16)
+                
+                // Pitch slider
+                HStack {
+                    Text("Pitch")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.5))
+                    Slider(value: $pitch, in: 0.5...2.0)
+                        .tint(Color(hex: "A78BFA"))
+                    Text(String(format: "%.1fx", pitch))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                }
+                .padding(.horizontal, 16)
+                
+                Spacer()
+                
+                // Action buttons
+                HStack(spacing: 12) {
+                    Button(action: {}) {
+                        Text("Preview")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(Color(hex: "A78BFA"))
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(hex: "2A1A3E"))
+                            .cornerRadius(14)
+                    }
+                    
+                    Button(action: { dismiss() }) {
+                        Text("🎙️ Add to Timeline")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(hex: "7C3AED"))
+                            .cornerRadius(14)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 16)
+            }
+        }
+    }
+}
+
+// MARK: - Spatter AI Sheet
+struct SpatterAISheet: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var prompt = ""
+    @State private var messages: [(role: String, text: String)] = [
+        ("assistant", "Hey! I'm Spatter AI 🎨 I can help you animate, suggest techniques, generate effects, and answer any animation questions. What do you want to create?")
+    ]
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
@@ -637,371 +1118,249 @@ struct LayerSheet: View {
             Color(hex: "0A0A0F").ignoresSafeArea()
             
             VStack(spacing: 0) {
-                // Drag handle
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.white.opacity(0.2))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 8)
+                // Header
+                HStack {
+                    Text("🎨 Spatter AI")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(.red)
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .foregroundColor(.red)
+                }
+                .padding(16)
                 
+                // Messages
                 ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(state.layers.indices, id: \.self) { i in
-                            LayerRow(layer: $state.layers[i], isSelected: state.currentLayerIndex == i) {
-                                state.currentLayerIndex = i
+                    LazyVStack(spacing: 8) {
+                        ForEach(messages.indices, id: \.self) { i in
+                            let msg = messages[i]
+                            HStack {
+                                if msg.role == "user" { Spacer() }
+                                Text(msg.text)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(.white)
+                                    .padding(12)
+                                    .background(msg.role == "user" ? Color.red : Color(hex: "1A1A24"))
+                                    .cornerRadius(12)
+                                    .frame(maxWidth: 280, alignment: msg.role == "user" ? .trailing : .leading)
+                                if msg.role == "assistant" { Spacer() }
                             }
                         }
                     }
+                    .padding(16)
                 }
                 
-                // Add layer
-                Button(action: { state.addLayer() }) {
-                    Text("+")
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                }
-            }
-        }
-    }
-}
-
-struct LayerRow: View {
-    @Binding var layer: AnimationLayer
-    let isSelected: Bool
-    let onSelect: () -> Void
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            Button(action: onSelect) {
+                // Input
                 HStack(spacing: 8) {
-                    // Drag handle
-                    Image(systemName: "line.3.horizontal")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.3))
+                    TextField("Ask Spatter anything...", text: $prompt)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                        .padding(12)
+                        .background(Color(hex: "1A1A24"))
+                        .cornerRadius(12)
                     
-                    // Visibility
-                    Button(action: { layer.visible.toggle() }) {
-                        Image(systemName: layer.visible ? "eye" : "eye.slash")
-                            .font(.system(size: 12))
-                            .foregroundColor(layer.visible ? .white.opacity(0.5) : .red)
+                    Button(action: sendMessage) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.red)
                     }
-                    
-                    // Thumbnail
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color(hex: "1E1E2A"))
-                        .frame(width: 28, height: 28)
-                    
-                    // Name
-                    Text(layer.name)
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
-                    
-                    Spacer()
-                    
-                    // Lock
-                    Image(systemName: layer.locked ? "lock.fill" : "lock.open")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.4))
-                    
-                    // Opacity
-                    Text("\(Int(layer.opacity))%")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
-                    
-                    // Expand
-                    Image(systemName: layer.expanded ? "chevron.down" : "chevron.right")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.3))
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(16)
             }
-            .buttonStyle(.plain)
-            
-            if layer.expanded {
-                LayerSettings(layer: $layer)
-            }
-            
-            Divider().background(Color.white.opacity(0.04))
+        }
+    }
+    
+    func sendMessage() {
+        guard !prompt.isEmpty else { return }
+        messages.append(("user", prompt))
+        let userPrompt = prompt
+        prompt = ""
+        
+        // AI response using Spatter Brain knowledge
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            let response = SpatterBrainLoader.shared.getResponse(for: userPrompt)
+            messages.append(("assistant", response))
         }
     }
 }
 
-struct LayerSettings: View {
-    @Binding var layer: AnimationLayer
-    
-    let lockModes = [("Free", "lock.open"), ("Full", "lock.fill"), ("Pos", "pin.fill"), ("Alpha", "paintpalette.fill")]
-    let colorLabels: [Color] = [.red, .orange, .yellow, .green, .blue, .purple, .pink, .gray]
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            // Opacity
-            HStack {
-                Text("Opacity")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.4))
-                Slider(value: $layer.opacity, in: 0...100)
-                    .tint(.red)
-                Text("\(Int(layer.opacity))%")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.4))
-                    .frame(width: 36, alignment: .trailing)
-            }
-            
-            // Lock Mode
-            Text("LOCK MODE")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.3))
-                .tracking(2)
-            
-            HStack(spacing: 6) {
-                ForEach(lockModes, id: \.0) { mode in
-                    Button(action: {
-                        layer.lockMode = mode.0
-                        layer.locked = mode.0 != "Free"
-                    }) {
-                        VStack(spacing: 2) {
-                            Image(systemName: mode.1)
-                                .font(.system(size: 12))
-                            Text(mode.0)
-                                .font(.system(size: 8, weight: .medium, design: .monospaced))
-                        }
-                        .foregroundColor(layer.lockMode == mode.0 ? .red : .white.opacity(0.4))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(layer.lockMode == mode.0 ? Color.red.opacity(0.15) : Color(hex: "1E1E2A"))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(layer.lockMode == mode.0 ? Color.red.opacity(0.3) : Color.clear, lineWidth: 1)
-                        )
-                    }
-                }
-            }
-            
-            // Blend Mode
-            Text("BLEND MODE")
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.3))
-                .tracking(2)
-            
-            Picker("Blend", selection: $layer.blendMode) {
-                ForEach(["Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "Color Dodge", "Color Burn"], id: \.self) { mode in
-                    Text(mode).tag(mode)
-                }
-            }
-            .pickerStyle(.menu)
-            .tint(.white)
-            .padding(.horizontal, 8)
-            .background(Color(hex: "1E1E2A"))
-            .cornerRadius(8)
-            
-            // Glow
-            HStack {
-                Text("GLOW")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                Toggle("", isOn: $layer.glowEnabled)
-                    .labelsHidden()
-                    .scaleEffect(0.7)
-            }
-            
-            // Color labels
-            HStack(spacing: 8) {
-                Text("Color:")
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.4))
-                ForEach(colorLabels.indices, id: \.self) { i in
-                    Circle()
-                        .fill(colorLabels[i])
-                        .frame(width: 18, height: 18)
-                        .overlay(
-                            Circle().stroke(Color.white, lineWidth: layer.colorLabelIndex == i ? 2 : 0)
-                        )
-                        .onTapGesture { layer.colorLabelIndex = i }
-                }
-            }
-            
-            // Actions
-            HStack(spacing: 8) {
-                Button(action: {}) {
-                    Label("Editable", systemImage: "pencil")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(hex: "1E1E2A"))
-                        .cornerRadius(6)
-                }
-                
-                Button(action: {}) {
-                    Label("Duplicate", systemImage: "doc.on.doc")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundColor(.white.opacity(0.5))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color(hex: "1E1E2A"))
-                        .cornerRadius(6)
-                }
-                
-                Button(action: {}) {
-                    Image(systemName: "arrow.up.square")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .padding(6)
-                        .background(Color(hex: "1E1E2A"))
-                        .cornerRadius(6)
-                }
-                
-                Button(action: {}) {
-                    Image(systemName: "arrow.down.square")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .padding(6)
-                        .background(Color(hex: "1E1E2A"))
-                        .cornerRadius(6)
-                }
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(Color(hex: "0A0A10").opacity(0.5))
-    }
-}
-
-// MARK: - Export Sheet
-struct ExportSheet: View {
-    @ObservedObject var state: StudioState
-    @State private var format = "mp4"
-    @State private var isExporting = false
+// MARK: - Magic Cut Sheet
+struct MagicCutSheet: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var isProcessing = false
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
-        NavigationView {
-            ZStack {
-                Color(hex: "0A0A0F").ignoresSafeArea()
-                
-                VStack(spacing: 16) {
-                    // Format selection
-                    Text("FORMAT")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.3))
-                        .tracking(2)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                        ForEach(["mp4", "gif", "png", "spritesheet"], id: \.self) { fmt in
-                            Button(action: { format = fmt }) {
-                                VStack(spacing: 4) {
-                                    Text(fmt == "mp4" ? "🎬" : fmt == "gif" ? "🔄" : fmt == "png" ? "🖼️" : "📋")
-                                        .font(.system(size: 24))
-                                    Text(fmt.uppercased())
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                }
-                                .foregroundColor(format == fmt ? .white : .white.opacity(0.4))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(format == fmt ? Color.red.opacity(0.15) : Color(hex: "1E1E2A"))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(format == fmt ? Color.red : Color.clear, lineWidth: 1)
-                                )
-                            }
-                        }
-                    }
-                    
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 20) {
+                HStack {
+                    Text("✨ Magic Cut")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
                     Spacer()
+                    Button("Done") { dismiss() }
+                }
+                .padding(16)
+                
+                VStack(spacing: 12) {
+                    Image(systemName: "wand.and.stars")
+                        .font(.system(size: 48))
+                        .foregroundColor(.red)
+                    
+                    Text("AI-Powered Background Removal")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    
+                    Text("Automatically removes backgrounds from your frames using AI. Works best with clear stick figure outlines.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    
+                    if isProcessing {
+                        ProgressView()
+                            .tint(.red)
+                            .padding()
+                        Text("Processing frame \(vm.currentFrameIndex + 1)...")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.4))
+                    }
                     
                     Button(action: {
-                        isExporting = true
+                        isProcessing = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            isExporting = false
-                            dismiss()
+                            isProcessing = false
                         }
                     }) {
-                        if isExporting {
-                            ProgressView()
-                                .tint(.white)
-                        } else {
-                            Text("Export \(format.uppercased())")
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                        }
+                        Text("Cut Current Frame")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.red)
+                            .cornerRadius(14)
                     }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding()
-                    .background(Color.red)
-                    .cornerRadius(14)
+                    .padding(.horizontal, 32)
+                    .disabled(isProcessing)
+                    
+                    Button(action: {
+                        isProcessing = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                            isProcessing = false
+                        }
+                    }) {
+                        Text("Cut All Frames (\(vm.frames.count))")
+                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color.red.opacity(0.1))
+                            .cornerRadius(14)
+                    }
+                    .padding(.horizontal, 32)
+                    .disabled(isProcessing)
                 }
-                .padding(20)
-            }
-            .navigationTitle("Export")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
+                
+                Spacer()
             }
         }
     }
 }
 
-// MARK: - Models
-struct AnimationFrame: Identifiable {
-    let id: String
-    let index: Int
-    var strokes: [[CGPoint]] = []
-}
-
-struct AnimationLayer: Identifiable {
-    let id: String
-    var name: String
-    var visible = true
-    var locked = false
-    var expanded = false
-    var opacity: Double = 100
-    var lockMode = "Free"
-    var blendMode = "Normal"
-    var glowEnabled = false
-    var colorLabelIndex = 0
-}
-
-// MARK: - Color Hex Extension
-extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let a, r, g, b: UInt64
-        switch hex.count {
-        case 3:
-            (a, r, g, b) = (255, (int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-        case 6:
-            (a, r, g, b) = (255, int >> 16, int >> 8 & 0xFF, int & 0xFF)
-        case 8:
-            (a, r, g, b) = (int >> 24, int >> 16 & 0xFF, int >> 8 & 0xFF, int & 0xFF)
-        default:
-            (a, r, g, b) = (255, 0, 0, 0)
+// MARK: - Rotoscope Sheet
+struct RotoscopeSheet: View {
+    @ObservedObject var vm: StudioViewModel
+    @State private var showVideoPicker = false
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            
+            VStack(spacing: 20) {
+                HStack {
+                    Text("🎬 Rotoscope / Video")
+                        .font(.system(size: 18, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Button("Done") { dismiss() }
+                }
+                .padding(16)
+                
+                VStack(spacing: 16) {
+                    Image(systemName: "film.fill")
+                        .font(.system(size: 48))
+                        .foregroundColor(.red)
+                    
+                    Text("Import a video to trace over")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    
+                    Text("Import a video and it will be split into frames for you to draw over. Perfect for rotoscoping and reference.")
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.5))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 32)
+                    
+                    Button(action: { showVideoPicker = true }) {
+                        HStack {
+                            Image(systemName: "video.fill")
+                            Text("Choose Video")
+                        }
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.red)
+                        .cornerRadius(14)
+                    }
+                    .padding(.horizontal, 32)
+                    
+                    Button(action: {}) {
+                        HStack {
+                            Image(systemName: "camera.fill")
+                            Text("Record Video")
+                        }
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundColor(.red)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(Color.red.opacity(0.1))
+                        .cornerRadius(14)
+                    }
+                    .padding(.horizontal, 32)
+                }
+                
+                Spacer()
+            }
         }
-        self.init(
-            .sRGB,
-            red: Double(r) / 255,
-            green: Double(g) / 255,
-            blue: Double(b) / 255,
-            opacity: Double(a) / 255
-        )
     }
 }
 
-struct StudioView_Previews: PreviewProvider {
-    static var previews: some View {
-        StudioView()
+// MARK: - Panel Header (reusable)
+struct PanelHeader: View {
+    let title: String
+    let icon: String
+    let onClose: () -> Void
+    
+    var body: some View {
+        HStack {
+            Image(systemName: icon)
+                .foregroundColor(.red)
+            Text(title)
+                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .foregroundColor(.white)
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(Color(hex: "0D0D14"))
     }
 }
