@@ -233,7 +233,7 @@ struct AudioTrack {
     var duration: Double
 }
 
-struct ChatMessage: Codable {
+struct StoredChatMessage: Codable {
     let id: UUID
     let senderId: String
     let recipientId: String

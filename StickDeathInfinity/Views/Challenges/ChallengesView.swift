@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ChallengesView: View {
     @State private var selectedFilter = "active"
-    @State private var challenges: [Challenge] = Challenge.samples
+    @State private var challenges: [Challenge] = ChallengeItem.samples
     @State private var selectedChallenge: Challenge?
     
     var body: some View {
@@ -139,7 +139,7 @@ struct ChallengeCard: View {
     }
 }
 
-struct ChallengeDetailView: View {
+struct InlineChallengeDetailView: View {
     let challenge: Challenge
     @State private var hasEntered = false
     @Environment(\.dismiss) var dismiss
@@ -217,7 +217,7 @@ struct ChallengeDetailView: View {
     }
 }
 
-struct Challenge: Identifiable {
+struct ChallengeItem: Identifiable {
     let id: String
     let title: String
     let emoji: String
@@ -231,7 +231,7 @@ struct Challenge: Identifiable {
     let rules: [String]
     
     static let samples: [Challenge] = [
-        Challenge(id: "ch1", title: "Last Stand",
+        ChallengeItem(id: "ch1", title: "Last Stand",
                   emoji: "⚔️",
                   description: "Create a 2-5 second animation of a stick figure making their last stand. Use dramatic angles and dynamic poses.",
                   reward: "500",
@@ -240,7 +240,7 @@ struct Challenge: Identifiable {
                   status: "active",
                   gradientStart: "7F1D1D", gradientEnd: "991B1B",
                   rules: ["2-5 seconds long", "12+ FPS", "At least 24 frames", "Original work only"]),
-        Challenge(id: "ch2", title: "Speed Demon",
+        ChallengeItem(id: "ch2", title: "Speed Demon",
                   emoji: "🏃",
                   description: "Animate the fastest possible action sequence. Speed is everything!",
                   reward: "250",
@@ -249,7 +249,7 @@ struct Challenge: Identifiable {
                   status: "active",
                   gradientStart: "1E3A5F", gradientEnd: "2563EB",
                   rules: ["Under 2 seconds", "24 FPS minimum", "Must include motion blur"]),
-        Challenge(id: "ch3", title: "Glow Up",
+        ChallengeItem(id: "ch3", title: "Glow Up",
                   emoji: "✨",
                   description: "Use glow effects and neon colors to create something magical.",
                   reward: "750",
@@ -258,7 +258,7 @@ struct Challenge: Identifiable {
                   status: "upcoming",
                   gradientStart: "581C87", gradientEnd: "7C3AED",
                   rules: ["Must use glow layers", "Neon color palette", "3-10 seconds"]),
-        Challenge(id: "ch4", title: "Comedy Gold",
+        ChallengeItem(id: "ch4", title: "Comedy Gold",
                   emoji: "😂",
                   description: "Make us laugh! Funniest animation wins.",
                   reward: "400",

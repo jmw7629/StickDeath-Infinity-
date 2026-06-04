@@ -141,7 +141,7 @@ struct ProfileView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            ProfileSettingsView()
         }
     }
 }
@@ -239,7 +239,7 @@ struct AnalyticsCard: View {
     }
 }
 
-struct SettingsView: View {
+struct ProfileSettingsView: View {
     @State private var darkMode = true
     @State private var soundEffects = true
     @State private var autoSave = true
