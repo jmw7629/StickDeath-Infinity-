@@ -210,7 +210,7 @@ struct AnimationMetadata: Codable {
     var thumbnailData: Data?
 }
 
-struct AnimationFrame {
+struct StoredAnimationFrame {
     var imageData: Data?
     var layerData: [LayerData]?
 }

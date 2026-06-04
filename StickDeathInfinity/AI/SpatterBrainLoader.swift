@@ -109,6 +109,23 @@ class SpatterBrainLoader {
         let pool = category.flatMap { categoryIndex[$0] } ?? modules
         return pool.randomElement()
     }
+    
+    /// Quick response from brain knowledge base (no API call)
+    func getResponse(for query: String) -> String {
+        let relevant = search(query: query, limit: 3)
+        if let best = relevant.first {
+            return "🎨 *\(best.title)*\n\n\(best.content)\n\n💡 Tip: \(relevant.dropFirst().first?.title ?? "Try different keywords for more tips!")"
+        }
+        // Fallback responses
+        let tips = [
+            "Great question! Try using the brush tool with pressure sensitivity for more natural-looking strokes. Hold and drag slowly for smooth lines!",
+            "For stick figure combat, use 12 FPS for standard animation and 24 FPS for smooth slow-motion effects. Add smear frames for impact!",
+            "Pro tip: Use the onion skin feature to see your previous frame while drawing. It helps keep your animation consistent!",
+            "Want better effects? Try using the marker tool with low opacity for energy blasts, then layer them for a glowing look!",
+            "For smooth walking cycles, you need about 8-12 frames. Start with the contact poses, then add the passing and down positions.",
+        ]
+        return tips.randomElement() ?? "I'm here to help with your animation! Ask me about techniques, effects, or any creative ideas."
+    }
 }
 
 // MARK: - Spatter AI Chat Engine

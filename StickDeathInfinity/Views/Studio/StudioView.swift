@@ -1201,10 +1201,16 @@ struct SpatterAISheet: View {
         let userPrompt = prompt
         prompt = ""
         
-        // AI response using Spatter Brain knowledge
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let response = SpatterBrainLoader.shared.getResponse(for: userPrompt)
-            messages.append(("assistant", response))
+        // First show brain knowledge immediately
+        let quickResponse = SpatterBrainLoader.shared.getResponse(for: userPrompt)
+        messages.append(("assistant", quickResponse))
+        
+        // Then call async AI engine for a deeper response
+        Task {
+            let aiResponse = await SpatterAIEngine.shared.chat(userMessage: userPrompt)
+            if !aiResponse.isEmpty && !aiResponse.contains("error") {
+                messages.append(("assistant", aiResponse))
+            }
         }
     }
 }
