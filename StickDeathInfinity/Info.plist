@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleDisplayName</key>
+    <string>StickDeath ∞</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.willisnmb.stickdeathinfinity</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>StickDeath Infinity</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSRequiresIPhoneOS</key>
+    <true/>
+    <key>UILaunchScreen</key>
+    <dict>
+        <key>UIColorName</key>
+        <string>LaunchBackground</string>
+    </dict>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+    <key>UIApplicationSceneManifest</key>
+    <dict>
+        <key>UIApplicationSupportsMultipleScenes</key>
+        <true/>
+    </dict>
+    <key>NSCameraUsageDescription</key>
+    <string>StickDeath Infinity needs camera access for video calls and profile photos.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>StickDeath Infinity needs microphone access for voice and video calls.</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>StickDeath Infinity needs photo library access to import images and export animations.</string>
+    <!-- URL Schemes for OAuth Callback (Google Sign In, Supabase redirects) -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.willisnmb.stickdeathinfinity</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>stickdeath</string>
+            </array>
+        </dict>
+    </array>
+    <key>UIAppFonts</key>
+    <array>
+        <string>SpecialElite-Regular.ttf</string>
+        <string>Anybody-Regular.ttf</string>
+        <string>Anybody-Bold.ttf</string>
+    </array>
+</dict>
+</plist>

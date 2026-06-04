@@ -1,0 +1,47 @@
+
+name: StickDeathInfinity
+options:
+  bundleIdPrefix: com.willisnmb
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "15.0"
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+settings:
+  base:
+    INFOPLIST_FILE: StickDeathInfinity/Info.plist
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1,2"
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  StickDeathInfinity:
+    type: application
+    platform: iOS
+    sources:
+      - StickDeathInfinity
+    settings:
+      base:
+        INFOPLIST_FILE: StickDeathInfinity/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity
+        SWIFT_VERSION: "5.9"
+        GENERATE_INFOPLIST_FILE: false
+    dependencies:
+      - package: supabase-swift
+      - package: client-sdk-swift
+      # StoreKit 2 is built into iOS 15+ — no external package needed
+      # Stripe SDK removed: iOS subscriptions use StoreKit IAP per Apple policy
+    entitlements:
+      path: StickDeathInfinity/StickDeathInfinity.entitlements
+    capabilities:
+      Sign in with Apple: {}
+      In-App Purchase: {}
+
+packages:
+  supabase-swift:
+    url: https://github.com/supabase-community/supabase-swift.git
+    from: "2.0.0"
+  client-sdk-swift:
+    url: https://github.com/livekit/client-sdk-swift.git
+    from: "2.0.0"
