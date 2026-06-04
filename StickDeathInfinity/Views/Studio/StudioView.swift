@@ -1005,8 +1005,13 @@ struct PanelHeader: View {
     
     var body: some View {
         HStack {
-            Image(systemName: icon)
-                .foregroundColor(.red)
+            if icon.count <= 3 && icon.unicodeScalars.contains(where: { $0.value > 0x1F000 }) {
+                Text(icon)
+                    .font(.system(size: 18))
+            } else {
+                Image(systemName: icon)
+                    .foregroundColor(.red)
+            }
             Text(title)
                 .font(.system(size: 16, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
