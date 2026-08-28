@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+echo "Blocked by JoeOS bridge policy: gh is unavailable inside OpenCode task execution." >&2
+echo "The bridge runner owns GitHub issue, branch, and pull-request mutations." >&2
+exit 126
