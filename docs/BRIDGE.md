@@ -29,6 +29,22 @@ Nothing is merged automatically.
 
 Use the same non-root user account that already runs OpenCode.
 
+The bridge must use a **non-Snap OpenCode binary**. The systemd service intentionally keeps `NoNewPrivileges=true`; Snap's `snap-confine` requires Linux file capabilities that conflict with that hardened service context. Do not remove the bridge hardening just to make the Snap package run.
+
+If `command -v opencode` begins with `/snap/`, install the official OpenCode build first:
+
+```bash
+curl -fsSL https://opencode.ai/install | bash
+exec "$SHELL" -l
+command -v opencode
+opencode --version
+opencode auth list
+```
+
+`command -v opencode` must not begin with `/snap/` before bridge installation.
+
+Then activate the bridge:
+
 ```bash
 cd /path/to/StickDeath-Infinity-
 git checkout main
@@ -64,6 +80,8 @@ The installer creates:
 
 `~/.config/joeos-opencode-bridge/stickdeath.env`
 
+On every install/reinstall, `OPENCODE_BIN` is refreshed to the currently selected non-Snap `opencode` binary. This avoids leaving the service pinned to an obsolete `/snap/bin/opencode` path after migration.
+
 By default no model is forced. OpenCode uses its existing local configuration. To pin a model, first obtain the exact ID from `opencode models`, then set `OPENCODE_MODEL=provider/model-id` in that environment file.
 
 An already-running loopback-only OpenCode server can optionally be reused by setting `OPENCODE_ATTACH_URL=http://127.0.0.1:4096`.
@@ -71,6 +89,7 @@ An already-running loopback-only OpenCode server can optionally be reused by set
 ## Security boundaries
 
 - Never run the bridge as root.
+- Keep `NoNewPrivileges=true` in the systemd service.
 - Only allow explicitly trusted issue authors.
 - No comment-triggered execution.
 - No direct pushes to `main` from OpenCode.
