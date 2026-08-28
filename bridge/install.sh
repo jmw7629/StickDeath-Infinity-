@@ -26,6 +26,28 @@ if [[ "${REMOTE}" != *"jmw7629/StickDeath-Infinity-"* ]]; then
   exit 1
 fi
 
+OPENCODE_BIN_PATH="$(command -v opencode)"
+if [[ "${OPENCODE_BIN_PATH}" == /snap/* ]]; then
+  cat >&2 <<'EOF'
+OpenCode is currently resolving to a Snap binary.
+The bridge intentionally runs with systemd NoNewPrivileges=true, while snap-confine
+requires Linux file capabilities that are unavailable in that hardened context.
+
+Do not weaken the bridge service. Install the official non-Snap OpenCode build:
+
+  curl -fsSL https://opencode.ai/install | bash
+
+Then start a fresh login shell and verify:
+
+  command -v opencode
+  opencode --version
+  opencode auth list
+
+`command -v opencode` must NOT begin with /snap/ before rerunning bridge/install.sh.
+EOF
+  exit 1
+fi
+
 echo "[1/7] Checking GitHub CLI authentication..."
 if ! gh auth status >/dev/null 2>&1; then
   echo "GitHub CLI is not authenticated. Run: gh auth login" >&2
@@ -36,13 +58,13 @@ echo "[2/7] Configuring Git to use GitHub CLI credentials..."
 gh auth setup-git
 
 echo "[3/7] Checking OpenCode authentication..."
-if ! opencode auth list; then
+if ! "${OPENCODE_BIN_PATH}" auth list; then
   echo "OpenCode authentication is not ready. Open OpenCode and use /connect." >&2
   exit 1
 fi
 
 echo "[4/7] Checking OpenCode automation flags..."
-OC_HELP="$(opencode run --help 2>&1 || true)"
+OC_HELP="$("${OPENCODE_BIN_PATH}" run --help 2>&1 || true)"
 for flag in --dir --auto --format; do
   if ! grep -q -- "${flag}" <<<"${OC_HELP}"; then
     echo "Your OpenCode build does not expose required flag ${flag}." >&2
@@ -51,7 +73,6 @@ for flag in --dir --auto --format; do
   fi
 done
 
-OPENCODE_BIN_PATH="$(command -v opencode)"
 CONFIG_DIR="${HOME}/.config/joeos-opencode-bridge"
 ENV_FILE="${CONFIG_DIR}/stickdeath.env"
 SERVICE_DIR="${HOME}/.config/systemd/user"
@@ -74,7 +95,10 @@ OPENCODE_BIN=${OPENCODE_BIN_PATH}
 # OPENCODE_ATTACH_URL=http://127.0.0.1:4096
 EOF
   chmod 600 "${ENV_FILE}"
-elif ! grep -q '^OPENCODE_BIN=' "${ENV_FILE}"; then
+elif grep -q '^OPENCODE_BIN=' "${ENV_FILE}"; then
+  sed -i "s|^OPENCODE_BIN=.*|OPENCODE_BIN=${OPENCODE_BIN_PATH}|" "${ENV_FILE}"
+  chmod 600 "${ENV_FILE}"
+else
   printf '\nOPENCODE_BIN=%s\n' "${OPENCODE_BIN_PATH}" >> "${ENV_FILE}"
   chmod 600 "${ENV_FILE}"
 fi
@@ -110,12 +134,14 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable --now stickdeath-opencode-bridge.service
+systemctl --user restart stickdeath-opencode-bridge.service
 
 echo "[7/7] Bridge status..."
 systemctl --user --no-pager --full status stickdeath-opencode-bridge.service || true
 
 echo
 echo "Bridge installed."
+echo "OpenCode binary: ${OPENCODE_BIN_PATH}"
 echo "Logs: journalctl --user -u stickdeath-opencode-bridge -f"
 echo "Config: ${ENV_FILE}"
 echo "The bridge never auto-merges and accepts only trusted [OC] issues with the v1 marker."
