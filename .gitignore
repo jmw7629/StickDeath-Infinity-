@@ -7,3 +7,11 @@ DerivedData/
 StickDeathInfinity/Config/AppConfig.swift
 StickDeathInfinity/App/AppConfig.swift
 HANDOFF-COMPLETE.md
+
+# Local AI/reference inputs — never commit
+ReferenceCorpus/
+.reference-corpus/
+
+# Local ChatGPT ↔ OpenCode bridge state/logs/worktrees
+.bridge/
+bridge-state/

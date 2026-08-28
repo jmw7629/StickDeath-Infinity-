@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REAL_GIT="${BRIDGE_REAL_GIT:-}"
+if [[ -z "${REAL_GIT}" || ! -x "${REAL_GIT}" ]]; then
+  echo "Bridge git wrapper cannot locate the real git binary." >&2
+  exit 126
+fi
+
+cmd="${1:-}"
+case "${cmd}" in
+  status|diff|log|show|grep|ls-files|rev-parse|describe|blame|shortlog|name-rev|merge-base|cat-file|ls-tree)
+    exec "${REAL_GIT}" "$@"
+    ;;
+  "")
+    exec "${REAL_GIT}" "$@"
+    ;;
+  *)
+    echo "Blocked by JoeOS bridge policy: git ${cmd}" >&2
+    echo "The bridge runner owns branches, staging, commits, pushes, merges, and git history." >&2
+    exit 126
+    ;;
+esac
