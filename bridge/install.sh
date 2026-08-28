@@ -26,16 +26,32 @@ if [[ "${REMOTE}" != *"jmw7629/StickDeath-Infinity-"* ]]; then
   exit 1
 fi
 
+echo "[1/7] Checking GitHub CLI authentication..."
 if ! gh auth status >/dev/null 2>&1; then
   echo "GitHub CLI is not authenticated. Run: gh auth login" >&2
   exit 1
 fi
 
+echo "[2/7] Configuring Git to use GitHub CLI credentials..."
+gh auth setup-git
+
+echo "[3/7] Checking OpenCode authentication..."
 if ! opencode auth list; then
   echo "OpenCode authentication is not ready. Open OpenCode and use /connect." >&2
   exit 1
 fi
 
+echo "[4/7] Checking OpenCode automation flags..."
+OC_HELP="$(opencode run --help 2>&1 || true)"
+for flag in --dir --auto --format; do
+  if ! grep -q -- "${flag}" <<<"${OC_HELP}"; then
+    echo "Your OpenCode build does not expose required flag ${flag}." >&2
+    echo "Upgrade OpenCode before installing the bridge." >&2
+    exit 1
+  fi
+done
+
+OPENCODE_BIN_PATH="$(command -v opencode)"
 CONFIG_DIR="${HOME}/.config/joeos-opencode-bridge"
 ENV_FILE="${CONFIG_DIR}/stickdeath.env"
 SERVICE_DIR="${HOME}/.config/systemd/user"
@@ -50,6 +66,7 @@ BRIDGE_REPO=${REPO}
 BRIDGE_ROOT=${ROOT}
 BRIDGE_TRUSTED_AUTHORS=jmw7629
 BRIDGE_POLL_SECONDS=60
+OPENCODE_BIN=${OPENCODE_BIN_PATH}
 # Optional: pin exact values returned by 'opencode models' / your config.
 # OPENCODE_MODEL=provider/model-id
 # OPENCODE_AGENT=build
@@ -57,8 +74,20 @@ BRIDGE_POLL_SECONDS=60
 # OPENCODE_ATTACH_URL=http://127.0.0.1:4096
 EOF
   chmod 600 "${ENV_FILE}"
+elif ! grep -q '^OPENCODE_BIN=' "${ENV_FILE}"; then
+  printf '\nOPENCODE_BIN=%s\n' "${OPENCODE_BIN_PATH}" >> "${ENV_FILE}"
+  chmod 600 "${ENV_FILE}"
 fi
 
+echo "[5/7] Checking Git commit identity..."
+if [[ -z "$(git -C "${ROOT}" config user.name 2>/dev/null || true)" ]]; then
+  git -C "${ROOT}" config user.name "JoeOS OpenCode Bridge"
+fi
+if [[ -z "$(git -C "${ROOT}" config user.email 2>/dev/null || true)" ]]; then
+  git -C "${ROOT}" config user.email "jmw7629@users.noreply.github.com"
+fi
+
+echo "[6/7] Writing and enabling user service..."
 cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=JoeOS ChatGPT to OpenCode bridge for StickDeath Infinity
@@ -81,6 +110,8 @@ EOF
 
 systemctl --user daemon-reload
 systemctl --user enable --now stickdeath-opencode-bridge.service
+
+echo "[7/7] Bridge status..."
 systemctl --user --no-pager --full status stickdeath-opencode-bridge.service || true
 
 echo
