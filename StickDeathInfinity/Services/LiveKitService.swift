@@ -24,8 +24,8 @@ class LiveKitService: ObservableObject {
     
     private var room: Room?
     
-    // LiveKit server config
-    private let serverURL = "wss://stickdeath-live.livekit.cloud"
+    // LiveKit server config — resolved at runtime from AppConfig
+    private var serverURL: String { AppConfig.liveKitWSURL }
     
     // MARK: - Connection
     
@@ -112,11 +112,16 @@ class LiveKitService: ObservableObject {
     // For development, use Supabase Edge Function
     
     func getToken(roomName: String, participantName: String) async throws -> String {
-        let url = URL(string: "https://iohubnamsqnzyburydxr.supabase.co/functions/v1/livekit-token")!
-        var request = URLRequest(url: url)
+        guard let supabaseURL = URL(string: AppConfig.supabaseURL),
+              !AppConfig.supabaseAnonKey.isEmpty else {
+            throw NSError(domain: "LiveKitService", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "Supabase not configured"])
+        }
+        let tokenURL = supabaseURL.appendingPathComponent("functions/v1/livekit-token")
+        var request = URLRequest(url: tokenURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvaHVibmFtc3FuenlidXJ5ZHhyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MzQ4MjcsImV4cCI6MjA5MTUxMDgyN30.5kwCtvB7SxInFZFISuDKgE9z6RvOFJPzi2VfefrL7m0",
+        request.setValue("Bearer \(AppConfig.supabaseAnonKey)",
                     forHTTPHeaderField: "Authorization")
         
         let body: [String: String] = [
