@@ -1,112 +1,25 @@
 // ═══════════════════════════════════════════════════════════════════
-// Models — All data types for StickDeath Infinity
-// Matches: Supabase schema + React TypeScript types exactly
+// Models — iOS app types
+// Persistence/Codable types are defined in SDCore (single source of truth).
+// This file provides SwiftUI-specific adapters and app-only types.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
 import SwiftUI
+import SDCore
 
-// MARK: - User Profile
-struct UserProfile: Codable, Identifiable {
-    let id: String
-    var username: String?
-    var email: String?
-    var avatarURL: String?
-    var bio: String?
-    var role: UserRole?
-    var subscriptionTier: String?
-    var onboarded: Bool?
-    var skillLevel: String?
-    var interests: [String]?
-    var createdAt: String?
+// MARK: - Type aliases — iOS app uses SDCore production types directly
+public typealias UserProfile = SDUserProfile
+public typealias UserRole = SDUserRole
+public typealias StudioProject = SDStudioProject
+// DrawnElement, StrokePoint, DrawingTool, AnimationFrame, CanvasLayer,
+// LayerLockMode, AudioClip, SoundEffect, Sticker, ShareTarget,
+// ExportFormat, ExportQuality, LockMode, SDBlendMode — all from SDCore.
+// AnimationProject, AnimationMetadata, StoredAnimationFrame, LayerData,
+// AudioTrack, StoredChatMessage, MediaType — all from SDCore.
 
-    enum CodingKeys: String, CodingKey {
-        case id, username, email, bio, role, onboarded, interests
-        case avatarURL = "avatar_url"
-        case subscriptionTier = "subscription_tier"
-        case skillLevel = "skill_level"
-        case createdAt = "created_at"
-    }
+// MARK: - StudioLayer (SwiftUI UI adapter — not Codable, UI-only)
 
-    enum UserRole: String, Codable {
-        case user, creator, moderator, superadmin
-    }
-}
-
-// MARK: - Studio Project
-struct StudioProject: Codable, Identifiable {
-    let id: String
-    var userID: String
-    var name: String
-    var width: Int?
-    var height: Int?
-    var fps: Int?
-    var frameCount: Int?
-    var thumbnailURL: String?
-    var createdAt: String?
-    var updatedAt: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, width, height, fps
-        case userID = "user_id"
-        case frameCount = "frame_count"
-        case thumbnailURL = "thumbnail_url"
-        case createdAt = "created_at"
-        case updatedAt = "updated_at"
-    }
-}
-
-// MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
-    let id: String
-    var tool: DrawingTool
-    var points: [StrokePoint]
-    var color: String       // hex color
-    var width: CGFloat
-    var opacity: Double
-    var fillColor: String?  // for fill tool / shape fill
-    var layerID: String?
-}
-
-struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
-    var timestamp: TimeInterval?
-}
-
-enum DrawingTool: String, Codable, CaseIterable {
-    case pen, pencil, marker, brush, crayon, eraser, fill, eyedropper
-    case line, rectangle, circle, text, lasso, wand
-    case arrow, image, ruler, gradient, blur
-    case airbrush, watercolor, neon, calligraphy
-    case smudge, sharpen, move, hand, zoom
-}
-
-struct AnimationFrame: Codable, Identifiable {
-    let id: String
-    var elements: [DrawnElement]
-}
-
-// Lock mode enum for type safety
-enum LayerLockMode: String, Codable, CaseIterable {
-    case free, full, position, alpha
-}
-
-struct CanvasLayer: Codable, Identifiable {
-    let id: String
-    var name: String
-    var visible: Bool
-    var locked: Bool
-    var opacity: Double
-    var lockMode: String = "free"      // free, full, position, alpha
-    var blendMode: String = "normal"   // normal, multiply, screen, overlay, etc.
-    var glowEnabled: Bool = false
-    var glowColor: String?
-    var colorLabel: String?
-}
-
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
 struct StudioLayer: Identifiable {
     let id: UUID
     var name: String
@@ -115,7 +28,7 @@ struct StudioLayer: Identifiable {
     var lockMode: LayerLockMode
     var blendMode: String
     var labelColor: Color
-    
+
     init(from canvas: CanvasLayer) {
         self.id = UUID(uuidString: canvas.id) ?? UUID()
         self.name = canvas.name
@@ -123,9 +36,9 @@ struct StudioLayer: Identifiable {
         self.opacity = canvas.opacity
         self.lockMode = LayerLockMode(rawValue: canvas.lockMode) ?? .free
         self.blendMode = canvas.blendMode
-        self.labelColor = Color.red // default
+        self.labelColor = Color.red
     }
-    
+
     init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
         self.id = id
         self.name = name
@@ -137,82 +50,8 @@ struct StudioLayer: Identifiable {
     }
 }
 
-// MARK: - Audio Clip
-struct AudioClip: Identifiable {
-    let id: String
-    var soundName: String
-    var track: Int
-    var startTime: Double
-    var duration: Double
-    var volume: Double = 0.8
-}
+// MARK: - Social (Supabase schema types, not for local persistence)
 
-// MARK: - Sound Effect
-struct SoundEffect: Identifiable {
-    let id: String
-    let name: String
-    let duration: String
-    let tag: String
-    let waveform: [CGFloat]
-    
-    init(id: String = UUID().uuidString, name: String, duration: String, tag: String) {
-        self.id = id
-        self.name = name
-        self.duration = duration
-        self.tag = tag
-        self.waveform = (0..<8).map { _ in CGFloat.random(in: 0.2...1.0) }
-    }
-}
-
-// MARK: - Sticker
-struct Sticker: Identifiable {
-    let id: String
-    let name: String
-    let emoji: String
-}
-
-// MARK: - Share Target
-struct ShareTarget: Identifiable {
-    let id: String
-    let name: String
-    let icon: String
-    let isPro: Bool
-    var isEnabled: Bool
-}
-
-// MARK: - Export Enums
-enum ExportFormat: String, CaseIterable {
-    case mp4 = "MP4", gif = "GIF", png = "PNG", spritesheet = "Spritesheet"
-    var icon: String {
-        switch self { case .mp4: return "🎬"; case .gif: return "🎞"; case .png: return "🖼"; case .spritesheet: return "⊞" }
-    }
-    var subtitle: String {
-        switch self { case .mp4: return "Video · social media"; case .gif: return "Animated · loops forever"; case .png: return "Individual frames"; case .spritesheet: return "All frames in one" }
-    }
-}
-
-enum ExportQuality: String, CaseIterable {
-    case standard = "Standard", hd = "HD", fullHD = "Full HD"
-    var resolution: String {
-        switch self { case .standard: return "480p"; case .hd: return "720p"; case .fullHD: return "1080p" }
-    }
-}
-
-// MARK: - Lock Mode
-enum LockMode: String, CaseIterable {
-    case free = "Free", full = "Full", position = "Pos", alpha = "Alpha"
-    var icon: String {
-        switch self { case .free: return "🔓"; case .full: return "🔒"; case .position: return "📌"; case .alpha: return "🎨" }
-    }
-}
-
-// MARK: - Blend Mode
-enum SDBlendMode: String, CaseIterable {
-    case normal = "Normal", multiply = "Multiply", screen = "Screen", overlay = "Overlay"
-    case darken = "Darken", lighten = "Lighten", colorDodge = "Color Dodge", colorBurn = "Color Burn"
-}
-
-// MARK: - Social
 struct Post: Codable, Identifiable {
     let id: Int
     var userID: String?
@@ -261,12 +100,13 @@ struct Comment: Codable, Identifiable {
 }
 
 // MARK: - Messaging
+
 struct ChatRoom: Codable, Identifiable {
     let id: Int
     var name: String?
-    var type: String?         // "dm", "group", "channel"
+    var type: String?
     var emoji: String?
-    var jitsiRoomID: String?  // legacy, now LiveKit room name
+    var jitsiRoomID: String?
     var lastMessage: String?
     var lastMessageAt: String?
     var memberCount: Int?
@@ -315,7 +155,6 @@ struct ChatMessage: Codable, Identifiable {
     var threadCount: Int?
 
     var timeString: String {
-        // Parse ISO date or return time
         guard let created = createdAt else { return "" }
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -360,6 +199,7 @@ struct ChatMessage: Codable, Identifiable {
 }
 
 // MARK: - Challenges
+
 struct Challenge: Codable, Identifiable {
     let id: Int
     var title: String
@@ -386,6 +226,7 @@ struct Challenge: Codable, Identifiable {
 }
 
 // MARK: - Tip
+
 struct Tip: Codable, Identifiable {
     let id: Int
     var senderID: String
@@ -402,10 +243,11 @@ struct Tip: Codable, Identifiable {
     }
 }
 
-// MARK: - R3 Call State
+// MARK: - R3 Call State (uses SDCore.CallRateTier)
+
 struct R3CallState {
     var isActive = false
-    var rateTier: AppConfig.CallRateTier = .standard
+    var rateTier: CallRateTier = .standard
     var duration: TimeInterval = 0
     var currentCost: Double = 0
     var spendLimit: Double = 50.0

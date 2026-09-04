@@ -10,6 +10,7 @@
 
 import SwiftUI
 import StoreKit
+import SDCore
 
 struct ChoosePlanView: View {
     let onSelected: () -> Void
@@ -125,7 +126,7 @@ struct ChoosePlanView: View {
                 onSelected()
             } else {
                 // Map to subscription tier
-                if let tier = AppConfig.SubscriptionTier(rawValue: planId) {
+                if let tier = SubscriptionTier(rawValue: planId) {
                     do {
                         try await stripe.subscribe(to: tier)
                         onSelected()

@@ -14,6 +14,7 @@
 import Foundation
 import Supabase
 import StoreKit
+import SDCore
 
 // MARK: - Product IDs (register these in App Store Connect)
 enum StoreProductID {
@@ -30,7 +31,7 @@ enum StoreProductID {
         creatorYearly, proYearly, studioYearly
     ]
 
-    static func tier(for productId: String) -> AppConfig.SubscriptionTier {
+    static func tier(for productId: String) -> SubscriptionTier {
         switch productId {
         case creatorMonthly, creatorYearly: return .creator
         case proMonthly, proYearly:        return .pro
@@ -39,7 +40,7 @@ enum StoreProductID {
         }
     }
 
-    static func productId(for tier: AppConfig.SubscriptionTier, yearly: Bool = false) -> String? {
+    static func productId(for tier: SubscriptionTier, yearly: Bool = false) -> String? {
         switch (tier, yearly) {
         case (.creator, false): return creatorMonthly
         case (.creator, true):  return creatorYearly
@@ -61,7 +62,7 @@ final class StripeService: ObservableObject {
     static let shared = StripeService()
 
     // Subscription state
-    @Published var currentTier: AppConfig.SubscriptionTier = .free
+    @Published var currentTier: SubscriptionTier = .free
     @Published var subscriptionStatus: SubscriptionStatus = .none
     @Published var availableProducts: [Product] = []
     @Published var isProcessing = false
@@ -100,7 +101,7 @@ final class StripeService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     /// Purchase a subscription tier via StoreKit 2
-    func subscribe(to tier: AppConfig.SubscriptionTier, yearly: Bool = false) async throws {
+    func subscribe(to tier: SubscriptionTier, yearly: Bool = false) async throws {
         guard tier != .free else {
             // Downgrade to free — user must cancel in Settings
             lastError = "To cancel, go to Settings → Subscriptions on your device."
@@ -161,7 +162,7 @@ final class StripeService: ObservableObject {
 
     /// Check current entitlements from StoreKit (call on app launch)
     func refreshEntitlements() async {
-        var highestTier: AppConfig.SubscriptionTier = .free
+        var highestTier: SubscriptionTier = .free
         var activeSubId: String?
 
         // Iterate through current entitlements
@@ -295,7 +296,7 @@ final class StripeService: ObservableObject {
     func chargeForCall(
         calleeId: String,
         durationSeconds: Int,
-        rateTier: AppConfig.CallRateTier,
+        rateTier: CallRateTier,
         callType: String = "video",
         spendCap: Double
     ) async throws {
@@ -331,7 +332,7 @@ final class StripeService: ObservableObject {
 
     /// Sync subscription status to Supabase (so server/web knows)
     private func syncSubscriptionToSupabase(
-        tier: AppConfig.SubscriptionTier,
+        tier: SubscriptionTier,
         transactionId: String?,
         productId: String?,
         status: String
