@@ -1,5 +1,9 @@
 // swift-tools-version: 5.9
 // SPM Dependencies — use Xcode's "Add Package Dependency" or XcodeGen
+//
+// NOTE: The full StickDeathInfinity target requires SwiftUI (iOS only).
+// For Linux CI, run `swift build --skip-update` to verify dependency
+// resolution. Full compilation and tests require Xcode on macOS.
 
 import PackageDescription
 
@@ -16,5 +20,11 @@ let package = Package(
         // NOTE: Stripe SDK removed — iOS subscriptions use StoreKit 2 (built-in).
         // Stripe is only used server-side (Edge Functions) for tips & call billing.
         // StoreKit 2 requires NO external dependency (import StoreKit).
+    ],
+    targets: [
+        .testTarget(
+            name: "StickDeathInfinityTests",
+            dependencies: []
+        ),
     ]
 )

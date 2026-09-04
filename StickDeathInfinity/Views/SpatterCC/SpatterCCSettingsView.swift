@@ -11,8 +11,8 @@ import SwiftUI
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared
-    @State private var openAIKey: String = AppConfig.openAIAPIKey
-    @State private var geminiKey: String = AppConfig.geminiAPIKey
+    @State private var openAIKey: String = ""
+    @State private var geminiKey: String = ""
     @State private var slackWebhook: String = ""
     @State private var showEmergencyConfirm = false
     @State private var showSavedToast = false

@@ -21,48 +21,48 @@ import CoreData
 
 class DeviceStorageManager {
     static let shared = DeviceStorageManager()
-    
+
     // MARK: - Directory paths
-    
+
     var animationsDir: URL {
         documentsDir.appendingPathComponent("Animations", isDirectory: true)
     }
-    
+
     var mediaDir: URL {
         documentsDir.appendingPathComponent("Media", isDirectory: true)
     }
-    
+
     var messagesDir: URL {
         documentsDir.appendingPathComponent("Messages", isDirectory: true)
     }
-    
+
     var aiCacheDir: URL {
         cachesDir.appendingPathComponent("AI", isDirectory: true)
     }
-    
+
     var thumbnailsDir: URL {
         cachesDir.appendingPathComponent("Thumbnails", isDirectory: true)
     }
-    
+
     private var documentsDir: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
     }
-    
+
     private var cachesDir: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
     }
-    
+
     // MARK: - Initialization
-    
+
     func setupDirectories() {
         let dirs = [animationsDir, mediaDir, messagesDir, aiCacheDir, thumbnailsDir]
         for dir in dirs {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
     }
-    
+
     // MARK: - Storage metrics
-    
+
     func deviceStorageUsed() -> Int64 {
         let dirs = [animationsDir, mediaDir, messagesDir]
         var total: Int64 = 0
@@ -71,7 +71,7 @@ class DeviceStorageManager {
         }
         return total
     }
-    
+
     func deviceStorageAvailable() -> Int64 {
         let fileURL = URL(fileURLWithPath: NSHomeDirectory())
         do {
@@ -81,14 +81,14 @@ class DeviceStorageManager {
             return 0
         }
     }
-    
+
     func formattedStorageUsed() -> String {
         let bytes = deviceStorageUsed()
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
     }
-    
+
     private func directorySize(url: URL) -> Int64 {
         let fm = FileManager.default
         guard let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
@@ -100,23 +100,23 @@ class DeviceStorageManager {
         }
         return total
     }
-    
+
     // MARK: - Animation Projects (on-device)
-    
+
     func saveAnimation(_ project: AnimationProject) throws {
         let projectDir = animationsDir.appendingPathComponent(project.id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
-        
-        let metadata = try JSONEncoder().encode(project.metadata)
+
+        let encoder = JSONEncoder()
+
+        let metadata = try encoder.encode(project.metadata)
         try metadata.write(to: projectDir.appendingPathComponent("metadata.json"))
-        
-        // Save frames as individual PNGs
-        for (index, frame) in project.frames.enumerated() {
-            if let data = frame.imageData {
-                try data.write(to: projectDir.appendingPathComponent("frame_\(index).png"))
-            }
-        }
-        
+
+        // Persist vector frame data (DrawnElements) so the round-trip
+        // preserves the actual production frame state.
+        let frameData = try encoder.encode(project.frames)
+        try frameData.write(to: projectDir.appendingPathComponent("frames.json"))
+
         // Save audio tracks
         for (index, track) in project.audioTracks.enumerated() {
             if let data = track.audioData {
@@ -124,29 +124,41 @@ class DeviceStorageManager {
             }
         }
     }
-    
+
     func loadAnimation(id: UUID) throws -> AnimationProject? {
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         guard FileManager.default.fileExists(atPath: projectDir.path) else { return nil }
-        
+
         let metadataURL = projectDir.appendingPathComponent("metadata.json")
         let data = try Data(contentsOf: metadataURL)
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
-        
-        // Load frames
-        var frames: [AnimationFrame] = []
-        var index = 0
-        while true {
-            let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
-            guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
-            let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
-            index += 1
+
+        // Load frames — prefer vector round-trip via frames.json.
+        // Fall back to PNG-only reconstruction for legacy projects
+        // that were saved before vector persistence was added.
+        let framesURL = projectDir.appendingPathComponent("frames.json")
+        var frames: [AnimationFrame]
+
+        if FileManager.default.fileExists(atPath: framesURL.path) {
+            let frameData = try Data(contentsOf: framesURL)
+            frames = try JSONDecoder().decode([AnimationFrame].self, from: frameData)
+        } else {
+            // Legacy path: reconstruct frame list from PNG files on disk.
+            // The vector elements are not recoverable from PNGs; we
+            // preserve the frame count so the timeline stays intact.
+            frames = []
+            var index = 0
+            while true {
+                let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
+                guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
+                frames.append(AnimationFrame(id: UUID().uuidString, elements: []))
+                index += 1
+            }
         }
-        
+
         return AnimationProject(id: id, metadata: metadata, frames: frames, audioTracks: [])
     }
-    
+
     func listAnimations() -> [AnimationMetadata] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: animationsDir, includingPropertiesForKeys: nil) else { return [] }
@@ -157,22 +169,22 @@ class DeviceStorageManager {
             return meta
         }
     }
-    
+
     func deleteAnimation(id: UUID) throws {
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.removeItem(at: projectDir)
     }
-    
+
     // MARK: - Messages (on-device encrypted SQLite)
-    
+
     func saveMessage(_ message: ChatMessage) {
         // Messages stored in local SQLite via Core Data
         // Encrypted at rest using iOS Data Protection
         // No server sync — peer-to-peer delivery via LiveKit data channels
     }
-    
+
     // MARK: - Media files (on-device)
-    
+
     func saveMedia(data: Data, type: MediaType, filename: String) throws -> URL {
         let typeDir = mediaDir.appendingPathComponent(type.rawValue, isDirectory: true)
         try? FileManager.default.createDirectory(at: typeDir, withIntermediateDirectories: true)
@@ -180,7 +192,7 @@ class DeviceStorageManager {
         try data.write(to: fileURL)
         return fileURL
     }
-    
+
     func clearCache() throws {
         try? FileManager.default.removeItem(at: aiCacheDir)
         try? FileManager.default.removeItem(at: thumbnailsDir)
