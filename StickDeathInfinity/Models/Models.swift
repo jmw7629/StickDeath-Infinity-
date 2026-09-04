@@ -46,6 +46,11 @@ struct StudioProject: Codable, Identifiable {
     var createdAt: String?
     var updatedAt: String?
 
+    /// Non-destructive legacy migration metadata.
+    /// When a project is imported from raster frame_N.png files,
+    /// this preserves the original asset paths so no user content is lost.
+    var legacyMigrationSource: String?
+
     enum CodingKeys: String, CodingKey {
         case id, name, width, height, fps
         case userID = "user_id"
@@ -53,6 +58,7 @@ struct StudioProject: Codable, Identifiable {
         case thumbnailURL = "thumbnail_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case legacyMigrationSource = "legacy_migration_source"
     }
 }
 
@@ -86,6 +92,12 @@ enum DrawingTool: String, Codable, CaseIterable {
 struct AnimationFrame: Codable, Identifiable {
     let id: String
     var elements: [DrawnElement]
+
+    /// Path to the original raster frame (e.g. "frame_001.png") when
+    /// migrated from a legacy raster project. Preserved non-destructively
+    /// so the Studio can display/export the raster until vector conversion
+    /// is complete. nil for natively-created vector frames.
+    var legacyRasterFramePath: String?
 }
 
 // Lock mode enum for type safety
