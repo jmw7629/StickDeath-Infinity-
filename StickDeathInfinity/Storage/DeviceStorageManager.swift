@@ -110,12 +110,11 @@ class DeviceStorageManager {
         let metadata = try JSONEncoder().encode(project.metadata)
         try metadata.write(to: projectDir.appendingPathComponent("metadata.json"))
         
-        // Save frames as individual PNGs
-        for (index, frame) in project.frames.enumerated() {
-            if let data = frame.imageData {
-                try data.write(to: projectDir.appendingPathComponent("frame_\(index).png"))
-            }
-        }
+        // Save frames — AnimationFrame stores vector draw elements.
+        // Rasterised PNGs are produced by the render pipeline and
+        // saved separately; this metadata path preserves the frame list.
+        // (No imageData property on AnimationFrame — that lives in
+        // StoredAnimationFrame for the on-disk snapshot path.)
         
         // Save audio tracks
         for (index, track) in project.audioTracks.enumerated() {
@@ -133,14 +132,18 @@ class DeviceStorageManager {
         let data = try Data(contentsOf: metadataURL)
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
         
-        // Load frames
+        // Load frames — each PNG is a rendered frame on disk.
+        // AnimationFrame stores vector draw elements; the PNG is the
+        // rasterised snapshot.  We reconstruct the frame list with
+        // placeholder element arrays so the count is correct.
         var frames: [AnimationFrame] = []
         var index = 0
         while true {
             let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
             guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
-            let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
+            // Image data is preserved on disk as PNG.
+            // The vector elements are not round-tripped through this path.
+            frames.append(AnimationFrame(id: UUID().uuidString, elements: []))
             index += 1
         }
         

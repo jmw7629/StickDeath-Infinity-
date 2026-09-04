@@ -16,5 +16,11 @@ let package = Package(
         // NOTE: Stripe SDK removed — iOS subscriptions use StoreKit 2 (built-in).
         // Stripe is only used server-side (Edge Functions) for tips & call billing.
         // StoreKit 2 requires NO external dependency (import StoreKit).
+    ],
+    targets: [
+        .testTarget(
+            name: "StickDeathInfinityTests",
+            dependencies: []
+        ),
     ]
 )
