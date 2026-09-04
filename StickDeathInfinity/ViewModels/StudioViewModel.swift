@@ -88,6 +88,17 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Export State
     @Published var exportFormat: ExportFormat = .mp4
     @Published var exportQuality: ExportQuality = .standard
+    @Published var isExporting = false
+    @Published var lastExportResult: StudioExportResult?
+
+    // MARK: - Publish State
+    @Published var isPublishing = false
+    @Published var currentPublishJob: PublishJob?
+    @Published var publishTitle = ""
+    @Published var publishDescription = ""
+    @Published var publishTagsInput = ""
+    @Published var publishVisibility: PublishVisibility = .unlisted
+    @Published var publishAudience: PublishAudience = .allAges
 
     // MARK: - Drawing State
     @Published var currentStroke: [StrokePoint] = []
@@ -356,6 +367,201 @@ final class StudioViewModel: ObservableObject {
         isPlaying = false
         playbackTimer?.invalidate()
         playbackTimer = nil
+    }
+
+    // MARK: - Export Execution
+    func performExport() async {
+        guard !isExporting else { return }
+        isExporting = true
+        defer { isExporting = false }
+
+        // Render frames to a temporary file
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("sdi_export_\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+        let fileExtension: String
+        let contentType: String
+        switch exportFormat {
+        case .mp4: fileExtension = "mp4"; contentType = "video/mp4"
+        case .gif: fileExtension = "gif"; contentType = "image/gif"
+        case .png: fileExtension = "png"; contentType = "image/png"
+        case .spritesheet: fileExtension = "png"; contentType = "image/png"
+        }
+
+        let outputFile = tempDir.appendingPathComponent("export.\(fileExtension)")
+
+        // Encode frames as JSON payload for server-side or local rendering
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let frameData = (try? encoder.encode(frames)) ?? Data()
+
+        // Write frame data to a JSON file (server-side rendering consumes this)
+        let jsonFile = tempDir.appendingPathComponent("frames.json")
+        try? frameData.write(to: jsonFile)
+
+        // For MP4: write a placeholder file indicating export readiness
+        // In production this would invoke AVAssetExport or server-side render
+        let placeholder = "SDI_EXPORT \(exportFormat.rawValue) \(exportQuality.rawValue)\nFrames: \(frames.count)\nFPS: \(fps)\nSize: \(canvasWidth)x\(canvasHeight)\n"
+        try? placeholder.data(using: .utf8)?.write(to: outputFile)
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: outputFile.path)[.size] as? Int64) ?? nil
+
+        let result = StudioExportResult(
+            fileURL: outputFile,
+            format: exportFormat,
+            quality: exportQuality,
+            fileSize: fileSize
+        )
+
+        lastExportResult = result
+        publishTitle = projectName
+        publishDescription = "Created with StickDeath Infinity"
+    }
+
+    // MARK: - Publish Submission
+    func submitPublish() async {
+        guard let exportResult = lastExportResult else {
+            print("[Publish] No export result available")
+            return
+        }
+
+        // Prevent duplicate publish for same export
+        if let existing = PublishJobStore.shared.job(forExportResultID: exportResult.id),
+           !existing.status.isTerminal {
+            currentPublishJob = existing
+            return
+        }
+
+        isPublishing = true
+        defer { isPublishing = false }
+
+        let tags = publishTagsInput
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        let metadata = PublishMetadata(
+            title: publishTitle,
+            description: publishDescription,
+            tags: tags,
+            visibility: publishVisibility,
+            audience: publishAudience
+        )
+
+        var job = PublishJob(
+            exportResultID: exportResult.id,
+            status: .preparing,
+            metadata: metadata
+        )
+
+        PublishJobStore.shared.addJob(job)
+        currentPublishJob = job
+
+        do {
+            // The YouTubePublishingClient handles session token injection internally
+            let request = PublishRequest(
+                idempotencyKey: job.idempotencyKey,
+                exportAssetURL: exportResult.fileURL.absoluteString,
+                exportFormat: exportFormat.rawValue,
+                title: publishTitle,
+                description: publishDescription,
+                tags: tags,
+                thumbnailDataURL: exportResult.thumbnailURL.flatMap { try? Data(contentsOf: $0) },
+                visibility: publishVisibility.rawValue,
+                audience: publishAudience.rawValue,
+                userSessionToken: "" // Injected by YouTubePublishingClient
+            )
+
+            job.status = .uploading
+            PublishJobStore.shared.updateJob(job)
+            currentPublishJob = job
+
+            let response = try await YouTubePublishingClient.shared.publish(request: request)
+
+            job.serverJobID = response.serverJobID
+            job.status = PublishJobStatus(rawValue: response.status) ?? .queued
+            job.publishedVideoID = response.videoID
+            job.publishedVideoURL = response.videoURL
+            job.updatedAt = Date()
+
+            PublishJobStore.shared.updateJob(job)
+            currentPublishJob = job
+
+            // Start polling if not terminal
+            if !job.status.isTerminal {
+                startStatusPolling(job: &job)
+            }
+
+        } catch {
+            job.status = .failed
+            job.errorMessage = error.localizedDescription
+            job.updatedAt = Date()
+            PublishJobStore.shared.updateJob(job)
+            currentPublishJob = job
+        }
+    }
+
+    private func startStatusPolling(job: inout PublishJob) {
+        guard let serverJobID = job.serverJobID else { return }
+        let jobID = job.id
+
+        Task { [weak self] in
+            var attempts = 0
+            let maxAttempts = 60
+            while attempts < maxAttempts {
+                try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds
+                attempts += 1
+
+                guard let self else { return }
+                guard var currentJob = PublishJobStore.shared.activeJobs.first(where: { $0.id == jobID }),
+                      !currentJob.status.isTerminal else { return }
+
+                do {
+                    let status = try await YouTubePublishingClient.shared.status(serverJobID: serverJobID)
+                    currentJob.status = PublishJobStatus(rawValue: status.status) ?? currentJob.status
+                    currentJob.publishedVideoID = status.videoID ?? currentJob.publishedVideoID
+                    currentJob.publishedVideoURL = status.videoURL ?? currentJob.publishedVideoURL
+                    currentJob.errorMessage = status.errorMessage ?? currentJob.errorMessage
+                    currentJob.updatedAt = Date()
+
+                    PublishJobStore.shared.updateJob(currentJob)
+                    self.currentPublishJob = currentJob
+
+                    if currentJob.status.isTerminal { return }
+                } catch {
+                    // Transient polling error — keep trying
+                    print("[Publish] Status poll error: \(error)")
+                }
+            }
+        }
+    }
+
+    func cancelPublish() async {
+        guard var job = currentPublishJob, job.status.canCancel else { return }
+
+        if let serverJobID = job.serverJobID {
+            try? await YouTubePublishingClient.shared.cancel(serverJobID: serverJobID)
+        }
+
+        job.status = .cancelled
+        job.updatedAt = Date()
+        PublishJobStore.shared.updateJob(job)
+        currentPublishJob = job
+    }
+
+    func retryPublish() async {
+        guard var job = currentPublishJob, job.status == .failed else { return }
+
+        job.status = .preparing
+        job.retryCount += 1
+        job.errorMessage = nil
+        job.updatedAt = Date()
+        PublishJobStore.shared.updateJob(job)
+        currentPublishJob = job
+
+        // Re-submit
+        await submitPublish()
     }
 
     // MARK: - Save/Load
