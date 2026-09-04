@@ -5,7 +5,9 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#endif
 
 // MARK: - Bot Platform
 
@@ -228,6 +230,7 @@ enum BotPlatform: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    #if canImport(SwiftUI)
     var color: Color {
         switch self {
         case .twitter:   return Color(hex: "1DA1F2")
@@ -240,6 +243,7 @@ enum BotPlatform: String, CaseIterable, Identifiable, Codable {
         case .scambait:  return Color(hex: "00C853")
         }
     }
+    #endif
 }
 
 // MARK: - Supporting Types

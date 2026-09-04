@@ -4,7 +4,9 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
+#if canImport(SwiftUI)
 import SwiftUI
+#endif
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -107,6 +109,7 @@ struct CanvasLayer: Codable, Identifiable {
 }
 
 // StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
+#if canImport(SwiftUI)
 struct StudioLayer: Identifiable {
     let id: UUID
     var name: String
@@ -136,6 +139,7 @@ struct StudioLayer: Identifiable {
         self.labelColor = labelColor
     }
 }
+#endif
 
 // MARK: - Audio Clip
 struct AudioClip: Identifiable {

@@ -18,8 +18,8 @@ final class SpatterBotService: ObservableObject {
     @Published var analytics: [PlatformAnalytics] = []
 
     // MARK: - Settings (persisted to UserDefaults for now, Supabase later)
-    @Published var openAIKey: String = AppConfig.openAIAPIKey
-    @Published var geminiKey: String = AppConfig.geminiAPIKey
+    @Published var openAIKey: String = ""
+    @Published var geminiKey: String = ""
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 

@@ -14,8 +14,12 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
+    // API key is not stored in AppConfig (privileged secret).
+    // Inject at runtime via environment variable or build config.
+    private var apiKey: String {
+        ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? ""
+    }
+    private let model = "gpt-4o"
     private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
 
     // Spatter's core personality prompt (from brain module 001 + 003)
