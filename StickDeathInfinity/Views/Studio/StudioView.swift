@@ -9,6 +9,7 @@ import SwiftUI
 struct StudioView: View {
     @StateObject private var vm = StudioViewModel()
     @Environment(\.dismiss) var dismiss
+    @State private var showPublishStatus = false
     
     var body: some View {
         ZStack {
@@ -94,6 +95,12 @@ struct StudioView: View {
         }
         .sheet(isPresented: showRotoscopeBinding) {
             RotoscopeSheet(vm: vm)
+        }
+        .sheet(isPresented: $showPublishStatus) {
+            PublishJobStatusView(vm: vm)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showPublishStatus)) { _ in
+            showPublishStatus = true
         }
     }
     

@@ -402,6 +402,213 @@ struct Tip: Codable, Identifiable {
     }
 }
 
+// MARK: - Export Result
+struct StudioExportResult: Identifiable, Sendable {
+    let id: String
+    let fileURL: URL
+    let format: ExportFormat
+    let quality: ExportQuality
+    let createdAt: Date
+    let fileSize: Int64?
+    let thumbnailURL: URL?
+
+    init(
+        id: String = UUID().uuidString,
+        fileURL: URL,
+        format: ExportFormat,
+        quality: ExportQuality,
+        createdAt: Date = Date(),
+        fileSize: Int64? = nil,
+        thumbnailURL: URL? = nil
+    ) {
+        self.id = id
+        self.fileURL = fileURL
+        self.format = format
+        self.quality = quality
+        self.createdAt = createdAt
+        self.fileSize = fileSize
+        self.thumbnailURL = thumbnailURL
+    }
+}
+
+// MARK: - Publish Job
+struct PublishJob: Identifiable, Codable, Sendable {
+    let id: String
+    let exportResultID: String
+    var status: PublishJobStatus
+    var metadata: PublishMetadata
+    var serverJobID: String?
+    var idempotencyKey: String
+    var createdAt: Date
+    var updatedAt: Date
+    var publishedVideoURL: String?
+    var publishedVideoID: String?
+    var errorMessage: String?
+    var retryCount: Int
+
+    init(
+        id: String = UUID().uuidString,
+        exportResultID: String,
+        status: PublishJobStatus = .preparing,
+        metadata: PublishMetadata,
+        serverJobID: String? = nil,
+        idempotencyKey: String = UUID().uuidString,
+        createdAt: Date = Date(),
+        updatedAt: Date = Date(),
+        publishedVideoURL: String? = nil,
+        publishedVideoID: String? = nil,
+        errorMessage: String? = nil,
+        retryCount: Int = 0
+    ) {
+        self.id = id
+        self.exportResultID = exportResultID
+        self.status = status
+        self.metadata = metadata
+        self.serverJobID = serverJobID
+        self.idempotencyKey = idempotencyKey
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.publishedVideoURL = publishedVideoURL
+        self.publishedVideoID = publishedVideoID
+        self.errorMessage = errorMessage
+        self.retryCount = retryCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, status, metadata
+        case exportResultID = "export_result_id"
+        case serverJobID = "server_job_id"
+        case idempotencyKey = "idempotency_key"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+        case publishedVideoURL = "published_video_url"
+        case publishedVideoID = "published_video_id"
+        case errorMessage = "error_message"
+        case retryCount = "retry_count"
+    }
+}
+
+// MARK: - Publish Job Status
+enum PublishJobStatus: String, Codable, Sendable {
+    case preparing
+    case uploading
+    case queued
+    case processing
+    case published
+    case failed
+    case cancelled
+
+    var displayName: String {
+        switch self {
+        case .preparing: return "Preparing"
+        case .uploading: return "Uploading"
+        case .queued: return "In Queue"
+        case .processing: return "Processing"
+        case .published: return "Published"
+        case .failed: return "Failed"
+        case .cancelled: return "Cancelled"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .preparing: return "arrow.up.circle"
+        case .uploading: return "icloud.and.arrow.up"
+        case .queued: return "clock"
+        case .processing: return "gearshape.2"
+        case .published: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .cancelled: return "xmark.circle"
+        }
+    }
+
+    var isTerminal: Bool {
+        switch self {
+        case .published, .failed, .cancelled: return true
+        default: return false
+        }
+    }
+
+    var canCancel: Bool {
+        switch self {
+        case .preparing, .uploading, .queued: return true
+        default: return false
+        }
+    }
+}
+
+// MARK: - Publish Metadata
+struct PublishMetadata: Codable, Sendable {
+    var title: String
+    var description: String
+    var tags: [String]
+    var thumbnailDataURL: Data?
+    var visibility: PublishVisibility
+    var audience: PublishAudience
+
+    init(
+        title: String = "",
+        description: String = "",
+        tags: [String] = [],
+        thumbnailDataURL: Data? = nil,
+        visibility: PublishVisibility = .unlisted,
+        audience: PublishAudience = .allAges
+    ) {
+        self.title = title
+        self.description = description
+        self.tags = tags
+        self.thumbnailDataURL = thumbnailDataURL
+        self.visibility = visibility
+        self.audience = audience
+    }
+}
+
+// MARK: - Publish Visibility
+enum PublishVisibility: String, Codable, Sendable, CaseIterable {
+    case `public`
+    case unlisted
+    case `private`
+
+    var displayName: String {
+        switch self {
+        case .public: return "Public"
+        case .unlisted: return "Unlisted"
+        case .private: return "Private"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .public: return "globe"
+        case .unlisted: return "link"
+        case .private: return "lock"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .public: return "Anyone can search for and view"
+        case .unlisted: return "Anyone with the link can view"
+        case .private: return "Only you can view"
+        }
+    }
+}
+
+// MARK: - Publish Audience
+enum PublishAudience: String, Codable, Sendable, CaseIterable {
+    case allAges = "all"
+    case over13 = "over_13"
+    case over18 = "over_18"
+
+    var displayName: String {
+        switch self {
+        case .allAges: return "Made for Kids / All Ages"
+        case .over13: return "Not Made for Kids (13+)"
+        case .over18: return "Mature (18+)"
+        }
+    }
+}
+
 // MARK: - R3 Call State
 struct R3CallState {
     var isActive = false
