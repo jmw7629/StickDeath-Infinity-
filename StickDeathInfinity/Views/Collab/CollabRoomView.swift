@@ -2,7 +2,7 @@ import SwiftUI
 
 struct CollabRoomView: View {
     @Environment(\.dismiss) private var dismiss
-    
+
     struct CollabProject: Identifiable {
         let id = UUID()
         let title: String
@@ -10,18 +10,18 @@ struct CollabRoomView: View {
         let progress: Double
         let frames: Int
     }
-    
+
     let projects: [CollabProject] = [
         CollabProject(title: "Epic Duel Animation", members: ["PixelFury", "NeonBlade", "You"], progress: 0.68, frames: 48),
         CollabProject(title: "Parkour Sequence", members: ["StickMaster", "You"], progress: 0.35, frames: 24),
     ]
-    
+
     let requests = [
         "Needs animator for fight scene (3 frames left)",
         "Looking for BG artist for nature scene",
         "Need voice actor for 30s clip",
     ]
-    
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -37,14 +37,14 @@ struct CollabRoomView: View {
             }
             .padding()
             .background(Color(hex: "0A0A14"))
-            
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("ACTIVE PROJECTS")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.secondary)
                         .tracking(2)
-                    
+
                     ForEach(projects) { project in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(project.title)
@@ -53,10 +53,10 @@ struct CollabRoomView: View {
                             Text(project.members.joined(separator: " · ") + " · \(project.frames) frames")
                                 .font(.system(size: 10))
                                 .foregroundColor(.secondary)
-                            
+
                             ProgressView(value: project.progress)
                                 .tint(.red)
-                            
+
                             HStack {
                                 Text("\(Int(project.progress * 100))% complete")
                                     .font(.system(size: 10))
@@ -76,13 +76,13 @@ struct CollabRoomView: View {
                         .cornerRadius(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
                     }
-                    
+
                     Text("LOOKING FOR COLLABS")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundColor(.secondary)
                         .tracking(2)
                         .padding(.top, 8)
-                    
+
                     ForEach(requests, id: \.self) { req in
                         HStack {
                             Text(req)

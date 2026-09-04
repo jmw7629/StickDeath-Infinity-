@@ -21,13 +21,13 @@ import SwiftUI
 struct LayerPanel: View {
     @ObservedObject var vm: StudioViewModel
     @State private var expandedLayer: UUID? = nil
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Tap to dismiss area
             Color.black.opacity(0.3)
                 .onTapGesture { vm.activePanel = .none }
-            
+
             // Panel
             VStack(spacing: 0) {
                 // Drag handle
@@ -36,7 +36,7 @@ struct LayerPanel: View {
                     .frame(width: 40, height: 4)
                     .padding(.top, 10)
                     .padding(.bottom, 8)
-                
+
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(vm.studioLayers) { layer in
@@ -46,15 +46,15 @@ struct LayerPanel: View {
                                         expandedLayer = expandedLayer == layer.id ? nil : layer.id
                                     }
                                 }
-                            
+
                             if expandedLayer == layer.id {
                                 LayerDetailView(vm: vm, layer: layer)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                            
+
                             Divider().background(Color.white.opacity(0.06))
                         }
-                        
+
                         // Add layer button
                         Button(action: { vm.addLayer() }) {
                             Text("+")
@@ -83,7 +83,7 @@ struct LayerRow: View {
     @ObservedObject var vm: StudioViewModel
     let layer: StudioLayer
     let isExpanded: Bool
-    
+
     var body: some View {
         HStack(spacing: 8) {
             // Drag dots (2×3 grid)
@@ -96,7 +96,7 @@ struct LayerRow: View {
                 }
             }
             .frame(width: 12)
-            
+
             // Visibility toggle (🚫 when hidden)
             Button(action: { vm.toggleLayerVisibility(layer.id) }) {
                 Image(systemName: layer.visible ? "eye.fill" : "eye.slash.fill")
@@ -104,7 +104,7 @@ struct LayerRow: View {
                     .foregroundColor(layer.visible ? .white.opacity(0.5) : .red.opacity(0.6))
             }
             .frame(width: 24)
-            
+
             // Thumbnail
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
@@ -113,24 +113,24 @@ struct LayerRow: View {
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                 )
-            
+
             // Layer name (red text)
             Text(layer.name)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(Color(hex: "DC2626"))
-            
+
             Spacer()
-            
+
             // Lock icon
             Image(systemName: lockIcon(for: layer.lockMode))
                 .font(.system(size: 12))
                 .foregroundColor(layer.lockMode == .full ? Color.yellow : .white.opacity(0.4))
-            
+
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(.white.opacity(0.5))
-            
+
             // Chevron
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 10))
@@ -140,7 +140,7 @@ struct LayerRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
     }
-    
+
     func lockIcon(for mode: LayerLockMode) -> String {
         switch mode {
         case .free: return "lock.open"
@@ -154,16 +154,48 @@ struct LayerRow: View {
 // MARK: - Layer Detail View (expanded)
 struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
+    @State private var isEditingName = false
+    @State private var editedName = ""
+    @State private var showBlendPicker = false
     let layer: StudioLayer
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Opacity slider (RED bar)
+            // Layer name (editable)
+            if isEditingName {
+                HStack {
+                    TextField("Layer name", text: $editedName, onCommit: {
+                        vm.renameLayer(layer.id, name: editedName)
+                        isEditingName = false
+                    })
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(6)
+                    .background(Color.white.opacity(0.1))
+                    .cornerRadius(6)
+                }
+            } else {
+                Button(action: {
+                    editedName = layer.name
+                    isEditingName = true
+                }) {
+                    HStack {
+                        Text(layer.name)
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                        Image(systemName: "pencil")
+                            .font(.system(size: 8))
+                            .foregroundColor(.white.opacity(0.3))
+                    }
+                }
+            }
+
+            // Opacity slider (RED bar) — functional
             HStack {
                 Text("Opacity")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
+
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3)
@@ -173,21 +205,29 @@ struct LayerDetailView: View {
                             .fill(Color.red)
                             .frame(width: geo.size.width * CGFloat(layer.opacity), height: 6)
                     }
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { val in
+                                let newOpacity = max(0, min(1, Double(val.location.x / geo.size.width)))
+                                vm.setLayerOpacity(layer.id, opacity: newOpacity)
+                            }
+                    )
                 }
                 .frame(height: 6)
-                
+
                 Text("\(Int(layer.opacity * 100))%")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
             }
-            
+
             // LOCK MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("LOCK MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 6) {
                     LockModeButton(emoji: "🔓", label: "Free", isSelected: layer.lockMode == .free, selectedColor: .clear) {
                         vm.setLayerLockMode(layer.id, mode: .free)
@@ -203,55 +243,67 @@ struct LayerDetailView: View {
                     }
                 }
             }
-            
-            // BLEND MODE
+
+            // BLEND MODE — functional picker
             VStack(alignment: .leading, spacing: 6) {
                 Text("BLEND MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
-                HStack {
-                    Text(layer.blendMode)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.3))
+
+                Button(action: { showBlendPicker.toggle() }) {
+                    HStack {
+                        Text(layer.blendMode)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
+                        Spacer()
+                        Image(systemName: showBlendPicker ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10))
+                            .foregroundColor(.white.opacity(0.3))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.white.opacity(0.05))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                    )
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
-                )
+
+                if showBlendPicker {
+                    ForEach(SDBlendMode.allCases, id: \.self) { mode in
+                        Button(action: {
+                            vm.setLayerBlendMode(layer.id, blendMode: mode.rawValue)
+                            showBlendPicker = false
+                        }) {
+                            HStack {
+                                Text(mode.rawValue)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(layer.blendMode == mode.rawValue ? .red : .white.opacity(0.6))
+                                Spacer()
+                                if layer.blendMode == mode.rawValue {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 9))
+                                        .foregroundColor(.red)
+                                }
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(layer.blendMode == mode.rawValue ? Color.red.opacity(0.1) : Color.clear)
+                        }
+                    }
+                }
             }
-            
-            // GLOW toggle
-            HStack {
-                Text("GLOW")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .scaleEffect(0.8)
-                
-                Spacer()
-            }
-            
+
             // Color dots
             HStack(spacing: 6) {
                 Text("Color:")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
+
                 ForEach([
                     Color.red, Color.orange, Color.yellow, Color.green,
                     Color(hex: "38BDF8"), Color.purple, Color.pink, Color.gray
@@ -268,14 +320,16 @@ struct LayerDetailView: View {
                         }
                 }
             }
-            
+
             // Action buttons
             HStack(spacing: 6) {
-                LayerActionButton(emoji: "📝", label: "Editable") {}
                 LayerActionButton(emoji: "📋", label: "Duplicate") {
                     vm.duplicateLayer(layer.id)
                 }
-                
+                LayerActionButton(emoji: "🗑", label: "Delete") {
+                    vm.deleteLayer(layer.id)
+                }
+
                 // Move up
                 Button(action: { vm.moveLayerUp(layer.id) }) {
                     Image(systemName: "arrow.up.square.fill")
@@ -286,7 +340,7 @@ struct LayerDetailView: View {
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
                 }
-                
+
                 // Move down
                 Button(action: { vm.moveLayerDown(layer.id) }) {
                     Image(systemName: "arrow.down.square.fill")
@@ -312,7 +366,7 @@ struct LockModeButton: View {
     let isSelected: Bool
     let selectedColor: Color
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -341,7 +395,7 @@ struct LayerActionButton: View {
     let emoji: String
     let label: String
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {

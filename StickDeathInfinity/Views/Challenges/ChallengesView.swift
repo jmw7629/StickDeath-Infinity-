@@ -4,11 +4,11 @@ struct ChallengesView: View {
     @State private var selectedFilter = "active"
     @State private var challenges: [Challenge] = ChallengeItem.samples
     @State private var selectedChallenge: Challenge?
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -21,7 +21,7 @@ struct ChallengesView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                
+
                 // Filter tabs
                 HStack(spacing: 8) {
                     ForEach(["active", "upcoming", "completed"], id: \.self) { filter in
@@ -39,9 +39,9 @@ struct ChallengesView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
-                
+
                 Divider().background(Color.white.opacity(0.06))
-                
+
                 // Challenges list
                 ScrollView {
                     LazyVStack(spacing: 12) {
@@ -65,7 +65,7 @@ struct ChallengesView: View {
 struct ChallengeCard: View {
     let challenge: Challenge
     let onTap: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 0) {
@@ -80,7 +80,7 @@ struct ChallengeCard: View {
                             )
                         )
                         .frame(height: 100)
-                    
+
                     HStack {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(challenge.emoji)
@@ -90,7 +90,7 @@ struct ChallengeCard: View {
                                 .foregroundColor(.white)
                         }
                         Spacer()
-                        
+
                         VStack(alignment: .trailing, spacing: 2) {
                             Text(challenge.reward)
                                 .font(.system(size: 18, weight: .bold, design: .monospaced))
@@ -103,7 +103,7 @@ struct ChallengeCard: View {
                     .padding(16)
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                
+
                 // Info
                 HStack {
                     HStack(spacing: 4) {
@@ -113,9 +113,9 @@ struct ChallengeCard: View {
                             .font(.system(size: 10))
                     }
                     .foregroundColor(.white.opacity(0.4))
-                    
+
                     Spacer()
-                    
+
                     HStack(spacing: 4) {
                         Image(systemName: "clock.fill")
                             .font(.system(size: 9))
@@ -143,11 +143,11 @@ struct InlineChallengeDetailView: View {
     let challenge: Challenge
     @State private var hasEntered = false
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             ScrollView {
                 VStack(spacing: 16) {
                     // Banner
@@ -161,7 +161,7 @@ struct InlineChallengeDetailView: View {
                                 )
                             )
                             .frame(height: 160)
-                        
+
                         VStack(spacing: 8) {
                             Text(challenge.emoji)
                                 .font(.system(size: 48))
@@ -173,20 +173,20 @@ struct InlineChallengeDetailView: View {
                                 .foregroundColor(.yellow)
                         }
                     }
-                    
+
                     // Description
                     Text(challenge.description)
                         .font(.system(size: 13))
                         .foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 16)
-                    
+
                     // Rules
                     VStack(alignment: .leading, spacing: 8) {
                         Text("RULES")
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.4))
                             .tracking(2)
-                        
+
                         ForEach(challenge.rules, id: \.self) { rule in
                             HStack(alignment: .top, spacing: 8) {
                                 Text("•")
@@ -198,7 +198,7 @@ struct InlineChallengeDetailView: View {
                         }
                     }
                     .padding(.horizontal, 16)
-                    
+
                     // Enter button
                     Button(action: { hasEntered.toggle() }) {
                         Text(hasEntered ? "✅ Entered" : "Enter Challenge")
@@ -229,7 +229,7 @@ struct ChallengeItem: Identifiable {
     let gradientStart: String
     let gradientEnd: String
     let rules: [String]
-    
+
     static let samples: [Challenge] = [
         ChallengeItem(id: "ch1", title: "Last Stand",
                   emoji: "⚔️",

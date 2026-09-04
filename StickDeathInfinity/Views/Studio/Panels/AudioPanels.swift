@@ -173,6 +173,9 @@ struct SoundRow: View {
                     .frame(width: 32, height: 32)
                     .background(Circle().fill(Color.white.opacity(0.08)))
             }
+            .disabled(true)
+            .opacity(0.4)
+            .help("Audio preview requires AVAudioPlayer — available in a future release")
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(sound.name)
@@ -300,13 +303,16 @@ struct AudioTimelinePanel: View {
                         .background(Circle().fill(Color.white.opacity(0.06)))
                 }
 
-                Button(action: { vm.isPlaying.toggle() }) {
-                    Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
+                Button(action: {}) {
+                    Image(systemName: "play.fill")
                         .font(.system(size: 14))
                         .foregroundColor(.white)
                         .frame(width: 38, height: 38)
                         .background(Circle().fill(Color(hex: "DC2626")))
                 }
+                .disabled(true)
+                .opacity(0.4)
+                .help("Audio playback requires AVAudioEngine — available in a future release")
 
                 Button(action: { vm.audioPlayheadTime = vm.audioDuration }) {
                     Image(systemName: "forward.end.fill")
