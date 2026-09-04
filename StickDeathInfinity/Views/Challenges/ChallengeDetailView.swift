@@ -4,12 +4,12 @@ struct ChallengeDetailView: View {
     let challenge: ChallengeItem
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab: ChallengeTab = .submissions
-    
+
     enum ChallengeTab: String, CaseIterable {
         case submissions = "Submissions"
         case leaderboard = "Leaderboard"
     }
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -27,7 +27,7 @@ struct ChallengeDetailView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            
+
             ScrollView {
                 VStack(spacing: 0) {
                     // Stats row
@@ -38,18 +38,18 @@ struct ChallengeDetailView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    
+
                     // Description
                     VStack(alignment: .leading, spacing: 12) {
                         Text(challenge.description)
                             .font(.system(size: 13))
                             .foregroundColor(.gray)
                             .lineSpacing(4)
-                        
+
                         Text("Rules:")
                             .font(.system(size: 13, weight: .bold))
                             .foregroundColor(.white)
-                        
+
                         VStack(alignment: .leading, spacing: 4) {
                             RuleRow(text: "Max 5 seconds")
                             RuleRow(text: "Must include at least 2 characters")
@@ -58,7 +58,7 @@ struct ChallengeDetailView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 16)
-                    
+
                     // Tab picker
                     HStack(spacing: 8) {
                         ForEach(ChallengeTab.allCases, id: \.self) { tab in
@@ -79,7 +79,7 @@ struct ChallengeDetailView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
-                    
+
                     // Tab content
                     if selectedTab == .submissions {
                         SubmissionsGrid()
@@ -88,7 +88,7 @@ struct ChallengeDetailView: View {
                     }
                 }
             }
-            
+
             // Submit button
             Button(action: { /* Navigate to submission */ }) {
                 Text("Submit Entry 🎬")
@@ -109,7 +109,7 @@ struct StatCard: View {
     let value: String
     let label: String
     let color: Color
-    
+
     var body: some View {
         VStack(spacing: 4) {
             Text(value)
@@ -151,12 +151,12 @@ struct SubmissionsGrid: View {
         ("PixelWarrior", "🥷", 31),
         ("StickLord", "🏹", 28),
     ]
-    
+
     let columns = [
         GridItem(.flexible(), spacing: 8),
         GridItem(.flexible(), spacing: 8)
     ]
-    
+
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {
             ForEach(submissions, id: \.0) { sub in
@@ -191,7 +191,7 @@ struct LeaderboardList: View {
         ("FightClubArt", 840),
         ("PixelWarrior", 720),
     ]
-    
+
     var body: some View {
         VStack(spacing: 0) {
             ForEach(Array(leaders.enumerated()), id: \.offset) { idx, leader in
@@ -205,20 +205,20 @@ struct LeaderboardList: View {
                             .gray
                         )
                         .frame(width: 24)
-                    
+
                     Text(leader.0)
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
-                    
+
                     Spacer()
-                    
+
                     Text("\(leader.1) pts")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.red)
                 }
                 .padding(.vertical, 10)
                 .padding(.horizontal, 16)
-                
+
                 if idx < leaders.count - 1 {
                     Divider()
                         .background(Color.white.opacity(0.04))

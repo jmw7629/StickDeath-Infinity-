@@ -2,7 +2,7 @@ import SwiftUI
 
 struct CreatorRoomView: View {
     @Environment(\.dismiss) private var dismiss
-    
+
     struct LiveSession: Identifiable {
         let id = UUID()
         let host: String
@@ -11,13 +11,13 @@ struct CreatorRoomView: View {
         let isLive: Bool
         let scheduledTime: String?
     }
-    
+
     let sessions: [LiveSession] = [
         LiveSession(host: "PixelFury", topic: "Advanced Sword Combos", viewers: 42, isLive: true, scheduledTime: nil),
         LiveSession(host: "AnimKing", topic: "Smooth Walk Cycles", viewers: 28, isLive: true, scheduledTime: nil),
         LiveSession(host: "NeonBlade", topic: "Particle Effects 101", viewers: 0, isLive: false, scheduledTime: "Today 5 PM"),
     ]
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -41,7 +41,7 @@ struct CreatorRoomView: View {
             }
             .padding()
             .background(Color(hex: "0A0A14"))
-            
+
             ScrollView {
                 VStack(spacing: 12) {
                     ForEach(sessions) { session in
@@ -81,7 +81,7 @@ struct CreatorRoomView: View {
                         .cornerRadius(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
                     }
-                    
+
                     Button(action: {}) {
                         Text("+ Start Your Own Session")
                             .font(.system(size: 13, weight: .semibold))

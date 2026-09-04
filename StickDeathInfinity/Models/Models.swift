@@ -66,6 +66,19 @@ struct DrawnElement: Codable, Identifiable {
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
+    var cornerRadius: CGFloat = 0
+    var textContent: String? = nil
+    var fontSize: CGFloat = 24
+    var textAlignment: TextAlignment = .left
+    var isBold: Bool = false
+    var isItalic: Bool = false
+    var isFlippedH: Bool = false
+    var isFlippedV: Bool = false
+    var locked: Bool = false
+
+    enum TextAlignment: String, Codable, CaseIterable {
+        case left, center, right
+    }
 }
 
 struct StrokePoint: Codable {
@@ -86,6 +99,8 @@ enum DrawingTool: String, Codable, CaseIterable {
 struct AnimationFrame: Codable, Identifiable {
     let id: String
     var elements: [DrawnElement]
+    var backgroundColor: String? = nil  // hex color, nil = white
+    var backgroundGradientColors: [String]? = nil  // hex colors for gradient
 }
 
 // Lock mode enum for type safety
@@ -115,7 +130,7 @@ struct StudioLayer: Identifiable {
     var lockMode: LayerLockMode
     var blendMode: String
     var labelColor: Color
-    
+
     init(from canvas: CanvasLayer) {
         self.id = UUID(uuidString: canvas.id) ?? UUID()
         self.name = canvas.name
@@ -125,7 +140,7 @@ struct StudioLayer: Identifiable {
         self.blendMode = canvas.blendMode
         self.labelColor = Color.red // default
     }
-    
+
     init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
         self.id = id
         self.name = name
@@ -154,7 +169,7 @@ struct SoundEffect: Identifiable {
     let duration: String
     let tag: String
     let waveform: [CGFloat]
-    
+
     init(id: String = UUID().uuidString, name: String, duration: String, tag: String) {
         self.id = id
         self.name = name

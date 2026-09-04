@@ -4,11 +4,11 @@ struct WarRoomView: View {
     @State private var activeMatches: [WarMatch] = WarMatch.samples
     @State private var selectedMatch: WarMatch?
     @State private var isMatchmaking = false
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -30,7 +30,7 @@ struct WarRoomView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                
+
                 // Stats banner
                 HStack(spacing: 16) {
                     StatPill(label: "W", value: "12", color: .green)
@@ -40,9 +40,9 @@ struct WarRoomView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
-                
+
                 Divider().background(Color.white.opacity(0.06))
-                
+
                 // Active matches
                 ScrollView {
                     VStack(spacing: 12) {
@@ -52,7 +52,7 @@ struct WarRoomView: View {
                             .tracking(2)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.top, 8)
-                        
+
                         ForEach(activeMatches) { match in
                             WarMatchCard(match: match) {
                                 selectedMatch = match
@@ -74,7 +74,7 @@ struct StatPill: View {
     let label: String
     let value: String
     let color: Color
-    
+
     var body: some View {
         VStack(spacing: 2) {
             Text(value)
@@ -98,7 +98,7 @@ struct StatPill: View {
 struct WarMatchCard: View {
     let match: WarMatch
     let onTap: () -> Void
-    
+
     var body: some View {
         Button(action: onTap) {
             VStack(spacing: 12) {
@@ -116,7 +116,7 @@ struct WarMatchCard: View {
                             .foregroundColor(.red)
                     }
                     .frame(maxWidth: .infinity)
-                    
+
                     // VS
                     ZStack {
                         Circle()
@@ -126,7 +126,7 @@ struct WarMatchCard: View {
                             .font(.system(size: 11, weight: .black, design: .monospaced))
                             .foregroundColor(.red)
                     }
-                    
+
                     // Player 2
                     VStack(spacing: 4) {
                         Text(match.player2Avatar)
@@ -140,12 +140,12 @@ struct WarMatchCard: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
-                
+
                 // Vote bar
                 GeometryReader { geo in
                     let total = max(match.votes1 + match.votes2, 1)
                     let leftWidth = CGFloat(match.votes1) / CGFloat(total) * geo.size.width
-                    
+
                     HStack(spacing: 0) {
                         Rectangle()
                             .fill(Color.red)
@@ -157,7 +157,7 @@ struct WarMatchCard: View {
                     .cornerRadius(2)
                 }
                 .frame(height: 4)
-                
+
                 // Timer + spectators
                 HStack {
                     HStack(spacing: 4) {
@@ -167,9 +167,9 @@ struct WarMatchCard: View {
                             .font(.system(size: 10, design: .monospaced))
                     }
                     .foregroundColor(.white.opacity(0.4))
-                    
+
                     Spacer()
-                    
+
                     HStack(spacing: 4) {
                         Image(systemName: "eye.fill")
                             .font(.system(size: 9))
@@ -195,14 +195,14 @@ struct MatchmakingView: View {
     @State private var searchingTime = 0
     @Environment(\.dismiss) var dismiss
     let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 24) {
                 Spacer()
-                
+
                 // Pulsing circles
                 ZStack {
                     ForEach(0..<3) { i in
@@ -213,17 +213,17 @@ struct MatchmakingView: View {
                     Text("⚔️")
                         .font(.system(size: 36))
                 }
-                
+
                 Text("Finding Opponent...")
                     .font(.system(size: 18, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
-                
+
                 Text("Searching for \(searchingTime)s")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
+
                 Spacer()
-                
+
                 Button(action: { dismiss() }) {
                     Text("Cancel")
                         .font(.system(size: 14, weight: .bold))
@@ -254,7 +254,7 @@ struct WarMatch: Identifiable {
     var votes2: Int
     let timeLeft: String
     let spectators: Int
-    
+
     static let samples: [WarMatch] = [
         WarMatch(id: "wm1", player1: "StickNinja99", player1Avatar: "🥷", player2: "xDeathArtist", player2Avatar: "💀", votes1: 45, votes2: 38, timeLeft: "2:45", spectators: 83),
         WarMatch(id: "wm2", player1: "AnimKing", player1Avatar: "👑", player2: "FightClubArt", player2Avatar: "🥊", votes1: 22, votes2: 31, timeLeft: "4:12", spectators: 47),

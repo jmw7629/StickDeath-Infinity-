@@ -34,7 +34,7 @@ final class StudioViewModel: ObservableObject {
         return frames[currentFrameIndex - 1]
     }
 
-    // MARK: - Layers (typed StudioLayer for panel, CanvasLayer for persistence)
+    // MARK: - Layers (single source of truth: studioLayers)
     @Published var studioLayers: [StudioLayer] = [
         StudioLayer(name: "Layer 1")
     ]
@@ -43,6 +43,19 @@ final class StudioViewModel: ObservableObject {
     ]
     @Published var activeLayerID: String = ""
     @Published var currentLayerIndex: Int = 0
+
+    // MARK: - Element Selection
+    @Published var selectedElementIDs: Set<String> = []
+
+    var hasSelection: Bool { !selectedElementIDs.isEmpty }
+
+    var selectedElements: [DrawnElement] {
+        currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+    }
+
+    // MARK: - Clipboard
+    @Published var clipboardElements: [DrawnElement] = []
+    var canPaste: Bool { !clipboardElements.isEmpty }
 
     // MARK: - Tool State
     @Published var selectedTool: DrawingTool = .brush
@@ -54,7 +67,30 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
+
+    // Eraser settings
+    @Published var eraserType: EraserType = .hard
+
+    // Text settings
+    @Published var textFontSize: Double = 24
+    @Published var textAlignment: DrawnElement.TextAlignment = .left
+    @Published var textBold: Bool = false
+    @Published var textItalic: Bool = false
+
+    // Smudge settings
+    @Published var smudgeStrength: Double = 50
+
+    // Shape settings
+    @Published var shapeCornerRadius: Double = 0
+
+    // Lasso settings
+    @Published var lassoMode: LassoMode = .freehand
+    @Published var lassoFeather: Double = 0
+    @Published var lassoSmoothness: Double = 3
+
+    // Move tool settings
+    @Published var selectionMode: SelectionMode = .new
+
     // Fill tool properties (GREEN theme in preview)
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
@@ -137,9 +173,11 @@ final class StudioViewModel: ObservableObject {
         self.fps = fps
         frames = [AnimationFrame(id: UUID().uuidString, elements: [])]
         layers = [CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)]
+        studioLayers = [StudioLayer(name: "Layer 1")]
         activeLayerID = layers.first?.id ?? ""
         currentFrameIndex = 0
         currentLayerIndex = 0
+        selectedElementIDs.removeAll()
         undoStack.removeAll()
         redoStack.removeAll()
         audioClips.removeAll()
@@ -176,9 +214,20 @@ final class StudioViewModel: ObservableObject {
                     width: el.width,
                     opacity: el.opacity,
                     fillColor: el.fillColor,
-                    layerID: el.layerID
+                    layerID: el.layerID,
+                    cornerRadius: el.cornerRadius,
+                    textContent: el.textContent,
+                    fontSize: el.fontSize,
+                    textAlignment: el.textAlignment,
+                    isBold: el.isBold,
+                    isItalic: el.isItalic,
+                    isFlippedH: el.isFlippedH,
+                    isFlippedV: el.isFlippedV,
+                    locked: el.locked
                 )
-            }
+            },
+            backgroundColor: current.backgroundColor,
+            backgroundGradientColors: current.backgroundGradientColors
         )
         frames.insert(dupe, at: currentFrameIndex + 1)
         currentFrameIndex += 1
@@ -195,10 +244,12 @@ final class StudioViewModel: ObservableObject {
 
     func nextFrame() {
         if currentFrameIndex < frames.count - 1 { currentFrameIndex += 1 }
+        selectedElementIDs.removeAll()
     }
 
     func prevFrame() {
         if currentFrameIndex > 0 { currentFrameIndex -= 1 }
+        selectedElementIDs.removeAll()
     }
 
     // MARK: - Element Operations
@@ -209,51 +260,224 @@ final class StudioViewModel: ObservableObject {
     }
 
     func deleteSelected() {
-        guard !frames[currentFrameIndex].elements.isEmpty else { return }
+        guard hasSelection else {
+            guard !frames[currentFrameIndex].elements.isEmpty else { return }
+            pushUndo()
+            frames[currentFrameIndex].elements.removeLast()
+            selectedElementIDs.removeAll()
+            lastSaveTime = Date()
+            return
+        }
         pushUndo()
-        frames[currentFrameIndex].elements.removeLast()
+        frames[currentFrameIndex].elements.removeAll { selectedElementIDs.contains($0.id) }
+        selectedElementIDs.removeAll()
         lastSaveTime = Date()
     }
 
     func clearCanvas() {
         pushUndo()
         frames[currentFrameIndex].elements.removeAll()
+        selectedElementIDs.removeAll()
         lastSaveTime = Date()
     }
 
-    // MARK: - Layer Operations (CanvasLayer by string ID for backward compat)
+    // MARK: - Element Selection
+    func selectElement(id: String, addToSelection: Bool = false) {
+        if addToSelection {
+            if selectedElementIDs.contains(id) {
+                selectedElementIDs.remove(id)
+            } else {
+                selectedElementIDs.insert(id)
+            }
+        } else {
+            selectedElementIDs = [id]
+        }
+    }
+
+    func deselectAll() {
+        selectedElementIDs.removeAll()
+    }
+
+    func selectAll() {
+        selectedElementIDs = Set(currentFrame.elements.map { $0.id })
+    }
+
+    // MARK: - Clipboard
+    func copySelected() {
+        guard hasSelection else { return }
+        clipboardElements = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+    }
+
+    func copyAll() {
+        clipboardElements = currentFrame.elements
+    }
+
+    func cutSelected() {
+        copySelected()
+        deleteSelected()
+    }
+
+    func paste() {
+        guard canPaste else { return }
+        pushUndo()
+        let newElements = clipboardElements.map { el in
+            DrawnElement(
+                id: UUID().uuidString,
+                tool: el.tool,
+                points: el.points.map { StrokePoint(x: $0.x + 20, y: $0.y + 20, pressure: $0.pressure, timestamp: $0.timestamp) },
+                color: el.color,
+                width: el.width,
+                opacity: el.opacity,
+                fillColor: el.fillColor,
+                layerID: el.layerID,
+                cornerRadius: el.cornerRadius,
+                textContent: el.textContent,
+                fontSize: el.fontSize,
+                textAlignment: el.textAlignment,
+                isBold: el.isBold,
+                isItalic: el.isItalic,
+                isFlippedH: el.isFlippedH,
+                isFlippedV: el.isFlippedV,
+                locked: el.locked
+            )
+        }
+        frames[currentFrameIndex].elements.append(contentsOf: newElements)
+        selectedElementIDs = Set(newElements.map { $0.id })
+        lastSaveTime = Date()
+    }
+
+    // MARK: - Element Transform (Move tool)
+    func moveSelectedBy(dx: CGFloat, dy: CGFloat) {
+        guard hasSelection else { return }
+        for id in selectedElementIDs {
+            if let idx = frames[currentFrameIndex].elements.firstIndex(where: { $0.id == id }) {
+                for pi in frames[currentFrameIndex].elements[idx].points.indices {
+                    frames[currentFrameIndex].elements[idx].points[pi].x += dx
+                    frames[currentFrameIndex].elements[idx].points[pi].y += dy
+                }
+            }
+        }
+    }
+
+    func flipSelected(horizontal: Bool) {
+        guard hasSelection else { return }
+        pushUndo()
+        for id in selectedElementIDs {
+            if let idx = frames[currentFrameIndex].elements.firstIndex(where: { $0.id == id }) {
+                frames[currentFrameIndex].elements[idx].isFlippedH.toggle()
+            }
+        }
+        lastSaveTime = Date()
+    }
+
+    func flipSelectedVertical() {
+        guard hasSelection else { return }
+        pushUndo()
+        for id in selectedElementIDs {
+            if let idx = frames[currentFrameIndex].elements.firstIndex(where: { $0.id == id }) {
+                frames[currentFrameIndex].elements[idx].isFlippedV.toggle()
+            }
+        }
+        lastSaveTime = Date()
+    }
+
+    func lockSelected() {
+        guard hasSelection else { return }
+        pushUndo()
+        for id in selectedElementIDs {
+            if let idx = frames[currentFrameIndex].elements.firstIndex(where: { $0.id == id }) {
+                frames[currentFrameIndex].elements[idx].locked = true
+            }
+        }
+        selectedElementIDs.removeAll()
+        lastSaveTime = Date()
+    }
+
+    func bringSelectedForward() {
+        guard hasSelection else { return }
+        pushUndo()
+        var els = frames[currentFrameIndex].elements
+        for i in stride(from: els.count - 2, through: 0, by: -1) {
+            if selectedElementIDs.contains(els[i].id) {
+                els.swapAt(i, i + 1)
+            }
+        }
+        frames[currentFrameIndex].elements = els
+        lastSaveTime = Date()
+    }
+
+    func sendSelectedBackward() {
+        guard hasSelection else { return }
+        pushUndo()
+        var els = frames[currentFrameIndex].elements
+        for i in 1..<els.count {
+            if selectedElementIDs.contains(els[i].id) {
+                els.swapAt(i, i - 1)
+            }
+        }
+        frames[currentFrameIndex].elements = els
+        lastSaveTime = Date()
+    }
+
+    func deleteSelectionClear() {
+        guard hasSelection else { return }
+        pushUndo()
+        frames[currentFrameIndex].elements.removeAll { selectedElementIDs.contains($0.id) }
+        selectedElementIDs.removeAll()
+        lastSaveTime = Date()
+    }
+
+    // MARK: - Layer Operations
     func toggleLayerVisibility(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].visible.toggle()
+            syncStudioLayersFromLayers()
         }
     }
 
     func toggleLayerLock(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].locked.toggle()
+            syncStudioLayersFromLayers()
         }
     }
-    
-    // StudioLayer operations for LayerPanel
+
     func toggleLayerVisibility(_ id: UUID) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].visible.toggle()
+            syncLayersFromStudioLayers()
         }
     }
-    
+
     func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].lockMode = mode
+            syncLayersFromStudioLayers()
         }
     }
-    
+
+    func setLayerOpacity(_ id: UUID, opacity: Double) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            studioLayers[idx].opacity = opacity
+            syncLayersFromStudioLayers()
+        }
+    }
+
+    func setLayerBlendMode(_ id: UUID, blendMode: String) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            studioLayers[idx].blendMode = blendMode
+            syncLayersFromStudioLayers()
+        }
+    }
+
     func setLayerColor(_ id: UUID, color: Color) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].labelColor = color
         }
     }
-    
+
     func duplicateLayer(_ id: UUID) {
+        pushUndo()
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
         let original = studioLayers[idx]
         let newLayer = StudioLayer(
@@ -265,23 +489,37 @@ final class StudioViewModel: ObservableObject {
             labelColor: original.labelColor
         )
         studioLayers.insert(newLayer, at: idx + 1)
+        let canvasLayer = CanvasLayer(
+            id: newLayer.id.uuidString, name: newLayer.name,
+            visible: newLayer.visible, locked: newLayer.lockMode == .full,
+            opacity: newLayer.opacity, lockMode: newLayer.lockMode.rawValue,
+            blendMode: newLayer.blendMode
+        )
+        layers.insert(canvasLayer, at: idx + 1)
+        lastSaveTime = Date()
     }
-    
+
     func moveLayerUp(_ id: UUID) {
+        pushUndo()
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
         studioLayers.swapAt(idx, idx - 1)
+        syncLayersFromStudioLayers()
+        lastSaveTime = Date()
     }
-    
+
     func moveLayerDown(_ id: UUID) {
+        pushUndo()
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
         studioLayers.swapAt(idx, idx + 1)
+        syncLayersFromStudioLayers()
+        lastSaveTime = Date()
     }
-    
+
     func addLayer() {
+        pushUndo()
         let num = studioLayers.count + 1
         let newLayer = StudioLayer(name: "Layer \(num)")
         studioLayers.insert(newLayer, at: 0)
-        // Also sync to CanvasLayer
         let canvasLayer = CanvasLayer(
             id: newLayer.id.uuidString, name: newLayer.name,
             visible: true, locked: false, opacity: 1.0
@@ -289,6 +527,80 @@ final class StudioViewModel: ObservableObject {
         layers.insert(canvasLayer, at: 0)
         activeLayerID = canvasLayer.id
         currentLayerIndex = 0
+        lastSaveTime = Date()
+    }
+
+    func renameLayer(_ id: UUID, name: String) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            studioLayers[idx].name = name
+            syncLayersFromStudioLayers()
+        }
+    }
+
+    func deleteLayer(_ id: UUID) {
+        guard studioLayers.count > 1 else { return }
+        pushUndo()
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            let layerID = studioLayers[idx].id.uuidString
+            studioLayers.remove(at: idx)
+            layers.removeAll { $0.id == layerID }
+            if activeLayerID == layerID {
+                activeLayerID = layers.first?.id ?? ""
+            }
+            lastSaveTime = Date()
+        }
+    }
+
+    func setActiveLayer(_ id: UUID) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            currentLayerIndex = idx
+            activeLayerID = studioLayers[idx].id.uuidString
+        }
+    }
+
+    // MARK: - Layer Sync
+    func syncLayersFromStudioLayers() {
+        layers = studioLayers.map { sl in
+            CanvasLayer(
+                id: sl.id.uuidString,
+                name: sl.name,
+                visible: sl.visible,
+                locked: sl.lockMode == .full,
+                opacity: sl.opacity,
+                lockMode: sl.lockMode.rawValue,
+                blendMode: sl.blendMode
+            )
+        }
+    }
+
+    func syncStudioLayersFromLayers() {
+        for cl in layers {
+            if let idx = studioLayers.firstIndex(where: { $0.id.uuidString == cl.id }) {
+                studioLayers[idx].visible = cl.visible
+                studioLayers[idx].opacity = cl.opacity
+                if cl.locked { studioLayers[idx].lockMode = .full }
+            }
+        }
+    }
+
+    func isLayerLocked(_ layerID: String) -> Bool {
+        if let cl = layers.first(where: { $0.id == layerID }) {
+            return cl.locked
+        }
+        if let sl = studioLayers.first(where: { $0.id.uuidString == layerID }) {
+            return sl.lockMode == .full
+        }
+        return false
+    }
+
+    func isLayerVisible(_ layerID: String) -> Bool {
+        if let cl = layers.first(where: { $0.id == layerID }) {
+            return cl.visible
+        }
+        if let sl = studioLayers.first(where: { $0.id.uuidString == layerID }) {
+            return sl.visible
+        }
+        return true
     }
 
     // MARK: - Canvas Controls
@@ -321,11 +633,17 @@ final class StudioViewModel: ObservableObject {
         if undoStack.count > 50 { undoStack.removeFirst() }
     }
 
+    /// Push undo state from external gesture handlers (canvas drag)
+    func pushUndoDirect() {
+        pushUndo()
+    }
+
     func undo() {
         guard let prev = undoStack.popLast() else { return }
         redoStack.append(frames)
         frames = prev
         currentFrameIndex = min(currentFrameIndex, frames.count - 1)
+        selectedElementIDs.removeAll()
     }
 
     func redo() {
@@ -333,6 +651,7 @@ final class StudioViewModel: ObservableObject {
         undoStack.append(frames)
         frames = next
         currentFrameIndex = min(currentFrameIndex, frames.count - 1)
+        selectedElementIDs.removeAll()
     }
 
     // MARK: - Playback
@@ -379,6 +698,19 @@ final class StudioViewModel: ObservableObject {
             print("[Studio] Save error: \(error)")
         }
     }
+}
+
+// MARK: - Enums
+enum EraserType: String, CaseIterable {
+    case hard, soft
+}
+
+enum LassoMode: String, CaseIterable {
+    case freehand, polygon, magnetic, smart
+}
+
+enum SelectionMode: String, CaseIterable {
+    case new, add, sub
 }
 
 // MARK: - Studio Panel Types

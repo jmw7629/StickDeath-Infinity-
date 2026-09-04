@@ -8,7 +8,7 @@ import SwiftUI
 struct StudioHeaderBar: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void = {}
-    
+
     var body: some View {
         HStack(spacing: 8) {
             // Back
@@ -22,14 +22,14 @@ struct StudioHeaderBar: View {
                 }
                 .foregroundColor(.white.opacity(0.8))
             }
-            
+
             // Info pill
             Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
                 .font(.system(size: 9))
                 .foregroundColor(.white.opacity(0.35))
-            
+
             Spacer()
-            
+
             // HIDE
             Button(action: { vm.showToolbar.toggle() }) {
                 VStack(spacing: 1) {
@@ -40,7 +40,7 @@ struct StudioHeaderBar: View {
                 }
                 .foregroundColor(.white.opacity(0.5))
             }
-            
+
             // Save indicator
             Button(action: { Task { await vm.save() } }) {
                 HStack(spacing: 4) {
@@ -55,7 +55,7 @@ struct StudioHeaderBar: View {
                 .background(Color(hex: "1A1A24"))
                 .cornerRadius(6)
             }
-            
+
             // Export
             Button(action: {
                 vm.activePanel = vm.activePanel == .export ? .none : .export
@@ -64,7 +64,7 @@ struct StudioHeaderBar: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
             }
-            
+
             // Menu (⋯)
             Button(action: {
                 vm.activePanel = .menu
