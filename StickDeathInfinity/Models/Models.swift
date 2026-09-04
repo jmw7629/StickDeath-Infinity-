@@ -115,7 +115,7 @@ struct StudioLayer: Identifiable {
     var lockMode: LayerLockMode
     var blendMode: String
     var labelColor: Color
-    
+
     init(from canvas: CanvasLayer) {
         self.id = UUID(uuidString: canvas.id) ?? UUID()
         self.name = canvas.name
@@ -125,7 +125,7 @@ struct StudioLayer: Identifiable {
         self.blendMode = canvas.blendMode
         self.labelColor = Color.red // default
     }
-    
+
     init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
         self.id = id
         self.name = name
@@ -154,7 +154,7 @@ struct SoundEffect: Identifiable {
     let duration: String
     let tag: String
     let waveform: [CGFloat]
-    
+
     init(id: String = UUID().uuidString, name: String, duration: String, tag: String) {
         self.id = id
         self.name = name
@@ -411,4 +411,126 @@ struct R3CallState {
     var spendLimit: Double = 50.0
     var isIdle = false
     var personalityLine: String? = nil
+}
+
+// MARK: - Media Asset (for imported images/videos)
+struct MediaAsset: Identifiable, Codable {
+    let id: String
+    var name: String
+    var type: MediaAssetType
+    var localURL: URL
+    var bookmarkData: Data?
+    var thumbnailData: Data?
+    var duration: TimeInterval?
+    var width: Int?
+    var height: Int?
+    var createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, type
+        case localURL = "local_url"
+        case bookmarkData = "bookmark_data"
+        case thumbnailData = "thumbnail_data"
+        case duration, width, height
+        case createdAt = "created_at"
+    }
+
+    init(id: String = UUID().uuidString, name: String, type: MediaAssetType, localURL: URL, bookmarkData: Data? = nil, thumbnailData: Data? = nil, duration: TimeInterval? = nil, width: Int? = nil, height: Int? = nil) {
+        self.id = id
+        self.name = name
+        self.type = type
+        self.localURL = localURL
+        self.bookmarkData = bookmarkData
+        self.thumbnailData = thumbnailData
+        self.duration = duration
+        self.width = width
+        self.height = height
+        self.createdAt = Date()
+    }
+}
+
+enum MediaAssetType: String, Codable, CaseIterable {
+    case image = "image"
+    case video = "video"
+    case audio = "audio"
+}
+
+// MARK: - Rotoscope Reference
+struct RotoscopeReference: Identifiable, Codable {
+    let id: String
+    var videoAssetID: String?
+    var opacity: Double
+    var frameExtractionEnabled: Bool
+    var extractedFrames: [RotoscopeFrame]
+    var isAboveDrawing: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case videoAssetID = "video_asset_id"
+        case opacity
+        case frameExtractionEnabled = "frame_extraction_enabled"
+        case extractedFrames = "extracted_frames"
+        case isAboveDrawing = "is_above_drawing"
+    }
+
+    init(id: String = UUID().uuidString, videoAssetID: String? = nil, opacity: Double = 0.5, frameExtractionEnabled: Bool = false, extractedFrames: [RotoscopeFrame] = [], isAboveDrawing: Bool = true) {
+        self.id = id
+        self.videoAssetID = videoAssetID
+        self.opacity = opacity
+        self.frameExtractionEnabled = frameExtractionEnabled
+        self.extractedFrames = extractedFrames
+        self.isAboveDrawing = isAboveDrawing
+    }
+}
+
+struct RotoscopeFrame: Identifiable, Codable {
+    let id: String
+    var time: TimeInterval
+    var image: Data?
+
+    init(id: String = UUID().uuidString, time: TimeInterval, image: Data? = nil) {
+        self.id = id
+        self.time = time
+        self.image = image
+    }
+}
+
+// MARK: - Export Result
+struct ExportResult: Identifiable, Codable {
+    let id: String
+    var url: URL
+    var format: ExportFormat
+    var fileSize: Int64
+    var duration: TimeInterval?
+    var width: Int?
+    var height: Int?
+    var createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, url, format
+        case fileSize = "file_size"
+        case duration, width, height
+        case createdAt = "created_at"
+    }
+
+    init(id: String = UUID().uuidString, url: URL, format: ExportFormat, fileSize: Int64, duration: TimeInterval? = nil, width: Int? = nil, height: Int? = nil) {
+        self.id = id
+        self.url = url
+        self.format = format
+        self.fileSize = fileSize
+        self.duration = duration
+        self.width = width
+        self.height = height
+        self.createdAt = Date()
+    }
+}
+
+// MARK: - Export Progress
+enum ExportProgress: Equatable {
+    case idle
+    case preparing
+    case exporting(progress: Double)
+    case complete(result: ExportResult)
+    case failed(error: String)
+    case cancelled
 }
