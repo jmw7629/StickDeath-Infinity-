@@ -47,11 +47,11 @@ struct ProfileView: View {
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.4))
                             
-                            // Role badge
-                            if authManager.currentUser?.role == "superuser" {
+                            // Role badge — reflects server-provided role, no client authorization
+                            if authManager.currentProfile?.role == .superadmin {
                                 HStack(spacing: 4) {
                                     Image(systemName: "shield.fill")
-                                    Text("SUPERUSER")
+                                    Text("SUPERADMIN")
                                 }
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(.red)

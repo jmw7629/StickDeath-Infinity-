@@ -208,7 +208,7 @@ struct AdminStatCard: View {
 struct AdminUsersContent: View {
     @State private var searchText = ""
     let users = [
-        ("J_Willy_Style", "joseph@willisnmb.com", "superuser", "👑"),
+        ("J_Willy_Style", "joseph@willisnmb.com", "superadmin", "👑"),
         ("StickNinja99", "ninja@example.com", "pro", "🥷"),
         ("FightClubArt", "fighter@example.com", "creator", "🥊"),
         ("AnimKing", "king@example.com", "creator", "👑"),
@@ -244,7 +244,7 @@ struct AdminUsersContent: View {
                     Spacer()
                     Text(user.2.uppercased())
                         .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(user.2 == "superuser" ? .red : user.2 == "pro" ? .purple : .white.opacity(0.4))
+                        .foregroundColor(user.2 == "superadmin" ? .red : user.2 == "pro" ? .purple : .white.opacity(0.4))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(Color(hex: "1A1A24"))

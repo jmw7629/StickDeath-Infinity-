@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterBotService — Backend for Spatter Command Center
 // Manages bot configs, content queue, analytics via Supabase
-// Owner-only — gated by AppConfig.superuserEmails
+// Owner-only — gated by server-provided role
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -25,10 +25,9 @@ final class SpatterBotService: ObservableObject {
 
     private let supabase = SupabaseManager.shared.client
 
-    // MARK: - Owner Check
+    // MARK: - Owner Check (server-provided role)
     var isOwner: Bool {
-        guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        AuthService.shared.currentProfile?.role == .superadmin
     }
 
     // MARK: - Load All Bot Configs

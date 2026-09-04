@@ -4,8 +4,7 @@ xcuserdata/
 build/
 DerivedData/
 .build/
-StickDeathInfinity/Config/AppConfig.swift
-StickDeathInfinity/App/AppConfig.swift
+StickDeathInfinity/Config/AppConfig.local.swift
 HANDOFF-COMPLETE.md
 
 # Local AI/reference inputs — never commit
