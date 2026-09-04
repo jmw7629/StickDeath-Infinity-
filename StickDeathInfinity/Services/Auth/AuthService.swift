@@ -34,8 +34,7 @@ final class AuthService: ObservableObject {
     var userId: String? { currentUser?.id.uuidString }
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
-        guard let email = currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        return currentProfile?.role == .superadmin
     }
     var displayName: String? { currentProfile?.username }
     var avatarUrl: String? { currentProfile?.avatarURL }
@@ -253,13 +252,13 @@ final class AuthService: ObservableObject {
     }
 
     private func ensureProfile(userId: String, email: String?, username: String) async {
-        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        // Role assignment is server-controlled — client defaults to "user"
         do {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
                 "username": .string(username),
-                "role": .string(role),
+                "role": .string("user"),
                 "created_at": .string(ISO8601DateFormatter().string(from: Date()))
             ]).execute()
         } catch {

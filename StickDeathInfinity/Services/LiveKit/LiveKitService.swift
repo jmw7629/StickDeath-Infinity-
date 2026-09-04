@@ -13,6 +13,7 @@
 import Foundation
 import Supabase
 import LiveKit
+import SDCore
 
 // MARK: - Call Phase (matches web CallPhase)
 enum CallPhase: String {
@@ -28,7 +29,7 @@ enum CallPhase: String {
 // MARK: - Call Fare (post-call summary)
 struct CallFare {
     let durationSeconds: Int
-    let rateTier: AppConfig.CallRateTier
+    let rateTier: CallRateTier
     let ratePerMinute: Double
     let totalCost: Double
     let callType: String  // "voice" | "video"
@@ -92,7 +93,7 @@ final class LiveKitService: ObservableObject {
     @Published var activePeerName: String = ""
 
     // R3 Config for active call
-    private var activeRateTier: AppConfig.CallRateTier = .standard
+    private var activeRateTier: CallRateTier = .standard
     private var activeSpendCap: Double = R3BillingConfig.defaultSpendLimit
     private var activeAutoRun: Bool = false
     private var activeCallType: String = "video"
@@ -128,7 +129,7 @@ final class LiveKitService: ObservableObject {
     }
 
     /// Update pre-call settings
-    func setRateTier(_ tier: AppConfig.CallRateTier) {
+    func setRateTier(_ tier: CallRateTier) {
         activeRateTier = tier
     }
 

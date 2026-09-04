@@ -16,6 +16,7 @@
 import SwiftUI
 import Supabase
 import LiveKit
+import SDCore
 
 struct VideoCallView: View {
     let room: ChatRoom
@@ -116,7 +117,7 @@ struct VideoCallView: View {
 // MARK: - Pre-Call Dialog (R3)
 struct PreCallDialogView: View {
     let targetName: String
-    let rateTier: AppConfig.CallRateTier
+    let rateTier: CallRateTier
     let onStart: () -> Void
     let onCancel: () -> Void
 
@@ -183,7 +184,7 @@ struct PreCallDialogView: View {
 struct TaxiMeterBar: View {
     let duration: TimeInterval
     let cost: Double
-    let rateTier: AppConfig.CallRateTier
+    let rateTier: CallRateTier
 
     var body: some View {
         HStack {
@@ -386,7 +387,7 @@ struct CallControlsView: View {
 struct CallSummaryView: View {
     let duration: TimeInterval
     let totalCost: Double
-    let rateTier: AppConfig.CallRateTier
+    let rateTier: CallRateTier
     let onDone: () -> Void
 
     var body: some View {
@@ -455,7 +456,7 @@ struct CallSummaryView: View {
 @MainActor
 final class VideoCallViewModel: ObservableObject {
     @Published var callState: CallState = .preCall
-    @Published var rateTier: AppConfig.CallRateTier = .standard
+    @Published var rateTier: CallRateTier = .standard
     @Published var callDuration: TimeInterval = 0
     @Published var currentCost: Double = 0
     @Published var isMuted = false
