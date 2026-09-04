@@ -6,6 +6,7 @@
 
 import SwiftUI
 import Supabase
+import AVFoundation
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -54,7 +55,7 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
+
     // Fill tool properties (GREEN theme in preview)
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
@@ -85,9 +86,19 @@ final class StudioViewModel: ObservableObject {
     @Published var snapEnabled: Bool = true
     @Published var selectedAudioClip: AudioClip?
 
+    // MARK: - Media Assets
+    @Published var mediaAssets: [MediaAsset] = []
+    @Published var selectedMediaAsset: MediaAsset?
+
+    // MARK: - Rotoscope Reference
+    @Published var rotoscopeReference: RotoscopeReference?
+    @Published var rotoscopeVideoAsset: MediaAsset?
+
     // MARK: - Export State
     @Published var exportFormat: ExportFormat = .mp4
     @Published var exportQuality: ExportQuality = .standard
+    @Published var exportProgress: ExportProgress = .idle
+    @Published var lastExportResult: ExportResult?
 
     // MARK: - Drawing State
     @Published var currentStroke: [StrokePoint] = []
@@ -233,26 +244,26 @@ final class StudioViewModel: ObservableObject {
             layers[idx].locked.toggle()
         }
     }
-    
+
     // StudioLayer operations for LayerPanel
     func toggleLayerVisibility(_ id: UUID) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].visible.toggle()
         }
     }
-    
+
     func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].lockMode = mode
         }
     }
-    
+
     func setLayerColor(_ id: UUID, color: Color) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].labelColor = color
         }
     }
-    
+
     func duplicateLayer(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
         let original = studioLayers[idx]
@@ -266,17 +277,17 @@ final class StudioViewModel: ObservableObject {
         )
         studioLayers.insert(newLayer, at: idx + 1)
     }
-    
+
     func moveLayerUp(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
         studioLayers.swapAt(idx, idx - 1)
     }
-    
+
     func moveLayerDown(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
         studioLayers.swapAt(idx, idx + 1)
     }
-    
+
     func addLayer() {
         let num = studioLayers.count + 1
         let newLayer = StudioLayer(name: "Layer \(num)")
@@ -312,6 +323,66 @@ final class StudioViewModel: ObservableObject {
     func deleteAudioClip(_ id: String) {
         audioClips.removeAll { $0.id == id }
         if selectedAudioClip?.id == id { selectedAudioClip = nil }
+    }
+
+    // MARK: - Media Asset Operations
+    func addMediaAsset(_ asset: MediaAsset) {
+        mediaAssets.append(asset)
+        selectedMediaAsset = asset
+    }
+
+    func removeMediaAsset(_ id: String) {
+        mediaAssets.removeAll { $0.id == id }
+        if selectedMediaAsset?.id == id {
+            selectedMediaAsset = nil
+        }
+    }
+
+    func selectMediaAsset(_ asset: MediaAsset) {
+        selectedMediaAsset = asset
+    }
+
+    // MARK: - Rotoscope Operations
+    func setRotoscopeVideo(_ asset: MediaAsset) {
+        rotoscopeVideoAsset = asset
+        rotoscopeReference = RotoscopeReference(videoAssetID: asset.id)
+    }
+
+    func updateRotoscopeOpacity(_ opacity: Double) {
+        rotoscopeReference?.opacity = opacity
+    }
+
+    func toggleRotoscopeFrameExtraction() {
+        rotoscopeReference?.frameExtractionEnabled.toggle()
+    }
+
+    func toggleRotoscopePosition() {
+        rotoscopeReference?.isAboveDrawing.toggle()
+    }
+
+    func extractRotoscopeFrames(atTime time: TimeInterval) async -> [RotoscopeFrame] {
+        guard let asset = rotoscopeVideoAsset else { return [] }
+
+        let avAsset = AVURLAsset(url: asset.localURL)
+        let imageGenerator = AVAssetImageGenerator(asset: avAsset)
+        imageGenerator.appliesPreferredTrackTransform = true
+        imageGenerator.maximumSize = CGSize(width: 1920, height: 1080)
+
+        var frames: [RotoscopeFrame] = []
+        let times = [NSValue(time: CMTime(seconds: time, preferredTimescale: 600))]
+
+        do {
+            let cgImages = try await imageGenerator.images(for: times as [NSValue])
+            for cgImage in cgImages {
+                if let data = cgImage.cgImage.jpegData(compressionQuality: 0.8) {
+                    frames.append(RotoscopeFrame(time: time, image: data))
+                }
+            }
+        } catch {
+            print("[Studio] Rotoscope frame extraction error: \(error)")
+        }
+
+        return frames
     }
 
     // MARK: - Undo/Redo
