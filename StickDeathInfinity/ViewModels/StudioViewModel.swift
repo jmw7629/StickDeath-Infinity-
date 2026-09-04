@@ -98,6 +98,15 @@ final class StudioViewModel: ObservableObject {
     var canUndo: Bool { !undoStack.isEmpty }
     var canRedo: Bool { !redoStack.isEmpty }
 
+    /// Public undo checkpoint for bulk Spatter operations.
+    /// Creates a snapshot before a batch of commands so the user can
+    /// revert the entire AI operation in one undo.
+    func pushUndoCheckpoint() {
+        undoStack.append(frames)
+        redoStack.removeAll()
+        if undoStack.count > 50 { undoStack.removeFirst() }
+    }
+
     // MARK: - Playback
     private var playbackTimer: Timer?
 
