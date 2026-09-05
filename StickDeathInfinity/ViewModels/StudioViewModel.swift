@@ -131,6 +131,7 @@ final class StudioViewModel: ObservableObject {
     }
 
     func createProject(name: String, width: Int, height: Int, fps: Int) {
+        currentProjectID = UUID().uuidString
         projectName = name
         canvasWidth = width
         canvasHeight = height
@@ -151,6 +152,7 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = project.width ?? 1080
         canvasHeight = project.height ?? 1080
         fps = project.fps ?? 12
+        loadLocal()
     }
 
     // MARK: - Frame Operations
@@ -358,13 +360,84 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
+    // MARK: - Save/Load (local persistence first, Supabase sync optional)
+
+    /// Save the current project locally to disk.
+    /// This is the canonical persistence path — local works offline/no-auth/no-network.
+    /// Remote Supabase sync is optional and fails independently.
     func save() async {
-        guard let userId = AuthService.shared.userId else { return }
+        let bundle = StudioProjectBundle(
+            projectID: currentProjectID ?? UUID().uuidString,
+            projectName: projectName,
+            canvasWidth: canvasWidth,
+            canvasHeight: canvasHeight,
+            fps: fps,
+            frames: frames,
+            layers: layers,
+            studioLayers: studioLayers,
+            audioClips: audioClips,
+            legacyRasterReferences: [],
+            savedAt: Date()
+        )
+
+        do {
+            try StudioPersistence.save(bundle: bundle)
+            lastSaveTime = Date()
+            print("[Studio] Saved \(frames.count) frames locally")
+
+            // Optional: sync to Supabase (fails independently of local save)
+            if let userId = AuthService.shared.userId {
+                await syncToSupabase(bundle: bundle, userId: userId)
+            }
+        } catch {
+            print("[Studio] Local save error: \(error)")
+        }
+    }
+
+    /// Load a project from local disk.
+    /// Restores metadata, frames, vector elements, layer metadata, and legacy raster references.
+    func loadLocal() {
+        guard let projectID = currentProjectID else { return }
+        do {
+            let bundle = try StudioPersistence.load(projectID: projectID)
+            projectName = bundle.projectName
+            canvasWidth = bundle.canvasWidth
+            canvasHeight = bundle.canvasHeight
+            fps = bundle.fps
+            frames = bundle.frames
+            layers = bundle.layers
+            if !bundle.studioLayers.isEmpty {
+                studioLayers = bundle.studioLayers
+            }
+            audioClips = bundle.audioClips
+            currentFrameIndex = 0
+            currentLayerIndex = 0
+            activeLayerID = layers.first?.id ?? ""
+            undoStack.removeAll()
+            redoStack.removeAll()
+            lastSaveTime = bundle.savedAt
+            print("[Studio] Loaded \(frames.count) frames from local storage")
+        } catch {
+            print("[Studio] Local load error: \(error)")
+        }
+    }
+
+    /// List all locally saved project IDs.
+    func listLocalProjects() -> [String] {
+        StudioPersistence.listProjects()
+    }
+
+    /// Delete a local project.
+    func deleteLocal(projectID: String) {
+        StudioPersistence.delete(projectID: projectID)
+    }
+
+    /// Optional Supabase sync — fails independently of local persistence.
+    private func syncToSupabase(bundle: StudioProjectBundle, userId: String) async {
         let supabase = SupabaseManager.shared.client
         do {
             let encoder = JSONEncoder()
-            let frameData = try encoder.encode(frames)
+            let frameData = try encoder.encode(bundle.frames)
             let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
 
             try await supabase.from("studio_project_versions").insert([
@@ -372,11 +445,8 @@ final class StudioViewModel: ObservableObject {
                 "frame_data": .string(frameJSON),
                 "user_id": .string(userId),
             ]).execute()
-
-            lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
         } catch {
-            print("[Studio] Save error: \(error)")
+            print("[Studio] Supabase sync failed (local save preserved): \(error)")
         }
     }
 }

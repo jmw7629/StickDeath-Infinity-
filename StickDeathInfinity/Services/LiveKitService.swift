@@ -24,9 +24,6 @@ class LiveKitService: ObservableObject {
     
     private var room: Room?
     
-    // LiveKit server config
-    private let serverURL = "wss://stickdeath-live.livekit.cloud"
-    
     // MARK: - Connection
     
     func connect(roomName: String, token: String) async throws {
@@ -44,7 +41,7 @@ class LiveKitService: ObservableObject {
             defaultAudioCaptureOptions: AudioCaptureOptions()
         )
         
-        try await room.connect(url: serverURL, token: token, connectOptions: connectOptions, roomOptions: roomOptions)
+        try await room.connect(url: AppConfig.liveKitWSURL, token: token, connectOptions: connectOptions, roomOptions: roomOptions)
         
         await MainActor.run {
             self.isConnected = true
@@ -108,16 +105,15 @@ class LiveKitService: ObservableObject {
     }
     
     // MARK: - Room Token Generation
-    // In production, tokens are generated server-side
-    // For development, use Supabase Edge Function
+    // In production, tokens are generated server-side via Supabase Edge Functions.
+    // No provider secrets are stored in the client.
     
     func getToken(roomName: String, participantName: String) async throws -> String {
-        let url = URL(string: "https://iohubnamsqnzyburydxr.supabase.co/functions/v1/livekit-token")!
+        let url = URL(string: "\(AppConfig.supabaseURL)/functions/v1/livekit-token")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvaHVibmFtc3FuenlidXJ5ZHhyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MzQ4MjcsImV4cCI6MjA5MTUxMDgyN30.5kwCtvB7SxInFZFISuDKgE9z6RvOFJPzi2VfefrL7m0",
-                    forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(AppConfig.supabaseAnonKey)", forHTTPHeaderField: "Authorization")
         
         let body: [String: String] = [
             "room": roomName,
