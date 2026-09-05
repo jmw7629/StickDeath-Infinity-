@@ -56,26 +56,26 @@ struct StudioProject: Codable, Identifiable {
     }
 }
 
-// MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
+// MARK: - Drawing Types (SDCore-compatible, Double-backed)
+struct DrawnElement: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var tool: DrawingTool
     var points: [StrokePoint]
     var color: String       // hex color
-    var width: CGFloat
+    var width: Double
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
 }
 
-struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
+struct StrokePoint: Codable, Sendable, Equatable {
+    var x: Double
+    var y: Double
+    var pressure: Double?
     var timestamp: TimeInterval?
 }
 
-enum DrawingTool: String, Codable, CaseIterable {
+enum DrawingTool: String, Codable, CaseIterable, Sendable {
     case pen, pencil, marker, brush, crayon, eraser, fill, eyedropper
     case line, rectangle, circle, text, lasso, wand
     case arrow, image, ruler, gradient, blur
@@ -83,7 +83,7 @@ enum DrawingTool: String, Codable, CaseIterable {
     case smudge, sharpen, move, hand, zoom
 }
 
-struct AnimationFrame: Codable, Identifiable {
+struct AnimationFrame: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var elements: [DrawnElement]
 }
@@ -93,7 +93,7 @@ enum LayerLockMode: String, Codable, CaseIterable {
     case free, full, position, alpha
 }
 
-struct CanvasLayer: Codable, Identifiable {
+struct CanvasLayer: Codable, Identifiable, Sendable, Equatable {
     let id: String
     var name: String
     var visible: Bool
@@ -115,9 +115,13 @@ struct StudioLayer: Identifiable {
     var lockMode: LayerLockMode
     var blendMode: String
     var labelColor: Color
-    
+
     init(from canvas: CanvasLayer) {
-        self.id = UUID(uuidString: canvas.id) ?? UUID()
+        if let uuid = UUID(uuidString: canvas.id) {
+            self.id = uuid
+        } else {
+            self.id = UUID(uuidString: canvas.id.replacingOccurrences(of: "layer_", with: UUID().uuidString.prefix(8).description)) ?? UUID()
+        }
         self.name = canvas.name
         self.visible = canvas.visible
         self.opacity = canvas.opacity
@@ -125,7 +129,7 @@ struct StudioLayer: Identifiable {
         self.blendMode = canvas.blendMode
         self.labelColor = Color.red // default
     }
-    
+
     init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
         self.id = id
         self.name = name
@@ -134,6 +138,10 @@ struct StudioLayer: Identifiable {
         self.lockMode = lockMode
         self.blendMode = blendMode
         self.labelColor = labelColor
+    }
+
+    var canonicalID: String {
+        id.uuidString
     }
 }
 

@@ -239,8 +239,7 @@ struct LayerDetailView: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
+                GlowToggle(vm: vm, layerID: layer.id)
                     .scaleEffect(0.8)
                 
                 Spacer()
@@ -360,3 +359,35 @@ struct LayerActionButton: View {
 }
 
 // Rounded corner helper
+private struct RoundedCorner: Shape {
+    var radius: CGFloat
+    var corners: UIRectCorner
+
+    func path(in rect: CGRect) -> Path {
+        let path = UIBezierPath(
+            roundedRect: rect,
+            byRoundingCorners: corners,
+            cornerRadii: CGSize(width: radius, height: radius)
+        )
+        return Path(path.cgPath)
+    }
+}
+
+// MARK: - Glow Toggle (real binding to canonical state)
+private struct GlowToggle: View {
+    @ObservedObject var vm: StudioViewModel
+    let layerID: UUID
+
+    private var isGlowEnabled: Bool {
+        guard let canonical = vm.studioLayers.first(where: { $0.id == layerID }) else { return false }
+        return vm.layers.first(where: { $0.id == canonical.canonicalID })?.glowEnabled ?? false
+    }
+
+    var body: some View {
+        Toggle("", isOn: Binding(
+            get: { isGlowEnabled },
+            set: { _ in vm.toggleLayerGlow(layerID) }
+        ))
+        .labelsHidden()
+    }
+}

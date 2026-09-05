@@ -101,8 +101,9 @@ class DeviceStorageManager {
         return total
     }
     
-    // MARK: - Animation Projects (on-device)
+    // MARK: - Animation Projects (on-device) — DEPRECATED: Use SDCore StudioStorage instead
     
+    @available(*, deprecated, message: "Use SDCore StudioStorage for animation persistence")
     func saveAnimation(_ project: AnimationProject) throws {
         let projectDir = animationsDir.appendingPathComponent(project.id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
@@ -125,6 +126,7 @@ class DeviceStorageManager {
         }
     }
     
+    @available(*, deprecated, message: "Use SDCore StudioStorage for animation persistence")
     func loadAnimation(id: UUID) throws -> AnimationProject? {
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         guard FileManager.default.fileExists(atPath: projectDir.path) else { return nil }
@@ -133,20 +135,10 @@ class DeviceStorageManager {
         let data = try Data(contentsOf: metadataURL)
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
         
-        // Load frames
-        var frames: [AnimationFrame] = []
-        var index = 0
-        while true {
-            let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
-            guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
-            let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
-            index += 1
-        }
-        
-        return AnimationProject(id: id, metadata: metadata, frames: frames, audioTracks: [])
+        return AnimationProject(id: id, metadata: metadata, frames: [], audioTracks: [])
     }
     
+    @available(*, deprecated, message: "Use SDCore StudioStorage for animation persistence")
     func listAnimations() -> [AnimationMetadata] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: animationsDir, includingPropertiesForKeys: nil) else { return [] }
@@ -158,6 +150,7 @@ class DeviceStorageManager {
         }
     }
     
+    @available(*, deprecated, message: "Use SDCore StudioStorage for animation persistence")
     func deleteAnimation(id: UUID) throws {
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.removeItem(at: projectDir)
