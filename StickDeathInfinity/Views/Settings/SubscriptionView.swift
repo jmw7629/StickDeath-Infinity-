@@ -8,7 +8,7 @@ struct SubscriptionView: View {
     @State private var selectedPlan = "pro_monthly"
     @State private var purchasing = false
     @State private var purchased = false
-    
+
     struct Plan: Identifiable {
         let id: String
         let name: String
@@ -17,13 +17,13 @@ struct SubscriptionView: View {
         let savings: String
         let popular: Bool
     }
-    
+
     let plans: [Plan] = [
         Plan(id: "pro_monthly", name: "Pro Monthly", price: "$9.99", period: "/month", savings: "", popular: true),
         Plan(id: "pro_annual", name: "Pro Annual", price: "$79.99", period: "/year", savings: "Save 33%", popular: false),
         Plan(id: "studio_monthly", name: "Studio", price: "$19.99", period: "/month", savings: "All features", popular: false),
     ]
-    
+
     let features = [
         "Unlimited projects & frames",
         "4K HD export (MP4, GIF, PNG)",
@@ -34,12 +34,12 @@ struct SubscriptionView: View {
         "No watermark",
         "Cloud backup (device-first storage)",
     ]
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Button(action: { 
+                Button(action: {
                     if showPurchase { showPurchase = false }
                     else { dismiss() }
                 }) {
@@ -54,7 +54,7 @@ struct SubscriptionView: View {
             }
             .padding()
             .background(Color(hex: "0A0A14"))
-            
+
             if showPurchase {
                 purchaseView
             } else {
@@ -64,7 +64,7 @@ struct SubscriptionView: View {
         .background(Color(hex: "0A0A14"))
         .navigationBarHidden(true)
     }
-    
+
     var currentPlanView: some View {
         ScrollView {
             VStack(spacing: 16) {
@@ -78,7 +78,7 @@ struct SubscriptionView: View {
                 Text("✓ Active")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.green)
-                
+
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(["Unlimited projects", "HD export", "All brushes & tools", "Spatter AI unlimited", "Priority support", "No watermark"], id: \.self) { feature in
                         HStack(spacing: 8) {
@@ -93,7 +93,7 @@ struct SubscriptionView: View {
                 .background(Color.white.opacity(0.04))
                 .cornerRadius(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
-                
+
                 Button(action: { showPurchase = true }) {
                     Text("Change Plan")
                         .font(.system(size: 13, weight: .semibold))
@@ -103,7 +103,7 @@ struct SubscriptionView: View {
                         .background(Color.red)
                         .cornerRadius(12)
                 }
-                
+
                 Button(action: {}) {
                     Text("Restore Purchases")
                         .font(.system(size: 13))
@@ -114,7 +114,7 @@ struct SubscriptionView: View {
                         .cornerRadius(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1)))
                 }
-                
+
                 Text("Managed via Apple StoreKit · All data stored on device")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
@@ -122,7 +122,7 @@ struct SubscriptionView: View {
             .padding()
         }
     }
-    
+
     var purchaseView: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -170,7 +170,7 @@ struct SubscriptionView: View {
                         }
                     }
                 }
-                
+
                 VStack(alignment: .leading, spacing: 6) {
                     Text("INCLUDED")
                         .font(.system(size: 9, weight: .bold))
@@ -188,7 +188,7 @@ struct SubscriptionView: View {
                 .cornerRadius(12)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
                 .padding(.top, 8)
-                
+
                 // Purchase button — in production uses StoreKit Product.purchase()
                 Button(action: {
                     purchasing = true
@@ -211,7 +211,7 @@ struct SubscriptionView: View {
                         .opacity(purchasing ? 0.7 : 1.0)
                 }
                 .disabled(purchasing || purchased)
-                
+
                 VStack(spacing: 2) {
                     Text("Payment processed by Apple via StoreKit")
                         .font(.system(size: 9))

@@ -1,0 +1,75 @@
+name: SDCore CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Swift Build & Test
+    runs-on: ubuntu-latest
+    container: swift:5.9
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+
+      - name: Test SDCore
+        run: swift test --package-path SDCore
+
+  whitespace-check:
+    name: Whitespace Check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for trailing whitespace
+        run: |
+          if grep -rn ' $' --include='*.swift' SDCore/ StickDeathInfinity/; then
+            echo "ERROR: Trailing whitespace found in Swift files"
+            exit 1
+          fi
+          echo "Whitespace check passed"
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check for provider API keys in source
+        run: |
+          # Ensure no OpenAI/Gemini/provider API key properties remain
+          if grep -rn 'openAIAPIKey\|geminiAPIKey\|openAIModel\|superuserEmails' \
+            --include='*.swift' \
+            StickDeathInfinity/; then
+            echo "ERROR: Provider API key references found in iOS client source"
+            exit 1
+          fi
+
+          # Ensure no direct OpenAI endpoint references
+          if grep -rn 'api\.openai\.com\|generativelanguage\.googleapis\.com' \
+            --include='*.swift' \
+            StickDeathInfinity/; then
+            echo "ERROR: Direct provider API endpoints found in client source"
+            exit 1
+          fi
+
+          # Ensure no client-local admin email allowlists
+          if grep -rn 'admin.*emails\|superadmin.*emails' \
+            --include='*.swift' \
+            StickDeathInfinity/; then
+            echo "ERROR: Client-local admin email allowlists found"
+            exit 1
+          fi
+
+          echo "Security audit passed"

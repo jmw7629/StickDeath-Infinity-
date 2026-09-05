@@ -71,6 +71,7 @@
 		B08F79CCEDA61C3317EA4D09 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A58386C9AEBE847DB9B6FA95 /* Assets.xcassets */; };
 		26DC1157C43122DB89395CAB /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 942276A7C2AD5F02FCFE142E /* Supabase */; };
 		990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0B86BD26C0F4E5851CCB9969 /* LiveKit */; };
+		AA112233BBCCDD44EE55FF66 /* SDCore in Frameworks */ = {isa = PBXBuildFile; productRef = CC778899DD001122EE33FF44 /* SDCore */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXFileReference section */
@@ -148,6 +149,7 @@
 			files = (
 				26DC1157C43122DB89395CAB /* Supabase in Frameworks */,
 				990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */,
+				AA112233BBCCDD44EE55FF66 /* SDCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -540,6 +542,7 @@
 			packageProductDependencies = (
 				942276A7C2AD5F02FCFE142E /* Supabase */,
 				0B86BD26C0F4E5851CCB9969 /* LiveKit */,
+				CC778899DD001122EE33FF44 /* SDCore */,
 			);
 			productName = StickDeathInfinity;
 			productReference = C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */;
@@ -573,6 +576,7 @@
 			packageReferences = (
 				AD8BA8041B6CA7947F5006AE /* supabase-swift */,
 				A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */,
+				DD112233EE445566FF778899 /* SDCore */,
 			);
 			productRefGroup = F35AEC2E38F2F9ACFEFB2B5F /* Products */;
 			projectDirPath = "";
@@ -893,10 +897,21 @@
 		};
 		0B86BD26C0F4E5851CCB9969 /* LiveKit */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = A4CA4C66E9E948D381ACDF42 /* LiveKit */;
+			package = A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */;
 			productName = LiveKit;
 		};
+		CC778899DD001122EE33FF44 /* SDCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SDCore;
+		};
 		/* End XCSwiftPackageProductDependency section */
+
+		/* Begin XCLocalSwiftPackageReference section */
+		DD112233EE445566FF778899 /* SDCore */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SDCore;
+		};
+		/* End XCLocalSwiftPackageReference section */
 	};
 	rootObject = 0AEB550C38C3C1411E9E6734 /* Project object */;
 }

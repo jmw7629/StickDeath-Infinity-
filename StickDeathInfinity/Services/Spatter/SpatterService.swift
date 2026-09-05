@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
+// Talks to a configurable backend endpoint for AI completions.
+// No direct provider API keys on the client.
 //
 // Knowledge is embedded permanently via SpatterKnowledgeBase.swift
 // (120 modules: 100 brain + 20 core) — no external JSON needed.
@@ -14,9 +15,17 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private var backendEndpoint: URL? {
+        guard let urlString = AppConfig.spatterBackendURL, !urlString.isEmpty else {
+            return nil
+        }
+        return URL(string: urlString)
+    }
+
+    /// Whether the AI backend is configured and available
+    var isAvailable: Bool {
+        backendEndpoint != nil
+    }
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -32,20 +41,6 @@ final class SpatterService {
     - You reference classic stick figure fights, blood splatters, epic combos
     - You help users become better animators and grow their audience
 
-    Your knowledge areas (120 embedded modules):
-    - Core Identity: Who Spatter is, founder memory, personality modes, lore
-    - Animation: Physics engine, impact sync, smear frames, pose-to-pose, ragdoll, timing
-    - Studio Tools: 25 tool behaviors (brush, pen, eraser, fill, lasso, etc.)
-    - Studio Systems: Layers, timeline, onion skin, undo/redo, autosave, export, grid
-    - AI Animation: Autonomous builder, fix-this-scene, cinematic pass, viral pass
-    - Social: TikTok/YouTube strategy, thumbnail intelligence, comment bait, social agent
-    - Collaboration: LiveKit calls, voice/video flow, studio share, watch together, rooms
-    - Community: Challenges, creator support, reward loops, creator identity
-    - Business: Owner ops, payment entitlements, bug triage, investor reporting, moderation
-    - Lore: Old Internet Mode, Corrupted Spatter Mode
-    - Advanced: Sound design, style DNA, remix DNA, destruction engine, procedural effects,
-      AI scene escalation, legendary frame detection, audio choreography, marketplace
-
     Rules:
     - Keep responses concise and actionable
     - Always relate advice back to the user's current project if context is available
@@ -56,7 +51,6 @@ final class SpatterService {
 
     // MARK: - Build Knowledge Context
 
-    /// Build contextual knowledge from embedded SpatterKnowledgeBase
     private func buildKnowledgeContext(screen: String?, tool: String?) -> String {
         return SpatterKnowledgeBase.buildContext(
             for: screen ?? "general",
@@ -65,7 +59,6 @@ final class SpatterService {
         )
     }
 
-    /// Optionally also fetch from Supabase for any runtime-added knowledge
     private func fetchSupabaseKnowledge() async -> String {
         do {
             let entries: [SupabaseKnowledgeEntry] = try await SupabaseManager.shared.client
@@ -76,34 +69,32 @@ final class SpatterService {
                 .value
             return entries.map { "[\($0.category)] \($0.content)" }.joined(separator: "\n")
         } catch {
-            // Supabase knowledge is optional — embedded knowledge is always available
             return ""
         }
     }
 
     // MARK: - Chat
 
-    /// Send a message to Spatter and get a response
     func chat(
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
     ) async throws -> String {
-        // 1. Build embedded knowledge context (always available, instant)
+        guard let endpoint = backendEndpoint else {
+            throw SpatterServiceError.backendUnavailable
+        }
+
         let embeddedKnowledge = buildKnowledgeContext(
             screen: context?.currentScreen,
             tool: context?.currentTool
         )
 
-        // 2. Optionally fetch Supabase knowledge (non-blocking fallback)
         let supabaseKnowledge = await fetchSupabaseKnowledge()
 
-        // 3. Build context string
         var contextStr = ""
         if let ctx = context {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build API messages
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
@@ -117,14 +108,11 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": model,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
@@ -132,21 +120,32 @@ final class SpatterService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let response = try JSONDecoder().decode(BackendResponse.self, from: data)
 
         return response.choices.first?.message.content ?? "..."
     }
 
     // MARK: - Quick Knowledge Lookup
 
-    /// Get knowledge for a specific tool (for inline help / tooltips)
     func toolKnowledge(for tool: String) -> SpatterKnowledgeModule? {
         SpatterKnowledgeBase.search(tool).first
     }
 
-    /// Get all knowledge categories
     func categories() -> [String] {
         Array(Set(SpatterKnowledgeBase.allModules.map(\.category))).sorted()
+    }
+}
+
+// MARK: - Errors
+
+enum SpatterServiceError: Error, LocalizedError {
+    case backendUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .backendUnavailable:
+            return "AI backend is not configured. Set AppConfig.spatterBackendURL to enable AI features."
+        }
     }
 }
 
@@ -165,7 +164,7 @@ struct SpatterContext {
     let userName: String
 }
 
-struct OpenAIResponse: Codable {
+struct BackendResponse: Codable {
     let choices: [Choice]
 
     struct Choice: Codable {

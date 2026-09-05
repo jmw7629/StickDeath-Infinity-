@@ -4,7 +4,7 @@ struct CallsView: View {
     @State private var callActive = false
     @State private var callTimer = 0
     @State private var timer: Timer?
-    
+
     struct RecentCall: Identifiable {
         let id = UUID()
         let name: String
@@ -14,14 +14,14 @@ struct CallsView: View {
         let duration: String
         let avatar: String
     }
-    
+
     let recentCalls: [RecentCall] = [
         RecentCall(name: "PixelFury", type: "video", direction: "incoming", time: "2 min ago", duration: "12:34", avatar: "🔥"),
         RecentCall(name: "AnimKing", type: "audio", direction: "outgoing", time: "1h ago", duration: "5:22", avatar: "👑"),
         RecentCall(name: "NeonBlade", type: "video", direction: "missed", time: "3h ago", duration: "-", avatar: "⚡"),
         RecentCall(name: "StickMaster", type: "audio", direction: "incoming", time: "Yesterday", duration: "8:45", avatar: "💀"),
     ]
-    
+
     var body: some View {
         if callActive {
             // Active call screen
@@ -80,7 +80,7 @@ struct CallsView: View {
                 }
                 .padding()
                 .background(Color(hex: "0A0A14"))
-                
+
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(recentCalls) { call in
@@ -121,7 +121,7 @@ struct CallsView: View {
             .background(Color(hex: "0A0A14"))
         }
     }
-    
+
     @ViewBuilder
     func callButton(icon: String, label: String) -> some View {
         Button(action: {}) {
