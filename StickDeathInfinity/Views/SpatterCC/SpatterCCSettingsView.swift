@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterCCSettingsView — Command Center global settings
 // Matches: spatter-admin /settings exactly
-// - AI Engine config (OpenAI key, Gemini key)
+// - Cloud AI status (no provider secrets in client)
 // - Notifications (Slack webhook URL)
 // - Appearance (dark/light toggle)
 // - Emergency Controls (kill all bots)
@@ -11,8 +11,6 @@ import SwiftUI
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared
-    @State private var openAIKey: String = AppConfig.openAIAPIKey
-    @State private var geminiKey: String = AppConfig.geminiAPIKey
     @State private var slackWebhook: String = ""
     @State private var showEmergencyConfirm = false
     @State private var showSavedToast = false
@@ -29,14 +27,23 @@ struct SpatterCCSettingsView: View {
                     .foregroundColor(.sdTextSecondary)
             }
 
-            // AI Engine section
-            CCSettingsSection(title: "AI Engine", icon: "brain.fill",
-                              description: "Spatter uses AI to generate platform-native content. Configure your AI provider below.") {
-                VStack(spacing: 14) {
-                    CCSecureField(label: "OpenAI API Key (GPT-4)", value: $openAIKey,
-                                  placeholder: "sk-...")
-                    CCSecureField(label: "Google Gemini API Key", value: $geminiKey,
-                                  placeholder: "AI...")
+            // Cloud AI status (no provider secrets in client)
+            CCSettingsSection(title: "Cloud AI", icon: "cloud.fill",
+                              description: "Spatter uses a configurable backend for AI features. No API keys are stored in the app.") {
+                VStack(spacing: 10) {
+                    HStack(spacing: 8) {
+                        Image(systemName: SpatterService.shared.isCloudAvailable ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundColor(SpatterService.shared.isCloudAvailable ? .sdSuccess : .sdWarning)
+                        Text(SpatterService.shared.isCloudAvailable
+                             ? "Cloud AI backend is configured"
+                             : "Cloud AI not configured — using embedded knowledge only")
+                            .font(.system(size: 13))
+                            .foregroundColor(.sdTextSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .background(Color.sdSurface2)
+                    .cornerRadius(8)
                 }
             }
 
@@ -127,8 +134,6 @@ struct SpatterCCSettingsView: View {
 
             // Save button
             Button {
-                botService.openAIKey = openAIKey
-                botService.geminiKey = geminiKey
                 botService.slackWebhook = slackWebhook
                 withAnimation { showSavedToast = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {

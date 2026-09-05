@@ -1,7 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
+//
+// Uses a configurable public backend endpoint (no provider secrets).
+// If no backend endpoint is configured, reports cloud-unavailable state
+// and falls back to embedded knowledge only.
 //
 // Knowledge is embedded permanently via SpatterKnowledgeBase.swift
 // (120 modules: 100 brain + 20 core) — no external JSON needed.
@@ -14,9 +17,17 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    /// Whether the cloud AI backend is configured and available.
+    var isCloudAvailable: Bool {
+        guard let endpoint = backendURL else { return false }
+        return !endpoint.absoluteString.isEmpty
+    }
+
+    private var backendURL: URL? {
+        guard let urlString = AppConfig.spatterBackendEndpoint,
+              !urlString.isEmpty else { return nil }
+        return URL(string: urlString)
+    }
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -83,11 +94,16 @@ final class SpatterService {
 
     // MARK: - Chat
 
-    /// Send a message to Spatter and get a response
+    /// Send a message to Spatter and get a response.
+    /// If no backend is configured, returns an explicit cloud-unavailable state.
     func chat(
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
     ) async throws -> String {
+        guard let backendURL else {
+            throw SpatterError.cloudUnavailable
+        }
+
         // 1. Build embedded knowledge context (always available, instant)
         let embeddedKnowledge = buildKnowledgeContext(
             screen: context?.currentScreen,
@@ -117,14 +133,12 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
+        // 5. Call configurable backend endpoint (no provider secret in client)
+        var request = URLRequest(url: backendURL)
         request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": model,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
@@ -132,7 +146,7 @@ final class SpatterService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let response = try JSONDecoder().decode(BackendResponse.self, from: data)
 
         return response.choices.first?.message.content ?? "..."
     }
@@ -165,7 +179,7 @@ struct SpatterContext {
     let userName: String
 }
 
-struct OpenAIResponse: Codable {
+struct BackendResponse: Codable {
     let choices: [Choice]
 
     struct Choice: Codable {
@@ -174,5 +188,16 @@ struct OpenAIResponse: Codable {
 
     struct Message: Codable {
         let content: String
+    }
+}
+
+enum SpatterError: LocalizedError {
+    case cloudUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .cloudUnavailable:
+            return "Cloud AI is not available. Using embedded knowledge only."
+        }
     }
 }

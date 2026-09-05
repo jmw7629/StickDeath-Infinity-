@@ -62,17 +62,23 @@ struct DrawnElement: Codable, Identifiable {
     var tool: DrawingTool
     var points: [StrokePoint]
     var color: String       // hex color
-    var width: CGFloat
+    var width: Double       // platform-agnostic; convert to CGFloat at render boundary
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
+
+    /// Render-time convenience: convert width to CGFloat for CoreGraphics/SwiftUI.
+    var cgWidth: CGFloat { CGFloat(width) }
 }
 
 struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
+    var x: Double           // platform-agnostic; convert to CGFloat at render boundary
+    var y: Double
+    var pressure: Double?
     var timestamp: TimeInterval?
+
+    /// Render-time convenience: convert to CGPoint for CoreGraphics/SwiftUI.
+    var cgPoint: CGPoint { CGPoint(x: x, y: y) }
 }
 
 enum DrawingTool: String, Codable, CaseIterable {
@@ -411,4 +417,138 @@ struct R3CallState {
     var spendLimit: Double = 50.0
     var isIdle = false
     var personalityLine: String? = nil
+}
+
+// MARK: - Studio Project Bundle (canonical persistence model)
+/// The single source of truth for Studio project persistence.
+/// This is what gets saved/loaded to/from disk.
+struct StudioProjectBundle: Codable {
+    let projectID: String
+    var projectName: String
+    var canvasWidth: Int
+    var canvasHeight: Int
+    var fps: Int
+    var frames: [AnimationFrame]
+    var layers: [CanvasLayer]
+    var studioLayers: [StudioLayerCodable]
+    var audioClips: [AudioClip]
+    var legacyRasterReferences: [LegacyRasterReference]
+    var savedAt: Date
+}
+
+/// Codable version of StudioLayer for persistence (StudioLayer uses Color which isn't Codable).
+struct StudioLayerCodable: Codable {
+    let id: String
+    var name: String
+    var visible: Bool
+    var opacity: Double
+    var lockMode: String
+    var blendMode: String
+    var colorLabelHex: String?
+
+    init(from layer: StudioLayer) {
+        self.id = layer.id.uuidString
+        self.name = layer.name
+        self.visible = layer.visible
+        self.opacity = layer.opacity
+        self.lockMode = layer.lockMode.rawValue
+        self.blendMode = layer.blendMode
+        self.colorLabelHex = nil
+    }
+
+    func toStudioLayer() -> StudioLayer {
+        StudioLayer(
+            id: UUID(uuidString: id) ?? UUID(),
+            name: name,
+            visible: visible,
+            opacity: opacity,
+            lockMode: LayerLockMode(rawValue: lockMode) ?? .free,
+            blendMode: blendMode,
+            labelColor: .red
+        )
+    }
+}
+
+/// Reference to a legacy raster file (frame_N.png) on disk.
+struct LegacyRasterReference: Codable {
+    let frameIndex: Int
+    let filename: String
+    let relativePath: String
+}
+
+// MARK: - Studio Persistence (local file I/O)
+enum StudioPersistence {
+    private static let projectsDir = "StudioProjects"
+
+    /// Base directory for all local project bundles.
+    private static var baseDirectory: URL {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return docs.appendingPathComponent(projectsDir)
+    }
+
+    /// Directory for a specific project.
+    private static func projectDirectory(for projectID: String) -> URL {
+        baseDirectory.appendingPathComponent(projectID)
+    }
+
+    /// Save a project bundle to disk.
+    static func save(bundle: StudioProjectBundle) throws {
+        let dir = projectDirectory(for: bundle.projectID)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        let bundleFile = dir.appendingPathComponent("project.json")
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(bundle)
+        try data.write(to: bundleFile, options: .atomic)
+    }
+
+    /// Load a project bundle from disk.
+    static func load(projectID: String) throws -> StudioProjectBundle {
+        let dir = projectDirectory(for: projectID)
+        let bundleFile = dir.appendingPathComponent("project.json")
+        let data = try Data(contentsOf: bundleFile)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(StudioProjectBundle.self, from: data)
+    }
+
+    /// List all locally saved project IDs.
+    static func listProjects() -> [String] {
+        let dir = baseDirectory
+        guard let contents = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        return contents
+            .filter { $0.lastPathComponent != ".DS_Store" }
+            .map { $0.lastPathComponent }
+    }
+
+    /// Delete a local project.
+    static func delete(projectID: String) {
+        let dir = projectDirectory(for: projectID)
+        try? FileManager.default.removeItem(at: dir)
+    }
+
+    /// Discover legacy frame_N.png raster files in a project directory.
+    static func discoverLegacyRasters(projectID: String) -> [LegacyRasterReference] {
+        let dir = projectDirectory(for: projectID)
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+
+        let framePattern = /^frame_(\d+)\.png$/
+        return files.compactMap { url in
+            let name = url.lastPathComponent
+            guard let match = name.firstMatch(of: framePattern) else { return nil }
+            guard let frameIndex = Int(match.1) else { return nil }
+            return LegacyRasterReference(
+                frameIndex: frameIndex,
+                filename: name,
+                relativePath: url.relativePath
+            )
+        }
+    }
 }
