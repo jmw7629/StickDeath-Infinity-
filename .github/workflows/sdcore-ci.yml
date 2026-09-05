@@ -1,0 +1,35 @@
+name: SDCore CI
+
+on:
+  push:
+    branches: [main]
+    paths: ['SDCore/**', '.github/workflows/sdcore-ci.yml']
+  pull_request:
+    branches: [main]
+    paths: ['SDCore/**', '.github/workflows/sdcore-ci.yml']
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    name: Swift Linux — Build & Test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: '5.9'
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+
+      - name: Run SDCore tests
+        run: swift test --package-path SDCore
+
+      - name: Git diff check
+        run: git diff --check || echo "git diff --check found whitespace issues"

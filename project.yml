@@ -30,6 +30,7 @@ targets:
     dependencies:
       - package: supabase-swift
       - package: client-sdk-swift
+      - package: SDCore
       # StoreKit 2 is built into iOS 15+ — no external package needed
       # Stripe SDK removed: iOS subscriptions use StoreKit IAP per Apple policy
     entitlements:
@@ -45,3 +46,5 @@ packages:
   client-sdk-swift:
     url: https://github.com/livekit/client-sdk-swift.git
     from: "2.0.0"
+  SDCore:
+    path: SDCore

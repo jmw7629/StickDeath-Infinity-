@@ -1,10 +1,23 @@
 // ═══════════════════════════════════════════════════════════════════
 // Models — All data types for StickDeath Infinity
 // Matches: Supabase schema + React TypeScript types exactly
+//
+// Production persistence types (DrawingTool, StrokePoint, DrawnElement,
+// AnimationFrame, CanvasLayer, LayerLockMode) are owned by the SDCore
+// Foundation-only package and re-exported here for app convenience.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
 import SwiftUI
+import SDCore
+
+// Re-export SDCore production types so existing app code compiles unchanged
+@_exported import struct SDCore.StrokePoint
+@_exported import struct SDCore.DrawnElement
+@_exported import struct SDCore.AnimationFrame
+@_exported import struct SDCore.CanvasLayer
+@_exported import enum SDCore.DrawingTool
+@_exported import enum SDCore.LayerLockMode
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -56,57 +69,7 @@ struct StudioProject: Codable, Identifiable {
     }
 }
 
-// MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
-    let id: String
-    var tool: DrawingTool
-    var points: [StrokePoint]
-    var color: String       // hex color
-    var width: CGFloat
-    var opacity: Double
-    var fillColor: String?  // for fill tool / shape fill
-    var layerID: String?
-}
-
-struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
-    var timestamp: TimeInterval?
-}
-
-enum DrawingTool: String, Codable, CaseIterable {
-    case pen, pencil, marker, brush, crayon, eraser, fill, eyedropper
-    case line, rectangle, circle, text, lasso, wand
-    case arrow, image, ruler, gradient, blur
-    case airbrush, watercolor, neon, calligraphy
-    case smudge, sharpen, move, hand, zoom
-}
-
-struct AnimationFrame: Codable, Identifiable {
-    let id: String
-    var elements: [DrawnElement]
-}
-
-// Lock mode enum for type safety
-enum LayerLockMode: String, Codable, CaseIterable {
-    case free, full, position, alpha
-}
-
-struct CanvasLayer: Codable, Identifiable {
-    let id: String
-    var name: String
-    var visible: Bool
-    var locked: Bool
-    var opacity: Double
-    var lockMode: String = "free"      // free, full, position, alpha
-    var blendMode: String = "normal"   // normal, multiply, screen, overlay, etc.
-    var glowEnabled: Bool = false
-    var glowColor: String?
-    var colorLabel: String?
-}
-
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
+// MARK: - StudioLayer (UI-only, wraps CanvasLayer with typed lock mode)
 struct StudioLayer: Identifiable {
     let id: UUID
     var name: String

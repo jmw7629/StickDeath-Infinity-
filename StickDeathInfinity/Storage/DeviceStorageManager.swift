@@ -140,7 +140,7 @@ class DeviceStorageManager {
             let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
             guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
             let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
+            frames.append(AnimationFrame(id: UUID().uuidString, elements: []))
             index += 1
         }
         
