@@ -6,7 +6,7 @@ struct SoundCategory: Identifiable {
     let icon: String
     let color: Color
     let sounds: [SoundEffect]
-    
+
     init(id: String = UUID().uuidString, name: String, icon: String, color: Color, sounds: [SoundEffect]) {
         self.id = id; self.name = name; self.icon = icon; self.color = color; self.sounds = sounds
     }

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterBotService — Backend for Spatter Command Center
 // Manages bot configs, content queue, analytics via Supabase
-// Owner-only — gated by AppConfig.superuserEmails
+// Owner check uses server-verified role, not client-local email list.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -17,18 +17,16 @@ final class SpatterBotService: ObservableObject {
     @Published var isLoading = false
     @Published var analytics: [PlatformAnalytics] = []
 
-    // MARK: - Settings (persisted to UserDefaults for now, Supabase later)
-    @Published var openAIKey: String = AppConfig.openAIAPIKey
-    @Published var geminiKey: String = AppConfig.geminiAPIKey
+    // MARK: - Settings
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 
     private let supabase = SupabaseManager.shared.client
 
-    // MARK: - Owner Check
+    // MARK: - Owner Check (server-verified, no client-local allowlist)
     var isOwner: Bool {
-        guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        guard let role = AuthService.shared.currentProfile?.role else { return false }
+        return role == .superadmin
     }
 
     // MARK: - Load All Bot Configs
@@ -47,7 +45,6 @@ final class SpatterBotService: ObservableObject {
                 botConfigs[config.platform] = config
             }
         } catch {
-            // Table may not exist yet — use empty configs
             print("[SpatterBotService] Could not load configs: \(error.localizedDescription)")
         }
     }
@@ -55,14 +52,12 @@ final class SpatterBotService: ObservableObject {
     // MARK: - Save Bot Config
     func saveBotConfig(_ config: BotConfiguration) async throws {
         if config.id != nil {
-            // Update
             try await supabase
                 .from("spatter_bot_configs")
                 .update(config)
                 .eq("id", value: config.id!)
                 .execute()
         } else {
-            // Insert
             let saved: BotConfiguration = try await supabase
                 .from("spatter_bot_configs")
                 .insert(config)
@@ -116,7 +111,6 @@ final class SpatterBotService: ObservableObject {
 
     // MARK: - Analytics
     func loadAnalytics(days: Int = 7) async {
-        // Build from content queue engagement data for now
         var platformStats: [String: PlatformAnalytics] = [:]
         for item in contentQueue where item.status == .posted {
             guard let platform = BotPlatform(rawValue: item.platform) else { continue }
@@ -137,25 +131,11 @@ final class SpatterBotService: ObservableObject {
     }
 
     // MARK: - Stats
-    var activeBotCount: Int {
-        botConfigs.values.filter(\.isActive).count
-    }
-
-    var configuredBotCount: Int {
-        botConfigs.values.filter { !$0.credentials.isEmpty }.count
-    }
-
-    var postsToday: Int {
-        contentQueue.filter { $0.status == .posted }.count
-    }
-
-    var totalFollowers: Int {
-        analytics.reduce(0) { $0 + $1.followers }
-    }
-
-    var contentQueuedCount: Int {
-        contentQueue.filter { $0.status == .queued || $0.status == .draft }.count
-    }
+    var activeBotCount: Int { botConfigs.values.filter(\.isActive).count }
+    var configuredBotCount: Int { botConfigs.values.filter { !$0.credentials.isEmpty }.count }
+    var postsToday: Int { contentQueue.filter { $0.status == .posted }.count }
+    var totalFollowers: Int { analytics.reduce(0) { $0 + $1.followers } }
+    var contentQueuedCount: Int { contentQueue.filter { $0.status == .queued || $0.status == .draft }.count }
 
     // MARK: - Emergency Stop
     func emergencyStopAll() async {

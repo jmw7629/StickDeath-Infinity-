@@ -7,6 +7,9 @@ let package = Package(
     name: "StickDeathInfinity",
     platforms: [.iOS(.v17)],
     dependencies: [
+        // SDCore — production drawing/persistence types (local)
+        .package(path: "SDCore"),
+
         // Supabase — Auth, Database, Storage, Realtime, Edge Functions
         .package(url: "https://github.com/supabase-community/supabase-swift.git", from: "2.0.0"),
 

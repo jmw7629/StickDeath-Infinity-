@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 struct StickerEmojiPanel: View {
     @ObservedObject var vm: StudioViewModel

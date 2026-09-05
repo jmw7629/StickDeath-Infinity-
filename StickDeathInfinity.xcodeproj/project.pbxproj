@@ -71,6 +71,7 @@
 		B08F79CCEDA61C3317EA4D09 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A58386C9AEBE847DB9B6FA95 /* Assets.xcassets */; };
 		26DC1157C43122DB89395CAB /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 942276A7C2AD5F02FCFE142E /* Supabase */; };
 		990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0B86BD26C0F4E5851CCB9969 /* LiveKit */; };
+		AAAA000100000001DEADBEEF /* SDCore in Frameworks */ = {isa = PBXBuildFile; productRef = AAAA000100000002DEADBEEF /* SDCore */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXFileReference section */
@@ -148,6 +149,7 @@
 			files = (
 				26DC1157C43122DB89395CAB /* Supabase in Frameworks */,
 				990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */,
+				AAAA000100000001DEADBEEF /* SDCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -540,6 +542,7 @@
 			packageProductDependencies = (
 				942276A7C2AD5F02FCFE142E /* Supabase */,
 				0B86BD26C0F4E5851CCB9969 /* LiveKit */,
+				AAAA000100000002DEADBEEF /* SDCore */,
 			);
 			productName = StickDeathInfinity;
 			productReference = C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */;
@@ -571,6 +574,7 @@
 			);
 			mainGroup = 0B1447498EC4F1F69A2A1BCC;
 			packageReferences = (
+				AAAA000100000000DEADBEEF /* SDCore */,
 				AD8BA8041B6CA7947F5006AE /* supabase-swift */,
 				A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */,
 			);
@@ -866,6 +870,13 @@
 		};
 		/* End XCConfigurationList section */
 
+		/* Begin XCLocalSwiftPackageReference section */
+		AAAA000100000000DEADBEEF /* SDCore */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SDCore;
+		};
+		/* End XCLocalSwiftPackageReference section */
+
 		/* Begin XCRemoteSwiftPackageReference section */
 		AD8BA8041B6CA7947F5006AE /* supabase-swift */ = {
 			isa = XCRemoteSwiftPackageReference;
@@ -886,6 +897,11 @@
 		/* End XCRemoteSwiftPackageReference section */
 
 		/* Begin XCSwiftPackageProductDependency section */
+		AAAA000100000002DEADBEEF /* SDCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AAAA000100000000DEADBEEF /* SDCore */;
+			productName = SDCore;
+		};
 		942276A7C2AD5F02FCFE142E /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = AD8BA8041B6CA7947F5006AE /* Supabase */;

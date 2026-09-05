@@ -5,6 +5,7 @@
 
 import Foundation
 import Supabase
+import SDCore
 
 @MainActor
 final class ProjectService {

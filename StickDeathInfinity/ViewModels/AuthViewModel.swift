@@ -17,7 +17,6 @@ final class AuthViewModel: ObservableObject {
     private let auth = AuthService.shared
 
     var isAuthenticated: Bool { state == .authenticated }
-    var isSuperAdmin: Bool { auth.isSuperAdmin }
     var userId: String? { auth.userId }
     var displayName: String? { auth.displayName }
 

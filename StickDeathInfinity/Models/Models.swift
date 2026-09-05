@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftUI
+import SDCore
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -56,77 +57,30 @@ struct StudioProject: Codable, Identifiable {
     }
 }
 
-// MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
-    let id: String
-    var tool: DrawingTool
-    var points: [StrokePoint]
-    var color: String       // hex color
-    var width: CGFloat
-    var opacity: Double
-    var fillColor: String?  // for fill tool / shape fill
-    var layerID: String?
-}
+// MARK: - Studio Layer (UI-only presentation wrapper around SDCore.CanvasLayer)
+// Not Codable / not authoritative. Derived from canonical SDCore state.
+import SwiftUI
 
-struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
-    var timestamp: TimeInterval?
-}
-
-enum DrawingTool: String, Codable, CaseIterable {
-    case pen, pencil, marker, brush, crayon, eraser, fill, eyedropper
-    case line, rectangle, circle, text, lasso, wand
-    case arrow, image, ruler, gradient, blur
-    case airbrush, watercolor, neon, calligraphy
-    case smudge, sharpen, move, hand, zoom
-}
-
-struct AnimationFrame: Codable, Identifiable {
-    let id: String
-    var elements: [DrawnElement]
-}
-
-// Lock mode enum for type safety
-enum LayerLockMode: String, Codable, CaseIterable {
-    case free, full, position, alpha
-}
-
-struct CanvasLayer: Codable, Identifiable {
-    let id: String
-    var name: String
-    var visible: Bool
-    var locked: Bool
-    var opacity: Double
-    var lockMode: String = "free"      // free, full, position, alpha
-    var blendMode: String = "normal"   // normal, multiply, screen, overlay, etc.
-    var glowEnabled: Bool = false
-    var glowColor: String?
-    var colorLabel: String?
-}
-
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
 struct StudioLayer: Identifiable {
     let id: UUID
     var name: String
     var visible: Bool
     var opacity: Double
-    var lockMode: LayerLockMode
+    var lockMode: SDCore.LayerLockMode
     var blendMode: String
     var labelColor: Color
-    
+
     init(from canvas: CanvasLayer) {
         self.id = UUID(uuidString: canvas.id) ?? UUID()
         self.name = canvas.name
         self.visible = canvas.visible
         self.opacity = canvas.opacity
-        self.lockMode = LayerLockMode(rawValue: canvas.lockMode) ?? .free
+        self.lockMode = SDCore.LayerLockMode(rawValue: canvas.lockMode) ?? .free
         self.blendMode = canvas.blendMode
-        self.labelColor = Color.red // default
+        self.labelColor = Color.red
     }
-    
-    init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
+
+    init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: SDCore.LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
         self.id = id
         self.name = name
         self.visible = visible
@@ -154,7 +108,7 @@ struct SoundEffect: Identifiable {
     let duration: String
     let tag: String
     let waveform: [CGFloat]
-    
+
     init(id: String = UUID().uuidString, name: String, duration: String, tag: String) {
         self.id = id
         self.name = name

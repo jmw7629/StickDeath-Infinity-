@@ -7,7 +7,7 @@ struct AdminDashboardView: View {
     @State private var selectedTab = "dashboard"
     @State private var stats = AdminStats()
     @State private var showSpatterAdmin = false
-    
+
     let tabs: [(id: String, icon: String, label: String)] = [
         ("dashboard", "chart.bar.fill", "Dashboard"),
         ("users", "person.2.fill", "Users"),
@@ -20,11 +20,11 @@ struct AdminDashboardView: View {
         ("settings", "gearshape.fill", "Settings"),
         ("billing", "creditcard.fill", "Billing"),
     ]
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -41,7 +41,7 @@ struct AdminDashboardView: View {
                             .foregroundColor(.white.opacity(0.4))
                     }
                     Spacer()
-                    
+
                     // Live indicator
                     HStack(spacing: 4) {
                         Circle()
@@ -54,7 +54,7 @@ struct AdminDashboardView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                
+
                 // Tab selector (horizontal scroll)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
@@ -77,9 +77,9 @@ struct AdminDashboardView: View {
                     .padding(.horizontal, 16)
                 }
                 .padding(.bottom, 8)
-                
+
                 Divider().background(Color.white.opacity(0.06))
-                
+
                 // Content
                 ScrollView {
                     VStack(spacing: 12) {
@@ -128,7 +128,7 @@ struct AdminStats {
 // MARK: - Dashboard Content
 struct AdminDashboardContent: View {
     let stats: AdminStats
-    
+
     var body: some View {
         VStack(spacing: 12) {
             // Stat cards
@@ -140,14 +140,14 @@ struct AdminDashboardContent: View {
                 AdminStatCard(icon: "exclamationmark.shield.fill", label: "Reports", value: "\(stats.pendingReports)", color: "EF4444")
                 AdminStatCard(icon: "brain", label: "AI Queries/Day", value: "\(stats.aiQueriesDay)", color: "EC4899")
             }
-            
+
             // Recent activity
             VStack(alignment: .leading, spacing: 8) {
                 Text("RECENT ACTIVITY")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 ForEach(0..<5, id: \.self) { i in
                     let activities = [
                         ("StickNinja99 joined", "person.fill.badge.plus", "2m ago"),
@@ -184,7 +184,7 @@ struct AdminStatCard: View {
     let label: String
     let value: String
     let color: String
-    
+
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: icon)
@@ -214,7 +214,7 @@ struct AdminUsersContent: View {
         ("AnimKing", "king@example.com", "creator", "👑"),
         ("xDeathArtist", "death@example.com", "free", "💀"),
     ]
-    
+
     var body: some View {
         VStack(spacing: 10) {
             // Search
@@ -228,7 +228,7 @@ struct AdminUsersContent: View {
             .padding(10)
             .background(Color(hex: "1A1A24"))
             .cornerRadius(10)
-            
+
             ForEach(users, id: \.0) { user in
                 HStack(spacing: 10) {
                     Text(user.3)
@@ -287,7 +287,7 @@ struct AdminSpatterContent: View {
             AdminInfoCard(title: "Brain Modules", value: "51,100", detail: "100 + 1,000 + 50,000")
             AdminInfoCard(title: "AI Queries Today", value: "892", detail: "Avg response: 1.2s")
             AdminInfoCard(title: "Knowledge Categories", value: "20", detail: "Animation, Physics, Anatomy...")
-            
+
             // Spatter Admin iframe link
             Button(action: {}) {
                 HStack {
@@ -313,7 +313,7 @@ struct AdminBotsContent: View {
         ("TutorBot", "📚", true), ("ChallengeBot", "🏆", true),
         ("NewsBot", "📰", true),
     ]
-    
+
     var body: some View {
         VStack(spacing: 8) {
             ForEach(bots, id: \.0) { bot in
@@ -368,7 +368,7 @@ struct AdminSettingsContent: View {
     @State private var maintenanceMode = false
     @State private var allowRegistration = true
     @State private var requireEmailVerification = true
-    
+
     var body: some View {
         VStack(spacing: 10) {
             Toggle("Maintenance Mode", isOn: $maintenanceMode)
@@ -408,7 +408,7 @@ struct AdminInfoCard: View {
     let title: String
     let value: String
     let detail: String
-    
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
