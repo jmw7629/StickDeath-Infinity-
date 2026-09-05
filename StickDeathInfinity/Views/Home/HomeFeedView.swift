@@ -5,20 +5,20 @@ struct HomeFeedView: View {
     @State private var showCreatePost = false
     @State private var showNotifications = false
     @State private var notificationCount = 3
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
                     Text("StickDeath ∞")
                         .font(.system(size: 20, weight: .black, design: .monospaced))
                         .foregroundColor(.red)
-                    
+
                     Spacer()
-                    
+
                     Button(action: { showNotifications.toggle() }) {
                         ZStack(alignment: .topTrailing) {
                             Image(systemName: "bell.fill")
@@ -35,7 +35,7 @@ struct HomeFeedView: View {
                             }
                         }
                     }
-                    
+
                     Button(action: { showCreatePost = true }) {
                         Image(systemName: "plus.circle.fill")
                             .font(.system(size: 22))
@@ -45,9 +45,9 @@ struct HomeFeedView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                
+
                 Divider().background(Color.white.opacity(0.06))
-                
+
                 // Feed
                 ScrollView {
                     LazyVStack(spacing: 0) {
@@ -68,7 +68,7 @@ struct FeedPostCard: View {
     @Binding var post: FeedPost
     @State private var showComments = false
     @State private var newComment = ""
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Author header
@@ -81,7 +81,7 @@ struct FeedPostCard: View {
                     Text(post.avatar)
                         .font(.system(size: 18))
                 }
-                
+
                 VStack(alignment: .leading, spacing: 1) {
                     Text(post.username)
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
@@ -90,22 +90,22 @@ struct FeedPostCard: View {
                         .font(.system(size: 10))
                         .foregroundColor(.white.opacity(0.4))
                 }
-                
+
                 Spacer()
-                
+
                 Image(systemName: "ellipsis")
                     .foregroundColor(.white.opacity(0.3))
                     .font(.system(size: 14))
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            
+
             // Content preview
             ZStack {
                 RoundedRectangle(cornerRadius: 0)
                     .fill(Color(hex: "12121A"))
                     .frame(height: 280)
-                
+
                 VStack(spacing: 8) {
                     Text(post.previewEmoji)
                         .font(.system(size: 64))
@@ -119,7 +119,7 @@ struct FeedPostCard: View {
                     }
                 }
             }
-            
+
             // Action bar
             HStack(spacing: 20) {
                 // Like
@@ -135,7 +135,7 @@ struct FeedPostCard: View {
                     }
                     .font(.system(size: 13))
                 }
-                
+
                 // Comments
                 Button(action: { showComments.toggle() }) {
                     HStack(spacing: 4) {
@@ -145,16 +145,16 @@ struct FeedPostCard: View {
                     .font(.system(size: 13))
                     .foregroundColor(.white.opacity(0.5))
                 }
-                
+
                 // Share
                 Button(action: {}) {
                     Image(systemName: "square.and.arrow.up")
                         .font(.system(size: 13))
                         .foregroundColor(.white.opacity(0.5))
                 }
-                
+
                 Spacer()
-                
+
                 // Coins
                 HStack(spacing: 2) {
                     Text("🪙")
@@ -166,7 +166,7 @@ struct FeedPostCard: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            
+
             // Caption
             if !post.caption.isEmpty {
                 Text(post.caption)
@@ -176,7 +176,7 @@ struct FeedPostCard: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
-            
+
             // Comments section
             if showComments {
                 VStack(spacing: 0) {
@@ -200,7 +200,7 @@ struct FeedPostCard: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 6)
                     }
-                    
+
                     // Add comment
                     HStack(spacing: 8) {
                         TextField("Add a comment...", text: $newComment)
@@ -209,7 +209,7 @@ struct FeedPostCard: View {
                             .padding(8)
                             .background(Color(hex: "1A1A24"))
                             .cornerRadius(8)
-                        
+
                         Button(action: {
                             if !newComment.isEmpty {
                                 let comment = PostComment(
@@ -233,7 +233,7 @@ struct FeedPostCard: View {
                 }
                 .background(Color(hex: "0D0D14"))
             }
-            
+
             Divider().background(Color.white.opacity(0.04))
         }
     }

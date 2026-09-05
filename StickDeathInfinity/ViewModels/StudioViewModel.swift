@@ -6,6 +6,7 @@
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -34,15 +35,17 @@ final class StudioViewModel: ObservableObject {
         return frames[currentFrameIndex - 1]
     }
 
-    // MARK: - Layers (typed StudioLayer for panel, CanvasLayer for persistence)
-    @Published var studioLayers: [StudioLayer] = [
-        StudioLayer(name: "Layer 1")
-    ]
+    // MARK: - Layers (canonical CanvasLayer is the sole mutable source of truth)
     @Published var layers: [CanvasLayer] = [
         CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)
     ]
     @Published var activeLayerID: String = ""
     @Published var currentLayerIndex: Int = 0
+
+    /// Derived presentation adapter for UI — never independently mutated.
+    var studioLayers: [StudioLayer] {
+        layers.map { StudioLayer(from: $0) }
+    }
 
     // MARK: - Tool State
     @Published var selectedTool: DrawingTool = .brush
@@ -54,7 +57,7 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
+
     // Fill tool properties (GREEN theme in preview)
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
@@ -107,7 +110,15 @@ final class StudioViewModel: ObservableObject {
         return "\(seconds / 60)m ago"
     }
 
+    // MARK: - SDCore Persistence
+    private let persistence: ProjectPersistence
+    private var legacyMigration: LegacyMigration?
+
     init() {
+        let docsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        persistence = ProjectPersistence(rootURL: docsURL)
+        let legacyRoot = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        legacyMigration = LegacyMigration(legacyRoot: legacyRoot, persistence: persistence)
         activeLayerID = layers.first?.id ?? ""
         Task { await loadProjects() }
     }
@@ -233,61 +244,65 @@ final class StudioViewModel: ObservableObject {
             layers[idx].locked.toggle()
         }
     }
-    
-    // StudioLayer operations for LayerPanel
+
+    // StudioLayer operations for LayerPanel — resolve UUID to canonical CanvasLayer
     func toggleLayerVisibility(_ id: UUID) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].visible.toggle()
+        if let idx = layers.firstIndex(where: { $0.id == id.uuidString }) {
+            layers[idx].visible.toggle()
         }
     }
-    
+
     func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].lockMode = mode
+        if let idx = layers.firstIndex(where: { $0.id == id.uuidString }) {
+            layers[idx].lockMode = mode.rawValue
         }
     }
-    
+
     func setLayerColor(_ id: UUID, color: Color) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].labelColor = color
+        if let idx = layers.firstIndex(where: { $0.id == id.uuidString }) {
+            layers[idx].colorLabel = color.hexString
         }
     }
-    
+
     func duplicateLayer(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
-        let original = studioLayers[idx]
-        let newLayer = StudioLayer(
+        guard let idx = layers.firstIndex(where: { $0.id == id.uuidString }) else { return }
+        let original = layers[idx]
+        let newLayer = CanvasLayer(
+            id: UUID().uuidString,
             name: "\(original.name) Copy",
             visible: original.visible,
+            locked: original.locked,
             opacity: original.opacity,
             lockMode: original.lockMode,
             blendMode: original.blendMode,
-            labelColor: original.labelColor
+            glowEnabled: original.glowEnabled,
+            glowColor: original.glowColor,
+            colorLabel: original.colorLabel
         )
-        studioLayers.insert(newLayer, at: idx + 1)
+        layers.insert(newLayer, at: idx + 1)
     }
-    
+
     func moveLayerUp(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
-        studioLayers.swapAt(idx, idx - 1)
+        guard let idx = layers.firstIndex(where: { $0.id == id.uuidString }), idx > 0 else { return }
+        layers.swapAt(idx, idx - 1)
     }
-    
+
     func moveLayerDown(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
-        studioLayers.swapAt(idx, idx + 1)
+        guard let idx = layers.firstIndex(where: { $0.id == id.uuidString }), idx < layers.count - 1 else { return }
+        layers.swapAt(idx, idx + 1)
     }
-    
+
     func addLayer() {
-        let num = studioLayers.count + 1
-        let newLayer = StudioLayer(name: "Layer \(num)")
-        studioLayers.insert(newLayer, at: 0)
-        // Also sync to CanvasLayer
-        let canvasLayer = CanvasLayer(
-            id: newLayer.id.uuidString, name: newLayer.name,
-            visible: true, locked: false, opacity: 1.0
+        let num = layers.count + 1
+        let newLayer = CanvasLayer(
+            id: UUID().uuidString,
+            name: "Layer \(num)",
+            visible: true,
+            locked: false,
+            opacity: 1.0
         )
-        layers.insert(canvasLayer, at: 0)
-        activeLayerID = canvasLayer.id
+        layers.insert(newLayer, at: 0)
+        activeLayerID = newLayer.id
         currentLayerIndex = 0
     }
 
@@ -358,8 +373,48 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
+    // MARK: - Save/Load (delegates to SDCore persistence)
     func save() async {
+        // Save canonical state via SDCore
+        if let projectID = currentProjectID {
+            let sdFrames = frames.map { frame -> SDCore.AnimationFrame in
+                SDCore.AnimationFrame(
+                    id: frame.id,
+                    elements: frame.elements.map { el -> SDCore.DrawnElement in
+                        SDCore.DrawnElement(
+                            id: el.id,
+                            tool: SDCore.DrawingTool(rawValue: el.tool.rawValue) ?? .pen,
+                            points: el.points.map { pt in
+                                SDCore.StrokePoint(x: Double(pt.x), y: Double(pt.y), pressure: pt.pressure.map(Double.init), timestamp: pt.timestamp)
+                            },
+                            color: el.color,
+                            width: Double(el.width),
+                            opacity: el.opacity,
+                            fillColor: el.fillColor,
+                            layerID: el.layerID
+                        )
+                    }
+                )
+            }
+            let doc = ProjectDocument(
+                projectName: projectName,
+                canvasWidth: canvasWidth,
+                canvasHeight: canvasHeight,
+                fps: fps,
+                frames: sdFrames,
+                layers: layers,
+                activeLayerID: activeLayerID,
+                currentFrameIndex: currentFrameIndex
+            )
+            do {
+                try persistence.save(doc, projectID: projectID)
+                print("[Studio] SDCore saved \(frames.count) frames, \(layers.count) layers")
+            } catch {
+                print("[Studio] SDCore save error: \(error)")
+            }
+        }
+
+        // Also sync to Supabase
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
@@ -374,9 +429,62 @@ final class StudioViewModel: ObservableObject {
             ]).execute()
 
             lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
+            print("[Studio] Supabase saved \(frames.count) frames")
         } catch {
-            print("[Studio] Save error: \(error)")
+            print("[Studio] Supabase save error: \(error)")
+        }
+    }
+
+    // MARK: - Load from SDCore (with legacy migration)
+    func loadLocal(projectID: String) {
+        // Run legacy migration first
+        if let migration = legacyMigration {
+            do {
+                let result = try migration.migrate(projectID: projectID)
+                if !result.migratedFrameIndices.isEmpty {
+                    print("[Studio] Migrated \(result.migratedFrameIndices.count) legacy frames")
+                }
+            } catch {
+                print("[Studio] Legacy migration error: \(error)")
+            }
+        }
+
+        // Load from SDCore
+        do {
+            let doc = try persistence.load(projectID: projectID)
+            projectName = doc.projectName
+            canvasWidth = doc.canvasWidth
+            canvasHeight = doc.canvasHeight
+            fps = doc.fps
+            layers = doc.layers
+            activeLayerID = doc.activeLayerID
+            currentFrameIndex = doc.currentFrameIndex
+
+            // Convert SDCore frames back to app frames
+            frames = doc.frames.map { sdFrame -> AnimationFrame in
+                AnimationFrame(
+                    id: sdFrame.id,
+                    elements: sdFrame.elements.map { el -> DrawnElement in
+                        DrawnElement(
+                            id: el.id,
+                            tool: DrawingTool(rawValue: el.tool.rawValue) ?? .pen,
+                            points: el.points.map { pt in
+                                StrokePoint(x: CGFloat(pt.x), y: CGFloat(pt.y), pressure: pt.pressure.map(CGFloat.init), timestamp: pt.timestamp)
+                            },
+                            color: el.color,
+                            width: CGFloat(el.width),
+                            opacity: el.opacity,
+                            fillColor: el.fillColor,
+                            layerID: el.layerID
+                        )
+                    }
+                )
+            }
+
+            lastSaveTime = Date()
+            print("[Studio] Loaded \(frames.count) frames, \(layers.count) layers from SDCore")
+        } catch {
+            print("[Studio] SDCore load error: \(error)")
         }
     }
 }

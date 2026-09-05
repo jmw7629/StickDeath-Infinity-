@@ -21,13 +21,13 @@ import SwiftUI
 struct LayerPanel: View {
     @ObservedObject var vm: StudioViewModel
     @State private var expandedLayer: UUID? = nil
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Tap to dismiss area
             Color.black.opacity(0.3)
                 .onTapGesture { vm.activePanel = .none }
-            
+
             // Panel
             VStack(spacing: 0) {
                 // Drag handle
@@ -36,7 +36,7 @@ struct LayerPanel: View {
                     .frame(width: 40, height: 4)
                     .padding(.top, 10)
                     .padding(.bottom, 8)
-                
+
                 ScrollView {
                     VStack(spacing: 0) {
                         ForEach(vm.studioLayers) { layer in
@@ -46,15 +46,15 @@ struct LayerPanel: View {
                                         expandedLayer = expandedLayer == layer.id ? nil : layer.id
                                     }
                                 }
-                            
+
                             if expandedLayer == layer.id {
                                 LayerDetailView(vm: vm, layer: layer)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                            
+
                             Divider().background(Color.white.opacity(0.06))
                         }
-                        
+
                         // Add layer button
                         Button(action: { vm.addLayer() }) {
                             Text("+")
@@ -83,7 +83,7 @@ struct LayerRow: View {
     @ObservedObject var vm: StudioViewModel
     let layer: StudioLayer
     let isExpanded: Bool
-    
+
     var body: some View {
         HStack(spacing: 8) {
             // Drag dots (2×3 grid)
@@ -96,7 +96,7 @@ struct LayerRow: View {
                 }
             }
             .frame(width: 12)
-            
+
             // Visibility toggle (🚫 when hidden)
             Button(action: { vm.toggleLayerVisibility(layer.id) }) {
                 Image(systemName: layer.visible ? "eye.fill" : "eye.slash.fill")
@@ -104,7 +104,7 @@ struct LayerRow: View {
                     .foregroundColor(layer.visible ? .white.opacity(0.5) : .red.opacity(0.6))
             }
             .frame(width: 24)
-            
+
             // Thumbnail
             RoundedRectangle(cornerRadius: 4)
                 .fill(Color.white.opacity(0.08))
@@ -113,24 +113,24 @@ struct LayerRow: View {
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                 )
-            
+
             // Layer name (red text)
             Text(layer.name)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(Color(hex: "DC2626"))
-            
+
             Spacer()
-            
+
             // Lock icon
             Image(systemName: lockIcon(for: layer.lockMode))
                 .font(.system(size: 12))
                 .foregroundColor(layer.lockMode == .full ? Color.yellow : .white.opacity(0.4))
-            
+
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(.white.opacity(0.5))
-            
+
             // Chevron
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 10))
@@ -140,7 +140,7 @@ struct LayerRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
     }
-    
+
     func lockIcon(for mode: LayerLockMode) -> String {
         switch mode {
         case .free: return "lock.open"
@@ -155,7 +155,7 @@ struct LayerRow: View {
 struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
     let layer: StudioLayer
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             // Opacity slider (RED bar)
@@ -163,7 +163,7 @@ struct LayerDetailView: View {
                 Text("Opacity")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
+
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 3)
@@ -175,19 +175,19 @@ struct LayerDetailView: View {
                     }
                 }
                 .frame(height: 6)
-                
+
                 Text("\(Int(layer.opacity * 100))%")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
             }
-            
+
             // LOCK MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("LOCK MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 6) {
                     LockModeButton(emoji: "🔓", label: "Free", isSelected: layer.lockMode == .free, selectedColor: .clear) {
                         vm.setLayerLockMode(layer.id, mode: .free)
@@ -203,14 +203,14 @@ struct LayerDetailView: View {
                     }
                 }
             }
-            
+
             // BLEND MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("BLEND MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack {
                     Text(layer.blendMode)
                         .font(.system(size: 12, design: .monospaced))
@@ -231,27 +231,27 @@ struct LayerDetailView: View {
                         .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
                 )
             }
-            
+
             // GLOW toggle
             HStack {
                 Text("GLOW")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 Toggle("", isOn: .constant(false))
                     .labelsHidden()
                     .scaleEffect(0.8)
-                
+
                 Spacer()
             }
-            
+
             // Color dots
             HStack(spacing: 6) {
                 Text("Color:")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
+
                 ForEach([
                     Color.red, Color.orange, Color.yellow, Color.green,
                     Color(hex: "38BDF8"), Color.purple, Color.pink, Color.gray
@@ -268,14 +268,14 @@ struct LayerDetailView: View {
                         }
                 }
             }
-            
+
             // Action buttons
             HStack(spacing: 6) {
                 LayerActionButton(emoji: "📝", label: "Editable") {}
                 LayerActionButton(emoji: "📋", label: "Duplicate") {
                     vm.duplicateLayer(layer.id)
                 }
-                
+
                 // Move up
                 Button(action: { vm.moveLayerUp(layer.id) }) {
                     Image(systemName: "arrow.up.square.fill")
@@ -286,7 +286,7 @@ struct LayerDetailView: View {
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
                 }
-                
+
                 // Move down
                 Button(action: { vm.moveLayerDown(layer.id) }) {
                     Image(systemName: "arrow.down.square.fill")
@@ -312,7 +312,7 @@ struct LockModeButton: View {
     let isSelected: Bool
     let selectedColor: Color
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -341,7 +341,7 @@ struct LayerActionButton: View {
     let emoji: String
     let label: String
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             HStack(spacing: 4) {

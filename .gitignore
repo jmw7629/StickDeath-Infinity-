@@ -5,7 +5,6 @@ build/
 DerivedData/
 .build/
 StickDeathInfinity/Config/AppConfig.swift
-StickDeathInfinity/App/AppConfig.swift
 HANDOFF-COMPLETE.md
 
 # Local AI/reference inputs — never commit

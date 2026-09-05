@@ -2,7 +2,7 @@ import SwiftUI
 
 struct LeaderboardView: View {
     @Environment(\.dismiss) private var dismiss
-    
+
     struct Leader: Identifiable {
         let id = UUID()
         let rank: Int
@@ -12,7 +12,7 @@ struct LeaderboardView: View {
         let wins: Int
         let streak: Int
     }
-    
+
     let leaders: [Leader] = [
         Leader(rank: 1, name: "PixelFury", avatar: "🔥", xp: 12450, wins: 89, streak: 14),
         Leader(rank: 2, name: "NeonBlade", avatar: "⚡", xp: 11200, wins: 76, streak: 8),
@@ -23,7 +23,7 @@ struct LeaderboardView: View {
         Leader(rank: 7, name: "DeathDraw", avatar: "✏️", xp: 7200, wins: 45, streak: 2),
         Leader(rank: 8, name: "StickMaster", avatar: "💀", xp: 6800, wins: 41, streak: 1),
     ]
-    
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -39,7 +39,7 @@ struct LeaderboardView: View {
             }
             .padding()
             .background(Color(hex: "0A0A14"))
-            
+
             // Top 3 podium
             HStack(alignment: .bottom, spacing: 12) {
                 // 2nd place
@@ -51,7 +51,7 @@ struct LeaderboardView: View {
             }
             .padding(.vertical, 20)
             .padding(.horizontal)
-            
+
             // Rest of leaderboard
             ScrollView {
                 VStack(spacing: 0) {
@@ -83,7 +83,7 @@ struct LeaderboardView: View {
         .background(Color(hex: "0A0A14"))
         .navigationBarHidden(true)
     }
-    
+
     @ViewBuilder
     func podiumColumn(leader: Leader, medal: String, height: CGFloat) -> some View {
         VStack(spacing: 4) {

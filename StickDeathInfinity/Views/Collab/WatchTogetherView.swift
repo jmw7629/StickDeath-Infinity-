@@ -5,11 +5,11 @@ struct WatchTogetherView: View {
     @State private var isCreating = false
     @State private var newTitle = ""
     @State private var selectedSession: WatchSession?
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -33,7 +33,7 @@ struct WatchTogetherView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .padding(.bottom, 8)
-                
+
                 // Active sessions
                 ScrollView {
                     VStack(spacing: 12) {
@@ -70,7 +70,7 @@ struct WatchTogetherView: View {
 struct WatchSessionCard: View {
     let session: WatchSession
     let onJoin: () -> Void
-    
+
     var body: some View {
         VStack(spacing: 0) {
             // Preview area
@@ -78,7 +78,7 @@ struct WatchSessionCard: View {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color(hex: "1A1A24"))
                     .frame(height: 140)
-                
+
                 VStack(spacing: 8) {
                     Text(session.thumbnail)
                         .font(.system(size: 48))
@@ -86,7 +86,7 @@ struct WatchSessionCard: View {
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.white.opacity(0.6))
                 }
-                
+
                 // Live indicator
                 if session.isLive {
                     VStack {
@@ -103,9 +103,9 @@ struct WatchSessionCard: View {
                             .padding(.vertical, 3)
                             .background(Color.red.opacity(0.8))
                             .cornerRadius(4)
-                            
+
                             Spacer()
-                            
+
                             HStack(spacing: 2) {
                                 Image(systemName: "eye.fill")
                                     .font(.system(size: 8))
@@ -119,13 +119,13 @@ struct WatchSessionCard: View {
                             .cornerRadius(4)
                         }
                         .padding(8)
-                        
+
                         Spacer()
                     }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            
+
             // Info
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -136,9 +136,9 @@ struct WatchSessionCard: View {
                         .font(.system(size: 10))
                         .foregroundColor(.white.opacity(0.5))
                 }
-                
+
                 Spacer()
-                
+
                 Button(action: onJoin) {
                     Text("Join")
                         .font(.system(size: 12, weight: .bold))
@@ -166,7 +166,7 @@ struct CreateWatchRoomSheet: View {
     @Binding var title: String
     let onCreate: () -> Void
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         NavigationView {
             ZStack {
@@ -178,7 +178,7 @@ struct CreateWatchRoomSheet: View {
                         .padding()
                         .background(Color(hex: "1A1A24"))
                         .cornerRadius(12)
-                    
+
                     Button(action: onCreate) {
                         Text("Create Room")
                             .font(.system(size: 16, weight: .bold))
@@ -188,7 +188,7 @@ struct CreateWatchRoomSheet: View {
                             .background(Color.red)
                             .cornerRadius(12)
                     }
-                    
+
                     Spacer()
                 }
                 .padding(20)
@@ -212,7 +212,7 @@ struct WatchSession: Identifiable {
     let thumbnail: String
     let isLive: Bool
     let animationTitle: String
-    
+
     static let samples: [WatchSession] = [
         WatchSession(id: "ws1", title: "Epic Battle Marathon", host: "StickNinja99", viewers: 42, thumbnail: "⚔️", isLive: true, animationTitle: "Last Stand"),
         WatchSession(id: "ws2", title: "Speed Run Showcase", host: "AnimKing", viewers: 18, thumbnail: "🏃", isLive: true, animationTitle: "Speed Run"),
