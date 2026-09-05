@@ -16,7 +16,12 @@ final class SpatterService {
 
     private let apiKey = AppConfig.openAIAPIKey
     private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+
+    /// Cloud AI is available only when a valid API key is configured.
+    /// When unconfigured, the service reports unavailable and must not fabricate success.
+    var isCloudAvailable: Bool {
+        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -83,11 +88,16 @@ final class SpatterService {
 
     // MARK: - Chat
 
-    /// Send a message to Spatter and get a response
+    /// Send a message to Spatter and get a response.
+    /// Returns explicit unavailable message when no API key is configured.
     func chat(
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
     ) async throws -> String {
+        guard isCloudAvailable else {
+            return "[Spatter Cloud AI is not configured. Set an OpenAI API key in Settings to enable cloud responses. Local knowledge base is always available.]"
+        }
+
         // 1. Build embedded knowledge context (always available, instant)
         let embeddedKnowledge = buildKnowledgeContext(
             screen: context?.currentScreen,
@@ -118,6 +128,7 @@ final class SpatterService {
         }
 
         // 5. Call OpenAI
+        let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")

@@ -6,6 +6,7 @@
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -114,19 +115,42 @@ final class StudioViewModel: ObservableObject {
 
     // MARK: - Project List Operations
     func loadProjects() async {
+        // Load local projects first (always available)
+        let localProjects = localPersistence.listProjects()
+        savedProjects = localProjects.map { proj in
+            StudioProject(
+                id: proj.id,
+                userID: proj.userID,
+                name: proj.name,
+                width: proj.width,
+                height: proj.height,
+                fps: proj.fps,
+                frameCount: proj.frameCount,
+                thumbnailURL: proj.thumbnailURL,
+                createdAt: proj.createdAt,
+                updatedAt: proj.updatedAt
+            )
+        }
+
+        // Also load remote projects if authenticated (appends to local list)
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
-            let projects: [StudioProject] = try await supabase
+            let remoteProjects: [StudioProject] = try await supabase
                 .from("studio_projects")
                 .select("*")
                 .eq("user_id", value: userId)
                 .order("updated_at", ascending: false)
                 .execute()
                 .value
-            savedProjects = projects
+
+            // Merge: add remote projects not already in local list
+            let localIDs = Set(savedProjects.map(\.id))
+            for remote in remoteProjects where !localIDs.contains(remote.id) {
+                savedProjects.append(remote)
+            }
         } catch {
-            print("[Studio] Load projects error: \(error)")
+            print("[Studio] Remote project load failed (local projects available): \(error)")
         }
     }
 
@@ -135,6 +159,8 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = width
         canvasHeight = height
         self.fps = fps
+        let newProjectID = UUID().uuidString
+        currentProjectID = newProjectID
         frames = [AnimationFrame(id: UUID().uuidString, elements: [])]
         layers = [CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)]
         activeLayerID = layers.first?.id ?? ""
@@ -143,6 +169,9 @@ final class StudioViewModel: ObservableObject {
         undoStack.removeAll()
         redoStack.removeAll()
         audioClips.removeAll()
+
+        // Persist the new project immediately
+        Task { await save() }
     }
 
     func openProject(_ project: StudioProject) {
@@ -151,6 +180,11 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = project.width ?? 1080
         canvasHeight = project.height ?? 1080
         fps = project.fps ?? 12
+
+        // Attempt to load full project data from local persistence
+        Task {
+            await loadLocalProject(id: project.id)
+        }
     }
 
     // MARK: - Frame Operations
@@ -359,7 +393,47 @@ final class StudioViewModel: ObservableObject {
     }
 
     // MARK: - Save/Load
+    private var localPersistence: ProjectPersistence {
+        ProjectPersistence(baseDir: ProjectPersistence.defaultBaseDir)
+    }
+
+    /// Local save — works with no Supabase session and no network.
+    /// Also attempts remote sync if authenticated (fails independently).
     func save() async {
+        let projectID = currentProjectID ?? UUID().uuidString
+        if currentProjectID == nil { currentProjectID = projectID }
+
+        // Convert iOS types to SDCore persistence types
+        let sdFrames = frames.map(\.sdCore)
+        let sdLayers = layers.map(\.sdCore)
+        let sdProject = SDCore.StudioProjectRecord(
+            id: projectID,
+            userID: AuthService.shared.userId ?? "local",
+            name: projectName,
+            width: canvasWidth,
+            height: canvasHeight,
+            fps: fps,
+            frameCount: frames.count,
+            legacyRasterFiles: []
+        )
+
+        let bundle = ProjectBundle(
+            project: sdProject,
+            frames: sdFrames,
+            layers: sdLayers
+        )
+
+        // 1. Local save (always succeeds if disk is available)
+        do {
+            try localPersistence.save(bundle)
+            lastSaveTime = Date()
+            print("[Studio] Local save: \(frames.count) frames, \(layers.count) layers")
+        } catch {
+            print("[Studio] Local save error: \(error)")
+            return
+        }
+
+        // 2. Remote sync (optional — fails independently, never destroys local state)
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
@@ -368,15 +442,33 @@ final class StudioViewModel: ObservableObject {
             let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
 
             try await supabase.from("studio_project_versions").insert([
-                "project_id": AnyJSON.null,
+                "project_id": .string(projectID),
                 "frame_data": .string(frameJSON),
                 "user_id": .string(userId),
             ]).execute()
 
-            lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
+            print("[Studio] Remote sync OK for project \(projectID)")
         } catch {
-            print("[Studio] Save error: \(error)")
+            print("[Studio] Remote sync failed (local state preserved): \(error)")
+        }
+    }
+
+    /// Local load — restores project from the same production persistence path used by save.
+    func loadLocalProject(id: String) async {
+        do {
+            let bundle = try localPersistence.load(projectID: id)
+            currentProjectID = id
+            projectName = bundle.project.name
+            canvasWidth = bundle.project.width ?? 1080
+            canvasHeight = bundle.project.height ?? 1080
+            fps = bundle.project.fps ?? 12
+            frames = bundle.frames.map { AnimationFrame(sdCore: $0) }
+            layers = bundle.layers.map { CanvasLayer(sdCore: $0) }
+            activeLayerID = layers.first?.id ?? ""
+            lastSaveTime = Date()
+            print("[Studio] Loaded local project: \(bundle.frames.count) frames, \(bundle.layers.count) layers")
+        } catch {
+            print("[Studio] Local load error: \(error)")
         }
     }
 }

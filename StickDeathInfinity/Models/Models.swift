@@ -5,6 +5,7 @@
 
 import Foundation
 import SwiftUI
+import SDCore
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -411,4 +412,74 @@ struct R3CallState {
     var spendLimit: Double = 50.0
     var isIdle = false
     var personalityLine: String? = nil
+}
+
+// MARK: - SDCore Bridge (iOS types → SDCore persistence types)
+
+extension StrokePoint {
+    /// Convert to SDCore StrokePoint for persistence
+    var sdCore: SDCore.StrokePoint {
+        SDCore.StrokePoint(x: Double(x), y: Double(y), pressure: pressure.map(Double.init), timestamp: timestamp)
+    }
+
+    /// Create from SDCore StrokePoint (at persistence boundary)
+    init(sdCore point: SDCore.StrokePoint) {
+        self.init(x: CGFloat(point.x), y: CGFloat(point.y), pressure: point.pressure.map(CGFloat.init), timestamp: point.timestamp)
+    }
+}
+
+extension DrawnElement {
+    /// Convert to SDCore DrawnElement for persistence
+    var sdCore: SDCore.DrawnElement {
+        SDCore.DrawnElement(
+            id: id, tool: tool.sdCore, points: points.map(\.sdCore), color: color,
+            width: Double(width), opacity: opacity, fillColor: fillColor, layerID: layerID
+        )
+    }
+
+    /// Create from SDCore DrawnElement (at persistence boundary)
+    init(sdCore elem: SDCore.DrawnElement) {
+        self.init(
+            id: elem.id, tool: DrawingTool(sdCore: elem.tool), points: elem.points.map { StrokePoint(sdCore: $0) },
+            color: elem.color, width: CGFloat(elem.width), opacity: elem.opacity,
+            fillColor: elem.fillColor, layerID: elem.layerID
+        )
+    }
+}
+
+extension DrawingTool {
+    var sdCore: SDCore.DrawingTool { SDCore.DrawingTool(rawValue: rawValue)! }
+    init(sdCore: SDCore.DrawingTool) { self.init(rawValue: sdCore.rawValue)! }
+}
+
+extension AnimationFrame {
+    /// Convert to SDCore AnimationFrame for persistence
+    var sdCore: SDCore.AnimationFrame {
+        SDCore.AnimationFrame(id: id, elements: elements.map(\.sdCore))
+    }
+
+    /// Create from SDCore AnimationFrame (at persistence boundary)
+    init(sdCore frame: SDCore.AnimationFrame) {
+        self.init(id: frame.id, elements: frame.elements.map { DrawnElement(sdCore: $0) })
+    }
+}
+
+extension CanvasLayer {
+    /// Convert to SDCore CanvasLayer for persistence
+    var sdCore: SDCore.CanvasLayer {
+        SDCore.CanvasLayer(
+            id: id, name: name, visible: visible, locked: locked, opacity: opacity,
+            lockMode: lockMode, blendMode: blendMode, glowEnabled: glowEnabled,
+            glowColor: glowColor, colorLabel: colorLabel
+        )
+    }
+
+    /// Create from SDCore CanvasLayer (at persistence boundary)
+    init(sdCore layer: SDCore.CanvasLayer) {
+        self.init(
+            id: layer.id, name: layer.name, visible: layer.visible, locked: layer.locked,
+            opacity: layer.opacity, lockMode: layer.lockMode, blendMode: layer.blendMode,
+            glowEnabled: layer.glowEnabled, glowColor: layer.glowColor, colorLabel: layer.colorLabel
+        )
+    }
 }
