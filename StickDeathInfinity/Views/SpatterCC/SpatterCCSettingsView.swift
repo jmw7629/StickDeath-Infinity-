@@ -1,7 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterCCSettingsView — Command Center global settings
-// Matches: spatter-admin /settings exactly
-// - AI Engine config (OpenAI key, Gemini key)
 // - Notifications (Slack webhook URL)
 // - Appearance (dark/light toggle)
 // - Emergency Controls (kill all bots)
@@ -11,8 +9,6 @@ import SwiftUI
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared
-    @State private var openAIKey: String = AppConfig.openAIAPIKey
-    @State private var geminiKey: String = AppConfig.geminiAPIKey
     @State private var slackWebhook: String = ""
     @State private var showEmergencyConfirm = false
     @State private var showSavedToast = false
@@ -27,17 +23,6 @@ struct SpatterCCSettingsView: View {
                 Text("Global configuration for Spatter Social Autopilot")
                     .font(.system(size: 14))
                     .foregroundColor(.sdTextSecondary)
-            }
-
-            // AI Engine section
-            CCSettingsSection(title: "AI Engine", icon: "brain.fill",
-                              description: "Spatter uses AI to generate platform-native content. Configure your AI provider below.") {
-                VStack(spacing: 14) {
-                    CCSecureField(label: "OpenAI API Key (GPT-4)", value: $openAIKey,
-                                  placeholder: "sk-...")
-                    CCSecureField(label: "Google Gemini API Key", value: $geminiKey,
-                                  placeholder: "AI...")
-                }
             }
 
             // Notifications section
@@ -127,8 +112,6 @@ struct SpatterCCSettingsView: View {
 
             // Save button
             Button {
-                botService.openAIKey = openAIKey
-                botService.geminiKey = geminiKey
                 botService.slackWebhook = slackWebhook
                 withAnimation { showSavedToast = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
@@ -200,49 +183,6 @@ struct CCSettingsSection<Content: View>: View {
         .padding(16)
         .background(Color.sdSurface)
         .cornerRadius(14)
-    }
-}
-
-// MARK: - Secure Field
-
-struct CCSecureField: View {
-    let label: String
-    @Binding var value: String
-    let placeholder: String
-    @State private var isRevealed = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.sdTextSecondary)
-
-            HStack {
-                if isRevealed {
-                    TextField(placeholder, text: $value)
-                        .font(.system(size: 14, design: .monospaced))
-                } else {
-                    SecureField(placeholder, text: $value)
-                        .font(.system(size: 14, design: .monospaced))
-                }
-
-                Button {
-                    isRevealed.toggle()
-                } label: {
-                    Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(.sdTextMuted)
-                }
-            }
-            .foregroundColor(.sdTextPrimary)
-            .padding(12)
-            .background(Color.sdSurface2)
-            .cornerRadius(8)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color.sdBorderLight, lineWidth: 1)
-            )
-        }
     }
 }
 

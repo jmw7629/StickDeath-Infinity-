@@ -1,0 +1,108 @@
+name: Recovery Gate v10 — SDCore CI
+
+on:
+  push:
+    branches: [main, "oc/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-sdcore:
+    name: Build SDCore
+    runs-on: ubuntu-latest
+    container: swift:5.9-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+      - name: Whitespace check
+        run: |
+          FAIL=0
+          for f in $(find . -name '*.swift' -not -path './.build/*' -not -path './bridge/*'); do
+            if grep -Pn '\s+$' "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::Trailing whitespace found"
+              grep -Pn '\s+$' "$f"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Whitespace check failed"
+            exit 1
+          fi
+          echo "Whitespace check passed"
+
+  test-sdcore:
+    name: Test SDCore
+    runs-on: ubuntu-latest
+    container: swift:5.9-jammy
+    needs: build-sdcore
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Test SDCore
+        run: swift test --package-path SDCore
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject client-local admin email allowlists
+        run: |
+          if grep -rn 'superuserEmails\|SUPERUSER_EMAILS\|adminEmails\|ADMIN_EMAILS' --include='*.swift' .; then
+            echo "::error::Client-local admin email allowlist found in source"
+            exit 1
+          fi
+          echo "No client-local admin allowlist found"
+      - name: Reject direct provider API calls from client
+        run: |
+          FAIL=0
+          for pattern in 'api\.openai\.com' 'api\.anthropic\.com' 'generativelanguage\.googleapis\.com' 'text\.pollinations\.ai'; do
+            if grep -rn "$pattern" --include='*.swift' .; then
+              echo "::error::Direct provider endpoint found: $pattern"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Security audit failed: direct provider calls found"
+            exit 1
+          fi
+          echo "No direct provider calls found"
+      - name: Reject fake placeholder config
+        run: |
+          FAIL=0
+          for pattern in 'xyzcompany\.supabase\.co' 'eyJ\.\.\.placeholder' 'sk-placeholder'; do
+            if grep -rn "$pattern" --include='*.swift' .; then
+              echo "::error::Fake placeholder config found: $pattern"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "Security audit failed: fake placeholders found"
+            exit 1
+          fi
+          echo "No fake placeholder config found"
+      - name: Reject provider key input in client
+        run: |
+          if grep -rn 'openAIAPIKey\|geminiAPIKey\|anthropicAPIKey\|providerAPIKey' --include='*.swift' .; then
+            echo "::error::Provider API key reference found in client"
+            exit 1
+          fi
+          echo "No provider API key references found"
+      - name: Verify no force unwrap of config URLs
+        run: |
+          FAIL=0
+          for f in $(grep -rln 'AppConfig\.' --include='*.swift' .); do
+            if grep -Pn 'AppConfig\.\w+!' "$f" >/dev/null 2>&1; then
+              echo "::warning file=$f::Force unwrap of AppConfig property"
+              grep -Pn 'AppConfig\.\w+!' "$f"
+              FAIL=1
+            fi
+          done
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::warning::Force unwrap of config properties detected (not blocking, but flagged)"
+          fi
+          echo "Force unwrap check complete"

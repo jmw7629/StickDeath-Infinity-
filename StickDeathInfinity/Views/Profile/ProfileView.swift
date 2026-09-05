@@ -6,11 +6,11 @@ struct ProfileView: View {
     @State private var bio = "Creator & Animator 💀 Building the future of stick figure animation."
     @State private var isEditing = false
     @State private var showSettings = false
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
+
             VStack(spacing: 0) {
                 // Header
                 HStack {
@@ -26,7 +26,7 @@ struct ProfileView: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
-                
+
                 ScrollView {
                     VStack(spacing: 16) {
                         // Avatar & name
@@ -38,15 +38,15 @@ struct ProfileView: View {
                                 Text("👑")
                                     .font(.system(size: 40))
                             }
-                            
+
                             Text(authManager.currentUser?.handle ?? "J_Willy_Style")
                                 .font(.system(size: 16, weight: .bold, design: .monospaced))
                                 .foregroundColor(.white)
-                            
+
                             Text(authManager.currentUser?.email ?? "joseph@willisnmb.com")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.4))
-                            
+
                             // Role badge
                             if authManager.currentUser?.role == "superuser" {
                                 HStack(spacing: 4) {
@@ -61,7 +61,7 @@ struct ProfileView: View {
                                 .cornerRadius(6)
                             }
                         }
-                        
+
                         // Bio
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
@@ -75,7 +75,7 @@ struct ProfileView: View {
                                         .foregroundColor(.red)
                                 }
                             }
-                            
+
                             if isEditing {
                                 TextEditor(text: $bio)
                                     .font(.system(size: 12))
@@ -92,7 +92,7 @@ struct ProfileView: View {
                             }
                         }
                         .padding(.horizontal, 16)
-                        
+
                         // Stats
                         HStack(spacing: 0) {
                             ProfileStat(value: "42", label: "Projects")
@@ -107,7 +107,7 @@ struct ProfileView: View {
                         .background(Color(hex: "12121A"))
                         .cornerRadius(12)
                         .padding(.horizontal, 16)
-                        
+
                         // Tab selector
                         HStack(spacing: 0) {
                             ForEach(["projects", "analytics", "subscription"], id: \.self) { tab in
@@ -124,7 +124,7 @@ struct ProfileView: View {
                         .background(Color(hex: "12121A"))
                         .cornerRadius(10)
                         .padding(.horizontal, 16)
-                        
+
                         // Tab content
                         switch selectedTab {
                         case "projects":
@@ -149,7 +149,7 @@ struct ProfileView: View {
 struct ProfileStat: View {
     let value: String
     let label: String
-    
+
     var body: some View {
         VStack(spacing: 2) {
             Text(value)
@@ -172,7 +172,7 @@ struct ProjectsGrid: View {
         ("Combo Attack", "💥", "60 frames"),
         ("Training", "🎯", "16 frames"),
     ]
-    
+
     var body: some View {
         LazyVGrid(columns: [
             GridItem(.flexible(), spacing: 8),
@@ -217,7 +217,7 @@ struct AnalyticsCard: View {
     let value: String
     let change: String
     let positive: Bool
-    
+
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
@@ -247,25 +247,25 @@ struct ProfileSettingsView: View {
     @State private var showGrid = true
     @State private var onionSkin = false
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         NavigationView {
             ZStack {
                 Color(hex: "0A0A0F").ignoresSafeArea()
-                
+
                 List {
                     Section("GENERAL") {
                         Toggle("Dark Mode", isOn: $darkMode)
                         Toggle("Sound Effects", isOn: $soundEffects)
                         Toggle("Haptic Feedback", isOn: $haptics)
                     }
-                    
+
                     Section("DRAWING") {
                         Toggle("Auto Save", isOn: $autoSave)
                         Toggle("Show Grid", isOn: $showGrid)
                         Toggle("Onion Skinning", isOn: $onionSkin)
                     }
-                    
+
                     Section("STORAGE") {
                         HStack {
                             Text("Device Storage")
@@ -273,11 +273,11 @@ struct ProfileSettingsView: View {
                             Text("2.4 GB / 64 GB")
                                 .foregroundColor(.white.opacity(0.4))
                         }
-                        
+
                         ProgressView(value: 2.4, total: 64)
                             .tint(.red)
                     }
-                    
+
                     Section("ACCOUNT") {
                         Button("Sign Out") {}
                             .foregroundColor(.red)

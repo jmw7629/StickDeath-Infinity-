@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 // ═══════════════════════════════════════════════════════════════════
 // Tool Strip — Matches preview EXACTLY per-tool colors from React source
@@ -20,7 +21,7 @@ struct ToolDef {
 
 struct StudioToolStrip: View {
     @ObservedObject var vm: StudioViewModel
-    
+
     static let tools: [ToolDef] = [
         ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   shortcut: "V", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
         ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  shortcut: "L", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
@@ -40,7 +41,7 @@ struct StudioToolStrip: View {
         ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   shortcut: "H", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
         ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   shortcut: "Z", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
     ]
-    
+
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 4) {
@@ -54,7 +55,7 @@ struct StudioToolStrip: View {
                     }
                 }
                 .padding(.horizontal, 6)
-                
+
                 // Color square — tap opens color picker
                 Button(action: {
                     vm.activePanel = vm.activePanel == .colorPicker ? .none : .colorPicker
@@ -68,12 +69,12 @@ struct StudioToolStrip: View {
                                 .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                         )
                 }
-                
+
                 // Tools
                 ForEach(Self.tools.indices, id: \.self) { i in
                     let def = Self.tools[i]
                     let isSelected = vm.selectedTool == def.tool
-                    
+
                     Button(action: {
                         if isSelected && hasSettings(def.tool) {
                             vm.activePanel = vm.activePanel == .toolSettings ? .none : .toolSettings
@@ -121,7 +122,7 @@ struct StudioToolStrip: View {
         }
         .background(Color(hex: "12121A").opacity(0.95))
     }
-    
+
     func hasSettings(_ tool: DrawingTool) -> Bool {
         [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .text, .fill, .line, .rectangle, .circle, .move, .lasso].contains(tool)
     }

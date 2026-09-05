@@ -11,16 +11,16 @@ import SwiftUI
 
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
-    
+
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
     }
-    
+
     var accentColor: Color {
         guard let def = toolDef else { return .red }
         return Color(hex: def.topColor)
     }
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
@@ -40,12 +40,12 @@ struct FloatingToolSettingsPanel: View {
                                 .foregroundColor(.white.opacity(0.4))
                         }
                     }
-                    
+
                     Divider().background(Color.white.opacity(0.08))
-                    
+
                     // Tool-specific content
                     toolSettingsContent(def)
-                    
+
                     // Shortcut
                     HStack(spacing: 4) {
                         Text("Shortcut:")
@@ -77,7 +77,7 @@ struct FloatingToolSettingsPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 8)
     }
-    
+
     @ViewBuilder
     func toolSettingsContent(_ def: ToolDef) -> some View {
         switch def.tool {
@@ -89,7 +89,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
                 SettingsToggle(label: "Pressure Sensitivity", isOn: $vm.pressureSensitivity, accent: .red)
             }
-            
+
         // ── MARKER ──
         case .marker:
             VStack(alignment: .leading, spacing: 8) {
@@ -104,7 +104,7 @@ struct FloatingToolSettingsPanel: View {
                         .font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.5))
                 }
             }
-            
+
         // ── CRAYON ──
         case .crayon:
             // Video shows minimal panel — just name + shortcut
@@ -114,7 +114,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Texture", value: .constant(5.0), range: 0...10, unit: "", accent: accentColor)
                 SettingsSlider(label: "Grain", value: .constant(3.0), range: 0...10, unit: "", accent: accentColor)
             }
-            
+
         // ── FILL TOOL (GREEN THEME) ──
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
@@ -122,7 +122,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
                 SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "", accent: .yellow)
-                
+
                 // Toggle buttons (green themed)
                 VStack(spacing: 4) {
                     FillToggleButton(label: vm.fillContiguous ? "🔗 Contiguous" : "🌐 All Similar",
@@ -133,17 +133,17 @@ struct FloatingToolSettingsPanel: View {
                                      isOn: $vm.fillSampleAll, accent: .green)
                 }
             }
-            
+
         // ── ERASER (ORANGE THEME) ──
         case .eraser:
             VStack(alignment: .leading, spacing: 8) {
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                
+
                 Text("ERASER TYPE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 4) {
                     ForEach(["◼ Hard", "◐ Soft"], id: \.self) { mode in
                         Button(action: {}) {
@@ -163,10 +163,10 @@ struct FloatingToolSettingsPanel: View {
                         }
                     }
                 }
-                
+
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
             }
-            
+
         // ── SMUDGE (PURPLE THEME) ──
         case .smudge:
             VStack(alignment: .leading, spacing: 8) {
@@ -174,17 +174,17 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Strength", value: .constant(50.0), range: 0...100, unit: "%", accent: accentColor)
             }
-            
+
         // ── TEXT (MAGENTA THEME) ──
         case .text:
             VStack(alignment: .leading, spacing: 8) {
                 SettingsSlider(label: "Font Size", value: .constant(24.0), range: 8...120, unit: "px", accent: accentColor)
-                
+
                 Text("ALIGNMENT")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 4) {
                     ForEach(["◁ Left", "☰ Center", "▷ Right"], id: \.self) { align in
                         Button(action: {}) {
@@ -204,12 +204,12 @@ struct FloatingToolSettingsPanel: View {
                         }
                     }
                 }
-                
+
                 Text("STYLE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 4) {
                     Button(action: {}) {
                         Text("B Bold")
@@ -230,10 +230,10 @@ struct FloatingToolSettingsPanel: View {
                             .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 1))
                     }
                 }
-                
+
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
             }
-            
+
         // ── LINE ──
         case .line:
             VStack(alignment: .leading, spacing: 8) {
@@ -243,18 +243,18 @@ struct FloatingToolSettingsPanel: View {
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.white.opacity(0.25))
             }
-            
+
         // ── RECTANGLE / CIRCLE ──
         case .rectangle, .circle:
             VStack(alignment: .leading, spacing: 8) {
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                
+
                 Text("FILL")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(vm.strokeColor)
@@ -264,12 +264,12 @@ struct FloatingToolSettingsPanel: View {
                         .font(.system(size: 9, design: .monospaced))
                         .foregroundColor(.white.opacity(0.3))
                 }
-                
+
                 if def.tool == .rectangle {
                     SettingsSlider(label: "Corner Radius", value: .constant(0.0), range: 0...50, unit: "px", accent: .orange)
                 }
             }
-            
+
         // ── MOVE ──
         case .move:
             VStack(alignment: .leading, spacing: 8) {
@@ -277,7 +277,7 @@ struct FloatingToolSettingsPanel: View {
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 4) {
                     ForEach(["⬜ New", "➕ Add", "➖ Sub"], id: \.self) { mode in
                         Button(action: {}) {
@@ -297,12 +297,12 @@ struct FloatingToolSettingsPanel: View {
                         }
                     }
                 }
-                
+
                 Text("ACTIONS")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
                     ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Clear"], id: \.self) { action in
                         Button(action: {}) {
@@ -321,7 +321,7 @@ struct FloatingToolSettingsPanel: View {
                     }
                 }
             }
-            
+
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
@@ -329,7 +329,7 @@ struct FloatingToolSettingsPanel: View {
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
                     ForEach(["✏️ Freehand", "⬡ Polygon", "🧲 Magnetic", "✨ Smart"], id: \.self) { mode in
                         Button(action: {}) {
@@ -349,16 +349,16 @@ struct FloatingToolSettingsPanel: View {
                         }
                     }
                 }
-                
+
                 SettingsSlider(label: "Feather", value: .constant(0.0), range: 0...20, unit: "px", accent: .cyan)
                 SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
             }
-            
+
         default:
             EmptyView()
         }
     }
-    
+
     var opacityBinding: Binding<Double> {
         Binding(
             get: { vm.toolOpacity * 100 },
@@ -374,13 +374,13 @@ struct SettingsSlider: View {
     let range: ClosedRange<Double>
     let unit: String
     let accent: Color
-    
+
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(label): \(Int(value))\(unit)")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.white.opacity(0.4))
-            
+
             Slider(value: $value, in: range)
                 .tint(accent)
                 .frame(height: 6)
@@ -393,7 +393,7 @@ struct SettingsToggle: View {
     let label: String
     @Binding var isOn: Bool
     let accent: Color
-    
+
     var body: some View {
         HStack {
             Text(label)
@@ -412,7 +412,7 @@ struct FillToggleButton: View {
     let label: String
     @Binding var isOn: Bool
     let accent: Color
-    
+
     var body: some View {
         Button(action: { isOn.toggle() }) {
             Text(label)

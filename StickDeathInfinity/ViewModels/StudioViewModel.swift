@@ -2,10 +2,12 @@
 // StudioViewModel — Full animation studio state (MVVM)
 // Replaces: StudioScreen.tsx's 6,378 lines of inline state
 // Manages: frames, layers, tools, undo/redo, playback, audio, export
+// Uses SDCore types as single source of truth.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -19,7 +21,7 @@ final class StudioViewModel: ObservableObject {
     @Published var canvasHeight = 1080
     @Published var fps = 12
 
-    // MARK: - Frames
+    // MARK: - Frames (SDCore.AnimationFrame — single source of truth)
     @Published var frames: [AnimationFrame] = [
         AnimationFrame(id: UUID().uuidString, elements: [])
     ]
@@ -34,15 +36,17 @@ final class StudioViewModel: ObservableObject {
         return frames[currentFrameIndex - 1]
     }
 
-    // MARK: - Layers (typed StudioLayer for panel, CanvasLayer for persistence)
-    @Published var studioLayers: [StudioLayer] = [
-        StudioLayer(name: "Layer 1")
-    ]
+    // MARK: - Layers (SDCore.CanvasLayer — sole mutable/persisted source)
     @Published var layers: [CanvasLayer] = [
         CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)
     ]
     @Published var activeLayerID: String = ""
     @Published var currentLayerIndex: Int = 0
+
+    // Derived StudioLayers for LayerPanel UI (computed from canonical state)
+    var studioLayers: [StudioLayer] {
+        layers.map { StudioLayer(from: $0) }
+    }
 
     // MARK: - Tool State
     @Published var selectedTool: DrawingTool = .brush
@@ -54,7 +58,7 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
+
     // Fill tool properties (GREEN theme in preview)
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
@@ -221,7 +225,8 @@ final class StudioViewModel: ObservableObject {
         lastSaveTime = Date()
     }
 
-    // MARK: - Layer Operations (CanvasLayer by string ID for backward compat)
+    // MARK: - Layer Operations (mutate canonical SDCore.CanvasLayer state)
+
     func toggleLayerVisibility(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].visible.toggle()
@@ -233,61 +238,62 @@ final class StudioViewModel: ObservableObject {
             layers[idx].locked.toggle()
         }
     }
-    
-    // StudioLayer operations for LayerPanel
-    func toggleLayerVisibility(_ id: UUID) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].visible.toggle()
+
+    func setLayerLockMode(_ id: String, mode: SDCore.LayerLockMode) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].lockMode = mode.rawValue
         }
     }
-    
-    func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].lockMode = mode
+
+    func setLayerColor(_ id: String, color: Color) {
+        // Color label stored as hex string on canonical layer
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            let uiColor = UIColor(color)
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            uiColor.getRed(&r, green: &g, blue: &b, alpha: &a)
+            layers[idx].colorLabel = String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
         }
     }
-    
-    func setLayerColor(_ id: UUID, color: Color) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].labelColor = color
-        }
-    }
-    
-    func duplicateLayer(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
-        let original = studioLayers[idx]
-        let newLayer = StudioLayer(
+
+    func duplicateLayer(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }) else { return }
+        let original = layers[idx]
+        let newLayer = CanvasLayer(
+            id: UUID().uuidString,
             name: "\(original.name) Copy",
             visible: original.visible,
+            locked: original.locked,
             opacity: original.opacity,
             lockMode: original.lockMode,
             blendMode: original.blendMode,
-            labelColor: original.labelColor
+            glowEnabled: original.glowEnabled,
+            glowColor: original.glowColor,
+            colorLabel: original.colorLabel
         )
-        studioLayers.insert(newLayer, at: idx + 1)
+        layers.insert(newLayer, at: idx + 1)
     }
-    
-    func moveLayerUp(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
-        studioLayers.swapAt(idx, idx - 1)
+
+    func moveLayerUp(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
+        layers.swapAt(idx, idx - 1)
     }
-    
-    func moveLayerDown(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
-        studioLayers.swapAt(idx, idx + 1)
+
+    func moveLayerDown(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }), idx < layers.count - 1 else { return }
+        layers.swapAt(idx, idx + 1)
     }
-    
+
     func addLayer() {
-        let num = studioLayers.count + 1
-        let newLayer = StudioLayer(name: "Layer \(num)")
-        studioLayers.insert(newLayer, at: 0)
-        // Also sync to CanvasLayer
-        let canvasLayer = CanvasLayer(
-            id: newLayer.id.uuidString, name: newLayer.name,
-            visible: true, locked: false, opacity: 1.0
+        let num = layers.count + 1
+        let newLayer = CanvasLayer(
+            id: UUID().uuidString,
+            name: "Layer \(num)",
+            visible: true,
+            locked: false,
+            opacity: 1.0
         )
-        layers.insert(canvasLayer, at: 0)
-        activeLayerID = canvasLayer.id
+        layers.insert(newLayer, at: 0)
+        activeLayerID = newLayer.id
         currentLayerIndex = 0
     }
 
@@ -358,7 +364,7 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
+    // MARK: - Save (local first, then optional remote)
     func save() async {
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
