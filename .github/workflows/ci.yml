@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-sdcore:
+    name: Build SDCore
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+
+  test-sdcore:
+    name: Test SDCore
+    runs-on: ubuntu-latest
+    needs: build-sdcore
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+      - name: Test SDCore
+        run: swift test --package-path SDCore
+
+  whitespace:
+    name: Whitespace Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for trailing whitespace
+        run: |
+          if grep -rn ' $' --include='*.swift' --include='*.yml' SDCore/ StickDeathInfinity/ .github/; then
+            echo "ERROR: Trailing whitespace found"
+            exit 1
+          fi
+      - name: Check for tab characters
+        run: |
+          if grep -rPn '\t' --include='*.swift' SDCore/Sources/; then
+            echo "ERROR: Tab characters found in SDCore sources"
+            exit 1
+          fi
+
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for hardcoded secrets
+        run: |
+          # Reject hardcoded secret values (not field names in UI models)
+          if grep -rni '= "sk-\|= "AIza\|= "ghp_\|= "gho_\|= "xoxb-\|= "xoxp-' \
+            --include='*.swift' SDCore/ StickDeathInfinity/; then
+            echo "ERROR: Potential hardcoded secrets found in source"
+            exit 1
+          fi
+          # Reject direct AI provider hostnames (Pollinations, OpenAI, Gemini, Anthropic, etc.)
+          if grep -rni 'pollinations\.ai\|api\.openai\.com\|generativelanguage\.googleapis\.com\|api\.anthropic\.com' \
+            --include='*.swift' SDCore/ StickDeathInfinity/; then
+            echo "ERROR: Direct AI provider URL found — use backend endpoint"
+            exit 1
+          fi
+      - name: Check for provider API key storage in AppConfig
+        run: |
+          # Reject Appconfig-level API key properties for direct provider access
+          if grep -rni 'openAIAPIKey\|geminiAPIKey\|anthropicAPIKey' \
+            --include='*.swift' SDCore/ StickDeathInfinity/; then
+            echo "ERROR: Direct provider API key properties found in AppConfig"
+            exit 1
+          fi

@@ -251,11 +251,11 @@ struct FramesViewerPanel: View {
                                             for el in vm.frames[i].elements {
                                                 guard el.points.count >= 2 else { continue }
                                                 var path = Path()
-                                                path.move(to: CGPoint(x: el.points[0].x * scaleX, y: el.points[0].y * scaleY))
+                                                path.move(to: CGPoint(x: CGFloat(el.points[0].x) * scaleX, y: CGFloat(el.points[0].y) * scaleY))
                                                 for p in el.points.dropFirst() {
-                                                    path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
+                                                    path.addLine(to: CGPoint(x: CGFloat(p.x) * scaleX, y: CGFloat(p.y) * scaleY))
                                                 }
-                                                context.stroke(path, with: .color(Color(hex: el.color)), lineWidth: max(1, el.width * scaleX))
+                                                context.stroke(path, with: .color(Color(hex: el.color)), lineWidth: max(1, CGFloat(el.width) * scaleX))
                                             }
                                         }
                                         .frame(height: 80)

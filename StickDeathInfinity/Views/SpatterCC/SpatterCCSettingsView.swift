@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterCCSettingsView — Command Center global settings
 // Matches: spatter-admin /settings exactly
-// - AI Engine config (OpenAI key, Gemini key)
+// - AI Engine config (backend-only, no client-side provider keys)
 // - Notifications (Slack webhook URL)
 // - Appearance (dark/light toggle)
 // - Emergency Controls (kill all bots)
@@ -11,8 +11,6 @@ import SwiftUI
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared
-    @State private var openAIKey: String = AppConfig.openAIAPIKey
-    @State private var geminiKey: String = AppConfig.geminiAPIKey
     @State private var slackWebhook: String = ""
     @State private var showEmergencyConfirm = false
     @State private var showSavedToast = false
@@ -29,15 +27,19 @@ struct SpatterCCSettingsView: View {
                     .foregroundColor(.sdTextSecondary)
             }
 
-            // AI Engine section
+            // AI Engine section — backend-only, no client-side provider keys
             CCSettingsSection(title: "AI Engine", icon: "brain.fill",
-                              description: "Spatter uses AI to generate platform-native content. Configure your AI provider below.") {
-                VStack(spacing: 14) {
-                    CCSecureField(label: "OpenAI API Key (GPT-4)", value: $openAIKey,
-                                  placeholder: "sk-...")
-                    CCSecureField(label: "Google Gemini API Key", value: $geminiKey,
-                                  placeholder: "AI...")
+                              description: "Spatter AI uses a configured backend endpoint. No provider API keys are stored in the app.") {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .foregroundColor(.sdSuccess)
+                    Text("Backend-only AI — no client-side provider keys")
+                        .font(.system(size: 13))
+                        .foregroundColor(.sdTextSecondary)
                 }
+                .padding(14)
+                .background(Color.sdSuccess.opacity(0.08))
+                .cornerRadius(10)
             }
 
             // Notifications section
@@ -127,8 +129,6 @@ struct SpatterCCSettingsView: View {
 
             // Save button
             Button {
-                botService.openAIKey = openAIKey
-                botService.geminiKey = geminiKey
                 botService.slackWebhook = slackWebhook
                 withAnimation { showSavedToast = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {

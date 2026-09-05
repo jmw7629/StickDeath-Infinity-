@@ -2,10 +2,14 @@
 // StudioViewModel — Full animation studio state (MVVM)
 // Replaces: StudioScreen.tsx's 6,378 lines of inline state
 // Manages: frames, layers, tools, undo/redo, playback, audio, export
+//
+// Local-first lifecycle: all persistence goes through SDCore first.
+// Supabase sync is optional and failure-independent.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -54,7 +58,7 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
+
     // Fill tool properties (GREEN theme in preview)
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
@@ -101,6 +105,9 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Playback
     private var playbackTimer: Timer?
 
+    // MARK: - Local Storage (SDCore)
+    private let storage = StudioStorage()
+
     var saveTimeAgo: String {
         let seconds = Int(-lastSaveTime.timeIntervalSinceNow)
         if seconds < 60 { return "\(seconds)s ago" }
@@ -112,37 +119,80 @@ final class StudioViewModel: ObservableObject {
         Task { await loadProjects() }
     }
 
-    // MARK: - Project List Operations
+    // MARK: - Project List Operations (local-first)
     func loadProjects() async {
+        // 1. Load local projects from SDCore
+        let localProjects = storage.listProjects()
+        savedProjects = localProjects.map { meta in
+            StudioProject(
+                id: meta.id,
+                userID: meta.userID ?? "",
+                name: meta.name,
+                width: meta.width,
+                height: meta.height,
+                fps: meta.fps,
+                frameCount: meta.frameCount,
+                thumbnailURL: nil,
+                createdAt: ISO8601DateFormatter().string(from: meta.createdAt),
+                updatedAt: ISO8601DateFormatter().string(from: meta.updatedAt)
+            )
+        }
+
+        // 2. Optional: merge remote projects (failure-independent)
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
-            let projects: [StudioProject] = try await supabase
+            let remoteProjects: [StudioProject] = try await supabase
                 .from("studio_projects")
                 .select("*")
                 .eq("user_id", value: userId)
                 .order("updated_at", ascending: false)
                 .execute()
                 .value
-            savedProjects = projects
+
+            // Merge: add remote projects not already local
+            let localIDs = Set(savedProjects.map(\.id))
+            for remote in remoteProjects where !localIDs.contains(remote.id) {
+                savedProjects.append(remote)
+            }
         } catch {
-            print("[Studio] Load projects error: \(error)")
+            print("[Studio] Remote sync unavailable: \(error.localizedDescription)")
         }
     }
 
     func createProject(name: String, width: Int, height: Int, fps: Int) {
+        // Assign durable ID immediately — local-first, no auth required
+        let projectID = UUID().uuidString
+
+        currentProjectID = projectID
         projectName = name
         canvasWidth = width
         canvasHeight = height
         self.fps = fps
         frames = [AnimationFrame(id: UUID().uuidString, elements: [])]
-        layers = [CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)]
-        activeLayerID = layers.first?.id ?? ""
+        layers = [CanvasLayer(id: "layer_default", name: "Layer 1", visible: true, locked: false, opacity: 1.0)]
+        activeLayerID = "layer_default"
         currentFrameIndex = 0
         currentLayerIndex = 0
         undoStack.removeAll()
         redoStack.removeAll()
         audioClips.removeAll()
+
+        // Persist locally via SDCore (no auth/network needed)
+        do {
+            try storage.createProject(
+                id: projectID,
+                name: name,
+                width: width,
+                height: height,
+                fps: fps
+            )
+        } catch {
+            print("[Studio] Local create error: \(error)")
+        }
+
+        // Sync studio layers from canonical layers
+        syncStudioLayersFromCanonical()
     }
 
     func openProject(_ project: StudioProject) {
@@ -151,6 +201,39 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = project.width ?? 1080
         canvasHeight = project.height ?? 1080
         fps = project.fps ?? 12
+
+        // Invoke local load to restore full state
+        loadLocal(projectID: project.id)
+    }
+
+    // MARK: - Local Load (SDCore + migration)
+    func loadLocal(projectID: String) {
+        // Run legacy migration discovery first
+        let migration = LegacyMigration()
+        let legacyIDs = migration.discoverLegacyProjects()
+        if legacyIDs.contains(projectID) {
+            do {
+                let result = try migration.migrateLegacyProject(projectID: projectID, storage: storage)
+                print("[Studio] Migration: \(result.migratedFrameCount) frames migrated, \(result.conflicts.count) conflicts")
+            } catch {
+                print("[Studio] Migration skipped: \(error)")
+            }
+        }
+
+        // Load canonical state from SDCore
+        do {
+            let result = try storage.load(for: projectID)
+            frames = result.frames.isEmpty ? [AnimationFrame(id: UUID().uuidString, elements: [])] : result.frames
+            layers = result.layers.isEmpty ? [CanvasLayer(id: "layer_default", name: "Layer 1")] : result.layers
+            activeLayerID = result.state.activeLayerID
+            currentFrameIndex = min(result.state.currentFrameIndex, max(frames.count - 1, 0))
+            currentLayerIndex = layers.firstIndex(where: { $0.id == activeLayerID }) ?? 0
+            undoStack.removeAll()
+            redoStack.removeAll()
+            syncStudioLayersFromCanonical()
+        } catch {
+            print("[Studio] Load local error: \(error)")
+        }
     }
 
     // MARK: - Frame Operations
@@ -225,34 +308,81 @@ final class StudioViewModel: ObservableObject {
     func toggleLayerVisibility(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].visible.toggle()
+            syncStudioLayersFromCanonical()
         }
     }
 
     func toggleLayerLock(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].locked.toggle()
+            syncStudioLayersFromCanonical()
         }
     }
-    
-    // StudioLayer operations for LayerPanel
+
+    // StudioLayer operations for LayerPanel — all mutate canonical CanvasLayer
     func toggleLayerVisibility(_ id: UUID) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].visible.toggle()
+            let canonicalID = studioLayers[idx].canonicalID
+            if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+                layers[cIdx].visible = studioLayers[idx].visible
+            }
         }
     }
-    
+
     func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].lockMode = mode
+            let canonicalID = studioLayers[idx].canonicalID
+            if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+                layers[cIdx].lockMode = mode.rawValue
+                layers[cIdx].locked = (mode != .free)
+            }
         }
     }
-    
+
     func setLayerColor(_ id: UUID, color: Color) {
         if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
             studioLayers[idx].labelColor = color
+            let canonicalID = studioLayers[idx].canonicalID
+            if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+                layers[cIdx].colorLabel = color.hexString
+            }
         }
     }
-    
+
+    func setLayerOpacity(_ id: UUID, opacity: Double) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            studioLayers[idx].opacity = opacity
+            let canonicalID = studioLayers[idx].canonicalID
+            if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+                layers[cIdx].opacity = opacity
+            }
+        }
+    }
+
+    func setLayerBlendMode(_ id: UUID, blendMode: String) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            studioLayers[idx].blendMode = blendMode
+            let canonicalID = studioLayers[idx].canonicalID
+            if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+                layers[cIdx].blendMode = blendMode
+            }
+        }
+    }
+
+    func toggleLayerGlow(_ id: UUID) {
+        let canonicalID: String?
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            canonicalID = studioLayers[idx].canonicalID
+        } else {
+            canonicalID = nil
+        }
+        if let cID = canonicalID, let cIdx = layers.firstIndex(where: { $0.id == cID }) {
+            layers[cIdx].glowEnabled.toggle()
+        }
+    }
+
     func duplicateLayer(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
         let original = studioLayers[idx]
@@ -265,18 +395,33 @@ final class StudioViewModel: ObservableObject {
             labelColor: original.labelColor
         )
         studioLayers.insert(newLayer, at: idx + 1)
+
+        // Also duplicate in canonical layers
+        let canonicalID = original.canonicalID
+        if let cIdx = layers.firstIndex(where: { $0.id == canonicalID }) {
+            let newCanvasID = newLayer.id.uuidString
+            let canvasLayer = CanvasLayer(
+                id: newCanvasID, name: newLayer.name,
+                visible: newLayer.visible, locked: newLayer.lockMode != .free,
+                opacity: newLayer.opacity
+            )
+            layers.insert(canvasLayer, at: cIdx + 1)
+        }
     }
-    
+
     func moveLayerUp(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
         studioLayers.swapAt(idx, idx - 1)
+        // Reorder canonical layers to match
+        syncCanonicalFromStudioLayers()
     }
-    
+
     func moveLayerDown(_ id: UUID) {
         guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
         studioLayers.swapAt(idx, idx + 1)
+        syncCanonicalFromStudioLayers()
     }
-    
+
     func addLayer() {
         let num = studioLayers.count + 1
         let newLayer = StudioLayer(name: "Layer \(num)")
@@ -289,6 +434,43 @@ final class StudioViewModel: ObservableObject {
         layers.insert(canvasLayer, at: 0)
         activeLayerID = canvasLayer.id
         currentLayerIndex = 0
+    }
+
+    func deleteLayer(_ id: UUID) {
+        guard studioLayers.count > 1 else { return }
+        guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
+        let canonicalID = studioLayers[idx].canonicalID
+        studioLayers.remove(at: idx)
+        layers.removeAll { $0.id == canonicalID }
+        if activeLayerID == canonicalID {
+            activeLayerID = layers.first?.id ?? ""
+        }
+    }
+
+    func selectLayer(_ id: UUID) {
+        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
+            let canonicalID = studioLayers[idx].canonicalID
+            activeLayerID = canonicalID
+            currentLayerIndex = layers.firstIndex(where: { $0.id == canonicalID }) ?? 0
+        }
+    }
+
+    // MARK: - Layer Sync Helpers
+    private func syncStudioLayersFromCanonical() {
+        studioLayers = layers.map { StudioLayer(from: $0) }
+    }
+
+    private func syncCanonicalFromStudioLayers() {
+        for sl in studioLayers {
+            if let cIdx = layers.firstIndex(where: { $0.id == sl.canonicalID }) {
+                layers[cIdx].visible = sl.visible
+                layers[cIdx].opacity = sl.opacity
+                layers[cIdx].lockMode = sl.lockMode.rawValue
+                layers[cIdx].locked = sl.lockMode != .free
+                layers[cIdx].blendMode = sl.blendMode
+                layers[cIdx].colorLabel = sl.labelColor.hexString
+            }
+        }
     }
 
     // MARK: - Canvas Controls
@@ -358,8 +540,26 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
+    // MARK: - Save/Load (local-first via SDCore)
     func save() async {
+        guard let projectID = currentProjectID else { return }
+
+        // Local save via SDCore — no auth required
+        do {
+            try storage.save(
+                frames: frames,
+                layers: layers,
+                activeLayerID: activeLayerID,
+                currentFrameIndex: currentFrameIndex,
+                for: projectID
+            )
+            lastSaveTime = Date()
+            print("[Studio] Local save: \(frames.count) frames, \(layers.count) layers")
+        } catch {
+            print("[Studio] Local save error: \(error)")
+        }
+
+        // Optional remote sync — failure-independent
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
@@ -368,15 +568,12 @@ final class StudioViewModel: ObservableObject {
             let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
 
             try await supabase.from("studio_project_versions").insert([
-                "project_id": AnyJSON.null,
+                "project_id": AnyJSON.string(projectID),
                 "frame_data": .string(frameJSON),
                 "user_id": .string(userId),
             ]).execute()
-
-            lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
         } catch {
-            print("[Studio] Save error: \(error)")
+            print("[Studio] Remote sync unavailable: \(error.localizedDescription)")
         }
     }
 }

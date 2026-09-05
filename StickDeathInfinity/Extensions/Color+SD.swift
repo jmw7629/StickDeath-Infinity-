@@ -74,6 +74,14 @@ extension Color {
         }
         self.init(red: r, green: g, blue: b)
     }
+
+    var hexString: String {
+        guard let components = UIColor(self).cgColor.components else { return "000000" }
+        let r = Int(components[0] * 255)
+        let g = Int(components.count > 1 ? components[1] * 255 : components[0] * 255)
+        let b = Int(components.count > 2 ? components[2] * 255 : components[0] * 255)
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
 }
 
 // MARK: - View Modifiers (Red Glow)
