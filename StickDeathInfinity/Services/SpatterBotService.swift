@@ -26,10 +26,9 @@ final class SpatterBotService: ObservableObject {
     private let supabase = SupabaseManager.shared.client
 
     // MARK: - Owner Check
-    var isOwner: Bool {
-        guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
-    }
+    // Client-local admin allowlists are prohibited for security.
+    // Owner/admin role is enforced server-side via Supabase RLS and edge functions.
+    var isOwner: Bool { false }
 
     // MARK: - Load All Bot Configs
     func loadBotConfigs() async {

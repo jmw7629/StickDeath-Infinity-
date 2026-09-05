@@ -34,8 +34,7 @@ final class AuthService: ObservableObject {
     var userId: String? { currentUser?.id.uuidString }
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
-        guard let email = currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        return false
     }
     var displayName: String? { currentProfile?.username }
     var avatarUrl: String? { currentProfile?.avatarURL }
@@ -253,7 +252,7 @@ final class AuthService: ObservableObject {
     }
 
     private func ensureProfile(userId: String, email: String?, username: String) async {
-        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        let role = "user"
         do {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),

@@ -6,9 +6,17 @@
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
+    // MARK: - Local Persistence
+    private let persistence = ProjectPersistence()
+    private var localRoot: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("StudioProjects", isDirectory: true)
+    }
+
     // MARK: - Project List
     @Published var savedProjects: [StudioProject] = []
     @Published var currentProjectID: String?
@@ -34,15 +42,20 @@ final class StudioViewModel: ObservableObject {
         return frames[currentFrameIndex - 1]
     }
 
-    // MARK: - Layers (typed StudioLayer for panel, CanvasLayer for persistence)
-    @Published var studioLayers: [StudioLayer] = [
-        StudioLayer(name: "Layer 1")
-    ]
+    // MARK: - Canonical Persisted Layers (SDCore CanvasLayer)
     @Published var layers: [CanvasLayer] = [
         CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)
     ]
     @Published var activeLayerID: String = ""
     @Published var currentLayerIndex: Int = 0
+
+    // MARK: - UI-only Derived Layer State (StudioLayer, not persisted separately)
+    @Published var studioLayers: [StudioLayer] = [
+        StudioLayer(name: "Layer 1")
+    ]
+
+    // MARK: - Legacy Raster References
+    @Published var legacyRasterReferences: [LegacyRasterReference] = []
 
     // MARK: - Tool State
     @Published var selectedTool: DrawingTool = .brush
@@ -109,6 +122,7 @@ final class StudioViewModel: ObservableObject {
 
     init() {
         activeLayerID = layers.first?.id ?? ""
+        try? FileManager.default.createDirectory(at: localRoot, withIntermediateDirectories: true)
         Task { await loadProjects() }
     }
 
@@ -358,8 +372,95 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
-    func save() async {
+    // MARK: - Save/Load (local persistence via SDCore)
+
+    func saveLocal() {
+        let projectID = currentProjectID ?? UUID().uuidString
+        currentProjectID = projectID
+
+        let bundle = StudioProjectBundle(
+            projectID: projectID,
+            name: projectName,
+            width: canvasWidth,
+            height: canvasHeight,
+            fps: fps,
+            frames: frames,
+            layers: layers,
+            legacyRasterReferences: legacyRasterReferences,
+            createdAt: Date(),
+            updatedAt: Date()
+        )
+
+        do {
+            try persistence.save(bundle: bundle, root: localRoot)
+            lastSaveTime = Date()
+            print("[Studio] Saved \(frames.count) frames locally")
+        } catch {
+            print("[Studio] Local save error: \(error)")
+        }
+
+        // Optional Supabase cloud sync (independent of local save)
+        Task { await cloudSync() }
+    }
+
+    func loadLocal(projectID: String) {
+        currentProjectID = projectID
+
+        // Discover legacy rasters first
+        let discovered = persistence.discoverLegacyRasters(root: localRoot, projectID: projectID)
+        legacyRasterReferences = discovered
+
+        // Load or migrate bundle
+        do {
+            let existing = try? persistence.load(root: localRoot, projectID: projectID)
+            let bundle = try persistence.migrateAndDiscover(
+                root: localRoot,
+                projectID: projectID,
+                existingBundle: existing
+            )
+
+            projectName = bundle.name
+            canvasWidth = bundle.width
+            canvasHeight = bundle.height
+            fps = bundle.fps
+            frames = bundle.frames.isEmpty ? [AnimationFrame(id: UUID().uuidString, elements: [])] : bundle.frames
+            layers = bundle.layers.isEmpty ? [CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)] : bundle.layers
+            legacyRasterReferences = bundle.legacyRasterReferences
+            currentFrameIndex = 0
+            activeLayerID = layers.first?.id ?? ""
+            currentLayerIndex = 0
+
+            // Derive StudioLayers from persisted CanvasLayers
+            syncStudioLayersFromPersisted()
+
+            undoStack.removeAll()
+            redoStack.removeAll()
+            lastSaveTime = Date()
+            print("[Studio] Loaded \(frames.count) frames, \(layers.count) layers, \(legacyRasterReferences.count) legacy rasters")
+        } catch {
+            print("[Studio] Load error: \(error)")
+        }
+    }
+
+    func listLocalProjects() -> [StudioProjectBundle] {
+        persistence.listProjects(root: localRoot)
+    }
+
+    func deleteLocalProject(projectID: String) {
+        try? persistence.deleteProject(root: localRoot, projectID: projectID)
+    }
+
+    // MARK: - Derive UI layers from persisted layers
+
+    private func syncStudioLayersFromPersisted() {
+        studioLayers = layers.map { canvas in
+            StudioLayer(from: canvas)
+        }
+    }
+
+    // MARK: - Cloud Sync (optional, independent)
+
+    private func cloudSync() async {
         guard let userId = AuthService.shared.userId else { return }
         let supabase = SupabaseManager.shared.client
         do {
@@ -373,10 +474,9 @@ final class StudioViewModel: ObservableObject {
                 "user_id": .string(userId),
             ]).execute()
 
-            lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
+            print("[Studio] Cloud-synced \(frames.count) frames")
         } catch {
-            print("[Studio] Save error: \(error)")
+            print("[Studio] Cloud sync error (non-fatal): \(error)")
         }
     }
 }

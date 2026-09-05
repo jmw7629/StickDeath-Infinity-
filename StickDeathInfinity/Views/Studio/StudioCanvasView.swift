@@ -3,6 +3,11 @@ import SwiftUI
 // ═══════════════════════════════════════════════════════════════════════
 // CoreGraphics-based Canvas — Renders drawn elements + live stroke
 // Handles touch input for drawing, shapes, fill, eraser, text, etc.
+//
+// CGFloat ↔ Double boundary policy:
+//   Gesture/UI coordinates use CGFloat (CoreGraphics).
+//   Production model values (StrokePoint, DrawnElement) use Double (SDCore).
+//   Explicit conversions happen at the boundary in each direction.
 // ═══════════════════════════════════════════════════════════════════════
 
 struct StudioCanvasView: View {
@@ -76,12 +81,11 @@ struct StudioCanvasView: View {
                 )
                 let localX = (val.location.x - canvasOrigin.x) / canvasSize.width * CGFloat(vm.canvasWidth)
                 let localY = (val.location.y - canvasOrigin.y) / canvasSize.height * CGFloat(vm.canvasHeight)
-                let point = StrokePoint(x: localX, y: localY)
+                // Explicit CGFloat → Double at gesture/model boundary
+                let point = StrokePoint(x: Double(localX), y: Double(localY))
 
                 if isShapeTool {
-                    if shapeStart == nil {
-                        shapeStart = CGPoint(x: localX, y: localY)
-                    }
+                    shapeStart = CGPoint(x: localX, y: localY)
                     shapeEnd = CGPoint(x: localX, y: localY)
                 } else {
                     livePoints.append(point)
@@ -134,8 +138,9 @@ struct StudioCanvasView: View {
             id: UUID().uuidString,
             tool: vm.selectedTool,
             points: [
-                StrokePoint(x: start.x, y: start.y),
-                StrokePoint(x: end.x, y: end.y)
+                // Explicit CGFloat → Double at gesture/model boundary
+                StrokePoint(x: Double(start.x), y: Double(start.y)),
+                StrokePoint(x: Double(end.x), y: Double(end.y))
             ],
             color: vm.strokeColorHex,
             width: vm.strokeWidth,
@@ -158,27 +163,28 @@ struct StudioCanvasView: View {
             guard element.points.count >= 2 else { return }
             var path = Path()
             let first = element.points[0]
-            path.move(to: CGPoint(x: first.x * scaleX, y: first.y * scaleY))
+            // Explicit Double → CGFloat at model/render boundary
+            path.move(to: CGPoint(x: CGFloat(first.x) * scaleX, y: CGFloat(first.y) * scaleY))
 
             if element.points.count == 2 {
                 let p = element.points[1]
-                path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
+                path.addLine(to: CGPoint(x: CGFloat(p.x) * scaleX, y: CGFloat(p.y) * scaleY))
             } else {
                 for i in 1..<element.points.count {
                     let prev = element.points[i - 1]
                     let curr = element.points[i]
-                    let midX = (prev.x + curr.x) / 2 * scaleX
-                    let midY = (prev.y + curr.y) / 2 * scaleY
+                    let midX = CGFloat((prev.x + curr.x) / 2) * scaleX
+                    let midY = CGFloat((prev.y + curr.y) / 2) * scaleY
                     path.addQuadCurve(
                         to: CGPoint(x: midX, y: midY),
-                        control: CGPoint(x: prev.x * scaleX, y: prev.y * scaleY)
+                        control: CGPoint(x: CGFloat(prev.x) * scaleX, y: CGFloat(prev.y) * scaleY)
                     )
                 }
                 let last = element.points.last!
-                path.addLine(to: CGPoint(x: last.x * scaleX, y: last.y * scaleY))
+                path.addLine(to: CGPoint(x: CGFloat(last.x) * scaleX, y: CGFloat(last.y) * scaleY))
             }
 
-            let lineWidth = element.width * scaleX * brushWidthMultiplier(for: element.tool)
+            let lineWidth = CGFloat(element.width) * scaleX * brushWidthMultiplier(for: element.tool)
 
             if element.tool == .eraser {
                 context.blendMode = .clear
@@ -197,39 +203,39 @@ struct StudioCanvasView: View {
         case .line:
             guard element.points.count >= 2 else { return }
             var path = Path()
-            path.move(to: CGPoint(x: element.points[0].x * scaleX, y: element.points[0].y * scaleY))
-            path.addLine(to: CGPoint(x: element.points[1].x * scaleX, y: element.points[1].y * scaleY))
-            context.stroke(path, with: .color(color), lineWidth: element.width * scaleX)
+            path.move(to: CGPoint(x: CGFloat(element.points[0].x) * scaleX, y: CGFloat(element.points[0].y) * scaleY))
+            path.addLine(to: CGPoint(x: CGFloat(element.points[1].x) * scaleX, y: CGFloat(element.points[1].y) * scaleY))
+            context.stroke(path, with: .color(color), lineWidth: CGFloat(element.width) * scaleX)
 
         case .rectangle:
             guard element.points.count >= 2 else { return }
             let rect = CGRect(
-                x: min(element.points[0].x, element.points[1].x) * scaleX,
-                y: min(element.points[0].y, element.points[1].y) * scaleY,
-                width: abs(element.points[1].x - element.points[0].x) * scaleX,
-                height: abs(element.points[1].y - element.points[0].y) * scaleY
+                x: min(CGFloat(element.points[0].x), CGFloat(element.points[1].x)) * scaleX,
+                y: min(CGFloat(element.points[0].y), CGFloat(element.points[1].y)) * scaleY,
+                width: abs(CGFloat(element.points[1].x) - CGFloat(element.points[0].x)) * scaleX,
+                height: abs(CGFloat(element.points[1].y) - CGFloat(element.points[0].y)) * scaleY
             )
-            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: element.width * scaleX)
+            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: CGFloat(element.width) * scaleX)
 
         case .circle:
             guard element.points.count >= 2 else { return }
             let center = CGPoint(
-                x: (element.points[0].x + element.points[1].x) / 2 * scaleX,
-                y: (element.points[0].y + element.points[1].y) / 2 * scaleY
+                x: CGFloat((element.points[0].x + element.points[1].x) / 2) * scaleX,
+                y: CGFloat((element.points[0].y + element.points[1].y) / 2) * scaleY
             )
-            let radiusX = abs(element.points[1].x - element.points[0].x) / 2 * scaleX
-            let radiusY = abs(element.points[1].y - element.points[0].y) / 2 * scaleY
+            let radiusX = CGFloat(abs(element.points[1].x - element.points[0].x) / 2) * scaleX
+            let radiusY = CGFloat(abs(element.points[1].y - element.points[0].y) / 2) * scaleY
             let path = Path(ellipseIn: CGRect(
                 x: center.x - radiusX, y: center.y - radiusY,
                 width: radiusX * 2, height: radiusY * 2
             ))
-            context.stroke(path, with: .color(color), lineWidth: element.width * scaleX)
+            context.stroke(path, with: .color(color), lineWidth: CGFloat(element.width) * scaleX)
 
         case .text:
             if let text = element.fillColor, let first = element.points.first {
                 context.draw(
-                    Text(text).font(.system(size: element.width * 3, design: .monospaced)).foregroundColor(color),
-                    at: CGPoint(x: first.x * scaleX, y: first.y * scaleY),
+                    Text(text).font(.system(size: CGFloat(element.width) * 3, design: .monospaced)).foregroundColor(color),
+                    at: CGPoint(x: CGFloat(first.x) * scaleX, y: CGFloat(first.y) * scaleY),
                     anchor: .topLeading
                 )
             }
@@ -262,20 +268,20 @@ struct StudioCanvasView: View {
         let color = vm.selectedTool == .eraser ? Color.white : vm.strokeColor
 
         var path = Path()
-        path.move(to: CGPoint(x: points[0].x * scaleX, y: points[0].y * scaleY))
+        path.move(to: CGPoint(x: CGFloat(points[0].x) * scaleX, y: CGFloat(points[0].y) * scaleY))
         for i in 1..<points.count {
             let prev = points[i - 1]
             let curr = points[i]
-            let midX = (prev.x + curr.x) / 2 * scaleX
-            let midY = (prev.y + curr.y) / 2 * scaleY
+            let midX = CGFloat((prev.x + curr.x) / 2) * scaleX
+            let midY = CGFloat((prev.y + curr.y) / 2) * scaleY
             path.addQuadCurve(
                 to: CGPoint(x: midX, y: midY),
-                control: CGPoint(x: prev.x * scaleX, y: prev.y * scaleY)
+                control: CGPoint(x: CGFloat(prev.x) * scaleX, y: CGFloat(prev.y) * scaleY)
             )
         }
 
         context.stroke(path, with: .color(color.opacity(vm.strokeOpacity)), style: StrokeStyle(
-            lineWidth: vm.strokeWidth * scaleX * brushWidthMultiplier(for: vm.selectedTool),
+            lineWidth: CGFloat(vm.strokeWidth) * scaleX * brushWidthMultiplier(for: vm.selectedTool),
             lineCap: .round,
             lineJoin: .round
         ))
@@ -292,7 +298,7 @@ struct StudioCanvasView: View {
             var path = Path()
             path.move(to: CGPoint(x: start.x * scaleX, y: start.y * scaleY))
             path.addLine(to: CGPoint(x: end.x * scaleX, y: end.y * scaleY))
-            context.stroke(path, with: .color(color), lineWidth: vm.strokeWidth * scaleX)
+            context.stroke(path, with: .color(color), lineWidth: CGFloat(vm.strokeWidth) * scaleX)
 
         case .rectangle:
             let rect = CGRect(
@@ -301,7 +307,7 @@ struct StudioCanvasView: View {
                 width: abs(end.x - start.x) * scaleX,
                 height: abs(end.y - start.y) * scaleY
             )
-            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: vm.strokeWidth * scaleX)
+            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: CGFloat(vm.strokeWidth) * scaleX)
 
         case .circle:
             let cx = (start.x + end.x) / 2 * scaleX
@@ -309,7 +315,7 @@ struct StudioCanvasView: View {
             let rx = abs(end.x - start.x) / 2 * scaleX
             let ry = abs(end.y - start.y) / 2 * scaleY
             let path = Path(ellipseIn: CGRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2))
-            context.stroke(path, with: .color(color), lineWidth: vm.strokeWidth * scaleX)
+            context.stroke(path, with: .color(color), lineWidth: CGFloat(vm.strokeWidth) * scaleX)
 
         default:
             break

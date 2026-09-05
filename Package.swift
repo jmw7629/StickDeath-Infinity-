@@ -13,8 +13,7 @@ let package = Package(
         // LiveKit — Real-time video/voice calls
         .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.0.0"),
 
-        // NOTE: Stripe SDK removed — iOS subscriptions use StoreKit 2 (built-in).
-        // Stripe is only used server-side (Edge Functions) for tips & call billing.
-        // StoreKit 2 requires NO external dependency (import StoreKit).
+        // SDCore — Foundation-only production persistence model
+        .package(path: "SDCore"),
     ]
 )
