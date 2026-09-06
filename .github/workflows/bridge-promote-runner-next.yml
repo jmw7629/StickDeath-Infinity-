@@ -31,7 +31,9 @@ jobs:
           python3 bridge/runner_next.py --self-test
           ! grep -n 'shell=True' bridge/runner_next.py
           grep -q 'PROJECT_BYTE_MODEL_HINT' bridge/runner_next.py
-          grep -q 'recovery-blocked-dirty-worktree' bridge/runner_next.py
+          grep -q 'RECOVERABLE_PREFIX' bridge/runner_next.py
+          grep -q 'dirty-worktree' bridge/runner_next.py
+          grep -q 'blocked-local-commits' bridge/runner_next.py
 
       - name: Promote runner atomically
         shell: bash
