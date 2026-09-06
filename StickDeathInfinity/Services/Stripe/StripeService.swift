@@ -14,6 +14,7 @@
 import Foundation
 import Supabase
 import StoreKit
+import SDCore
 
 // MARK: - Product IDs (register these in App Store Connect)
 enum StoreProductID {

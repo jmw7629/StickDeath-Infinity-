@@ -8,6 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
+import SDCore
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared

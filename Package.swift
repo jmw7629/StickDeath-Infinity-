@@ -1,5 +1,6 @@
 // swift-tools-version: 5.9
-// SPM Dependencies — use Xcode's "Add Package Dependency" or XcodeGen
+// Root Package — wires SDCore as a local package for Xcode/SPM.
+// For Linux CI: use swift build/test --package-path SDCore
 
 import PackageDescription
 
@@ -7,14 +8,24 @@ let package = Package(
     name: "StickDeathInfinity",
     platforms: [.iOS(.v17)],
     dependencies: [
+        // SDCore — local package (Foundation-only, Linux-compatible)
+        .package(path: "SDCore"),
+
         // Supabase — Auth, Database, Storage, Realtime, Edge Functions
         .package(url: "https://github.com/supabase-community/supabase-swift.git", from: "2.0.0"),
 
         // LiveKit — Real-time video/voice calls
         .package(url: "https://github.com/livekit/client-sdk-swift.git", from: "2.0.0"),
-
-        // NOTE: Stripe SDK removed — iOS subscriptions use StoreKit 2 (built-in).
-        // Stripe is only used server-side (Edge Functions) for tips & call billing.
-        // StoreKit 2 requires NO external dependency (import StoreKit).
+    ],
+    targets: [
+        .executableTarget(
+            name: "StickDeathInfinity",
+            dependencies: [
+                "SDCore",
+                .product(name: "Supabase", package: "supabase-swift"),
+                .product(name: "LiveKit", package: "client-sdk-swift"),
+            ],
+            path: "StickDeathInfinity"
+        )
     ]
 )

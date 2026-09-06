@@ -16,6 +16,7 @@
 import SwiftUI
 import Supabase
 import LiveKit
+import SDCore
 
 struct VideoCallView: View {
     let room: ChatRoom

@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel

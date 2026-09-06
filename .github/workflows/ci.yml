@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "oc/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  sdcore-linux:
+    name: SDCore Build & Test (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Swift
+        uses: swift-actions/setup-swift@v2
+        with:
+          swift-version: "5.9"
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+
+      - name: Test SDCore
+        run: swift test --package-path SDCore
+
+      - name: git diff --check
+        run: git diff --check
+
+  security-source-scan:
+    name: Security & Source Scan
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for secrets in source
+        run: |
+          # Check for hardcoded API keys, tokens, or secrets
+          if grep -rn "sk-\|api[_-]key.*=\|secret.*=\|token.*=" --include="*.swift" SDCore/; then
+            echo "WARNING: Potential secrets found in SDCore source"
+            exit 1
+          fi
+          echo "No secrets found in SDCore source"
+
+      - name: Scan for provider keys in committed config
+        run: |
+          # Verify no API keys in AppConfig
+          if grep -rn "sk-proj\|sk-ant\|AIza\|ghp_\|gho_" --include="*.swift" .; then
+            echo "ERROR: Secrets found in committed source"
+            exit 1
+          fi
+          echo "No secrets found"
+
+      - name: Verify no recovery SWFs committed
+        run: |
+          if find . -name "*.swf" -not -path "./ReferenceCorpus/*" | grep -q .; then
+            echo "ERROR: SWF files found outside ReferenceCorpus"
+            exit 1
+          fi
+          echo "No SWF files in source"
+
+  whitespace-check:
+    name: Whitespace Check
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for trailing whitespace
+        run: |
+          if grep -rn ' $' SDCore/Sources/ SDCore/Tests/ --include="*.swift"; then
+            echo "ERROR: Trailing whitespace found"
+            exit 1
+          fi
+          echo "No trailing whitespace"

@@ -11,6 +11,7 @@
 import Foundation
 import SwiftUI
 import Supabase
+import SDCore
 import AuthenticationServices
 import CryptoKit
 

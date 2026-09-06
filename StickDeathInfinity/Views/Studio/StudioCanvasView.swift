@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 // ═══════════════════════════════════════════════════════════════════════
 // CoreGraphics-based Canvas — Renders drawn elements + live stroke

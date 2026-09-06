@@ -13,6 +13,7 @@
 import Foundation
 import Supabase
 import LiveKit
+import SDCore
 
 // MARK: - Call Phase (matches web CallPhase)
 enum CallPhase: String {

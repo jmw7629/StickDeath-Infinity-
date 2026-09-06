@@ -10,6 +10,7 @@
 
 import Foundation
 import Supabase
+import SDCore
 
 final class SpatterService {
     static let shared = SpatterService()

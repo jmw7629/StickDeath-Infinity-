@@ -10,6 +10,7 @@
 
 import SwiftUI
 import StoreKit
+import SDCore
 
 struct ChoosePlanView: View {
     let onSelected: () -> Void

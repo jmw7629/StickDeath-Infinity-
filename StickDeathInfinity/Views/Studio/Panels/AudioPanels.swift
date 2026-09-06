@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 // ═══════════════════════════════════════════════════════════════════════
 // Sound Library Panel — Browse categories & sounds, add to timeline

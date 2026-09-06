@@ -1,5 +1,6 @@
 import Foundation
 import CoreData
+import SDCore
 
 /// Device-first storage architecture for StickDeath ∞
 /// All user data (animations, messages, videos, calls, media) stored on-device.
@@ -134,13 +135,13 @@ class DeviceStorageManager {
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
         
         // Load frames
-        var frames: [AnimationFrame] = []
+        var frames: [LegacyAnimationFrame] = []
         var index = 0
         while true {
             let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
             guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
             let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
+            frames.append(LegacyAnimationFrame(imageData: imageData))
             index += 1
         }
         
@@ -190,10 +191,15 @@ class DeviceStorageManager {
 
 // MARK: - Data models
 
+// Legacy AnimationFrame (raster-based, used only for legacy discovery/load)
+struct LegacyAnimationFrame {
+    var imageData: Data?
+}
+
 struct AnimationProject {
     let id: UUID
     let metadata: AnimationMetadata
-    var frames: [AnimationFrame]
+    var frames: [LegacyAnimationFrame]
     var audioTracks: [AudioTrack]
 }
 

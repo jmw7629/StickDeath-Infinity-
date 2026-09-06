@@ -28,6 +28,7 @@ targets:
         SWIFT_VERSION: "5.9"
         GENERATE_INFOPLIST_FILE: false
     dependencies:
+      - sdk: SDCore
       - package: supabase-swift
       - package: client-sdk-swift
       # StoreKit 2 is built into iOS 15+ — no external package needed
