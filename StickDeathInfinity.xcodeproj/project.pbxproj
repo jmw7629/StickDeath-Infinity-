@@ -71,6 +71,7 @@
 		B08F79CCEDA61C3317EA4D09 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A58386C9AEBE847DB9B6FA95 /* Assets.xcassets */; };
 		26DC1157C43122DB89395CAB /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 942276A7C2AD5F02FCFE142E /* Supabase */; };
 		990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0B86BD26C0F4E5851CCB9969 /* LiveKit */; };
+		AA11BB22CC33DD44EE55FF66 /* SDCore in Frameworks */ = {isa = PBXBuildFile; productRef = BB22CC33DD44EE55FF6677 /* SDCore */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXFileReference section */
@@ -148,6 +149,7 @@
 			files = (
 				26DC1157C43122DB89395CAB /* Supabase in Frameworks */,
 				990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */,
+				AA11BB22CC33DD44EE55FF66 /* SDCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -540,6 +542,7 @@
 			packageProductDependencies = (
 				942276A7C2AD5F02FCFE142E /* Supabase */,
 				0B86BD26C0F4E5851CCB9969 /* LiveKit */,
+				BB22CC33DD44EE55FF6677 /* SDCore */,
 			);
 			productName = StickDeathInfinity;
 			productReference = C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */;
@@ -573,6 +576,7 @@
 			packageReferences = (
 				AD8BA8041B6CA7947F5006AE /* supabase-swift */,
 				A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */,
+				CC11DD22EE33FF44AA556677 /* SDCore */,
 			);
 			productRefGroup = F35AEC2E38F2F9ACFEFB2B5F /* Products */;
 			projectDirPath = "";
@@ -885,6 +889,13 @@
 		};
 		/* End XCRemoteSwiftPackageReference section */
 
+		/* Begin XCLocalSwiftPackageReference section */
+		CC11DD22EE33FF44AA556677 /* SDCore */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SDCore;
+		};
+		/* End XCLocalSwiftPackageReference section */
+
 		/* Begin XCSwiftPackageProductDependency section */
 		942276A7C2AD5F02FCFE142E /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -895,6 +906,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A4CA4C66E9E948D381ACDF42 /* LiveKit */;
 			productName = LiveKit;
+		};
+		BB22CC33DD44EE55FF6677 /* SDCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SDCore;
 		};
 		/* End XCSwiftPackageProductDependency section */
 	};

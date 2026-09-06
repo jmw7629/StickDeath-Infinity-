@@ -1,0 +1,150 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  swift-build-test:
+    name: Swift Build & Test (Docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace/SDCore swift:5.9.2 swift --version
+
+      - name: Build SDCore
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace/SDCore swift:5.9.2 swift build 2>&1
+
+      - name: Test SDCore
+        run: |
+          docker run --rm -v "$PWD":/workspace -w /workspace/SDCore swift:5.9.2 swift test 2>&1
+
+  whitespace-check:
+    name: Whitespace & Diff Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for trailing whitespace
+        run: |
+          if git diff --check; then
+            echo "No whitespace issues"
+          else
+            echo "Whitespace issues found"
+            exit 1
+          fi
+
+  security-scan:
+    name: Security & Source Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Forbidden client identifiers
+        run: |
+          ERRORS=0
+          # Check for forbidden provider key properties
+          if grep -rn "openAIAPIKey\|geminiAPIKey\|anthropicAPIKey" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: Forbidden provider key properties found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          # Check for admin email allowlists
+          if grep -rn "superuserEmails\|adminEmails\|superuser_emails" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: Forbidden admin email allowlists found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: No forbidden client identifiers"
+
+      - name: Known secret literal patterns
+        run: |
+          ERRORS=0
+          # Check for actual secret values (not variable declarations)
+          if grep -rn "sk-[a-zA-Z0-9]" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: OpenAI secret key pattern found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if grep -rn "AIza[a-zA-Z0-9]" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: Google API key pattern found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if grep -rn "ghp_[a-zA-Z0-9]" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: GitHub token pattern found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: No known secret literal patterns"
+
+      - name: Fabricated fallback service URLs
+        run: |
+          ERRORS=0
+          if grep -rn "your-project\.supabase\.co\|your-livekit-instance\.com" --include="*.swift" StickDeathInfinity/; then
+            echo "FAIL: Fabricated placeholder service URLs found"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: No fabricated fallback service URLs"
+
+      - name: Legacy animation writer patterns
+        run: |
+          ERRORS=0
+          if grep -rn "saveAnimation\|deleteAnimation" --include="*.swift" StickDeathInfinity/Storage/DeviceStorageManager.swift; then
+            echo "FAIL: Legacy animation writer/deleter still present in DeviceStorageManager"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: No legacy animation writer/deleter patterns"
+
+      - name: AppConfig tracked
+        run: |
+          if [ -f "StickDeathInfinity/App/AppConfig.swift" ]; then
+            echo "PASS: AppConfig.swift exists at app path"
+          else
+            echo "FAIL: AppConfig.swift not found"
+            exit 1
+          fi
+
+      - name: Package wiring checks
+        run: |
+          ERRORS=0
+          # Check project.yml has SDCore local package
+          if ! grep -q "SDCore" project.yml; then
+            echo "FAIL: project.yml missing SDCore reference"
+            ERRORS=$((ERRORS + 1))
+          fi
+          # Check .pbxproj has SDCore dependency
+          if ! grep -q "SDCore" StickDeathInfinity.xcodeproj/project.pbxproj; then
+            echo "FAIL: .pbxproj missing SDCore reference"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: Package wiring checks passed"
+
+      - name: No direct provider hosts in production cloud paths
+        run: |
+          ERRORS=0
+          # Check SpatterService doesn't hit OpenAI directly
+          if grep -n "api\.openai\.com" --include="*.swift" -r StickDeathInfinity/Services/Spatter/SpatterService.swift; then
+            echo "FAIL: Direct OpenAI host found in SpatterService"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+          echo "PASS: No direct provider hosts in production cloud paths"

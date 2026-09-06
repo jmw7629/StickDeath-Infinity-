@@ -62,16 +62,16 @@ struct DrawnElement: Codable, Identifiable {
     var tool: DrawingTool
     var points: [StrokePoint]
     var color: String       // hex color
-    var width: CGFloat
+    var width: Double       // persisted as Double for SDCore compat
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
 }
 
 struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
+    var x: Double           // persisted as Double for SDCore compat
+    var y: Double
+    var pressure: Double?
     var timestamp: TimeInterval?
 }
 

@@ -1,23 +1,20 @@
 import Foundation
 import CoreData
 
-/// Device-first storage architecture for StickDeath ∞
-/// All user data (animations, messages, videos, calls, media) stored on-device.
+/// Device-first storage architecture for StickDeath infinity
+/// All user data stored on-device.
 /// Server only handles: auth tokens, challenge metadata, matchmaking, leaderboards.
 ///
 /// Storage hierarchy:
-///   ~/Documents/Animations/       — .sdi animation project bundles
+///   ~/Documents/Animations/       — historical migration input (READ-ONLY)
+///   ~/Documents/StudioProjects/   — canonical SDCore project storage
 ///   ~/Documents/Media/            — photos, videos, audio files
 ///   ~/Documents/Messages/         — encrypted message archives (SQLite)
 ///   ~/Library/Caches/AI/          — Spatter AI cached responses
 ///   ~/Library/Caches/Thumbnails/  — generated thumbnails
-///   Core Data store               — projects metadata, frame data, layer data, user prefs
 ///
-/// Sync strategy: Device → server only sends:
-///   - User profile (handle, avatar, plan)
-///   - Challenge entries (animation thumbnail + metadata, not full project)
-///   - Leaderboard scores
-///   - Presence/online status for collab rooms
+/// Legacy animation project write/delete is intentionally removed.
+/// New persistence belongs only to SDCore canonical storage under StudioProjects.
 
 class DeviceStorageManager {
     static let shared = DeviceStorageManager()
@@ -28,6 +25,10 @@ class DeviceStorageManager {
         documentsDir.appendingPathComponent("Animations", isDirectory: true)
     }
     
+    var studioProjectsDir: URL {
+        documentsDir.appendingPathComponent("StudioProjects", isDirectory: true)
+    }
+
     var mediaDir: URL {
         documentsDir.appendingPathComponent("Media", isDirectory: true)
     }
@@ -55,7 +56,7 @@ class DeviceStorageManager {
     // MARK: - Initialization
     
     func setupDirectories() {
-        let dirs = [animationsDir, mediaDir, messagesDir, aiCacheDir, thumbnailsDir]
+        let dirs = [studioProjectsDir, mediaDir, messagesDir, aiCacheDir, thumbnailsDir]
         for dir in dirs {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         }
@@ -64,7 +65,7 @@ class DeviceStorageManager {
     // MARK: - Storage metrics
     
     func deviceStorageUsed() -> Int64 {
-        let dirs = [animationsDir, mediaDir, messagesDir]
+        let dirs = [studioProjectsDir, mediaDir, messagesDir]
         var total: Int64 = 0
         for dir in dirs {
             total += directorySize(url: dir)
@@ -101,30 +102,11 @@ class DeviceStorageManager {
         return total
     }
     
-    // MARK: - Animation Projects (on-device)
+    // MARK: - Legacy Animation Projects (READ-ONLY for migration)
+    // Historical source: ~/Documents/Animations/<id>/...
+    // write/delete removed — new persistence belongs to SDCore StudioProjects
     
-    func saveAnimation(_ project: AnimationProject) throws {
-        let projectDir = animationsDir.appendingPathComponent(project.id.uuidString, isDirectory: true)
-        try? FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
-        
-        let metadata = try JSONEncoder().encode(project.metadata)
-        try metadata.write(to: projectDir.appendingPathComponent("metadata.json"))
-        
-        // Save frames as individual PNGs
-        for (index, frame) in project.frames.enumerated() {
-            if let data = frame.imageData {
-                try data.write(to: projectDir.appendingPathComponent("frame_\(index).png"))
-            }
-        }
-        
-        // Save audio tracks
-        for (index, track) in project.audioTracks.enumerated() {
-            if let data = track.audioData {
-                try data.write(to: projectDir.appendingPathComponent("audio_\(index).\(track.format)"))
-            }
-        }
-    }
-    
+    /// Read-only load for legacy animation discovery/migration.
     func loadAnimation(id: UUID) throws -> AnimationProject? {
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         guard FileManager.default.fileExists(atPath: projectDir.path) else { return nil }
@@ -147,6 +129,7 @@ class DeviceStorageManager {
         return AnimationProject(id: id, metadata: metadata, frames: frames, audioTracks: [])
     }
     
+    /// Read-only list for legacy animation discovery/migration.
     func listAnimations() -> [AnimationMetadata] {
         let fm = FileManager.default
         guard let contents = try? fm.contentsOfDirectory(at: animationsDir, includingPropertiesForKeys: nil) else { return [] }
@@ -157,10 +140,20 @@ class DeviceStorageManager {
             return meta
         }
     }
-    
-    func deleteAnimation(id: UUID) throws {
-        let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
-        try FileManager.default.removeItem(at: projectDir)
+
+    /// Discover legacy animations for migration.
+    func findLegacyAnimations() -> [(id: String, dir: URL)] {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: animationsDir.path) else { return [] }
+        guard let contents = try? fm.contentsOfDirectory(
+            at: animationsDir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return contents.compactMap { dir in
+            guard dir.hasDirectoryPath else { return nil }
+            return (id: dir.lastPathComponent, dir: dir)
+        }
     }
     
     // MARK: - Messages (on-device encrypted SQLite)
@@ -188,7 +181,7 @@ class DeviceStorageManager {
     }
 }
 
-// MARK: - Data models
+// MARK: - Legacy animation project model (read-only for migration)
 
 struct AnimationProject {
     let id: UUID

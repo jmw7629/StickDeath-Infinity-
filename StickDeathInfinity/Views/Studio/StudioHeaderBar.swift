@@ -24,7 +24,7 @@ struct StudioHeaderBar: View {
             }
             
             // Info pill
-            Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
+            Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.layers.count) layers")
                 .font(.system(size: 9))
                 .foregroundColor(.white.opacity(0.35))
             

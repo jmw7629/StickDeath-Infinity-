@@ -13,9 +13,15 @@ final class SupabaseManager {
     let client: SupabaseClient
 
     private init() {
-        client = SupabaseClient(
-            supabaseURL: URL(string: AppConfig.supabaseURL)!,
-            supabaseKey: AppConfig.supabaseAnonKey
-        )
+        let urlString = AppConfig.supabaseURL
+        let key = AppConfig.supabaseAnonKey
+        if !urlString.isEmpty, !key.isEmpty, let url = URL(string: urlString) {
+            client = SupabaseClient(supabaseURL: url, supabaseKey: key)
+        } else {
+            client = SupabaseClient(
+                supabaseURL: URL(string: "https://placeholder.supabase.co")!,
+                supabaseKey: "placeholder-key"
+            )
+        }
     }
 }

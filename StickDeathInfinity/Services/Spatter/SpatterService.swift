@@ -14,9 +14,15 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
     private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private let transport: SDCore.AuthenticatedTransport
+
+    init(transport: SDCore.AuthenticatedTransport? = nil) {
+        self.transport = transport ?? SDCore.AuthenticatedTransport(
+            baseURL: nil,
+            sessionToken: nil
+        )
+    }
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -117,24 +123,21 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
+        // 5. Call backend via authenticated transport
         let body: [String: Any] = [
             "model": model,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
         ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let bodyData = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-
-        return response.choices.first?.message.content ?? "..."
+        let spatterTransport = SDCore.SpatterTransport(transport: transport)
+        let responseText = try await spatterTransport.chat(
+            messages: apiMessages.map { (role: $0["role"] ?? "", content: $0["content"] ?? "") },
+            model: model
+        )
+        return responseText
     }
 
     // MARK: - Quick Knowledge Lookup

@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterBotService — Backend for Spatter Command Center
 // Manages bot configs, content queue, analytics via Supabase
-// Owner-only — gated by AppConfig.superuserEmails
+// Owner-only — gated by AuthService.isSuperAdmin
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -18,8 +18,6 @@ final class SpatterBotService: ObservableObject {
     @Published var analytics: [PlatformAnalytics] = []
 
     // MARK: - Settings (persisted to UserDefaults for now, Supabase later)
-    @Published var openAIKey: String = AppConfig.openAIAPIKey
-    @Published var geminiKey: String = AppConfig.geminiAPIKey
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 
@@ -27,8 +25,7 @@ final class SpatterBotService: ObservableObject {
 
     // MARK: - Owner Check
     var isOwner: Bool {
-        guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        AuthService.shared.isSuperAdmin
     }
 
     // MARK: - Load All Bot Configs

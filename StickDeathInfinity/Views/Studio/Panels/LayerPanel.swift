@@ -2,25 +2,12 @@ import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════
 // Layer Panel — Bottom sheet with drag handle
-// Matches video frame-by-frame:
-// ┌─────────────────────────────────────────────────┐
-// │                  ─── drag handle ───             │
-// │ ⋮⋮ 🚫 [thumb] Layer 1 (red)  🔒 100% ▼        │
-// │ Opacity ████████████████████████████ 100%        │
-// │ LOCK MODE                                        │
-// │ [🔓 Free] [🔒 Full] [📌 Pos] [🎨 Alpha]        │
-// │ BLEND MODE                                       │
-// │ [ Normal                              ▼ ]        │
-// │ GLOW  ○                                          │
-// │ Color: ● ● ● ● ● ● ● ●                         │
-// │ [📝 Editable] [📋 Duplicate] [⬆] [⬇]           │
-// │                   + (red)                        │
-// └─────────────────────────────────────────────────┘
+// Uses canonical SDCore CanvasLayer String IDs
 // ═══════════════════════════════════════════════════════════════════
 
 struct LayerPanel: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var expandedLayer: UUID? = nil
+    @State private var expandedLayerID: String? = nil
     
     var body: some View {
         VStack(spacing: 0) {
@@ -39,15 +26,15 @@ struct LayerPanel: View {
                 
                 ScrollView {
                     VStack(spacing: 0) {
-                        ForEach(vm.studioLayers) { layer in
-                            LayerRow(vm: vm, layer: layer, isExpanded: expandedLayer == layer.id)
+                        ForEach(vm.layers) { layer in
+                            LayerRow(vm: vm, layer: layer, isExpanded: expandedLayerID == layer.id)
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.2)) {
-                                        expandedLayer = expandedLayer == layer.id ? nil : layer.id
+                                        expandedLayerID = expandedLayerID == layer.id ? nil : layer.id
                                     }
                                 }
                             
-                            if expandedLayer == layer.id {
+                            if expandedLayerID == layer.id {
                                 LayerDetailView(vm: vm, layer: layer)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
@@ -78,15 +65,15 @@ struct LayerPanel: View {
     }
 }
 
-// MARK: - Layer Row (collapsed)
+// MARK: - Layer Row (collapsed) — uses canonical String ID
 struct LayerRow: View {
     @ObservedObject var vm: StudioViewModel
-    let layer: StudioLayer
+    let layer: CanvasLayer
     let isExpanded: Bool
     
     var body: some View {
         HStack(spacing: 8) {
-            // Drag dots (2×3 grid)
+            // Drag dots (2x3 grid)
             VStack(spacing: 2) {
                 ForEach(0..<3) { _ in
                     HStack(spacing: 2) {
@@ -97,7 +84,7 @@ struct LayerRow: View {
             }
             .frame(width: 12)
             
-            // Visibility toggle (🚫 when hidden)
+            // Visibility toggle
             Button(action: { vm.toggleLayerVisibility(layer.id) }) {
                 Image(systemName: layer.visible ? "eye.fill" : "eye.slash.fill")
                     .font(.system(size: 14))
@@ -124,7 +111,7 @@ struct LayerRow: View {
             // Lock icon
             Image(systemName: lockIcon(for: layer.lockMode))
                 .font(.system(size: 12))
-                .foregroundColor(layer.lockMode == .full ? Color.yellow : .white.opacity(0.4))
+                .foregroundColor(layer.lockMode == "full" ? Color.yellow : .white.opacity(0.4))
             
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
@@ -141,24 +128,25 @@ struct LayerRow: View {
         .contentShape(Rectangle())
     }
     
-    func lockIcon(for mode: LayerLockMode) -> String {
+    func lockIcon(for mode: String) -> String {
         switch mode {
-        case .free: return "lock.open"
-        case .full: return "lock.fill"
-        case .position: return "pin.fill"
-        case .alpha: return "paintpalette.fill"
+        case "free": return "lock.open"
+        case "full": return "lock.fill"
+        case "position": return "pin.fill"
+        case "alpha": return "paintpalette.fill"
+        default: return "lock.open"
         }
     }
 }
 
-// MARK: - Layer Detail View (expanded)
+// MARK: - Layer Detail View (expanded) — canonical String ID
 struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
-    let layer: StudioLayer
+    let layer: CanvasLayer
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Opacity slider (RED bar)
+            // Opacity slider
             HStack {
                 Text("Opacity")
                     .font(.system(size: 11, design: .monospaced))
@@ -189,17 +177,17 @@ struct LayerDetailView: View {
                     .tracking(2)
                 
                 HStack(spacing: 6) {
-                    LockModeButton(emoji: "🔓", label: "Free", isSelected: layer.lockMode == .free, selectedColor: .clear) {
-                        vm.setLayerLockMode(layer.id, mode: .free)
+                    LockModeButton(emoji: "\u{1F513}", label: "Free", isSelected: layer.lockMode == "free", selectedColor: .clear) {
+                        vm.setLayerLockMode(layer.id, mode: "free")
                     }
-                    LockModeButton(emoji: "🔒", label: "Full", isSelected: layer.lockMode == .full, selectedColor: .yellow) {
-                        vm.setLayerLockMode(layer.id, mode: .full)
+                    LockModeButton(emoji: "\u{1F512}", label: "Full", isSelected: layer.lockMode == "full", selectedColor: .yellow) {
+                        vm.setLayerLockMode(layer.id, mode: "full")
                     }
-                    LockModeButton(emoji: "📌", label: "Pos", isSelected: layer.lockMode == .position, selectedColor: .red) {
-                        vm.setLayerLockMode(layer.id, mode: .position)
+                    LockModeButton(emoji: "\u{1F4CC}", label: "Pos", isSelected: layer.lockMode == "position", selectedColor: .red) {
+                        vm.setLayerLockMode(layer.id, mode: "position")
                     }
-                    LockModeButton(emoji: "🎨", label: "Alpha", isSelected: layer.lockMode == .alpha, selectedColor: .orange) {
-                        vm.setLayerLockMode(layer.id, mode: .alpha)
+                    LockModeButton(emoji: "\u{1F3A8}", label: "Alpha", isSelected: layer.lockMode == "alpha", selectedColor: .orange) {
+                        vm.setLayerLockMode(layer.id, mode: "alpha")
                     }
                 }
             }
@@ -212,7 +200,7 @@ struct LayerDetailView: View {
                     .tracking(2)
                 
                 HStack {
-                    Text(layer.blendMode)
+                    Text(layer.blendMode.capitalized)
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(.white.opacity(0.7))
                     Spacer()
@@ -239,9 +227,12 @@ struct LayerDetailView: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
-                Toggle("", isOn: .constant(false))
-                    .labelsHidden()
-                    .scaleEffect(0.8)
+                Toggle("", isOn: Binding(
+                    get: { layer.glowEnabled },
+                    set: { vm.setLayerGlowEnabled(layer.id, enabled: $0) }
+                ))
+                .labelsHidden()
+                .scaleEffect(0.8)
                 
                 Spacer()
             }
@@ -253,26 +244,25 @@ struct LayerDetailView: View {
                     .foregroundColor(.white.opacity(0.4))
                 
                 ForEach([
-                    Color.red, Color.orange, Color.yellow, Color.green,
-                    Color(hex: "38BDF8"), Color.purple, Color.pink, Color.gray
-                ], id: \.self) { color in
+                    "red", "orange", "yellow", "green", "blue", "purple", "pink", "gray"
+                ], id: \.self) { colorName in
                     Circle()
-                        .fill(color)
+                        .fill(Color(hex: colorNameToHex(colorName)))
                         .frame(width: 20, height: 20)
                         .overlay(
                             Circle()
-                                .stroke(layer.labelColor == color ? Color.white : Color.white.opacity(0.1), lineWidth: layer.labelColor == color ? 2 : 0.5)
+                                .stroke(layer.colorLabel == colorName ? Color.white : Color.white.opacity(0.1), lineWidth: layer.colorLabel == colorName ? 2 : 0.5)
                         )
                         .onTapGesture {
-                            vm.setLayerColor(layer.id, color: color)
+                            vm.setLayerColorLabel(layer.id, color: colorName)
                         }
                 }
             }
             
             // Action buttons
             HStack(spacing: 6) {
-                LayerActionButton(emoji: "📝", label: "Editable") {}
-                LayerActionButton(emoji: "📋", label: "Duplicate") {
+                LayerActionButton(emoji: "\u{1F4DD}", label: "Editable") {}
+                LayerActionButton(emoji: "\u{1F4CB}", label: "Duplicate") {
                     vm.duplicateLayer(layer.id)
                 }
                 
@@ -302,6 +292,20 @@ struct LayerDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(hex: "14141E"))
+    }
+
+    func colorNameToHex(_ name: String) -> String {
+        switch name {
+        case "red": return "DC2626"
+        case "orange": return "F97316"
+        case "yellow": return "EAB308"
+        case "green": return "22C55E"
+        case "blue": return "3B82F6"
+        case "purple": return "A855F7"
+        case "pink": return "EC4899"
+        case "gray": return "6B7280"
+        default: return "6B7280"
+        }
     }
 }
 
