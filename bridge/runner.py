@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """JoeOS ChatGPT -> GitHub -> OpenCode bridge runner.
 
-Runs only tasks created as GitHub issues by trusted authors. It never merges.
+Runs only trusted [OC] GitHub issues carrying the bridge marker. It never merges.
+PROJECT_BYTE execution hints are parsed as data and passed to OpenCode only after
+strict validation; no issue text is ever interpreted by a shell.
 """
 
 from __future__ import annotations
@@ -23,6 +25,19 @@ BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
 DEFAULT_TRUSTED_AUTHORS = {"jmw7629"}
 DIAGNOSTIC_LIMIT = 1800
+MODEL_HINT_LINE_RE = re.compile(r"(?m)^PROJECT_BYTE_MODEL_HINT:[ \t]*([^\r\n]+?)[ \t]*$")
+MODEL_HINT_VALUE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+)
+TERMINAL_STATUSES = {
+    "pr-created",
+    "opencode-failed",
+    "bridge-error",
+    "diff-check-failed",
+    "no-changes",
+    "skipped-existing-remote-branch",
+}
+RECOVERABLE_PREFIX = "recovery-blocked-"
 
 
 class BridgeError(RuntimeError):
@@ -133,7 +148,6 @@ def ensure_repo(root: Path, repo: str) -> None:
             f"Repository has uncommitted changes: {root}. "
             "Bridge refuses to run on a dirty control checkout."
         )
-
     remote = run(["git", "remote", "get-url", "origin"], cwd=root).stdout.strip()
     expected = repo.lower().rstrip(".git")
     normalized = remote.lower().rstrip("/").removesuffix(".git")
@@ -178,20 +192,83 @@ GitHub issue body:
 """
 
 
-def branch_exists(root: Path, branch: str) -> bool:
+def branch_presence(root: Path, branch: str) -> tuple[bool, bool]:
     local = run(
         ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
         cwd=root,
         check=False,
-    )
-    if local.returncode == 0:
-        return True
+    ).returncode == 0
     remote = run(
         ["git", "ls-remote", "--exit-code", "--heads", "origin", branch],
         cwd=root,
         check=False,
+    ).returncode == 0
+    return local, remote
+
+
+def branch_worktree(root: Path, branch: str) -> Path | None:
+    proc = run(["git", "worktree", "list", "--porcelain"], cwd=root)
+    current: Path | None = None
+    target = f"refs/heads/{branch}"
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("worktree "):
+            current = Path(line.removeprefix("worktree ").strip())
+        elif line.startswith("branch ") and line.removeprefix("branch ").strip() == target:
+            return current
+    return None
+
+
+def local_branch_ahead_count(root: Path, branch: str) -> int:
+    proc = run(
+        ["git", "rev-list", "--count", f"origin/main..{branch}"],
+        cwd=root,
+        check=False,
     )
-    return remote.returncode == 0
+    if proc.returncode != 0:
+        raise BridgeError(f"Cannot determine whether local branch {branch} has unique commits")
+    try:
+        return max(0, int((proc.stdout or "0").strip()))
+    except ValueError as exc:
+        raise BridgeError(f"Unexpected rev-list output for {branch!r}") from exc
+
+
+def recovery_decision(
+    *,
+    local_exists: bool,
+    remote_exists: bool,
+    worktree_is_bridge_owned: bool,
+    worktree_dirty: bool,
+    ahead_count: int,
+) -> str:
+    if remote_exists:
+        return "remote-existing"
+    if not local_exists:
+        return "new"
+    if not worktree_is_bridge_owned:
+        return "blocked-foreign-worktree"
+    if worktree_dirty:
+        return "blocked-dirty-worktree"
+    if ahead_count > 0:
+        return "blocked-local-commits"
+    return "reset-clean-local"
+
+
+def project_byte_model_hint(body: str) -> str:
+    match = MODEL_HINT_LINE_RE.search(body or "")
+    if not match:
+        return ""
+    value = match.group(1).strip()
+    if not MODEL_HINT_VALUE_RE.fullmatch(value):
+        return ""
+    return value
+
+
+def choose_model(body: str, env_model: str) -> tuple[str, str]:
+    hinted = project_byte_model_hint(body)
+    if hinted:
+        return hinted, "project-byte"
+    fallback = (env_model or "").strip()
+    return fallback, "environment" if fallback else "default"
 
 
 PRIVATE_KEY_RE = re.compile(
@@ -230,7 +307,6 @@ def sanitize_text(text: str) -> str:
 
 def classify_opencode_failure(stdout: str, stderr: str) -> str:
     text = f"{stderr}\n{stdout}".lower()
-
     if any(
         marker in text
         for marker in (
@@ -243,7 +319,6 @@ def classify_opencode_failure(stdout: str, stderr: str) -> str:
         )
     ):
         return "cli-invocation-incompatibility"
-
     if any(
         marker in text
         for marker in (
@@ -261,7 +336,6 @@ def classify_opencode_failure(stdout: str, stderr: str) -> str:
         )
     ):
         return "model-provider-auth-config"
-
     if any(
         marker in text
         for marker in (
@@ -274,7 +348,6 @@ def classify_opencode_failure(stdout: str, stderr: str) -> str:
         )
     ):
         return "prompt-input-or-argument-passing"
-
     if any(
         marker in text
         for marker in (
@@ -287,7 +360,6 @@ def classify_opencode_failure(stdout: str, stderr: str) -> str:
         )
     ):
         return "filesystem-worktree-sandbox"
-
     if any(
         marker in text
         for marker in (
@@ -302,7 +374,6 @@ def classify_opencode_failure(stdout: str, stderr: str) -> str:
         )
     ):
         return "tool-runtime-dependency"
-
     return "unclassified"
 
 
@@ -328,7 +399,6 @@ def resolve_opencode_binary(configured: str) -> str:
         resolved = shutil.which(configured) or ""
         if not resolved:
             raise BridgeError(f"OpenCode binary is not on PATH: {configured}")
-
     if resolved.startswith("/snap/"):
         raise BridgeError(
             "OpenCode resolves to a Snap path, which is incompatible with the "
@@ -347,14 +417,12 @@ def opencode_preflight(configured: str) -> tuple[str, str, set[str]]:
         )
     version_text = sanitize_text((version.stdout or version.stderr or "").strip())
     version_text = version_text.splitlines()[0][:200] if version_text else "unknown"
-
     help_proc = run([binary, "run", "--help"], check=False, timeout=20)
     if help_proc.returncode != 0:
         excerpt = diagnostic_excerpt(help_proc.stdout or "", help_proc.stderr or "")
         raise BridgeError(
             f"OpenCode preflight failed at 'run --help' ({help_proc.returncode}): {excerpt}"
         )
-
     help_text = f"{help_proc.stdout or ''}\n{help_proc.stderr or ''}"
     flags = {
         flag
@@ -371,6 +439,152 @@ def opencode_preflight(configured: str) -> tuple[str, str, set[str]]:
     return binary, version_text, flags
 
 
+def mark_recovery_blocked(
+    repo: str,
+    number: int,
+    state: dict[str, Any],
+    state_path: Path,
+    branch: str,
+    status: str,
+    detail: str,
+) -> None:
+    key = str(number)
+    previous = (state.get("processed") or {}).get(key) or {}
+    state.setdefault("processed", {})[key] = {
+        "status": status,
+        "branch": branch,
+        "detail": sanitize_text(detail)[:800],
+        "time": int(time.time()),
+    }
+    save_state(state_path, state)
+    if previous.get("status") != status or previous.get("detail") != detail:
+        comment_issue(
+            repo,
+            number,
+            "Bridge recovery is blocked, but no work was deleted. "
+            f"Status: `{status}`. {sanitize_text(detail)} "
+            "The bridge will retry this issue automatically after the blocker is resolved.",
+        )
+
+
+def prepare_issue_branch(
+    root: Path,
+    repo: str,
+    number: int,
+    branch: str,
+    worktree: Path,
+    worktree_root: Path,
+    state: dict[str, Any],
+    state_path: Path,
+) -> bool:
+    run(["git", "fetch", "--prune", "origin", "main"], cwd=root)
+    local_exists, remote_exists = branch_presence(root, branch)
+    if remote_exists:
+        state.setdefault("processed", {})[str(number)] = {
+            "status": "skipped-existing-remote-branch",
+            "branch": branch,
+            "time": int(time.time()),
+        }
+        save_state(state_path, state)
+        comment_issue(
+            repo,
+            number,
+            f"Bridge refused to duplicate work because remote branch `{branch}` already exists. "
+            "Review the existing branch/PR or create a new `[OC]` issue for a revision.",
+        )
+        return False
+
+    if local_exists:
+        actual_worktree = branch_worktree(root, branch)
+        worktree_is_bridge_owned = actual_worktree is None
+        dirty = False
+        if actual_worktree is not None:
+            try:
+                actual_resolved = actual_worktree.resolve()
+                root_resolved = worktree_root.resolve()
+                worktree_is_bridge_owned = actual_resolved.is_relative_to(root_resolved)
+            except OSError:
+                worktree_is_bridge_owned = False
+            if worktree_is_bridge_owned and actual_worktree.exists():
+                dirty = bool(run(["git", "status", "--porcelain"], cwd=actual_worktree).stdout.strip())
+        ahead = local_branch_ahead_count(root, branch)
+        decision = recovery_decision(
+            local_exists=True,
+            remote_exists=False,
+            worktree_is_bridge_owned=worktree_is_bridge_owned,
+            worktree_dirty=dirty,
+            ahead_count=ahead,
+        )
+        if decision == "blocked-foreign-worktree":
+            mark_recovery_blocked(
+                repo,
+                number,
+                state,
+                state_path,
+                branch,
+                RECOVERABLE_PREFIX + "foreign-worktree",
+                "The issue branch is checked out outside the bridge-owned worktree root.",
+            )
+            return False
+        if decision == "blocked-dirty-worktree":
+            mark_recovery_blocked(
+                repo,
+                number,
+                state,
+                state_path,
+                branch,
+                RECOVERABLE_PREFIX + "dirty-worktree",
+                "The interrupted bridge worktree contains uncommitted changes and was preserved.",
+            )
+            return False
+        if decision == "blocked-local-commits":
+            mark_recovery_blocked(
+                repo,
+                number,
+                state,
+                state_path,
+                branch,
+                RECOVERABLE_PREFIX + "local-commits",
+                f"The local issue branch has {ahead} commit(s) not present on origin/main and was preserved.",
+            )
+            return False
+        if decision == "reset-clean-local":
+            if actual_worktree is not None and actual_worktree.exists():
+                run(["git", "worktree", "remove", "--force", str(actual_worktree)], cwd=root)
+            run(["git", "branch", "-D", branch], cwd=root)
+            state.setdefault("processed", {}).pop(str(number), None)
+            save_state(state_path, state)
+            comment_issue(
+                repo,
+                number,
+                f"Bridge recovered clean interrupted state for `{branch}` and will restart the issue from current `origin/main`.",
+            )
+
+    if worktree.exists():
+        status = run(["git", "status", "--porcelain"], cwd=worktree, check=False)
+        if status.returncode == 0 and status.stdout.strip():
+            mark_recovery_blocked(
+                repo,
+                number,
+                state,
+                state_path,
+                branch,
+                RECOVERABLE_PREFIX + "orphan-dirty-worktree",
+                f"Expected bridge worktree `{worktree}` contains changes and was preserved.",
+            )
+            return False
+        run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root, check=False)
+        if worktree.exists():
+            raise BridgeError(f"Cannot safely remove stale bridge worktree: {worktree}")
+
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    run(
+        ["git", "worktree", "add", "-b", branch, str(worktree), "origin/main"],
+        cwd=root,
+    )
+    return True
+
+
 def process_task(
     root: Path,
     repo: str,
@@ -381,6 +595,7 @@ def process_task(
 ) -> None:
     number = int(issue["number"])
     title = issue["title"].strip()
+    body = issue.get("body") or ""
     branch = f"oc/issue-{number}-{slugify(title.removeprefix('[OC]').strip())}"
     worktree = worktree_root / f"issue-{number}"
     logs_dir = state_path.parent / "logs"
@@ -390,30 +605,17 @@ def process_task(
     configured_opencode = os.getenv("OPENCODE_BIN", "opencode")
     opencode_bin, opencode_version, opencode_flags = opencode_preflight(configured_opencode)
 
-    if branch_exists(root, branch):
-        state["processed"][str(number)] = {
-            "status": "skipped-existing-branch",
-            "branch": branch,
-            "time": int(time.time()),
-        }
-        save_state(state_path, state)
-        comment_issue(
-            repo,
-            number,
-            f"Bridge refused to re-run because branch `{branch}` already exists. "
-            "Create a new `[OC]` issue for a revision.",
-        )
+    if not prepare_issue_branch(
+        root,
+        repo,
+        number,
+        branch,
+        worktree,
+        worktree_root,
+        state,
+        state_path,
+    ):
         return
-
-    run(["git", "fetch", "--prune", "origin", "main"], cwd=root)
-
-    if worktree.exists():
-        run(["git", "worktree", "remove", "--force", str(worktree)], cwd=root)
-    worktree.parent.mkdir(parents=True, exist_ok=True)
-    run(
-        ["git", "worktree", "add", "-b", branch, str(worktree), "origin/main"],
-        cwd=root,
-    )
 
     comment_issue(
         repo,
@@ -423,27 +625,17 @@ def process_task(
     )
 
     prompt = build_prompt(issue)
-    command = [
-        opencode_bin,
-        "run",
-        "--dir",
-        str(worktree),
-    ]
+    command = [opencode_bin, "run", "--dir", str(worktree)]
     if "--auto" in opencode_flags:
         command.append("--auto")
-    command.extend(
-        [
-            "--format",
-            "json",
-            "--title",
-            f"GitHub issue #{number}",
-        ]
-    )
+    command.extend(["--format", "json", "--title", f"GitHub issue #{number}"])
 
-    model = os.getenv("OPENCODE_MODEL", "").strip()
+    model, model_source = choose_model(body, os.getenv("OPENCODE_MODEL", ""))
     if model:
         if "--model" not in opencode_flags:
-            raise BridgeError("Configured OPENCODE_MODEL but installed 'run' lacks --model")
+            if model_source == "project-byte":
+                raise BridgeError("PROJECT_BYTE requested a model but installed OpenCode 'run' lacks --model")
+            raise BridgeError("Configured OPENCODE_MODEL but installed OpenCode 'run' lacks --model")
         command.extend(["--model", model])
 
     agent = os.getenv("OPENCODE_AGENT", "").strip()
@@ -474,6 +666,8 @@ def process_task(
     proc = run(command, cwd=worktree, check=False, capture=True, env=env)
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
+        f"Model source: {model_source}\n"
+        f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
         f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
         f"STDERR\n{proc.stderr or ''}\n"
@@ -488,6 +682,8 @@ def process_task(
             "classification": classification,
             "branch": branch,
             "log": str(log_path),
+            "model": model,
+            "model_source": model_source,
             "time": int(time.time()),
         }
         save_state(state_path, state)
@@ -508,6 +704,8 @@ def process_task(
             "status": "no-changes",
             "branch": branch,
             "log": str(log_path),
+            "model": model,
+            "model_source": model_source,
             "time": int(time.time()),
         }
         save_state(state_path, state)
@@ -525,6 +723,8 @@ def process_task(
             "status": "diff-check-failed",
             "branch": branch,
             "log": str(log_path),
+            "model": model,
+            "model_source": model_source,
             "time": int(time.time()),
         }
         save_state(state_path, state)
@@ -538,10 +738,7 @@ def process_task(
 
     run(["git", "add", "-A"], cwd=worktree)
     staged = run(["git", "diff", "--cached", "--stat"], cwd=worktree).stdout.strip()
-    run(
-        ["git", "commit", "-m", f"oc: implement issue #{number}"],
-        cwd=worktree,
-    )
+    run(["git", "commit", "-m", f"oc: implement issue #{number}"], cwd=worktree)
     run(["git", "push", "-u", "origin", branch], cwd=worktree)
 
     pr_body = (
@@ -549,6 +746,8 @@ def process_task(
         f"Closes #{number}\n\n"
         "### Bridge verification\n"
         "- `git diff --check`: PASS\n"
+        f"- Model source: `{model_source}`\n"
+        f"- Model: `{model or 'OpenCode default'}`\n"
         "- OpenCode execution log: retained locally; not uploaded to GitHub\n"
         "- Auto-merge: DISABLED\n\n"
         "### Changed files summary\n"
@@ -579,10 +778,11 @@ def process_task(
         "branch": branch,
         "pr": pr_url,
         "log": str(log_path),
+        "model": model,
+        "model_source": model_source,
         "time": int(time.time()),
     }
     save_state(state_path, state)
-
     comment_issue(
         repo,
         number,
@@ -597,7 +797,9 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
     processed = state.setdefault("processed", {})
     for issue in list_tasks(repo):
         number = str(issue["number"])
-        if number in processed:
+        record = processed.get(number) or {}
+        status = record.get("status", "")
+        if record and not status.startswith(RECOVERABLE_PREFIX):
             continue
         try:
             process_task(root, repo, issue, state, state_path, worktree_root)
@@ -649,6 +851,47 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             return 1
+
+    model_cases = [
+        ("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "openai/gpt-5.6-sol"),
+        ("PROJECT_BYTE_MODEL_HINT: ollama/qwen3-coder:30b", "ollama/qwen3-coder:30b"),
+        ("PROJECT_BYTE_MODEL_HINT: openai/gpt; rm -rf /", ""),
+        ("PROJECT_BYTE_MODEL_HINT: https://example.com/model", ""),
+        ("PROJECT_BYTE_MODEL_HINT: openai/gpt 5", ""),
+    ]
+    for body, expected in model_cases:
+        got = project_byte_model_hint(body)
+        if got != expected:
+            print(f"bridge self-test: model hint FAILED: {body!r} -> {got!r}", file=sys.stderr)
+            return 1
+    if choose_model("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "env/model") != (
+        "openai/gpt-5.6-sol",
+        "project-byte",
+    ):
+        print("bridge self-test: PROJECT_BYTE model precedence FAILED", file=sys.stderr)
+        return 1
+    if choose_model("", "env/model") != ("env/model", "environment"):
+        print("bridge self-test: environment model fallback FAILED", file=sys.stderr)
+        return 1
+
+    recovery_cases = [
+        ({"local_exists": False, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "new"),
+        ({"local_exists": True, "remote_exists": True, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "remote-existing"),
+        ({"local_exists": True, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "reset-clean-local"),
+        ({"local_exists": True, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": True, "ahead_count": 0}, "blocked-dirty-worktree"),
+        ({"local_exists": True, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 1}, "blocked-local-commits"),
+        ({"local_exists": True, "remote_exists": False, "worktree_is_bridge_owned": False, "worktree_dirty": False, "ahead_count": 0}, "blocked-foreign-worktree"),
+    ]
+    for kwargs, expected in recovery_cases:
+        got = recovery_decision(**kwargs)
+        if got != expected:
+            print(f"bridge self-test: recovery decision FAILED: {kwargs} -> {got}", file=sys.stderr)
+            return 1
+
+    malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")
+    if malicious:
+        print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
+        return 1
 
     print("bridge self-test: PASS")
     return 0
