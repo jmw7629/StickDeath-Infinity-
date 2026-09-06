@@ -38,6 +38,7 @@ TERMINAL_STATUSES = {
     "skipped-existing-remote-branch",
 }
 RECOVERABLE_PREFIX = "recovery-blocked-"
+LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
 
 class BridgeError(RuntimeError):
@@ -799,7 +800,7 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
         number = str(issue["number"])
         record = processed.get(number) or {}
         status = record.get("status", "")
-        if record and not status.startswith(RECOVERABLE_PREFIX):
+        if record and not (status.startswith(RECOVERABLE_PREFIX) or status in LEGACY_RECOVERABLE_STATUSES):
             continue
         try:
             process_task(root, repo, issue, state, state_path, worktree_root)
@@ -887,6 +888,10 @@ def self_test() -> int:
         if got != expected:
             print(f"bridge self-test: recovery decision FAILED: {kwargs} -> {got}", file=sys.stderr)
             return 1
+
+    if "skipped-existing-branch" not in LEGACY_RECOVERABLE_STATUSES:
+        print("bridge self-test: legacy recovery migration FAILED", file=sys.stderr)
+        return 1
 
     malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")
     if malicious:
