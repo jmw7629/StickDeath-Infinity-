@@ -1,0 +1,61 @@
+name: Bridge legacy state migration
+
+on:
+  push:
+    branches: [fix/bridge-recovery-project-byte-routing]
+    paths:
+      - '.github/workflows/bridge-legacy-state-migration.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.event.head_commit.message != 'Make legacy stuck bridge states recoverable'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/bridge-recovery-project-byte-routing
+          fetch-depth: 0
+      - name: Patch legacy state compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from pathlib import Path
+          p=Path('bridge/runner.py')
+          s=p.read_text()
+          old='RECOVERABLE_PREFIX = "recovery-blocked-"\n'
+          new='RECOVERABLE_PREFIX = "recovery-blocked-"\nLEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}\n'
+          if 'LEGACY_RECOVERABLE_STATUSES' not in s:
+              if old not in s: raise SystemExit('constant insertion point missing')
+              s=s.replace(old,new,1)
+          old_cond='if record and not status.startswith(RECOVERABLE_PREFIX):\n            continue'
+          new_cond='if record and not (status.startswith(RECOVERABLE_PREFIX) or status in LEGACY_RECOVERABLE_STATUSES):\n            continue'
+          if old_cond in s:
+              s=s.replace(old_cond,new_cond,1)
+          elif new_cond not in s:
+              raise SystemExit('bridge_once migration point missing')
+          marker='    malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")\n'
+          assertion='    if "skipped-existing-branch" not in LEGACY_RECOVERABLE_STATUSES:\n        print("bridge self-test: legacy recovery migration FAILED", file=sys.stderr)\n        return 1\n\n'
+          if assertion not in s:
+              if marker not in s: raise SystemExit('self-test insertion point missing')
+              s=s.replace(marker,assertion+marker,1)
+          p.write_text(s)
+          PY
+          python3 -m py_compile bridge/runner.py
+          python3 bridge/runner.py --self-test
+          git diff --check
+          grep -q 'LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}' bridge/runner.py
+      - name: Commit migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bridge/runner.py
+          git commit -m 'Make legacy stuck bridge states recoverable'
+          git push origin HEAD:fix/bridge-recovery-project-byte-routing
