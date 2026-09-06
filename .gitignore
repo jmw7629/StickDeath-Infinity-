@@ -4,6 +4,8 @@ xcuserdata/
 build/
 DerivedData/
 .build/
+__pycache__/
+*.py[cod]
 StickDeathInfinity/Config/AppConfig.swift
 StickDeathInfinity/App/AppConfig.swift
 HANDOFF-COMPLETE.md
