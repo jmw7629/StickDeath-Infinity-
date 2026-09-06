@@ -1,61 +1,45 @@
 import SwiftUI
+import SDCore
 
 // ═══════════════════════════════════════════════════════════════════
-// Layer Panel — Bottom sheet with drag handle
-// Matches video frame-by-frame:
-// ┌─────────────────────────────────────────────────┐
-// │                  ─── drag handle ───             │
-// │ ⋮⋮ 🚫 [thumb] Layer 1 (red)  🔒 100% ▼        │
-// │ Opacity ████████████████████████████ 100%        │
-// │ LOCK MODE                                        │
-// │ [🔓 Free] [🔒 Full] [📌 Pos] [🎨 Alpha]        │
-// │ BLEND MODE                                       │
-// │ [ Normal                              ▼ ]        │
-// │ GLOW  ○                                          │
-// │ Color: ● ● ● ● ● ● ● ●                         │
-// │ [📝 Editable] [📋 Duplicate] [⬆] [⬇]           │
-// │                   + (red)                        │
-// └─────────────────────────────────────────────────┘
+// Layer Panel — Canonical CanvasLayer drives all visible controls
 // ═══════════════════════════════════════════════════════════════════
 
 struct LayerPanel: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var expandedLayer: UUID? = nil
-    
+    @State private var expandedLayer: String? = nil
+
     var body: some View {
         VStack(spacing: 0) {
-            // Tap to dismiss area
             Color.black.opacity(0.3)
                 .onTapGesture { vm.activePanel = .none }
-            
-            // Panel
+
             VStack(spacing: 0) {
-                // Drag handle
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.white.opacity(0.25))
                     .frame(width: 40, height: 4)
                     .padding(.top, 10)
                     .padding(.bottom, 8)
-                
+
                 ScrollView {
                     VStack(spacing: 0) {
-                        ForEach(vm.studioLayers) { layer in
-                            LayerRow(vm: vm, layer: layer, isExpanded: expandedLayer == layer.id)
+                        ForEach(vm.layers) { layer in
+                            LayerRow(vm: vm, layer: layer, isExpanded: expandedLayer == layer.id, isSelected: vm.activeLayerID == layer.id)
                                 .onTapGesture {
+                                    vm.selectLayer(layer.id)
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         expandedLayer = expandedLayer == layer.id ? nil : layer.id
                                     }
                                 }
-                            
+
                             if expandedLayer == layer.id {
                                 LayerDetailView(vm: vm, layer: layer)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
-                            
+
                             Divider().background(Color.white.opacity(0.06))
                         }
-                        
-                        // Add layer button
+
                         Button(action: { vm.addLayer() }) {
                             Text("+")
                                 .font(.system(size: 20, weight: .bold))
@@ -81,12 +65,13 @@ struct LayerPanel: View {
 // MARK: - Layer Row (collapsed)
 struct LayerRow: View {
     @ObservedObject var vm: StudioViewModel
-    let layer: StudioLayer
+    let layer: CanvasLayer
     let isExpanded: Bool
-    
+    let isSelected: Bool
+
     var body: some View {
         HStack(spacing: 8) {
-            // Drag dots (2×3 grid)
+            // Drag dots
             VStack(spacing: 2) {
                 ForEach(0..<3) { _ in
                     HStack(spacing: 2) {
@@ -96,41 +81,41 @@ struct LayerRow: View {
                 }
             }
             .frame(width: 12)
-            
-            // Visibility toggle (🚫 when hidden)
+
+            // Visibility toggle
             Button(action: { vm.toggleLayerVisibility(layer.id) }) {
                 Image(systemName: layer.visible ? "eye.fill" : "eye.slash.fill")
                     .font(.system(size: 14))
                     .foregroundColor(layer.visible ? .white.opacity(0.5) : .red.opacity(0.6))
             }
             .frame(width: 24)
-            
+
             // Thumbnail
             RoundedRectangle(cornerRadius: 4)
-                .fill(Color.white.opacity(0.08))
+                .fill(isSelected ? Color.red.opacity(0.2) : Color.white.opacity(0.08))
                 .frame(width: 36, height: 36)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                        .stroke(isSelected ? Color.red.opacity(0.5) : Color.white.opacity(0.15), lineWidth: isSelected ? 1.5 : 0.5)
                 )
-            
-            // Layer name (red text)
+
+            // Layer name
             Text(layer.name)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundColor(Color(hex: "DC2626"))
-            
+                .foregroundColor(isSelected ? Color(hex: "DC2626") : .white.opacity(0.7))
+
             Spacer()
-            
+
             // Lock icon
             Image(systemName: lockIcon(for: layer.lockMode))
                 .font(.system(size: 12))
-                .foregroundColor(layer.lockMode == .full ? Color.yellow : .white.opacity(0.4))
-            
+                .foregroundColor(layer.lockMode == "full" ? Color.yellow : .white.opacity(0.4))
+
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundColor(.white.opacity(0.5))
-            
+
             // Chevron
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 10))
@@ -140,13 +125,13 @@ struct LayerRow: View {
         .padding(.vertical, 8)
         .contentShape(Rectangle())
     }
-    
-    func lockIcon(for mode: LayerLockMode) -> String {
+
+    func lockIcon(for mode: String) -> String {
         switch mode {
-        case .free: return "lock.open"
-        case .full: return "lock.fill"
-        case .position: return "pin.fill"
-        case .alpha: return "paintpalette.fill"
+        case "full": return "lock.fill"
+        case "position": return "pin.fill"
+        case "alpha": return "paintpalette.fill"
+        default: return "lock.open"
         }
     }
 }
@@ -154,128 +139,155 @@ struct LayerRow: View {
 // MARK: - Layer Detail View (expanded)
 struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
-    let layer: StudioLayer
-    
+    let layer: CanvasLayer
+
+    @State private var opacityDraft: Double = 1.0
+    @State private var blendModeDraft: String = "Normal"
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Opacity slider (RED bar)
+            // Opacity slider (functional)
             HStack {
                 Text("Opacity")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
-                GeometryReader { geo in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.white.opacity(0.1))
-                            .frame(height: 6)
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(Color.red)
-                            .frame(width: geo.size.width * CGFloat(layer.opacity), height: 6)
+
+                Slider(value: $opacityDraft, in: 0...1, step: 0.01)
+                    .tint(.red)
+                    .onChange(of: opacityDraft) { newVal in
+                        vm.setLayerOpacity(layer.id, opacity: newVal)
                     }
-                }
-                .frame(height: 6)
-                
-                Text("\(Int(layer.opacity * 100))%")
+
+                Text("\(Int(opacityDraft * 100))%")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
+                    .frame(width: 40, alignment: .trailing)
             }
-            
+
             // LOCK MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("LOCK MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
+
                 HStack(spacing: 6) {
-                    LockModeButton(emoji: "🔓", label: "Free", isSelected: layer.lockMode == .free, selectedColor: .clear) {
-                        vm.setLayerLockMode(layer.id, mode: .free)
+                    LockModeButton(emoji: "🔓", label: "Free", isSelected: layer.lockMode == "free", selectedColor: .clear) {
+                        vm.setLayerLockMode(layer.id, mode: "free")
                     }
-                    LockModeButton(emoji: "🔒", label: "Full", isSelected: layer.lockMode == .full, selectedColor: .yellow) {
-                        vm.setLayerLockMode(layer.id, mode: .full)
+                    LockModeButton(emoji: "🔒", label: "Full", isSelected: layer.lockMode == "full", selectedColor: .yellow) {
+                        vm.setLayerLockMode(layer.id, mode: "full")
                     }
-                    LockModeButton(emoji: "📌", label: "Pos", isSelected: layer.lockMode == .position, selectedColor: .red) {
-                        vm.setLayerLockMode(layer.id, mode: .position)
+                    LockModeButton(emoji: "📌", label: "Pos", isSelected: layer.lockMode == "position", selectedColor: .red) {
+                        vm.setLayerLockMode(layer.id, mode: "position")
                     }
-                    LockModeButton(emoji: "🎨", label: "Alpha", isSelected: layer.lockMode == .alpha, selectedColor: .orange) {
-                        vm.setLayerLockMode(layer.id, mode: .alpha)
+                    LockModeButton(emoji: "🎨", label: "Alpha", isSelected: layer.lockMode == "alpha", selectedColor: .orange) {
+                        vm.setLayerLockMode(layer.id, mode: "alpha")
                     }
                 }
             }
-            
-            // BLEND MODE
+
+            // BLEND MODE (functional dropdown)
             VStack(alignment: .leading, spacing: 6) {
                 Text("BLEND MODE")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
-                HStack {
-                    Text(layer.blendMode)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.7))
-                    Spacer()
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.3))
+
+                Picker("Blend Mode", selection: $blendModeDraft) {
+                    ForEach(["Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten", "Color Dodge", "Color Burn"], id: \.self) { mode in
+                        Text(mode).tag(mode)
+                    }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color.white.opacity(0.05))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
-                )
+                .pickerStyle(.menu)
+                .onChange(of: blendModeDraft) { newVal in
+                    vm.setLayerBlendMode(layer.id, blendMode: newVal)
+                }
             }
-            
-            // GLOW toggle
+
+            // GLOW toggle (functional)
             HStack {
                 Text("GLOW")
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
-                
-                Toggle("", isOn: .constant(false))
+
+                Toggle("", isOn: Binding(
+                    get: { layer.glowEnabled },
+                    set: { vm.setLayerGlow(layer.id, enabled: $0) }
+                ))
+                .labelsHidden()
+                .scaleEffect(0.8)
+
+                if layer.glowEnabled {
+                    ColorPicker("", selection: Binding(
+                        get: { Color(hex: layer.glowColor ?? "#FFFFFF") },
+                        set: { newColor in
+                            let hex = UIColor(newColor).hexString
+                            vm.setLayerGlow(layer.id, enabled: true, color: hex)
+                        }
+                    ))
                     .labelsHidden()
-                    .scaleEffect(0.8)
-                
+                    .frame(width: 28, height: 28)
+                }
+
                 Spacer()
             }
-            
-            // Color dots
+
+            // Color dots (functional)
             HStack(spacing: 6) {
                 Text("Color:")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
-                
-                ForEach([
-                    Color.red, Color.orange, Color.yellow, Color.green,
-                    Color(hex: "38BDF8"), Color.purple, Color.pink, Color.gray
-                ], id: \.self) { color in
+
+                ForEach(["#FF0000", "#FF8C00", "#FFD600", "#00C853", "#38BDF8", "#A855F7", "#EC4899", "#9CA3AF"], id: \.self) { hex in
                     Circle()
-                        .fill(color)
+                        .fill(Color(hex: hex))
                         .frame(width: 20, height: 20)
                         .overlay(
                             Circle()
-                                .stroke(layer.labelColor == color ? Color.white : Color.white.opacity(0.1), lineWidth: layer.labelColor == color ? 2 : 0.5)
+                                .stroke(layer.colorLabel == hex ? Color.white : Color.white.opacity(0.1), lineWidth: layer.colorLabel == hex ? 2 : 0.5)
                         )
                         .onTapGesture {
-                            vm.setLayerColor(layer.id, color: color)
+                            vm.setLayerColor(layer.id, color: hex)
                         }
                 }
             }
-            
-            // Action buttons
+
+            // Action buttons (functional)
             HStack(spacing: 6) {
-                LayerActionButton(emoji: "📝", label: "Editable") {}
-                LayerActionButton(emoji: "📋", label: "Duplicate") {
-                    vm.duplicateLayer(layer.id)
+                // Duplicate
+                Button(action: { vm.duplicateLayer(layer.id) }) {
+                    HStack(spacing: 4) {
+                        Text("📋").font(.system(size: 12))
+                        Text("Duplicate")
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(Color.white.opacity(0.05))
+                    .cornerRadius(8)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
                 }
-                
+
+                // Delete (only if more than one layer)
+                if vm.layers.count > 1 {
+                    Button(action: { vm.deleteLayer(layer.id) }) {
+                        HStack(spacing: 4) {
+                            Text("🗑").font(.system(size: 12))
+                            Text("Delete")
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundColor(.red.opacity(0.8))
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(Color.red.opacity(0.05))
+                        .cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.red.opacity(0.1), lineWidth: 0.5))
+                    }
+                }
+
                 // Move up
                 Button(action: { vm.moveLayerUp(layer.id) }) {
                     Image(systemName: "arrow.up.square.fill")
@@ -286,7 +298,7 @@ struct LayerDetailView: View {
                         .cornerRadius(8)
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
                 }
-                
+
                 // Move down
                 Button(action: { vm.moveLayerDown(layer.id) }) {
                     Image(systemName: "arrow.down.square.fill")
@@ -302,6 +314,10 @@ struct LayerDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(hex: "14141E"))
+        .onAppear {
+            opacityDraft = layer.opacity
+            blendModeDraft = layer.blendMode
+        }
     }
 }
 
@@ -312,7 +328,7 @@ struct LockModeButton: View {
     let isSelected: Bool
     let selectedColor: Color
     let action: () -> Void
-    
+
     var body: some View {
         Button(action: action) {
             VStack(spacing: 4) {
@@ -335,28 +351,3 @@ struct LockModeButton: View {
         }
     }
 }
-
-// MARK: - Layer Action Button
-struct LayerActionButton: View {
-    let emoji: String
-    let label: String
-    let action: () -> Void
-    
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Text(emoji).font(.system(size: 12))
-                Text(label)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.6))
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.05))
-            .cornerRadius(8)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
-        }
-    }
-}
-
-// Rounded corner helper

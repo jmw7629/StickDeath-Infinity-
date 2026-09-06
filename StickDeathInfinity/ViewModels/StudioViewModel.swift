@@ -1,11 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // StudioViewModel — Full animation studio state (MVVM)
-// Replaces: StudioScreen.tsx's 6,378 lines of inline state
-// Manages: frames, layers, tools, undo/redo, playback, audio, export
+// Local-first: all persistence through SDCore, optional remote sync.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
-import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -34,14 +33,11 @@ final class StudioViewModel: ObservableObject {
         return frames[currentFrameIndex - 1]
     }
 
-    // MARK: - Layers (typed StudioLayer for panel, CanvasLayer for persistence)
-    @Published var studioLayers: [StudioLayer] = [
-        StudioLayer(name: "Layer 1")
-    ]
+    // MARK: - Canonical Layers (SDCore.CanvasLayer is the sole truth)
     @Published var layers: [CanvasLayer] = [
-        CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)
+        CanvasLayer.defaultLayer()
     ]
-    @Published var activeLayerID: String = ""
+    @Published var activeLayerID: String = CanvasLayer.defaultLayerID
     @Published var currentLayerIndex: Int = 0
 
     // MARK: - Tool State
@@ -54,8 +50,8 @@ final class StudioViewModel: ObservableObject {
     @Published var pressureSensitivity: Bool = true
     @Published var showOnionSkin = false
     @Published var gridEnabled = false
-    
-    // Fill tool properties (GREEN theme in preview)
+
+    // Fill tool properties
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
     @Published var fillGapClose: Double = 0
@@ -101,6 +97,10 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Playback
     private var playbackTimer: Timer?
 
+    // MARK: - Storage
+    private let storage = StudioStorage.shared
+    private let migrationManager = LegacyMigrationManager.shared
+
     var saveTimeAgo: String {
         let seconds = Int(-lastSaveTime.timeIntervalSinceNow)
         if seconds < 60 { return "\(seconds)s ago" }
@@ -113,36 +113,77 @@ final class StudioViewModel: ObservableObject {
     }
 
     // MARK: - Project List Operations
+
     func loadProjects() async {
-        guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
+        // 1. Always enumerate local SDCore projects first (works signed out/offline)
+        let localProjects = storage.listProjects()
+        savedProjects = localProjects.map { project in
+            StudioProject(
+                id: project.id,
+                userID: AuthService.shared.userId ?? "",
+                name: project.name,
+                width: project.canvasWidth,
+                height: project.canvasHeight,
+                fps: project.fps,
+                frameCount: project.frames.count,
+                thumbnailURL: nil,
+                createdAt: ISO8601DateFormatter().string(from: project.createdAt),
+                updatedAt: ISO8601DateFormatter().string(from: project.updatedAt)
+            )
+        }
+
+        // 2. Optional remote metadata merge (does not remove local-only projects)
+        guard let userId = AuthService.shared.userId,
+              let client = SupabaseManager.shared.client else { return }
         do {
-            let projects: [StudioProject] = try await supabase
+            let remoteProjects: [StudioProject] = try await client
                 .from("studio_projects")
                 .select("*")
                 .eq("user_id", value: userId)
                 .order("updated_at", ascending: false)
                 .execute()
                 .value
-            savedProjects = projects
+
+            // Merge: add remote projects not already in local list
+            let localIDs = Set(savedProjects.map(\.id))
+            for remote in remoteProjects where !localIDs.contains(remote.id) {
+                savedProjects.append(remote)
+            }
         } catch {
-            print("[Studio] Load projects error: \(error)")
+            print("[Studio] Remote load failed (local data preserved): \(error)")
         }
     }
 
     func createProject(name: String, width: Int, height: Int, fps: Int) {
-        projectName = name
-        canvasWidth = width
-        canvasHeight = height
+        let projectID = UUID().uuidString
+        self.currentProjectID = projectID
+        self.projectName = name
+        self.canvasWidth = width
+        self.canvasHeight = height
         self.fps = fps
         frames = [AnimationFrame(id: UUID().uuidString, elements: [])]
-        layers = [CanvasLayer(id: UUID().uuidString, name: "Layer 1", visible: true, locked: false, opacity: 1.0)]
-        activeLayerID = layers.first?.id ?? ""
+        layers = [CanvasLayer.defaultLayer()]
+        activeLayerID = CanvasLayer.defaultLayerID
         currentFrameIndex = 0
         currentLayerIndex = 0
         undoStack.removeAll()
         redoStack.removeAll()
         audioClips.removeAll()
+
+        // Persist immediately to SDCore
+        let project = SDProject(
+            id: projectID,
+            name: name,
+            canvasWidth: width,
+            canvasHeight: height,
+            fps: fps,
+            frames: frames,
+            layers: layers,
+            activeLayerID: activeLayerID,
+            audioClips: audioClips
+        )
+        try? storage.createProject(project)
+        lastSaveTime = Date()
     }
 
     func openProject(_ project: StudioProject) {
@@ -151,6 +192,43 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = project.width ?? 1080
         canvasHeight = project.height ?? 1080
         fps = project.fps ?? 12
+
+        // Load canonical SDCore state
+        if let local = try? storage.loadProject(id: project.id) {
+            frames = local.frames.isEmpty ? [AnimationFrame()] : local.frames
+            layers = local.layers.isEmpty ? [CanvasLayer.defaultLayer()] : local.layers
+            activeLayerID = local.activeLayerID.isEmpty ? (layers.first?.id ?? "") : local.activeLayerID
+            audioClips = local.audioClips
+            currentFrameIndex = 0
+            currentLayerIndex = layers.firstIndex(where: { $0.id == activeLayerID }) ?? 0
+        }
+
+        // Run legacy migration discovery
+        Task { await runLegacyMigrationIfNeeded(for: project.id) }
+    }
+
+    func reopenProject(id: String) {
+        currentProjectID = id
+        if let local = try? storage.loadProject(id: id) {
+            projectName = local.name
+            canvasWidth = local.canvasWidth
+            canvasHeight = local.canvasHeight
+            fps = local.fps
+            frames = local.frames.isEmpty ? [AnimationFrame()] : local.frames
+            layers = local.layers.isEmpty ? [CanvasLayer.defaultLayer()] : local.layers
+            activeLayerID = local.activeLayerID.isEmpty ? (layers.first?.id ?? "") : local.activeLayerID
+            audioClips = local.audioClips
+            currentFrameIndex = 0
+            currentLayerIndex = layers.firstIndex(where: { $0.id == activeLayerID }) ?? 0
+        }
+        Task { await runLegacyMigrationIfNeeded(for: id) }
+    }
+
+    // MARK: - Legacy Migration
+
+    private func runLegacyMigrationIfNeeded(for projectID: String) async {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let _ = migrationManager.migrateLegacyAnimation(id: projectID, documentsDir: docs)
     }
 
     // MARK: - Frame Operations
@@ -221,7 +299,8 @@ final class StudioViewModel: ObservableObject {
         lastSaveTime = Date()
     }
 
-    // MARK: - Layer Operations (CanvasLayer by string ID for backward compat)
+    // MARK: - Layer Operations (canonical CanvasLayer by string ID)
+
     func toggleLayerVisibility(_ id: String) {
         if let idx = layers.firstIndex(where: { $0.id == id }) {
             layers[idx].visible.toggle()
@@ -233,62 +312,97 @@ final class StudioViewModel: ObservableObject {
             layers[idx].locked.toggle()
         }
     }
-    
-    // StudioLayer operations for LayerPanel
-    func toggleLayerVisibility(_ id: UUID) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].visible.toggle()
+
+    func setLayerLockMode(_ id: String, mode: String) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].lockMode = mode
         }
     }
-    
-    func setLayerLockMode(_ id: UUID, mode: LayerLockMode) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].lockMode = mode
+
+    func setLayerColor(_ id: String, color: String) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].colorLabel = color
         }
     }
-    
-    func setLayerColor(_ id: UUID, color: Color) {
-        if let idx = studioLayers.firstIndex(where: { $0.id == id }) {
-            studioLayers[idx].labelColor = color
+
+    func setLayerOpacity(_ id: String, opacity: Double) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].opacity = max(0, min(1, opacity))
         }
     }
-    
-    func duplicateLayer(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }) else { return }
-        let original = studioLayers[idx]
-        let newLayer = StudioLayer(
+
+    func setLayerBlendMode(_ id: String, blendMode: String) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].blendMode = blendMode
+        }
+    }
+
+    func setLayerGlow(_ id: String, enabled: Bool, color: String? = nil) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].glowEnabled = enabled
+            if let color { layers[idx].glowColor = color }
+        }
+    }
+
+    func setLayerName(_ id: String, name: String) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            layers[idx].name = name
+        }
+    }
+
+    func duplicateLayer(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }) else { return }
+        let original = layers[idx]
+        let newLayer = CanvasLayer(
+            id: UUID().uuidString,
             name: "\(original.name) Copy",
             visible: original.visible,
+            locked: original.locked,
             opacity: original.opacity,
             lockMode: original.lockMode,
             blendMode: original.blendMode,
-            labelColor: original.labelColor
+            glowEnabled: original.glowEnabled,
+            glowColor: original.glowColor,
+            colorLabel: original.colorLabel
         )
-        studioLayers.insert(newLayer, at: idx + 1)
+        layers.insert(newLayer, at: idx + 1)
+        activeLayerID = newLayer.id
+        currentLayerIndex = idx + 1
     }
-    
-    func moveLayerUp(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
-        studioLayers.swapAt(idx, idx - 1)
+
+    func moveLayerUp(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }), idx > 0 else { return }
+        layers.swapAt(idx, idx - 1)
     }
-    
-    func moveLayerDown(_ id: UUID) {
-        guard let idx = studioLayers.firstIndex(where: { $0.id == id }), idx < studioLayers.count - 1 else { return }
-        studioLayers.swapAt(idx, idx + 1)
+
+    func moveLayerDown(_ id: String) {
+        guard let idx = layers.firstIndex(where: { $0.id == id }), idx < layers.count - 1 else { return }
+        layers.swapAt(idx, idx + 1)
     }
-    
+
     func addLayer() {
-        let num = studioLayers.count + 1
-        let newLayer = StudioLayer(name: "Layer \(num)")
-        studioLayers.insert(newLayer, at: 0)
-        // Also sync to CanvasLayer
-        let canvasLayer = CanvasLayer(
-            id: newLayer.id.uuidString, name: newLayer.name,
-            visible: true, locked: false, opacity: 1.0
-        )
-        layers.insert(canvasLayer, at: 0)
-        activeLayerID = canvasLayer.id
+        let num = layers.count + 1
+        let newLayer = CanvasLayer(id: UUID().uuidString, name: "Layer \(num)")
+        layers.insert(newLayer, at: 0)
+        activeLayerID = newLayer.id
         currentLayerIndex = 0
+    }
+
+    func deleteLayer(_ id: String) {
+        guard layers.count > 1 else { return }
+        guard let idx = layers.firstIndex(where: { $0.id == id }) else { return }
+        layers.remove(at: idx)
+        if activeLayerID == id {
+            activeLayerID = layers.first?.id ?? ""
+            currentLayerIndex = 0
+        }
+    }
+
+    func selectLayer(_ id: String) {
+        if let idx = layers.firstIndex(where: { $0.id == id }) {
+            activeLayerID = id
+            currentLayerIndex = idx
+        }
     }
 
     // MARK: - Canvas Controls
@@ -299,7 +413,7 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Audio Operations
     func addAudioClip(sound: SoundEffect, track: Int) {
         let durValue = Double(sound.duration.replacingOccurrences(of: "s", with: "")) ?? 0.5
-        let clip = AudioClip(
+        let clip = SDCore.AudioClip(
             id: UUID().uuidString,
             soundName: sound.name,
             track: track,
@@ -358,25 +472,55 @@ final class StudioViewModel: ObservableObject {
         playbackTimer = nil
     }
 
-    // MARK: - Save/Load
+    // MARK: - Save/Load (local-first, then optional remote)
+
     func save() async {
-        guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
+        guard let projectID = currentProjectID else { return }
+
+        // 1. Build canonical SDProject
+        let project = SDProject(
+            id: projectID,
+            name: projectName,
+            canvasWidth: canvasWidth,
+            canvasHeight: canvasHeight,
+            fps: fps,
+            frames: frames,
+            layers: layers,
+            activeLayerID: activeLayerID,
+            audioClips: audioClips
+        )
+
+        // 2. Persist to SDCore FIRST (works signed out/offline)
+        do {
+            try storage.saveProject(project)
+        } catch {
+            print("[Studio] Local save error: \(error)")
+        }
+        lastSaveTime = Date()
+
+        // 3. Optional remote sync (after local success, non-blocking)
+        await syncRemote(project: project)
+    }
+
+    private func syncRemote(project: SDProject) async {
+        guard let userId = AuthService.shared.userId,
+              let client = SupabaseManager.shared.client else { return }
         do {
             let encoder = JSONEncoder()
-            let frameData = try encoder.encode(frames)
+            let frameData = try encoder.encode(project.frames)
             let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
 
-            try await supabase.from("studio_project_versions").insert([
-                "project_id": AnyJSON.null,
+            // Use real project ID, never null
+            try await client.from("studio_project_versions").insert([
+                "project_id": .string(project.id),
                 "frame_data": .string(frameJSON),
                 "user_id": .string(userId),
             ]).execute()
 
-            lastSaveTime = Date()
-            print("[Studio] Saved \(frames.count) frames")
+            print("[Studio] Remote sync OK for project \(project.id)")
         } catch {
-            print("[Studio] Save error: \(error)")
+            // Remote failure does NOT roll back local save
+            print("[Studio] Remote sync failed (local data preserved): \(error)")
         }
     }
 }

@@ -5,16 +5,18 @@
 
 import Foundation
 import Supabase
+import SDCore
 
 @MainActor
 final class ProjectService {
     static let shared = ProjectService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     // MARK: - List Projects
     func listProjects() async throws -> [StudioProject] {
-        guard let userId = AuthService.shared.userId else { return [] }
-        return try await supabase.from("studio_projects")
+        guard let userId = AuthService.shared.userId,
+              let client = supabase else { return [] }
+        return try await client.from("studio_projects")
             .select()
             .eq("user_id", value: userId)
             .order("updated_at", ascending: false)
@@ -24,11 +26,12 @@ final class ProjectService {
 
     // MARK: - Create Project
     func createProject(name: String, width: Int = 1920, height: Int = 1080, fps: Int = 12) async throws -> StudioProject {
-        guard let userId = AuthService.shared.userId else {
+        guard let userId = AuthService.shared.userId,
+              let client = supabase else {
             throw ProjectError.notAuthenticated
         }
 
-        let result: StudioProject = try await supabase.from("studio_projects").insert([
+        let result: StudioProject = try await client.from("studio_projects").insert([
             "user_id": AnyJSON.string(userId),
             "name": .string(name),
             "width": .integer(width),
@@ -41,11 +44,12 @@ final class ProjectService {
 
     // MARK: - Save Project (frames)
     func saveProject(projectID: String, frames: [AnimationFrame]) async throws {
+        guard let client = supabase else { return }
         let encoder = JSONEncoder()
         let frameData = try encoder.encode(frames)
         let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
 
-        try await supabase.from("studio_projects").update([
+        try await client.from("studio_projects").update([
             "frame_data": AnyJSON.string(frameJSON),
             "frame_count": .integer(frames.count),
             "updated_at": .string(ISO8601DateFormatter().string(from: Date())),
@@ -54,11 +58,12 @@ final class ProjectService {
 
     // MARK: - Load Project Frames
     func loadFrames(projectID: String) async throws -> [AnimationFrame] {
+        guard let client = supabase else { return [AnimationFrame()] }
         struct ProjectRow: Codable {
             let frame_data: String?
         }
 
-        let row: ProjectRow = try await supabase.from("studio_projects")
+        let row: ProjectRow = try await client.from("studio_projects")
             .select("frame_data")
             .eq("id", value: projectID)
             .single()

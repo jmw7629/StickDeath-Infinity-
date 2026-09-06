@@ -24,8 +24,13 @@ final class AuthService: ObservableObject {
     @Published var currentUser: User?
     @Published var currentProfile: UserProfile?
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
     private var appleSignInDelegate: AppleSignInDelegate?
+
+    private func requireClient() throws -> SupabaseClient {
+        guard let client = supabase else { throw AuthError.notAuthenticated }
+        return client
+    }
 
     enum AuthState: Equatable {
         case loading, unauthenticated, authenticated
@@ -35,16 +40,22 @@ final class AuthService: ObservableObject {
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
         guard let email = currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        return Self.adminEmails.contains(email.lowercased())
     }
+
+    private static let adminEmails: Set<String> = []
     var displayName: String? { currentProfile?.username }
     var avatarUrl: String? { currentProfile?.avatarURL }
 
     // MARK: - Initialize (call on app start)
     func initialize() async {
         state = .loading
+        guard let client = supabase else {
+            state = .unauthenticated
+            return
+        }
         do {
-            let session = try await supabase.auth.session
+            let session = try await client.auth.session
             currentUser = session.user
             await fetchProfile(userId: session.user.id.uuidString)
             state = .authenticated
@@ -54,7 +65,7 @@ final class AuthService: ObservableObject {
 
         // Listen for auth state changes
         Task {
-            for await (event, session) in supabase.auth.authStateChanges {
+            for await (event, session) in client.auth.authStateChanges {
                 switch event {
                 case .signedIn:
                     if let user = session?.user {
@@ -118,7 +129,8 @@ final class AuthService: ObservableObject {
 
     /// Exchange Apple ID token with Supabase
     private func exchangeAppleToken(idToken: String, nonce: String) async throws {
-        let session = try await supabase.auth.signInWithIdToken(
+        let client = try requireClient()
+        let session = try await client.auth.signInWithIdToken(
             credentials: .init(
                 provider: .apple,
                 idToken: idToken,
@@ -144,7 +156,8 @@ final class AuthService: ObservableObject {
         // Build the OAuth URL and open it in Safari.
         // When the user finishes, the app receives the redirect via URL scheme
         // and handleOAuthCallback() completes the sign-in.
-        let url = try supabase.auth.getOAuthSignInURL(
+        let client = try requireClient()
+        let url = try client.auth.getOAuthSignInURL(
             provider: .google,
             redirectTo: URL(string: "stickdeath://auth/callback")
         )
@@ -153,7 +166,8 @@ final class AuthService: ObservableObject {
 
     /// Handle the OAuth callback URL (call from SceneDelegate/AppDelegate)
     func handleOAuthCallback(url: URL) async throws {
-        let session = try await supabase.auth.session(from: url)
+        let client = try requireClient()
+        let session = try await client.auth.session(from: url)
         currentUser = session.user
         let email = session.user.email
         let username = email?.components(separatedBy: "@").first ?? "GoogleUser"
@@ -167,7 +181,8 @@ final class AuthService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     func signUp(email: String, password: String, username: String) async throws {
-        let result = try await supabase.auth.signUp(
+        let client = try requireClient()
+        let result = try await client.auth.signUp(
             email: email,
             password: password,
             data: ["username": .string(username)]
@@ -181,7 +196,8 @@ final class AuthService: ObservableObject {
     }
 
     func signIn(email: String, password: String) async throws {
-        let session = try await supabase.auth.signIn(
+        let client = try requireClient()
+        let session = try await client.auth.signIn(
             email: email,
             password: password
         )
@@ -192,7 +208,8 @@ final class AuthService: ObservableObject {
 
     // MARK: - Guest
     func signInAsGuest() async throws {
-        let session = try await supabase.auth.signInAnonymously()
+        let client = try requireClient()
+        let session = try await client.auth.signInAnonymously()
         currentUser = session.user
         let guestUsername = "Guest_\(session.user.id.uuidString.prefix(6))"
         await ensureProfile(userId: session.user.id.uuidString, email: nil, username: guestUsername)
@@ -202,7 +219,8 @@ final class AuthService: ObservableObject {
 
     // MARK: - Sign Out
     func signOut() async throws {
-        try await supabase.auth.signOut()
+        let client = try requireClient()
+        try await client.auth.signOut()
         currentUser = nil
         currentProfile = nil
         state = .unauthenticated
@@ -211,7 +229,8 @@ final class AuthService: ObservableObject {
     // MARK: - Profile Management
     func updateProfile(_ updates: [String: AnyJSON]) async throws {
         guard let userId else { throw AuthError.notAuthenticated }
-        try await supabase.from("users").update(updates).eq("id", value: userId).execute()
+        let client = try requireClient()
+        try await client.from("users").update(updates).eq("id", value: userId).execute()
         await fetchProfile(userId: userId)
     }
 
@@ -225,12 +244,14 @@ final class AuthService: ObservableObject {
 
     func deleteAccount() async throws {
         guard let userId else { throw AuthError.notAuthenticated }
-        try await supabase.from("users").delete().eq("id", value: userId).execute()
+        let client = try requireClient()
+        try await client.from("users").delete().eq("id", value: userId).execute()
         try await signOut()
     }
 
     func resetPassword(email: String) async throws {
-        try await supabase.auth.resetPasswordForEmail(email)
+        let client = try requireClient()
+        try await client.auth.resetPasswordForEmail(email)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -238,8 +259,9 @@ final class AuthService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     private func fetchProfile(userId: String) async {
+        guard let client = supabase else { return }
         do {
-            let profile: UserProfile = try await supabase
+            let profile: UserProfile = try await client
                 .from("users")
                 .select()
                 .eq("id", value: userId)
@@ -253,9 +275,10 @@ final class AuthService: ObservableObject {
     }
 
     private func ensureProfile(userId: String, email: String?, username: String) async {
-        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        let role = (email != nil && Self.adminEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        guard let client = supabase else { return }
         do {
-            try await supabase.from("users").upsert([
+            try await client.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
                 "username": .string(username),

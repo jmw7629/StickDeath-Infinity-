@@ -9,14 +9,26 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
-import Supabase
 
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private let backendClient: SpatterBackendClient
+
+    init(backendClient: SpatterBackendClient? = nil) {
+        if let client = backendClient {
+            self.backendClient = client
+        } else {
+            let config = BackendConfig(
+                baseURL: AppConfig.backendBaseURL,
+                isEnabled: !AppConfig.backendBaseURL.isEmpty
+            )
+            self.backendClient = SpatterBackendClient(
+                config: config,
+                authProvider: AuthServiceAuthBridge.shared
+            )
+        }
+    }
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -67,8 +79,9 @@ final class SpatterService {
 
     /// Optionally also fetch from Supabase for any runtime-added knowledge
     private func fetchSupabaseKnowledge() async -> String {
+        guard let client = SupabaseManager.shared.client else { return "" }
         do {
-            let entries: [SupabaseKnowledgeEntry] = try await SupabaseManager.shared.client
+            let entries: [SupabaseKnowledgeEntry] = try await client
                 .from("spatter_knowledge")
                 .select()
                 .limit(50)
@@ -76,14 +89,13 @@ final class SpatterService {
                 .value
             return entries.map { "[\($0.category)] \($0.content)" }.joined(separator: "\n")
         } catch {
-            // Supabase knowledge is optional — embedded knowledge is always available
             return ""
         }
     }
 
     // MARK: - Chat
 
-    /// Send a message to Spatter and get a response
+    /// Send a message to Spatter and get a response via the authenticated backend seam
     func chat(
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
@@ -103,38 +115,38 @@ final class SpatterService {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build API messages
+        // 4. Build system prompt
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
             + contextStr
 
-        var apiMessages: [[String: String]] = [
-            ["role": "system", "content": fullSystem]
-        ]
-
-        for msg in messages {
-            apiMessages.append(["role": msg.role, "content": msg.content])
+        // 5. Call through the authenticated backend seam
+        if let response = try await backendClient.chat(
+            messages: messages,
+            systemPrompt: fullSystem,
+            maxTokens: 500
+        ) {
+            return response
         }
 
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Backend unavailable — return offline response using embedded knowledge only
+        return offlineResponse(for: messages, knowledge: embeddedKnowledge)
+    }
 
-        let body: [String: Any] = [
-            "model": model,
-            "messages": apiMessages,
-            "max_tokens": 500,
-            "temperature": 0.8
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-
-        return response.choices.first?.message.content ?? "..."
+    /// Offline fallback when backend is unavailable
+    private func offlineResponse(for messages: [(role: String, content: String)], knowledge: String) -> String {
+        guard let last = messages.last else {
+            return "I'm Spatter. The cloud backend is currently unavailable, but my embedded knowledge is ready. What do you need? 💀"
+        }
+        let query = last.content.lowercased()
+        if query.contains("layer") {
+            return "Layers let you organize elements. Use the layer panel to toggle visibility, lock, adjust opacity, and reorder. 💀"
+        }
+        if query.contains("frame") {
+            return "Frames are the building blocks of animation. Add, duplicate, or delete them on the timeline. Each frame holds its own drawn elements."
+        }
+        return "I'm Spatter, your creative AI assistant! The cloud backend is offline right now, but I have 120 embedded knowledge modules ready. Ask me about animation, tools, or studio features! 💀"
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -163,16 +175,4 @@ struct SpatterContext {
     let currentScreen: String
     let currentTool: String?
     let userName: String
-}
-
-struct OpenAIResponse: Codable {
-    let choices: [Choice]
-
-    struct Choice: Codable {
-        let message: Message
-    }
-
-    struct Message: Codable {
-        let content: String
-    }
 }

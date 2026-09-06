@@ -21,7 +21,8 @@ final class MessagesViewModel: ObservableObject {
     }
 
     func loadRooms() async {
-        guard let userID = try? await SupabaseManager.shared.client.auth.session.user.id.uuidString else { return }
+        guard let client = SupabaseManager.shared.client,
+              let userID = try? await client.auth.session.user.id.uuidString else { return }
         isLoading = true
         defer { isLoading = false }
         do {

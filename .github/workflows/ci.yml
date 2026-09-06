@@ -1,0 +1,61 @@
+name: CI — SDCore Build & Test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  linux-swift:
+    name: Linux Swift Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build SDCore
+        run: swift build --package-path SDCore
+
+      - name: Test SDCore
+        run: swift test --package-path SDCore
+
+      - name: Whitespace gate
+        run: git diff --check
+
+      - name: Forbidden secrets scan
+        run: |
+          echo "Scanning for forbidden client-side secrets..."
+          if grep -r "openai.com/v1" StickDeathInfinity/ --include="*.swift" -q; then
+            echo "FAIL: Direct OpenAI host found in client code"
+            exit 1
+          fi
+          if grep -r "api.anthropic.com" StickDeathInfinity/ --include="*.swift" -q; then
+            echo "FAIL: Direct Anthropic host found in client code"
+            exit 1
+          fi
+          if grep -r "generativelanguage.googleapis.com" StickDeathInfinity/ --include="*.swift" -q; then
+            echo "FAIL: Direct Gemini host found in client code"
+            exit 1
+          fi
+          echo "PASS: No direct provider hosts found"
+
+      - name: AppConfig forbidden fields scan
+        run: |
+          echo "Scanning AppConfig for forbidden fields..."
+          if grep -E "(openAI|gemini|anthropic|pollinations|superuser|adminEmail|signingSecret|oauthSecret|serviceRole)" StickDeathInfinity/App/AppConfig.swift -q; then
+            echo "FAIL: AppConfig contains forbidden provider/secret fields"
+            exit 1
+          fi
+          echo "PASS: AppConfig is public-only"
+
+      - name: DeviceStorageManager write-api scan
+        run: |
+          echo "Scanning DeviceStorageManager for non-deprecated write APIs..."
+          if grep -E "^\s+func (saveAnimation|deleteAnimation)\b" StickDeathInfinity/Storage/DeviceStorageManager.swift | grep -v "@available.*deprecated" | grep -v "// DEPRECATED" -q; then
+            echo "FAIL: DeviceStorageManager has non-deprecated write APIs"
+            exit 1
+          fi
+          echo "PASS: DeviceStorageManager write APIs are deprecated"

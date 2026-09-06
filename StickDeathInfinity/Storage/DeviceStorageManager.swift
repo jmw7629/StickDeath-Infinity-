@@ -101,23 +101,24 @@ class DeviceStorageManager {
         return total
     }
     
-    // MARK: - Animation Projects (on-device)
+    // MARK: - Animation Projects (on-device) — READ-ONLY for legacy migration
     
+    @available(*, deprecated, message: "Use StudioStorage for new animation writes")
     func saveAnimation(_ project: AnimationProject) throws {
+        // DEPRECATED: SDCore StudioStorage is the only new animation writer.
+        // This method is retained for migration compatibility only.
         let projectDir = animationsDir.appendingPathComponent(project.id.uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: projectDir, withIntermediateDirectories: true)
         
         let metadata = try JSONEncoder().encode(project.metadata)
         try metadata.write(to: projectDir.appendingPathComponent("metadata.json"))
         
-        // Save frames as individual PNGs
         for (index, frame) in project.frames.enumerated() {
             if let data = frame.imageData {
                 try data.write(to: projectDir.appendingPathComponent("frame_\(index).png"))
             }
         }
         
-        // Save audio tracks
         for (index, track) in project.audioTracks.enumerated() {
             if let data = track.audioData {
                 try data.write(to: projectDir.appendingPathComponent("audio_\(index).\(track.format)"))
@@ -133,14 +134,13 @@ class DeviceStorageManager {
         let data = try Data(contentsOf: metadataURL)
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
         
-        // Load frames
-        var frames: [AnimationFrame] = []
+        var frames: [LegacyAnimationFrame] = []
         var index = 0
         while true {
             let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
             guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
             let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
+            frames.append(LegacyAnimationFrame(id: UUID().uuidString, imageData: imageData))
             index += 1
         }
         
@@ -158,7 +158,10 @@ class DeviceStorageManager {
         }
     }
     
+    @available(*, deprecated, message: "Use StudioStorage for new animation deletes")
     func deleteAnimation(id: UUID) throws {
+        // DEPRECATED: SDCore StudioStorage owns new animation lifecycle.
+        // This method is retained for migration compatibility only.
         let projectDir = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.removeItem(at: projectDir)
     }
@@ -193,7 +196,7 @@ class DeviceStorageManager {
 struct AnimationProject {
     let id: UUID
     let metadata: AnimationMetadata
-    var frames: [AnimationFrame]
+    var frames: [LegacyAnimationFrame]
     var audioTracks: [AudioTrack]
 }
 

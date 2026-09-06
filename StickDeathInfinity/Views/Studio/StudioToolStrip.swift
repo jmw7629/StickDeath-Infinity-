@@ -1,4 +1,5 @@
 import SwiftUI
+import SDCore
 
 // ═══════════════════════════════════════════════════════════════════
 // Tool Strip — Matches preview EXACTLY per-tool colors from React source

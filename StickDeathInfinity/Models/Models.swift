@@ -1,10 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════
 // Models — All data types for StickDeath Infinity
 // Matches: Supabase schema + React TypeScript types exactly
+// Core drawing types (DrawnElement, StrokePoint, DrawingTool,
+// CanvasLayer, AnimationFrame, AudioClip) live in SDCore.
+// This file defines app-specific types that depend on those.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
 import SwiftUI
+import SDCore
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -56,36 +60,10 @@ struct StudioProject: Codable, Identifiable {
     }
 }
 
-// MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
+// MARK: - Legacy AnimationFrame (used only by DeviceStorageManager)
+struct LegacyAnimationFrame: Codable, Identifiable {
     let id: String
-    var tool: DrawingTool
-    var points: [StrokePoint]
-    var color: String       // hex color
-    var width: CGFloat
-    var opacity: Double
-    var fillColor: String?  // for fill tool / shape fill
-    var layerID: String?
-}
-
-struct StrokePoint: Codable {
-    var x: CGFloat
-    var y: CGFloat
-    var pressure: CGFloat?
-    var timestamp: TimeInterval?
-}
-
-enum DrawingTool: String, Codable, CaseIterable {
-    case pen, pencil, marker, brush, crayon, eraser, fill, eyedropper
-    case line, rectangle, circle, text, lasso, wand
-    case arrow, image, ruler, gradient, blur
-    case airbrush, watercolor, neon, calligraphy
-    case smudge, sharpen, move, hand, zoom
-}
-
-struct AnimationFrame: Codable, Identifiable {
-    let id: String
-    var elements: [DrawnElement]
+    var imageData: Data?
 }
 
 // Lock mode enum for type safety
@@ -93,20 +71,7 @@ enum LayerLockMode: String, Codable, CaseIterable {
     case free, full, position, alpha
 }
 
-struct CanvasLayer: Codable, Identifiable {
-    let id: String
-    var name: String
-    var visible: Bool
-    var locked: Bool
-    var opacity: Double
-    var lockMode: String = "free"      // free, full, position, alpha
-    var blendMode: String = "normal"   // normal, multiply, screen, overlay, etc.
-    var glowEnabled: Bool = false
-    var glowColor: String?
-    var colorLabel: String?
-}
-
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
+// StudioLayer — local SwiftUI wrapper with typed lock mode + Color
 struct StudioLayer: Identifiable {
     let id: UUID
     var name: String
@@ -116,14 +81,14 @@ struct StudioLayer: Identifiable {
     var blendMode: String
     var labelColor: Color
     
-    init(from canvas: CanvasLayer) {
+    init(from canvas: SDCore.CanvasLayer) {
         self.id = UUID(uuidString: canvas.id) ?? UUID()
         self.name = canvas.name
         self.visible = canvas.visible
         self.opacity = canvas.opacity
         self.lockMode = LayerLockMode(rawValue: canvas.lockMode) ?? .free
         self.blendMode = canvas.blendMode
-        self.labelColor = Color.red // default
+        self.labelColor = Color.red
     }
     
     init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
@@ -135,16 +100,6 @@ struct StudioLayer: Identifiable {
         self.blendMode = blendMode
         self.labelColor = labelColor
     }
-}
-
-// MARK: - Audio Clip
-struct AudioClip: Identifiable {
-    let id: String
-    var soundName: String
-    var track: Int
-    var startTime: Double
-    var duration: Double
-    var volume: Double = 0.8
 }
 
 // MARK: - Sound Effect

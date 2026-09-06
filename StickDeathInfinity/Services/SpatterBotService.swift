@@ -18,17 +18,17 @@ final class SpatterBotService: ObservableObject {
     @Published var analytics: [PlatformAnalytics] = []
 
     // MARK: - Settings (persisted to UserDefaults for now, Supabase later)
-    @Published var openAIKey: String = AppConfig.openAIAPIKey
-    @Published var geminiKey: String = AppConfig.geminiAPIKey
+    @Published var openAIKey: String = ""
+    @Published var geminiKey: String = ""
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     // MARK: - Owner Check
     var isOwner: Bool {
         guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        return AuthService.shared.isSuperAdmin
     }
 
     // MARK: - Load All Bot Configs

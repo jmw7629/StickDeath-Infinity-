@@ -181,7 +181,7 @@ struct StudioBottomBar: View {
                     }
                     .foregroundColor(.white.opacity(0.5))
                     
-                    Text("\(vm.studioLayers.count)")
+                    Text("\(vm.layers.count)")
                         .font(.system(size: 7, weight: .bold))
                         .foregroundColor(.white)
                         .padding(2)

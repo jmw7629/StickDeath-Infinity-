@@ -278,7 +278,8 @@ final class StripeService: ObservableObject {
         let amountCents = Int(amount * 100)
 
         // Record in Supabase (actual Stripe charge via Edge Function)
-        try await SupabaseManager.shared.client.from("tips").insert([
+        guard let client = SupabaseManager.shared.client else { return }
+        try await client.from("tips").insert([
             "from_user_id": AnyJSON.string(fromUserId),
             "to_user_id": .string(toUserId),
             "amount_cents": .integer(amountCents),
@@ -306,7 +307,8 @@ final class StripeService: ObservableObject {
         let totalCost = Double(durationSeconds) / 60.0 * rateTier.ratePerMinute
         let amountCents = Int(totalCost * 100)
 
-        try await SupabaseManager.shared.client.from("tips").insert([
+        guard let client = SupabaseManager.shared.client else { return }
+        try await client.from("tips").insert([
             "from_user_id": AnyJSON.string(callerId),
             "to_user_id": .string("platform"),
             "amount_cents": .integer(amountCents),
@@ -350,7 +352,8 @@ final class StripeService: ObservableObject {
         }
 
         do {
-            try await SupabaseManager.shared.client
+            guard let client = SupabaseManager.shared.client else { return }
+            try await client
                 .from("users")
                 .update(updates)
                 .eq("id", value: userId)

@@ -10,11 +10,19 @@ import Supabase
 final class SupabaseManager {
     static let shared = SupabaseManager()
 
-    let client: SupabaseClient
+    let client: SupabaseClient?
+
+    var isAvailable: Bool { client != nil }
 
     private init() {
-        client = SupabaseClient(
-            supabaseURL: URL(string: AppConfig.supabaseURL)!,
+        guard !AppConfig.supabaseURL.isEmpty,
+              !AppConfig.supabaseAnonKey.isEmpty,
+              let url = URL(string: AppConfig.supabaseURL) else {
+            self.client = nil
+            return
+        }
+        self.client = SupabaseClient(
+            supabaseURL: url,
             supabaseKey: AppConfig.supabaseAnonKey
         )
     }

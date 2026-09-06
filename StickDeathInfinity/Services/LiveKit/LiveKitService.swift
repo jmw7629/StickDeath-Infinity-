@@ -352,7 +352,8 @@ final class LiveKitService: ObservableObject {
             let token: String
         }
 
-        let response: TokenResponse = try await SupabaseManager.shared.client.functions.invoke(
+        guard let client = SupabaseManager.shared.client else { throw LiveKitError.tokenFailed }
+        let response: TokenResponse = try await client.functions.invoke(
             "livekit-token",
             options: .init(body: TokenRequest(room: roomName, identity: participantName))
         )

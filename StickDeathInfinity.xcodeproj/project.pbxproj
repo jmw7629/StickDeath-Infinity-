@@ -540,6 +540,7 @@
 			packageProductDependencies = (
 				942276A7C2AD5F02FCFE142E /* Supabase */,
 				0B86BD26C0F4E5851CCB9969 /* LiveKit */,
+				SDCORE00100000000000000000001 /* SDCore */,
 			);
 			productName = StickDeathInfinity;
 			productReference = C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */;
@@ -573,6 +574,7 @@
 			packageReferences = (
 				AD8BA8041B6CA7947F5006AE /* supabase-swift */,
 				A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */,
+				SDCORE00200000000000000000001 /* SDCore */,
 			);
 			productRefGroup = F35AEC2E38F2F9ACFEFB2B5F /* Products */;
 			projectDirPath = "";
@@ -885,6 +887,13 @@
 		};
 		/* End XCRemoteSwiftPackageReference section */
 
+		/* Begin XCLocalSwiftPackageReference section */
+		SDCORE00200000000000000000001 /* SDCore */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = SDCore;
+		};
+		/* End XCLocalSwiftPackageReference section */
+
 		/* Begin XCSwiftPackageProductDependency section */
 		942276A7C2AD5F02FCFE142E /* Supabase */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -895,6 +904,10 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A4CA4C66E9E948D381ACDF42 /* LiveKit */;
 			productName = LiveKit;
+		};
+		SDCORE00100000000000000000001 /* SDCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SDCore;
 		};
 		/* End XCSwiftPackageProductDependency section */
 	};
