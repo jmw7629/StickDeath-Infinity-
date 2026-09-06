@@ -1,0 +1,55 @@
+name: Promote tested bridge runner
+
+on:
+  push:
+    branches: [fix/bridge-recovery-project-byte-routing]
+    paths:
+      - 'bridge/runner_next.py'
+      - '.github/workflows/bridge-promote-runner-next.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  promote:
+    if: github.event.head_commit.message != 'Promote tested bridge runner'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/bridge-recovery-project-byte-routing
+          fetch-depth: 0
+
+      - name: Compile and self-test staged runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f bridge/runner_next.py
+          python3 -m py_compile bridge/runner_next.py
+          python3 bridge/runner_next.py --self-test
+          ! grep -n 'shell=True' bridge/runner_next.py
+          grep -q 'PROJECT_BYTE_MODEL_HINT' bridge/runner_next.py
+          grep -q 'recovery-blocked-dirty-worktree' bridge/runner_next.py
+
+      - name: Promote runner atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp bridge/runner_next.py bridge/runner.py
+          rm bridge/runner_next.py
+          rm -f bridge/.project-byte-fix-staging
+          python3 -m py_compile bridge/runner.py
+          python3 bridge/runner.py --self-test
+          git diff --check
+
+      - name: Commit promoted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bridge/runner.py bridge/runner_next.py bridge/.project-byte-fix-staging
+          git commit -m 'Promote tested bridge runner'
+          git push origin HEAD:fix/bridge-recovery-project-byte-routing
