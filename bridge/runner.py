@@ -22,6 +22,7 @@ from typing import Any
 BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
 DEFAULT_TRUSTED_AUTHORS = {"jmw7629"}
+DIAGNOSTIC_LIMIT = 1800
 
 
 class BridgeError(RuntimeError):
@@ -35,22 +36,29 @@ def run(
     check: bool = True,
     capture: bool = True,
     env: dict[str, str] | None = None,
+    timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    proc = subprocess.run(
-        args,
-        cwd=str(cwd) if cwd else None,
-        text=True,
-        capture_output=capture,
-        check=False,
-        env=env,
-    )
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(cwd) if cwd else None,
+            text=True,
+            capture_output=capture,
+            check=False,
+            env=env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BridgeError(
+            f"Command timed out after {timeout}s: {shlex.join(args[:8])}"
+        ) from exc
     if check and proc.returncode != 0:
         stdout = (proc.stdout or "").strip()
         stderr = (proc.stderr or "").strip()
         raise BridgeError(
             f"Command failed ({proc.returncode}): {shlex.join(args)}\n"
-            f"stdout:\n{stdout[-4000:]}\n"
-            f"stderr:\n{stderr[-4000:]}"
+            f"stdout:\n{sanitize_text(stdout[-4000:])}\n"
+            f"stderr:\n{sanitize_text(stderr[-4000:])}"
         )
     return proc
 
@@ -186,6 +194,183 @@ def branch_exists(root: Path, branch: str) -> bool:
     return remote.returncode == 0
 
 
+PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-]*(?:PRIVATE|SECRET) KEY-----.*?"
+    r"-----END [^-]*(?:PRIVATE|SECRET) KEY-----",
+    re.IGNORECASE | re.DOTALL,
+)
+AUTH_HEADER_RE = re.compile(
+    r"(?im)\b(authorization|proxy-authorization)\s*:\s*(?:bearer|basic)\s+\S+"
+)
+SECRET_ASSIGN_RE = re.compile(
+    r"(?im)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|PRIVATE_KEY|"
+    r"ACCESS_KEY|AUTH_KEY|CLIENT_SECRET)[A-Z0-9_]*)\s*=\s*([^\s]+)"
+)
+COMMON_TOKEN_RE = re.compile(
+    r"(?i)\b(?:sk-[A-Za-z0-9_-]{12,}|ghp_[A-Za-z0-9]{12,}|"
+    r"github_pat_[A-Za-z0-9_]{12,}|xox[baprs]-[A-Za-z0-9-]{12,}|"
+    r"AKIA[A-Z0-9]{12,})\b"
+)
+JWT_RE = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
+)
+
+
+def sanitize_text(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text.replace("\x00", "")
+    cleaned = PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", cleaned)
+    cleaned = AUTH_HEADER_RE.sub(r"\1: [REDACTED]", cleaned)
+    cleaned = SECRET_ASSIGN_RE.sub(r"\1=[REDACTED]", cleaned)
+    cleaned = COMMON_TOKEN_RE.sub("[REDACTED TOKEN]", cleaned)
+    cleaned = JWT_RE.sub("[REDACTED JWT]", cleaned)
+    return cleaned.replace("```", "~~~").strip()
+
+
+def classify_opencode_failure(stdout: str, stderr: str) -> str:
+    text = f"{stderr}\n{stdout}".lower()
+
+    if any(
+        marker in text
+        for marker in (
+            "unknown option",
+            "unknown flag",
+            "unexpected argument",
+            "invalid option",
+            "unrecognized option",
+            "usage: opencode",
+        )
+    ):
+        return "cli-invocation-incompatibility"
+
+    if any(
+        marker in text
+        for marker in (
+            "unauthorized",
+            "authentication",
+            "invalid api key",
+            "api key",
+            "provider",
+            "model not found",
+            "unknown model",
+            "rate limit",
+            "quota",
+            "login required",
+            "credential",
+        )
+    ):
+        return "model-provider-auth-config"
+
+    if any(
+        marker in text
+        for marker in (
+            "argument list too long",
+            "prompt too long",
+            "payload too large",
+            "request entity too large",
+            "context length",
+            "maximum context",
+        )
+    ):
+        return "prompt-input-or-argument-passing"
+
+    if any(
+        marker in text
+        for marker in (
+            "permission denied",
+            "no such file or directory",
+            "read-only file system",
+            "worktree",
+            "not a directory",
+            "cannot access",
+        )
+    ):
+        return "filesystem-worktree-sandbox"
+
+    if any(
+        marker in text
+        for marker in (
+            "command not found",
+            "module not found",
+            "missing dependency",
+            "library not found",
+            "cannot load",
+            "runtime",
+            "segmentation fault",
+            "panic:",
+        )
+    ):
+        return "tool-runtime-dependency"
+
+    return "unclassified"
+
+
+def diagnostic_excerpt(stdout: str, stderr: str) -> str:
+    combined = "\n".join(part for part in (stderr, stdout) if part)
+    cleaned = sanitize_text(combined)
+    if not cleaned:
+        return "(no stdout/stderr captured)"
+    lines = [line.rstrip() for line in cleaned.splitlines() if line.strip()]
+    excerpt = "\n".join(lines[-24:])
+    if len(excerpt) > DIAGNOSTIC_LIMIT:
+        excerpt = excerpt[-DIAGNOSTIC_LIMIT:]
+    return excerpt
+
+
+def resolve_opencode_binary(configured: str) -> str:
+    if os.path.isabs(configured):
+        candidate = Path(configured).expanduser()
+        if not candidate.is_file() or not os.access(candidate, os.X_OK):
+            raise BridgeError(f"Configured OpenCode binary is not executable: {candidate}")
+        resolved = str(candidate)
+    else:
+        resolved = shutil.which(configured) or ""
+        if not resolved:
+            raise BridgeError(f"OpenCode binary is not on PATH: {configured}")
+
+    if resolved.startswith("/snap/"):
+        raise BridgeError(
+            "OpenCode resolves to a Snap path, which is incompatible with the "
+            "bridge service hardening. Install/use the non-Snap OpenCode binary."
+        )
+    return resolved
+
+
+def opencode_preflight(configured: str) -> tuple[str, str, set[str]]:
+    binary = resolve_opencode_binary(configured)
+    version = run([binary, "--version"], check=False, timeout=20)
+    if version.returncode != 0:
+        excerpt = diagnostic_excerpt(version.stdout or "", version.stderr or "")
+        raise BridgeError(
+            f"OpenCode preflight failed at --version ({version.returncode}): {excerpt}"
+        )
+    version_text = sanitize_text((version.stdout or version.stderr or "").strip())
+    version_text = version_text.splitlines()[0][:200] if version_text else "unknown"
+
+    help_proc = run([binary, "run", "--help"], check=False, timeout=20)
+    if help_proc.returncode != 0:
+        excerpt = diagnostic_excerpt(help_proc.stdout or "", help_proc.stderr or "")
+        raise BridgeError(
+            f"OpenCode preflight failed at 'run --help' ({help_proc.returncode}): {excerpt}"
+        )
+
+    help_text = f"{help_proc.stdout or ''}\n{help_proc.stderr or ''}"
+    flags = {
+        flag
+        for flag in ("--auto", "--dir", "--format", "--title", "--model", "--agent", "--attach")
+        if flag in help_text
+    }
+    required = {"--dir", "--format", "--title"}
+    missing = sorted(required - flags)
+    if missing:
+        raise BridgeError(
+            "Installed OpenCode 'run' command is missing required automation flags: "
+            + ", ".join(missing)
+        )
+    return binary, version_text, flags
+
+
 def process_task(
     root: Path,
     repo: str,
@@ -201,6 +386,9 @@ def process_task(
     logs_dir = state_path.parent / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = logs_dir / f"issue-{number}.log"
+
+    configured_opencode = os.getenv("OPENCODE_BIN", "opencode")
+    opencode_bin, opencode_version, opencode_flags = opencode_preflight(configured_opencode)
 
     if branch_exists(root, branch):
         state["processed"][str(number)] = {
@@ -230,33 +418,44 @@ def process_task(
     comment_issue(
         repo,
         number,
-        f"JoeOS bridge accepted this task. OpenCode is executing on branch `{branch}`. "
-        "Nothing will be merged automatically.",
+        f"JoeOS bridge accepted this task. OpenCode `{opencode_version}` is executing "
+        f"on branch `{branch}`. Nothing will be merged automatically.",
     )
 
     prompt = build_prompt(issue)
     command = [
-        os.getenv("OPENCODE_BIN", "opencode"),
+        opencode_bin,
         "run",
         "--dir",
         str(worktree),
-        "--auto",
-        "--format",
-        "json",
-        "--title",
-        f"GitHub issue #{number}",
     ]
+    if "--auto" in opencode_flags:
+        command.append("--auto")
+    command.extend(
+        [
+            "--format",
+            "json",
+            "--title",
+            f"GitHub issue #{number}",
+        ]
+    )
 
     model = os.getenv("OPENCODE_MODEL", "").strip()
     if model:
+        if "--model" not in opencode_flags:
+            raise BridgeError("Configured OPENCODE_MODEL but installed 'run' lacks --model")
         command.extend(["--model", model])
 
     agent = os.getenv("OPENCODE_AGENT", "").strip()
     if agent:
+        if "--agent" not in opencode_flags:
+            raise BridgeError("Configured OPENCODE_AGENT but installed 'run' lacks --agent")
         command.extend(["--agent", agent])
 
     attach = os.getenv("OPENCODE_ATTACH_URL", "").strip()
     if attach:
+        if "--attach" not in opencode_flags:
+            raise BridgeError("Configured OPENCODE_ATTACH_URL but installed 'run' lacks --attach")
         command.extend(["--attach", attach])
 
     command.append(prompt)
@@ -271,16 +470,22 @@ def process_task(
     env["BRIDGE_REAL_GH"] = real_gh
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
+
     proc = run(command, cwd=worktree, check=False, capture=True, env=env)
     log_path.write_text(
+        f"OpenCode version: {opencode_version}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\nSTDERR\n{proc.stderr or ''}\n"
+        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
+        f"STDERR\n{proc.stderr or ''}\n"
     )
     os.chmod(log_path, 0o600)
 
     if proc.returncode != 0:
+        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
+        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
         state["processed"][str(number)] = {
             "status": "opencode-failed",
+            "classification": classification,
             "branch": branch,
             "log": str(log_path),
             "time": int(time.time()),
@@ -289,8 +494,11 @@ def process_task(
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created. "
-            f"The detailed log remains local at `{log_path}` on the bridge host.",
+            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"Classification: `{classification}`\n\n"
+            "Sanitized diagnostic excerpt:\n"
+            f"```text\n{excerpt}\n```\n\n"
+            f"The full local log remains at `{log_path}` on the bridge host.",
         )
         return
 
@@ -394,9 +602,10 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
         try:
             process_task(root, repo, issue, state, state_path, worktree_root)
         except Exception as exc:
+            safe_error = sanitize_text(str(exc))[:1000]
             state["processed"][number] = {
                 "status": "bridge-error",
-                "error": str(exc),
+                "error": safe_error,
                 "time": int(time.time()),
             }
             save_state(state_path, state)
@@ -405,10 +614,44 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
                     repo,
                     int(issue["number"]),
                     "Bridge execution failed before a PR could be created. "
-                    f"Error: `{str(exc)[:1000]}`",
+                    f"Sanitized error: `{safe_error}`",
                 )
             except Exception:
                 pass
+
+
+def self_test() -> int:
+    sample = (
+        "Authorization: Bearer abcdefghijklmnop\n"
+        "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\n"
+        "token ghp_abcdefghijklmnopqrstuvwxyz123456\n"
+        "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n"
+    )
+    cleaned = sanitize_text(sample)
+    forbidden = ("abcdefghijklmnop", "sk-abcdefghijklmnopqrstuvwxyz", "ghp_", "\nsecret\n")
+    if any(value in cleaned for value in forbidden):
+        print("bridge self-test: redaction FAILED", file=sys.stderr)
+        return 1
+
+    cases = {
+        "error: unknown option '--auto'": "cli-invocation-incompatibility",
+        "401 unauthorized provider": "model-provider-auth-config",
+        "argument list too long": "prompt-input-or-argument-passing",
+        "permission denied: worktree": "filesystem-worktree-sandbox",
+        "command not found: foo": "tool-runtime-dependency",
+        "mysterious failure": "unclassified",
+    }
+    for text, expected in cases.items():
+        got = classify_opencode_failure("", text)
+        if got != expected:
+            print(
+                f"bridge self-test: classifier FAILED for {text!r}: {got} != {expected}",
+                file=sys.stderr,
+            )
+            return 1
+
+    print("bridge self-test: PASS")
+    return 0
 
 
 def main() -> int:
@@ -425,7 +668,11 @@ def main() -> int:
         default=int(os.getenv("BRIDGE_POLL_SECONDS", "60")),
     )
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+
+    if args.self_test:
+        return self_test()
 
     script_root = Path(__file__).resolve().parent.parent
     root = Path(args.root).expanduser().resolve() if args.root else script_root
@@ -456,7 +703,7 @@ def main() -> int:
             try:
                 bridge_once(root, args.repo, state_path, worktree_root)
             except Exception as exc:
-                print(f"[bridge] {exc}", file=sys.stderr)
+                print(f"[bridge] {sanitize_text(str(exc))}", file=sys.stderr)
             if args.once:
                 return 0
             time.sleep(max(args.interval, 30))
