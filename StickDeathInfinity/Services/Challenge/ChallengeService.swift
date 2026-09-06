@@ -9,10 +9,11 @@ import Supabase
 @MainActor
 final class ChallengeService {
     static let shared = ChallengeService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     /// Fetch all active challenges
     func fetchChallenges() async throws -> [Challenge] {
+        guard let supabase else { return [] }
         let challenges: [Challenge] = try await supabase
             .from("challenges")
             .select()
@@ -24,6 +25,7 @@ final class ChallengeService {
 
     /// Submit to a challenge
     func submitEntry(challengeID: Int, userID: String, projectID: String, mediaURL: String?) async throws {
+        guard let supabase else { return }
         try await supabase
             .from("challenge_submissions")
             .insert([
@@ -37,6 +39,7 @@ final class ChallengeService {
 
     /// Get submissions for a challenge
     func fetchSubmissions(challengeID: Int) async throws -> [ChallengeSubmission] {
+        guard let supabase else { return [] }
         let submissions: [ChallengeSubmission] = try await supabase
             .from("challenge_submissions")
             .select("*, profiles(username, avatar_url)")

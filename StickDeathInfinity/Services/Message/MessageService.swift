@@ -9,10 +9,11 @@ import Supabase
 @MainActor
 final class MessageService {
     static let shared = MessageService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     /// Fetch all chat rooms for the current user
     func fetchRooms(userID: String) async throws -> [ChatRoom] {
+        guard let supabase else { return [] }
         let rooms: [ChatRoom] = try await supabase
             .from("chat_rooms")
             .select("*, room_members!inner(user_id)")
@@ -25,6 +26,7 @@ final class MessageService {
 
     /// Fetch messages for a room
     func fetchMessages(roomID: Int, limit: Int = 50) async throws -> [ChatMessage] {
+        guard let supabase else { return [] }
         let messages: [ChatMessage] = try await supabase
             .from("chat_messages")
             .select()
@@ -38,6 +40,7 @@ final class MessageService {
 
     /// Send a message
     func sendMessage(roomID: Int, senderID: String, content: String, type: String = "text", replyToID: Int? = nil) async throws -> ChatMessage {
+        guard let supabase else { throw MessageError.notConfigured }
         var payload: [String: String] = [
             "room_id": "\(roomID)",
             "sender_id": senderID,
@@ -64,6 +67,7 @@ final class MessageService {
 
     /// Create a new DM room
     func createDMRoom(userID: String, otherUserID: String) async throws -> ChatRoom {
+        guard let supabase else { throw MessageError.notConfigured }
         let room: ChatRoom = try await supabase
             .from("chat_rooms")
             .insert(["type": "dm"])
@@ -87,10 +91,9 @@ final class MessageService {
     /// Subscribe to new messages in a room (Supabase Realtime)
     func subscribeToRoom(roomID: Int, onMessage: @escaping (ChatMessage) -> Void) {
         // TODO: Implement Supabase Realtime subscription
-        // supabase.channel("room:\(roomID)")
-        //     .on("postgres_changes", table: "chat_messages", filter: "room_id=eq.\(roomID)") { payload in
-        //         // Decode and call onMessage
-        //     }
-        //     .subscribe()
+    }
+
+    enum MessageError: Error {
+        case notConfigured
     }
 }

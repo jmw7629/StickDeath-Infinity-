@@ -535,8 +535,9 @@ final class VideoCallViewModel: ObservableObject {
         callState = .ended
 
         // Record charge in tips table
-        guard let userId = AuthService.shared.userId else { return }
-        try? await SupabaseManager.shared.client.from("tips").insert([
+        guard let userId = AuthService.shared.userId,
+              let supabase = SupabaseManager.shared.client else { return }
+        try? await supabase.from("tips").insert([
             "sender_id": AnyJSON.string(userId),
             "receiver_id": .string("system"),
             "amount": .double(currentCost),

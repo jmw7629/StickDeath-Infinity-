@@ -9,11 +9,11 @@ import Supabase
 @MainActor
 final class ProjectService {
     static let shared = ProjectService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     // MARK: - List Projects
     func listProjects() async throws -> [StudioProject] {
-        guard let userId = AuthService.shared.userId else { return [] }
+        guard let userId = AuthService.shared.userId, let supabase else { return [] }
         return try await supabase.from("studio_projects")
             .select()
             .eq("user_id", value: userId)
@@ -24,7 +24,7 @@ final class ProjectService {
 
     // MARK: - Create Project
     func createProject(name: String, width: Int = 1920, height: Int = 1080, fps: Int = 12) async throws -> StudioProject {
-        guard let userId = AuthService.shared.userId else {
+        guard let userId = AuthService.shared.userId, let supabase else {
             throw ProjectError.notAuthenticated
         }
 
@@ -41,6 +41,7 @@ final class ProjectService {
 
     // MARK: - Save Project (frames)
     func saveProject(projectID: String, frames: [AnimationFrame]) async throws {
+        guard let supabase else { return }
         let encoder = JSONEncoder()
         let frameData = try encoder.encode(frames)
         let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
@@ -54,6 +55,7 @@ final class ProjectService {
 
     // MARK: - Load Project Frames
     func loadFrames(projectID: String) async throws -> [AnimationFrame] {
+        guard let supabase else { return [AnimationFrame(id: UUID().uuidString, elements: [])] }
         struct ProjectRow: Codable {
             let frame_data: String?
         }
@@ -75,6 +77,7 @@ final class ProjectService {
 
     // MARK: - Delete Project
     func deleteProject(projectID: String) async throws {
+        guard let supabase else { return }
         try await supabase.from("studio_projects").delete().eq("id", value: projectID).execute()
     }
 

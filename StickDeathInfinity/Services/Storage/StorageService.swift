@@ -10,11 +10,12 @@ import UIKit
 @MainActor
 final class StorageService {
     static let shared = StorageService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
     private let bucket = "media"
 
     // MARK: - Upload Image
     func uploadImage(_ image: UIImage, path: String, quality: CGFloat = 0.8) async throws -> String {
+        guard let supabase else { throw StorageError.uploadFailed }
         guard let data = image.jpegData(compressionQuality: quality) else {
             throw StorageError.invalidImage
         }
@@ -32,6 +33,7 @@ final class StorageService {
 
     // MARK: - Upload Video
     func uploadVideo(data: Data, path: String) async throws -> String {
+        guard let supabase else { throw StorageError.uploadFailed }
         let filePath = "\(path)/\(UUID().uuidString).mp4"
         try await supabase.storage.from(bucket).upload(
             filePath,
@@ -53,6 +55,7 @@ final class StorageService {
 
     // MARK: - Upload Project Frame Data
     func uploadProjectData(_ data: Data, projectID: String) async throws -> String {
+        guard let supabase else { throw StorageError.uploadFailed }
         let filePath = "projects/\(projectID)/\(UUID().uuidString).json"
         try await supabase.storage.from(bucket).upload(
             filePath,
@@ -66,12 +69,14 @@ final class StorageService {
 
     // MARK: - Delete File
     func deleteFile(path: String) async throws {
+        guard let supabase else { throw StorageError.uploadFailed }
         try await supabase.storage.from(bucket).remove(paths: [path])
     }
 
     // MARK: - Download
     func download(path: String) async throws -> Data {
-        try await supabase.storage.from(bucket).download(path: path)
+        guard let supabase else { throw StorageError.uploadFailed }
+        return try await supabase.storage.from(bucket).download(path: path)
     }
 
     enum StorageError: Error {

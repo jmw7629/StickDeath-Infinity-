@@ -24,7 +24,7 @@ final class AuthService: ObservableObject {
     @Published var currentUser: User?
     @Published var currentProfile: UserProfile?
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
     private var appleSignInDelegate: AppleSignInDelegate?
 
     enum AuthState: Equatable {
@@ -33,9 +33,10 @@ final class AuthService: ObservableObject {
 
     var userId: String? { currentUser?.id.uuidString }
     var isAuthenticated: Bool { state == .authenticated }
+    /// Admin role must come from server-controlled user/profile/app metadata.
+    /// No client-local email-based authorization.
     var isSuperAdmin: Bool {
-        guard let email = currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        currentProfile?.role == .superadmin
     }
     var displayName: String? { currentProfile?.username }
     var avatarUrl: String? { currentProfile?.avatarURL }
@@ -43,6 +44,10 @@ final class AuthService: ObservableObject {
     // MARK: - Initialize (call on app start)
     func initialize() async {
         state = .loading
+        guard let supabase else {
+            state = .unauthenticated
+            return
+        }
         do {
             let session = try await supabase.auth.session
             currentUser = session.user
@@ -118,6 +123,7 @@ final class AuthService: ObservableObject {
 
     /// Exchange Apple ID token with Supabase
     private func exchangeAppleToken(idToken: String, nonce: String) async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         let session = try await supabase.auth.signInWithIdToken(
             credentials: .init(
                 provider: .apple,
@@ -141,6 +147,7 @@ final class AuthService: ObservableObject {
     /// Uses GoogleSignIn SDK to get ID token, then exchanges with Supabase.
     /// Requires GoogleSignIn SPM package + GIDClientID in Info.plist.
     func signInWithGoogle() async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         // Build the OAuth URL and open it in Safari.
         // When the user finishes, the app receives the redirect via URL scheme
         // and handleOAuthCallback() completes the sign-in.
@@ -153,6 +160,7 @@ final class AuthService: ObservableObject {
 
     /// Handle the OAuth callback URL (call from SceneDelegate/AppDelegate)
     func handleOAuthCallback(url: URL) async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         let session = try await supabase.auth.session(from: url)
         currentUser = session.user
         let email = session.user.email
@@ -167,6 +175,7 @@ final class AuthService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     func signUp(email: String, password: String, username: String) async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         let result = try await supabase.auth.signUp(
             email: email,
             password: password,
@@ -181,6 +190,7 @@ final class AuthService: ObservableObject {
     }
 
     func signIn(email: String, password: String) async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         let session = try await supabase.auth.signIn(
             email: email,
             password: password
@@ -192,6 +202,7 @@ final class AuthService: ObservableObject {
 
     // MARK: - Guest
     func signInAsGuest() async throws {
+        guard let supabase else { throw AuthError.notAuthenticated }
         let session = try await supabase.auth.signInAnonymously()
         currentUser = session.user
         let guestUsername = "Guest_\(session.user.id.uuidString.prefix(6))"
@@ -202,7 +213,7 @@ final class AuthService: ObservableObject {
 
     // MARK: - Sign Out
     func signOut() async throws {
-        try await supabase.auth.signOut()
+        try await supabase?.auth.signOut()
         currentUser = nil
         currentProfile = nil
         state = .unauthenticated
@@ -210,7 +221,7 @@ final class AuthService: ObservableObject {
 
     // MARK: - Profile Management
     func updateProfile(_ updates: [String: AnyJSON]) async throws {
-        guard let userId else { throw AuthError.notAuthenticated }
+        guard let userId, let supabase else { throw AuthError.notAuthenticated }
         try await supabase.from("users").update(updates).eq("id", value: userId).execute()
         await fetchProfile(userId: userId)
     }
@@ -224,13 +235,13 @@ final class AuthService: ObservableObject {
     }
 
     func deleteAccount() async throws {
-        guard let userId else { throw AuthError.notAuthenticated }
+        guard let userId, let supabase else { throw AuthError.notAuthenticated }
         try await supabase.from("users").delete().eq("id", value: userId).execute()
         try await signOut()
     }
 
     func resetPassword(email: String) async throws {
-        try await supabase.auth.resetPasswordForEmail(email)
+        try await supabase?.auth.resetPasswordForEmail(email)
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -238,6 +249,7 @@ final class AuthService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     private func fetchProfile(userId: String) async {
+        guard let supabase else { return }
         do {
             let profile: UserProfile = try await supabase
                 .from("users")
@@ -253,13 +265,14 @@ final class AuthService: ObservableObject {
     }
 
     private func ensureProfile(userId: String, email: String?, username: String) async {
-        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
+        // Role must come from server — never mint from client-side email literal.
+        // Default to "user"; server assigns admin/superadmin via RPC/trigger.
         do {
-            try await supabase.from("users").upsert([
+            try await supabase?.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
                 "username": .string(username),
-                "role": .string(role),
+                "role": .string("user"),
                 "created_at": .string(ISO8601DateFormatter().string(from: Date()))
             ]).execute()
         } catch {

@@ -352,7 +352,10 @@ final class LiveKitService: ObservableObject {
             let token: String
         }
 
-        let response: TokenResponse = try await SupabaseManager.shared.client.functions.invoke(
+        guard let supabase = SupabaseManager.shared.client else {
+            throw NSError(domain: "LiveKit", code: -1, userInfo: [NSLocalizedDescriptionKey: "Supabase not configured"])
+        }
+        let response: TokenResponse = try await supabase.functions.invoke(
             "livekit-token",
             options: .init(body: TokenRequest(room: roomName, identity: participantName))
         )

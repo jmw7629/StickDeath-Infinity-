@@ -9,11 +9,11 @@ import Supabase
 @MainActor
 final class SocialService {
     static let shared = SocialService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     // MARK: - Posts
     func createPost(content: String, mediaURL: String?, projectID: String?) async throws -> Post {
-        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
+        guard let userId = AuthService.shared.userId, let supabase else { throw ServiceError.notAuthenticated }
 
         var data: [String: AnyJSON] = [
             "user_id": .string(userId),
@@ -27,12 +27,13 @@ final class SocialService {
     }
 
     func deletePost(postID: Int) async throws {
+        guard let supabase else { return }
         try await supabase.from("posts").delete().eq("id", value: postID).execute()
     }
 
     // MARK: - Likes
     func likePost(postID: Int) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId, let supabase else { return }
         try await supabase.from("likes").insert([
             "user_id": AnyJSON.string(userId),
             "post_id": .integer(postID),
@@ -43,7 +44,7 @@ final class SocialService {
     }
 
     func unlikePost(postID: Int) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId, let supabase else { return }
         try await supabase.from("likes")
             .delete()
             .eq("user_id", value: userId)
@@ -52,7 +53,7 @@ final class SocialService {
     }
 
     func isPostLiked(postID: Int) async -> Bool {
-        guard let userId = AuthService.shared.userId else { return false }
+        guard let userId = AuthService.shared.userId, let supabase else { return false }
         do {
             let result: [LikeRecord] = try await supabase.from("likes")
                 .select()
@@ -66,7 +67,7 @@ final class SocialService {
 
     // MARK: - Comments
     func addComment(postID: Int, content: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId, let supabase else { return }
         try await supabase.from("comments").insert([
             "post_id": AnyJSON.integer(postID),
             "user_id": .string(userId),
@@ -75,7 +76,8 @@ final class SocialService {
     }
 
     func getComments(postID: Int) async throws -> [Comment] {
-        try await supabase.from("comments")
+        guard let supabase else { return [] }
+        return try await supabase.from("comments")
             .select("*, users(username, avatar_url)")
             .eq("post_id", value: postID)
             .order("created_at", ascending: true)
@@ -85,7 +87,7 @@ final class SocialService {
 
     // MARK: - Follows
     func followUser(targetID: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId, let supabase else { return }
         try await supabase.from("follows").insert([
             "follower_id": AnyJSON.string(userId),
             "following_id": .string(targetID),
@@ -93,7 +95,7 @@ final class SocialService {
     }
 
     func unfollowUser(targetID: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId, let supabase else { return }
         try await supabase.from("follows")
             .delete()
             .eq("follower_id", value: userId)
@@ -102,7 +104,7 @@ final class SocialService {
     }
 
     func isFollowing(targetID: String) async -> Bool {
-        guard let userId = AuthService.shared.userId else { return false }
+        guard let userId = AuthService.shared.userId, let supabase else { return false }
         do {
             let result: [FollowCheckRecord] = try await supabase.from("follows")
                 .select("id")

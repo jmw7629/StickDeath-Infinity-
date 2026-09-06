@@ -1,7 +1,10 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
+//
+// Production chat path uses the same AuthenticatedTransport/Spatter
+// transport seam tested in SDCore. No direct OpenAI/Gemini/Anthropic/
+// Pollinations host or provider-key storage in the iOS client.
 //
 // Knowledge is embedded permanently via SpatterKnowledgeBase.swift
 // (120 modules: 100 brain + 20 core) — no external JSON needed.
@@ -10,13 +13,42 @@
 
 import Foundation
 import Supabase
+import SDCore
+
+// MARK: - Token Provider Protocol
+
+/// Obtains the current authenticated session token at request time.
+/// Token is never frozen at startup.
+public protocol SessionTokenProvider {
+    func currentToken() async -> String?
+}
+
+// MARK: - Supabase Session Token Provider
+
+/// Production token provider that reads from the live Supabase session.
+public final class SupabaseSessionTokenProvider: SessionTokenProvider {
+    public init() {}
+    public func currentToken() async -> String? {
+        guard let supabase = SupabaseManager.shared.client else { return nil }
+        do {
+            let session = try await supabase.auth.session
+            return session.accessToken
+        } catch {
+            return nil
+        }
+    }
+}
+
+// MARK: - SpatterService
 
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private let transportFactory: TransportFactory?
+    private let tokenProvider: SessionTokenProvider
+
+    /// For SpatterBotService settings display only — not used for API calls.
+    private let displayModel: String
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -54,6 +86,15 @@ final class SpatterService {
     - Refer to the founder as "the creator" or "Joe" when context calls for it
     """
 
+    init(
+        transportFactory: TransportFactory? = nil,
+        tokenProvider: SessionTokenProvider = SupabaseSessionTokenProvider()
+    ) {
+        self.transportFactory = transportFactory
+        self.tokenProvider = tokenProvider
+        self.displayModel = AppConfig.openAIModel
+    }
+
     // MARK: - Build Knowledge Context
 
     /// Build contextual knowledge from embedded SpatterKnowledgeBase
@@ -67,8 +108,9 @@ final class SpatterService {
 
     /// Optionally also fetch from Supabase for any runtime-added knowledge
     private func fetchSupabaseKnowledge() async -> String {
+        guard let supabase = SupabaseManager.shared.client else { return "" }
         do {
-            let entries: [SupabaseKnowledgeEntry] = try await SupabaseManager.shared.client
+            let entries: [SupabaseKnowledgeEntry] = try await supabase
                 .from("spatter_knowledge")
                 .select()
                 .limit(50)
@@ -88,22 +130,32 @@ final class SpatterService {
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
     ) async throws -> String {
-        // 1. Build embedded knowledge context (always available, instant)
+        // 1. Check backend availability
+        guard let transportFactory else {
+            throw SpatterError.backendNotConfigured
+        }
+
+        // 2. Get current session token
+        guard let token = await tokenProvider.currentToken(), !token.isEmpty else {
+            throw SpatterError.missingAuthToken
+        }
+
+        // 3. Build embedded knowledge context (always available, instant)
         let embeddedKnowledge = buildKnowledgeContext(
             screen: context?.currentScreen,
             tool: context?.currentTool
         )
 
-        // 2. Optionally fetch Supabase knowledge (non-blocking fallback)
+        // 4. Optionally fetch Supabase knowledge (non-blocking fallback)
         let supabaseKnowledge = await fetchSupabaseKnowledge()
 
-        // 3. Build context string
+        // 5. Build context string
         var contextStr = ""
         if let ctx = context {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build API messages
+        // 6. Build API messages
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
@@ -117,24 +169,30 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
+        // 7. Build request through the tested transport seam
+        let transport = transportFactory.makeTransport()
+
+        var request = URLRequest(url: URL(string: "/v1/chat/completions")!)
         request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": model,
+            "model": displayModel,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        let (data, response) = try await transport.send(request)
 
-        return response.choices.first?.message.content ?? "..."
+        guard (200..<300).contains(response.statusCode) else {
+            throw SpatterError.backendError(response.statusCode)
+        }
+
+        let apiResponse = try JSONDecoder().decode(OpenAIResponse.self, from: data)
+        return apiResponse.choices.first?.message.content ?? "..."
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -147,6 +205,25 @@ final class SpatterService {
     /// Get all knowledge categories
     func categories() -> [String] {
         Array(Set(SpatterKnowledgeBase.allModules.map(\.category))).sorted()
+    }
+}
+
+// MARK: - Errors
+
+enum SpatterError: Error, LocalizedError {
+    case backendNotConfigured
+    case missingAuthToken
+    case backendError(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .backendNotConfigured:
+            return "Spatter backend not configured"
+        case .missingAuthToken:
+            return "No authentication token available"
+        case .backendError(let code):
+            return "Backend error: \(code)"
+        }
     }
 }
 

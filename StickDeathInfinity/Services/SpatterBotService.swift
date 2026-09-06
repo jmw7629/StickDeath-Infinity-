@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterBotService — Backend for Spatter Command Center
 // Manages bot configs, content queue, analytics via Supabase
-// Owner-only — gated by AppConfig.superuserEmails
+// Owner-only — gated by server-controlled superadmin role
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
@@ -23,18 +23,21 @@ final class SpatterBotService: ObservableObject {
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient? { SupabaseManager.shared.client }
 
     // MARK: - Owner Check
+    /// Admin role must come from server-controlled user metadata.
+    /// No client-local email-based authorization.
     var isOwner: Bool {
-        guard let email = AuthService.shared.currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        AuthService.shared.currentProfile?.role == .superadmin
     }
 
     // MARK: - Load All Bot Configs
     func loadBotConfigs() async {
         isLoading = true
         defer { isLoading = false }
+
+        guard let supabase else { return }
 
         do {
             let configs: [BotConfiguration] = try await supabase
@@ -54,6 +57,7 @@ final class SpatterBotService: ObservableObject {
 
     // MARK: - Save Bot Config
     func saveBotConfig(_ config: BotConfiguration) async throws {
+        guard let supabase else { return }
         if config.id != nil {
             // Update
             try await supabase
@@ -89,6 +93,7 @@ final class SpatterBotService: ObservableObject {
 
     // MARK: - Content Queue
     func loadContentQueue() async {
+        guard let supabase else { return }
         do {
             let items: [ContentQueueItem] = try await supabase
                 .from("spatter_content_queue")

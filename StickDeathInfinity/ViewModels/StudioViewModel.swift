@@ -6,6 +6,7 @@
 
 import SwiftUI
 import Supabase
+import SDCore
 
 @MainActor
 final class StudioViewModel: ObservableObject {
@@ -107,24 +108,37 @@ final class StudioViewModel: ObservableObject {
         return "\(seconds / 60)m ago"
     }
 
-    init() {
+    // MARK: - Coordinator (production lifecycle seam)
+    let coordinator: ProjectCoordinator
+
+    init(coordinator: ProjectCoordinator? = nil) {
+        if let coordinator {
+            self.coordinator = coordinator
+        } else {
+            // Default: local-only coordinator
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let repo = FileProjectRepository(baseDir: docs.appendingPathComponent("StudioProjects"))
+            self.coordinator = DefaultProjectCoordinator(localRepository: repo)
+        }
         activeLayerID = layers.first?.id ?? ""
         Task { await loadProjects() }
     }
 
     // MARK: - Project List Operations
     func loadProjects() async {
-        guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
         do {
-            let projects: [StudioProject] = try await supabase
-                .from("studio_projects")
-                .select("*")
-                .eq("user_id", value: userId)
-                .order("updated_at", ascending: false)
-                .execute()
-                .value
-            savedProjects = projects
+            let snapshots = try await coordinator.loadProjects()
+            // Convert SDCore ProjectSnapshot to StudioProject for UI
+            savedProjects = snapshots.map { snapshot in
+                StudioProject(
+                    id: snapshot.id,
+                    userID: AuthService.shared.userId ?? "",
+                    name: snapshot.name,
+                    width: snapshot.canvasWidth,
+                    height: snapshot.canvasHeight,
+                    fps: snapshot.fps
+                )
+            }
         } catch {
             print("[Studio] Load projects error: \(error)")
         }
@@ -151,6 +165,20 @@ final class StudioViewModel: ObservableObject {
         canvasWidth = project.width ?? 1080
         canvasHeight = project.height ?? 1080
         fps = project.fps ?? 12
+
+        // Trigger async load via coordinator (includes legacy migration)
+        Task {
+            if let snapshot = try? await coordinator.openProject(id: project.id) {
+                // Apply snapshot state
+                await MainActor.run {
+                    self.projectName = snapshot.name
+                    self.canvasWidth = snapshot.canvasWidth
+                    self.canvasHeight = snapshot.canvasHeight
+                    self.fps = snapshot.fps
+                    self.activeLayerID = snapshot.activeLayerID
+                }
+            }
+        }
     }
 
     // MARK: - Frame Operations
@@ -360,19 +388,49 @@ final class StudioViewModel: ObservableObject {
 
     // MARK: - Save/Load
     func save() async {
-        guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
+        guard let projectId = currentProjectID else { return }
+
+        let snapshot = ProjectSnapshot(
+            id: projectId,
+            name: projectName,
+            frames: frames.map { frame in
+                FrameData(
+                    id: frame.id,
+                    elements: frame.elements.map { el in
+                        ElementData(
+                            id: el.id,
+                            tool: el.tool.rawValue,
+                            points: el.points.map { pt in
+                                PointData(x: pt.x, y: pt.y, pressure: pt.pressure, timestamp: pt.timestamp)
+                            },
+                            color: el.color,
+                            width: el.width,
+                            opacity: el.opacity,
+                            fillColor: el.fillColor,
+                            layerID: el.layerID
+                        )
+                    }
+                )
+            },
+            layers: layers.map { layer in
+                LayerData(
+                    id: layer.id,
+                    name: layer.name,
+                    visible: layer.visible,
+                    locked: layer.locked,
+                    opacity: layer.opacity,
+                    lockMode: layer.lockMode,
+                    blendMode: layer.blendMode
+                )
+            },
+            activeLayerID: activeLayerID,
+            canvasWidth: canvasWidth,
+            canvasHeight: canvasHeight,
+            fps: fps
+        )
+
         do {
-            let encoder = JSONEncoder()
-            let frameData = try encoder.encode(frames)
-            let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"
-
-            try await supabase.from("studio_project_versions").insert([
-                "project_id": AnyJSON.null,
-                "frame_data": .string(frameJSON),
-                "user_id": .string(userId),
-            ]).execute()
-
+            try await coordinator.save(snapshot)
             lastSaveTime = Date()
             print("[Studio] Saved \(frames.count) frames")
         } catch {

@@ -268,7 +268,8 @@ final class StripeService: ObservableObject {
     /// Send a tip — uses Stripe because tips are person-to-person
     /// payments, not digital content purchases (Apple allows this)
     func sendTip(toUserId: String, amount: Double) async throws {
-        guard let fromUserId = AuthService.shared.userId else {
+        guard let fromUserId = AuthService.shared.userId,
+              let supabase = SupabaseManager.shared.client else {
             throw PaymentError.notAuthenticated
         }
 
@@ -278,7 +279,7 @@ final class StripeService: ObservableObject {
         let amountCents = Int(amount * 100)
 
         // Record in Supabase (actual Stripe charge via Edge Function)
-        try await SupabaseManager.shared.client.from("tips").insert([
+        try await supabase.from("tips").insert([
             "from_user_id": AnyJSON.string(fromUserId),
             "to_user_id": .string(toUserId),
             "amount_cents": .integer(amountCents),
@@ -299,14 +300,15 @@ final class StripeService: ObservableObject {
         callType: String = "video",
         spendCap: Double
     ) async throws {
-        guard let callerId = AuthService.shared.userId else {
+        guard let callerId = AuthService.shared.userId,
+              let supabase = SupabaseManager.shared.client else {
             throw PaymentError.notAuthenticated
         }
 
         let totalCost = Double(durationSeconds) / 60.0 * rateTier.ratePerMinute
         let amountCents = Int(totalCost * 100)
 
-        try await SupabaseManager.shared.client.from("tips").insert([
+        try await supabase.from("tips").insert([
             "from_user_id": AnyJSON.string(callerId),
             "to_user_id": .string("platform"),
             "amount_cents": .integer(amountCents),
@@ -336,7 +338,8 @@ final class StripeService: ObservableObject {
         productId: String?,
         status: String
     ) async {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId,
+              let supabase = SupabaseManager.shared.client else { return }
 
         var updates: [String: AnyJSON] = [
             "subscription_tier": .string(tier.rawValue),
@@ -350,7 +353,7 @@ final class StripeService: ObservableObject {
         }
 
         do {
-            try await SupabaseManager.shared.client
+            try await supabase
                 .from("users")
                 .update(updates)
                 .eq("id", value: userId)
