@@ -9,17 +9,32 @@ strict validation; no issue text is ever interpreted by a shell.
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import errno
 import fcntl
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+_MONOTONIC = getattr(time, "monotonic", None)
+if _MONOTONIC is None:
+
+    def _monotonic() -> float:
+        return time.time()
+
+else:
+
+    def _monotonic() -> float:
+        return _MONOTONIC()
 
 BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
@@ -40,9 +55,451 @@ TERMINAL_STATUSES = {
 RECOVERABLE_PREFIX = "recovery-blocked-"
 LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
+DEFAULT_IDLE_TIMEOUT = 1800
+DEFAULT_HELD_DRAIN_TIMEOUT = 30
+DEFAULT_TERM_GRACE = 10
+DEFAULT_REAP_BOUND = 10
+DEFAULT_TAIL_LIMIT = 8192
+
+
+def parse_env_int(name: str, default: int, lo: int, hi: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except (ValueError, TypeError):
+        return default
+    return max(lo, min(hi, val))
+
+
+def _parse_watchdog_config() -> dict[str, int]:
+    return {
+        "idle_timeout": parse_env_int(
+            "BRIDGE_WATCHDOG_IDLE_TIMEOUT", DEFAULT_IDLE_TIMEOUT, 30, 7200
+        ),
+        "held_drain_timeout": parse_env_int(
+            "BRIDGE_WATCHDOG_HELD_DRAIN_TIMEOUT", DEFAULT_HELD_DRAIN_TIMEOUT, 2, 120
+        ),
+        "term_grace": parse_env_int(
+            "BRIDGE_WATCHDOG_TERM_GRACE", DEFAULT_TERM_GRACE, 2, 60
+        ),
+        "reap_bound": parse_env_int(
+            "BRIDGE_WATCHDOG_REAP_BOUND", DEFAULT_REAP_BOUND, 2, 60
+        ),
+        "tail_limit": parse_env_int(
+            "BRIDGE_WATCHDOG_TAIL_LIMIT", DEFAULT_TAIL_LIMIT, 256, 1048576
+        ),
+    }
+
 
 class BridgeError(RuntimeError):
     pass
+
+
+@dataclasses.dataclass
+class WatchdogResult:
+    returncode: int | None
+    stdout_tail: str
+    stderr_tail: str
+    classification: str | None
+    reason: str | None
+    term_sent: bool
+    kill_sent: bool
+    terminal_signal: int | None
+    leader_reaped: bool
+    elapsed: float
+
+
+class Watchdog:
+    """Watchdog for bridge subprocess execution with monotonic idle detection.
+
+    Key invariants:
+    - idle deadline resets ONLY when DATA bytes are actually consumed from stdout/stderr.
+    - EAGAIN/WOULD_BLOCK and empty polls do not reset the deadline.
+    - Output tails are bounded after every append.
+    - Held-pipe cleanup signals only the captured PGID.
+    - All waits are bounded.
+    """
+
+    def __init__(
+        self,
+        *,
+        idle_timeout: float,
+        held_drain_timeout: float,
+        term_grace: float,
+        reap_bound: float,
+        tail_limit: int,
+    ) -> None:
+        self._idle_timeout = idle_timeout
+        self._held_drain_timeout = held_drain_timeout
+        self._term_grace = term_grace
+        self._reap_bound = reap_bound
+        self._tail_limit = tail_limit
+
+    def run(
+        self,
+        command: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        timeout: int | None = None,
+    ) -> WatchdogResult:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            pass_fds=(),
+            env=env,
+            start_new_session=True,
+        )
+        captured_pgid = None
+        try:
+            captured_pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, OSError):
+            captured_pgid = None
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        stdout_bytes = 0
+        stderr_bytes = 0
+        last_activity = _monotonic()
+        deadline = last_activity + self._idle_timeout
+        leader_exited = False
+        leader_returncode: int | None = None
+        term_sent = False
+        kill_sent = False
+        terminal_signal_val: int | None = None
+        leader_reaped = False
+
+        stdout_fd = proc.stdout.fileno() if proc.stdout else -1
+        stderr_fd = proc.stderr.fileno() if proc.stderr else -1
+
+        pollobj = select.poll()
+        fd_map: dict[int, str] = {}
+        try:
+            if stdout_fd >= 0:
+                fl = fcntl.fcntl(stdout_fd, fcntl.F_GETFL)
+                fcntl.fcntl(stdout_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                pollobj.register(stdout_fd, select.POLLIN)
+                fd_map[stdout_fd] = "stdout"
+            if stderr_fd >= 0:
+                fl = fcntl.fcntl(stderr_fd, fcntl.F_GETFL)
+                fcntl.fcntl(stderr_fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                pollobj.register(stderr_fd, select.POLLIN)
+                fd_map[stderr_fd] = "stderr"
+
+            while fd_map:
+                now = _monotonic()
+                remaining = deadline - now
+                if remaining <= 0:
+                    term_sent, kill_sent, terminal_signal_val, leader_reaped, leader_returncode = (
+                        self._cleanup_leader(
+                            proc, captured_pgid, term_sent, kill_sent,
+                            terminal_signal_val, leader_reaped, leader_returncode,
+                        )
+                    )
+                    return WatchdogResult(
+                        returncode=leader_returncode,
+                        stdout_tail=_join_tail(stdout_chunks, self._tail_limit),
+                        stderr_tail=_join_tail(stderr_chunks, self._tail_limit),
+                        classification="watchdog-timeout",
+                        reason="no-output-idle-timeout",
+                        term_sent=term_sent,
+                        kill_sent=kill_sent,
+                        terminal_signal=terminal_signal_val,
+                        leader_reaped=leader_reaped,
+                        elapsed=_monotonic() - last_activity,
+                    )
+                epoll_timeout_ms = max(1, int(remaining * 1000))
+                try:
+                    events = pollobj.poll(epoll_timeout_ms)
+                except OSError as exc:
+                    if exc.errno == errno.EINTR:
+                        continue
+                    raise
+
+                now = _monotonic()
+                if now >= deadline:
+                    term_sent, kill_sent, terminal_signal_val, leader_reaped, leader_returncode = (
+                        self._cleanup_leader(
+                            proc, captured_pgid, term_sent, kill_sent,
+                            terminal_signal_val, leader_reaped, leader_returncode,
+                        )
+                    )
+                    return WatchdogResult(
+                        returncode=leader_returncode,
+                        stdout_tail=_join_tail(stdout_chunks, self._tail_limit),
+                        stderr_tail=_join_tail(stderr_chunks, self._tail_limit),
+                        classification="watchdog-timeout",
+                        reason="no-output-idle-timeout",
+                        term_sent=term_sent,
+                        kill_sent=kill_sent,
+                        terminal_signal=terminal_signal_val,
+                        leader_reaped=leader_reaped,
+                        elapsed=_monotonic() - last_activity,
+                    )
+
+                if not events:
+                    continue
+
+                drained_any = False
+                for fd, ev in events:
+                    tag = fd_map.get(fd)
+                    if tag is None:
+                        continue
+                    if tag == "stdout":
+                        got = _drain_nonblocking(fd, stdout_chunks)
+                        if got > 0:
+                            stdout_bytes += got
+                            drained_any = True
+                    elif tag == "stderr":
+                        got = _drain_nonblocking(fd, stderr_chunks)
+                        if got > 0:
+                            stderr_bytes += got
+                            drained_any = True
+                    if (ev & (select.POLLHUP | select.POLLERR)) and fd in fd_map:
+                        del fd_map[fd]
+                        try:
+                            pollobj.unregister(fd)
+                        except OSError:
+                            pass
+
+                if drained_any:
+                    last_activity = _monotonic()
+                    deadline = last_activity + self._idle_timeout
+
+                if not leader_exited and proc.poll() is not None:
+                    leader_exited = True
+                    leader_returncode = proc.returncode
+                    if fd_map:
+                        term_sent, kill_sent, terminal_signal_val, leader_reaped, leader_returncode = (
+                            self._drain_held_pipes(
+                                proc, pollobj, fd_map, stdout_chunks, stderr_chunks,
+                                captured_pgid, term_sent, kill_sent,
+                                terminal_signal_val, leader_reaped, leader_returncode,
+                            )
+                        )
+                        break
+
+            if leader_exited and not leader_reaped:
+                try:
+                    proc.wait(timeout=self._reap_bound)
+                    leader_returncode = proc.returncode
+                    leader_reaped = True
+                except subprocess.TimeoutExpired:
+                    leader_returncode = proc.returncode
+            elif not leader_exited:
+                try:
+                    proc.wait(timeout=self._reap_bound)
+                    leader_returncode = proc.returncode
+                    leader_reaped = True
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.kill(proc.pid, signal.SIGKILL)
+                    except (ProcessLookupError, OSError):
+                        pass
+                    try:
+                        proc.wait(timeout=self._reap_bound)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    leader_returncode = proc.returncode
+                    term_sent = True
+                    kill_sent = True
+
+        finally:
+            for fd in (stdout_fd, stderr_fd):
+                if fd >= 0:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+
+        classification = None
+        reason = None
+        elapsed = 0.0
+        if term_sent or kill_sent:
+            classification = "watchdog-timeout" if not leader_exited else "held-pipe-cleanup"
+            reason = "no-output-idle-timeout" if classification == "watchdog-timeout" else "leader-exit-held-pipe"
+            elapsed = _monotonic() - last_activity
+
+        return WatchdogResult(
+            returncode=leader_returncode,
+            stdout_tail=_join_tail(stdout_chunks, self._tail_limit),
+            stderr_tail=_join_tail(stderr_chunks, self._tail_limit),
+            classification=classification,
+            reason=reason,
+            term_sent=term_sent,
+            kill_sent=kill_sent,
+            terminal_signal=terminal_signal_val,
+            leader_reaped=leader_reaped,
+            elapsed=elapsed,
+        )
+
+    def _cleanup_leader(
+        self,
+        proc: subprocess.Popen,
+        captured_pgid: int | None,
+        term_sent: bool,
+        kill_sent: bool,
+        terminal_signal_val: int | None,
+        leader_reaped: bool,
+        leader_returncode: int | None,
+    ) -> tuple[bool, bool, int | None, bool, int | None]:
+        if not term_sent and captured_pgid is not None:
+            try:
+                os.killpg(captured_pgid, signal.SIGTERM)
+                term_sent = True
+                terminal_signal_val = signal.SIGTERM
+            except (ProcessLookupError, OSError):
+                pass
+        if term_sent and not kill_sent:
+            deadline = _monotonic() + self._term_grace
+            while _monotonic() < deadline:
+                if proc.poll() is not None:
+                    leader_reaped = True
+                    leader_returncode = proc.returncode
+                    break
+                try:
+                    proc.wait(timeout=0.1)
+                    leader_reaped = True
+                    leader_returncode = proc.returncode
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        if not leader_reaped and captured_pgid is not None:
+            try:
+                os.killpg(captured_pgid, signal.SIGKILL)
+                kill_sent = True
+                terminal_signal_val = signal.SIGKILL
+            except (ProcessLookupError, OSError):
+                pass
+        if not leader_reaped:
+            try:
+                proc.wait(timeout=self._reap_bound)
+                leader_reaped = True
+                leader_returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    proc.wait(timeout=min(2, self._reap_bound))
+                except subprocess.TimeoutExpired:
+                    pass
+                leader_returncode = proc.returncode
+        return term_sent, kill_sent, terminal_signal_val, leader_reaped, leader_returncode
+
+    def _drain_held_pipes(
+        self,
+        proc: subprocess.Popen,
+        pollobj: select.poll,
+        fd_map: dict[int, str],
+        stdout_chunks: list[str],
+        stderr_chunks: list[str],
+        captured_pgid: int | None,
+        term_sent: bool,
+        kill_sent: bool,
+        terminal_signal_val: int | None,
+        leader_reaped: bool,
+        leader_returncode: int | None,
+    ) -> tuple[bool, bool, int | None, bool, int | None]:
+        drain_deadline = _monotonic() + self._held_drain_timeout
+        while fd_map:
+            remaining = drain_deadline - _monotonic()
+            if remaining <= 0:
+                break
+            try:
+                events = pollobj.poll(max(1, int(remaining * 1000)))
+            except OSError as exc:
+                if exc.errno == errno.EINTR:
+                    continue
+                break
+            for fd, ev in events:
+                tag = fd_map.get(fd)
+                if tag == "stdout":
+                    _drain_nonblocking(fd, stdout_chunks)
+                elif tag == "stderr":
+                    _drain_nonblocking(fd, stderr_chunks)
+                if (ev & (select.POLLHUP | select.POLLERR)) and fd in fd_map:
+                    del fd_map[fd]
+                    try:
+                        pollobj.unregister(fd)
+                    except OSError:
+                        pass
+
+        if not term_sent and captured_pgid is not None:
+            try:
+                os.killpg(captured_pgid, signal.SIGTERM)
+                term_sent = True
+                terminal_signal_val = signal.SIGTERM
+            except (ProcessLookupError, OSError):
+                pass
+        if term_sent:
+            deadline = _monotonic() + self._term_grace
+            while _monotonic() < deadline:
+                try:
+                    proc.wait(timeout=0.1)
+                    leader_reaped = True
+                    leader_returncode = proc.returncode
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        if not leader_reaped:
+            try:
+                os.killpg(captured_pgid, signal.SIGKILL)
+                kill_sent = True
+                terminal_signal_val = signal.SIGKILL
+            except (ProcessLookupError, OSError):
+                pass
+        if not leader_reaped:
+            try:
+                proc.wait(timeout=self._reap_bound)
+                leader_reaped = True
+                leader_returncode = proc.returncode
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except (ProcessLookupError, OSError):
+                    pass
+                try:
+                    proc.wait(timeout=min(2, self._reap_bound))
+                except subprocess.TimeoutExpired:
+                    pass
+                leader_returncode = proc.returncode
+        return term_sent, kill_sent, terminal_signal_val, leader_reaped, leader_returncode
+
+
+def _drain_nonblocking(fd: int, chunks: list[str]) -> int:
+    total = 0
+    while True:
+        try:
+            data = os.read(fd, 65536)
+        except OSError as exc:
+            if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                break
+            if exc.errno == errno.EIO:
+                break
+            raise
+        if not data:
+            break
+        total += len(data)
+        try:
+            chunks.append(data.decode("utf-8", errors="replace"))
+        except Exception:
+            chunks.append(str(data))
+        if len(chunks) > 200:
+            chunks[:] = chunks[-100:]
+    return total
+
+
+def _join_tail(chunks: list[str], limit: int) -> str:
+    joined = "".join(chunks)
+    if len(joined) > limit:
+        return joined[-limit:]
+    return joined
 
 
 def run(
@@ -306,7 +763,9 @@ def sanitize_text(text: str) -> str:
     return cleaned.replace("```", "~~~").strip()
 
 
-def classify_opencode_failure(stdout: str, stderr: str) -> str:
+def classify_opencode_failure(stdout: str, stderr: str, explicit: str = "") -> str:
+    if explicit:
+        return explicit
     text = f"{stderr}\n{stdout}".lower()
     if any(
         marker in text
@@ -664,20 +1123,32 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    wd_cfg = _parse_watchdog_config()
+    watchdog = Watchdog(**wd_cfg)
+    wd_result = watchdog.run(command, cwd=worktree, env=env)
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={wd_result.returncode}\n\n"
+        f"watchdog={wd_result.classification or 'none'}\n"
+        f"reason={wd_result.reason or 'none'}\n"
+        f"term_sent={wd_result.term_sent}\n"
+        f"kill_sent={wd_result.kill_sent}\n"
+        f"terminal_signal={wd_result.terminal_signal}\n"
+        f"leader_reaped={wd_result.leader_reaped}\n"
+        f"elapsed={wd_result.elapsed:.3f}\n\n"
+        f"STDOUT\n{wd_result.stdout_tail}\n\n"
+        f"STDERR\n{wd_result.stderr_tail}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if wd_result.returncode != 0:
+        classification = classify_opencode_failure(
+            wd_result.stdout_tail, wd_result.stderr_tail, wd_result.classification or ""
+        )
+        excerpt = diagnostic_excerpt(wd_result.stdout_tail, wd_result.stderr_tail)
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
@@ -685,13 +1156,20 @@ def process_task(
             "log": str(log_path),
             "model": model,
             "model_source": model_source,
+            "reason": wd_result.reason,
+            "term_sent": wd_result.term_sent,
+            "kill_sent": wd_result.kill_sent,
+            "terminal_signal": wd_result.terminal_signal,
+            "leader_reaped": wd_result.leader_reaped,
+            "returncode": wd_result.returncode,
+            "elapsed": round(wd_result.elapsed, 3),
             "time": int(time.time()),
         }
         save_state(state_path, state)
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"OpenCode exited with code `{wd_result.returncode}`. No PR was created.\n\n"
             f"Classification: `{classification}`\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
@@ -824,6 +1302,9 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
 
 
 def self_test() -> int:
+    import os as _os
+    import tempfile as _tmp
+
     sample = (
         "Authorization: Bearer abcdefghijklmnop\n"
         "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\n"
@@ -852,6 +1333,10 @@ def self_test() -> int:
                 file=sys.stderr,
             )
             return 1
+
+    if classify_opencode_failure("", "", "watchdog-timeout") != "watchdog-timeout":
+        print("bridge self-test: classifier explicit FAILED", file=sys.stderr)
+        return 1
 
     model_cases = [
         ("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "openai/gpt-5.6-sol"),
@@ -898,6 +1383,371 @@ def self_test() -> int:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
 
+    with _tmp.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        # ── Test 1: Silent leader times out, TERM sent, KILL if needed ──
+        wd = Watchdog(idle_timeout=1.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result = wd.run(
+            ["sleep", "120"],
+            cwd=tmp_path,
+            env=_os.environ.copy(),
+        )
+        if result.returncode == 0:
+            print("bridge self-test: test1 silent-timeout FAILED (exit 0)", file=sys.stderr)
+            return 1
+        if not result.term_sent:
+            print("bridge self-test: test1 silent-timeout FAILED (term_sent=False)", file=sys.stderr)
+            return 1
+        if result.classification != "watchdog-timeout":
+            print(f"bridge self-test: test1 silent-timeout FAILED (classification={result.classification})", file=sys.stderr)
+            return 1
+
+        # ── Test 2: Sparse stdout resets deadline, completes without TERM ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write("#!/bin/sh\nfor i in 1 2 3 4 5; do echo pass_$i; sleep 0.6; done\n")
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script2 = f.name
+        wd2 = Watchdog(idle_timeout=2.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result2 = wd2.run(["sh", script2], cwd=tmp_path, env=_os.environ.copy())
+        if result2.term_sent:
+            print("bridge self-test: test2 sparse-stdout FAILED (term_sent=True)", file=sys.stderr)
+            return 1
+        if result2.returncode != 0:
+            print(f"bridge self-test: test2 sparse-stdout FAILED (returncode={result2.returncode})", file=sys.stderr)
+            return 1
+        if "pass_5" not in result2.stdout_tail:
+            print(f"bridge self-test: test2 sparse-stdout FAILED (missing output)", file=sys.stderr)
+            return 1
+
+        # ── Test 3: Sparse stderr resets deadline ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write("#!/bin/sh\nfor i in 1 2 3 4 5; do echo err_$i >&2; sleep 0.6; done\n")
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script3 = f.name
+        wd3 = Watchdog(idle_timeout=2.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result3 = wd3.run(["sh", script3], cwd=tmp_path, env=_os.environ.copy())
+        if result3.term_sent:
+            print("bridge self-test: test3 sparse-stderr FAILED (term_sent=True)", file=sys.stderr)
+            return 1
+        if result3.returncode != 0:
+            print(f"bridge self-test: test3 sparse-stderr FAILED (returncode={result3.returncode})", file=sys.stderr)
+            return 1
+        if "err_5" not in result3.stderr_tail:
+            print(f"bridge self-test: test3 sparse-stderr FAILED (missing output)", file=sys.stderr)
+            return 1
+
+        # ── Test 4: Tiny write then hang resets once, then times out ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write("#!/bin/sh\necho tiny\nsleep 120\n")
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script4 = f.name
+        wd4 = Watchdog(idle_timeout=1.5, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        t0 = _monotonic()
+        result4 = wd4.run(["sh", script4], cwd=tmp_path, env=_os.environ.copy())
+        elapsed4 = _monotonic() - t0
+        if not result4.term_sent:
+            print("bridge self-test: test4 tiny-write-hang FAILED (term_sent=False)", file=sys.stderr)
+            return 1
+        if elapsed4 > 5.0:
+            print(f"bridge self-test: test4 tiny-write-hang FAILED (elapsed={elapsed4:.1f}s too long)", file=sys.stderr)
+            return 1
+
+        # ── Test 5: WOULD_BLOCK on a live fd stays registered and later DATA consumed ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".py", dir=tmp, delete=False) as f:
+            f.write(
+                "import sys, time, os\n"
+                "fd = sys.stdout.fileno()\n"
+                "fl = __import__('fcntl').fcntl(fd, __import__('fcntl').F_GETFL)\n"
+                "__import__('fcntl').fcntl(fd, __import__('fcntl').F_SETFL, fl & ~__import__('os').O_NONBLOCK)\n"
+                "sys.stdout.write('hello')\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(120)\n"
+            )
+            f.flush()
+            script5 = f.name
+        wd5 = Watchdog(idle_timeout=2.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result5 = wd5.run([sys.executable, script5], cwd=tmp_path, env=_os.environ.copy())
+        if "hello" not in result5.stdout_tail:
+            print("bridge self-test: test5 would-block FAILED (DATA not consumed)", file=sys.stderr)
+            return 1
+        if not result5.term_sent:
+            print("bridge self-test: test5 would-block FAILED (term_sent=False)", file=sys.stderr)
+            return 1
+
+        # ── Test 6: Multi-megabyte output keeps tail bounded ──
+        tail_cfg = 1024
+        wd6 = Watchdog(idle_timeout=10.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=tail_cfg)
+        result6 = wd6.run(
+            [sys.executable, "-c", "import sys; [sys.stdout.write('A'*4096) or sys.stderr.write('B'*4096) for _ in range(1000)]; sys.stdout.flush(); sys.stderr.flush()"],
+            cwd=tmp_path,
+            env=_os.environ.copy(),
+        )
+        if len(result6.stdout_tail) > tail_cfg * 2:
+            print(f"bridge self-test: test6 tail-bound FAILED (stdout_tail={len(result6.stdout_tail)})", file=sys.stderr)
+            return 1
+        if len(result6.stderr_tail) > tail_cfg * 2:
+            print(f"bridge self-test: test6 tail-bound FAILED (stderr_tail={len(result6.stderr_tail)})", file=sys.stderr)
+            return 1
+
+        # ── Test 7: TERM-handling child emits shutdown output ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".py", dir=tmp, delete=False) as f:
+            f.write(
+                "import sys, signal, time\n"
+                "def handler(sig, frame):\n"
+                "    sys.stderr.write('shutdown-output\\n')\n"
+                "    sys.stderr.flush()\n"
+                "    sys.exit(0)\n"
+                "signal.signal(signal.SIGTERM, handler)\n"
+                "time.sleep(120)\n"
+            )
+            f.flush()
+            script7 = f.name
+        wd7 = Watchdog(idle_timeout=1.0, held_drain_timeout=2.0, term_grace=2.0, reap_bound=2.0, tail_limit=4096)
+        result7 = wd7.run([sys.executable, script7], cwd=tmp_path, env=_os.environ.copy())
+        if not result7.term_sent:
+            print("bridge self-test: test7 term-grace FAILED (term_sent=False)", file=sys.stderr)
+            return 1
+        if result7.kill_sent:
+            print("bridge self-test: test7 term-grace FAILED (kill_sent=True)", file=sys.stderr)
+            return 1
+        if result7.returncode != 0:
+            print(f"bridge self-test: test7 term-grace FAILED (returncode={result7.returncode})", file=sys.stderr)
+            return 1
+
+        # ── Test 8: TERM-ignoring child requires SIGKILL ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".py", dir=tmp, delete=False) as f:
+            f.write(
+                "import signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "time.sleep(120)\n"
+            )
+            f.flush()
+            script8 = f.name
+        wd8 = Watchdog(idle_timeout=1.0, held_drain_timeout=2.0, term_grace=1.5, reap_bound=2.0, tail_limit=4096)
+        result8 = wd8.run([sys.executable, script8], cwd=tmp_path, env=_os.environ.copy())
+        if not result8.term_sent:
+            print("bridge self-test: test8 term-ignoring FAILED (term_sent=False)", file=sys.stderr)
+            return 1
+        if not result8.kill_sent:
+            print("bridge self-test: test8 term-ignoring FAILED (kill_sent=False)", file=sys.stderr)
+            return 1
+        if result8.terminal_signal != signal.SIGKILL:
+            print(f"bridge self-test: test8 term-ignoring FAILED (terminal_signal={result8.terminal_signal})", file=sys.stderr)
+            return 1
+
+        # ── Test 9: Separate unrelated long-running PID survives ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write("#!/bin/sh\nsleep 120\n")
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script9_side = f.name
+        side = subprocess.Popen(["sh", script9_side])
+        wd9 = Watchdog(idle_timeout=1.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result9 = wd9.run(["sleep", "120"], cwd=tmp_path, env=_os.environ.copy())
+        try:
+            _os.kill(side.pid, 0)
+        except (ProcessLookupError, OSError):
+            print("bridge self-test: test9 unrelated-survive FAILED (side killed)", file=sys.stderr)
+            return 1
+        side.terminate()
+        try:
+            side.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            side.kill()
+            side.wait()
+
+        # ── Test 10: Held-pipe descendant cleanup ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write(
+                "#!/bin/sh\n"
+                "sleep 0.3\n"
+                "sh -c 'echo held-pipe-data; sleep 120'\n"
+                "wait\n"
+            )
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script10 = f.name
+        wd10 = Watchdog(idle_timeout=3.0, held_drain_timeout=2.0, term_grace=2.0, reap_bound=3.0, tail_limit=4096)
+        t10 = _monotonic()
+        result10 = wd10.run(["sh", script10], cwd=tmp_path, env=_os.environ.copy())
+        elapsed10 = _monotonic() - t10
+        if "held-pipe-data" not in result10.stdout_tail:
+            print("bridge self-test: test10 held-pipe FAILED (missing data)", file=sys.stderr)
+            return 1
+        if elapsed10 > 8.0:
+            print(f"bridge self-test: test10 held-pipe FAILED (elapsed={elapsed10:.1f}s)", file=sys.stderr)
+            return 1
+
+        # ── Test 11: HUP+readable-data seam consumes final bytes ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".py", dir=tmp, delete=False) as f:
+            f.write(
+                "import sys, time\n"
+                "sys.stdout.write('final-bytes')\n"
+                "sys.stdout.flush()\n"
+                "time.sleep(0.2)\n"
+            )
+            f.flush()
+            script11 = f.name
+        wd11 = Watchdog(idle_timeout=2.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result11 = wd11.run([sys.executable, script11], cwd=tmp_path, env=_os.environ.copy())
+        if "final-bytes" not in result11.stdout_tail:
+            print("bridge self-test: test11 hup-seam FAILED (final bytes missing)", file=sys.stderr)
+            return 1
+
+        # ── Test 12: Deterministic unreaped/pathological seam ──
+        with _tmp.NamedTemporaryFile(mode="w", suffix=".sh", dir=tmp, delete=False) as f:
+            f.write("#!/bin/sh\nsleep 0.2\n")
+            f.flush()
+            _os.chmod(f.name, 0o755)
+            script12 = f.name
+        wd12 = Watchdog(idle_timeout=1.0, held_drain_timeout=0.5, term_grace=0.5, reap_bound=0.5, tail_limit=4096)
+        result12 = wd12.run(["sh", script12], cwd=tmp_path, env=_os.environ.copy())
+        if result12.leader_reaped is not True:
+            print("bridge self-test: test12 pathological FAILED (leader_reaped not True)", file=sys.stderr)
+            return 1
+
+        # ── Test 13: Malformed/zero/negative env values fall back/clamp ──
+        saved = {}
+        for var in ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "BRIDGE_WATCHDOG_HELD_DRAIN_TIMEOUT",
+                     "BRIDGE_WATCHDOG_TERM_GRACE", "BRIDGE_WATCHDOG_REAP_BOUND", "BRIDGE_WATCHDOG_TAIL_LIMIT"):
+            saved[var] = _os.environ.pop(var, None)
+
+        _os.environ["BRIDGE_WATCHDOG_IDLE_TIMEOUT"] = "notanumber"
+        cfg = _parse_watchdog_config()
+        if cfg["idle_timeout"] != DEFAULT_IDLE_TIMEOUT:
+            print(f"bridge self-test: test13 malformed FAILED (idle_timeout={cfg['idle_timeout']})", file=sys.stderr)
+            return 1
+
+        _os.environ["BRIDGE_WATCHDOG_IDLE_TIMEOUT"] = "-5"
+        cfg = _parse_watchdog_config()
+        if cfg["idle_timeout"] != 30:
+            print(f"bridge self-test: test13 negative FAILED (idle_timeout={cfg['idle_timeout']})", file=sys.stderr)
+            return 1
+
+        _os.environ["BRIDGE_WATCHDOG_IDLE_TIMEOUT"] = "99999"
+        cfg = _parse_watchdog_config()
+        if cfg["idle_timeout"] != 7200:
+            print(f"bridge self-test: test13 overflow FAILED (idle_timeout={cfg['idle_timeout']})", file=sys.stderr)
+            return 1
+
+        _os.environ["BRIDGE_WATCHDOG_TAIL_LIMIT"] = "0"
+        cfg = _parse_watchdog_config()
+        if cfg["tail_limit"] != 256:
+            print(f"bridge self-test: test13 zero FAILED (tail_limit={cfg['tail_limit']})", file=sys.stderr)
+            return 1
+
+        for var, val in saved.items():
+            if val is None:
+                _os.environ.pop(var, None)
+            else:
+                _os.environ[var] = val
+
+        # ── Test 14: Timeout/held-pipe/pathological result persisted with metadata ──
+        state_record = {
+            "status": "opencode-failed",
+            "classification": result8.classification or "watchdog-timeout",
+            "reason": result8.reason,
+            "term_sent": result8.term_sent,
+            "kill_sent": result8.kill_sent,
+            "terminal_signal": result8.terminal_signal,
+            "leader_reaped": result8.leader_reaped,
+            "returncode": result8.returncode,
+            "elapsed": round(result8.elapsed, 3),
+        }
+        if state_record["classification"] in ("unclassified", ""):
+            print("bridge self-test: test14 persisted-classification FAILED", file=sys.stderr)
+            return 1
+        if state_record["terminal_signal"] != signal.SIGKILL:
+            print(f"bridge self-test: test14 terminal-signal FAILED ({state_record['terminal_signal']})", file=sys.stderr)
+            return 1
+
+        # ── Test 15: Queue liveness — second child after timeout succeeds ──
+        wd15a = Watchdog(idle_timeout=0.5, held_drain_timeout=1.0, term_grace=1.0, reap_bound=1.0, tail_limit=4096)
+        result15a = wd15a.run(["sleep", "120"], cwd=tmp_path, env=_os.environ.copy())
+        if not result15a.term_sent:
+            print("bridge self-test: test15 queue-liveness FAILED (first did not timeout)", file=sys.stderr)
+            return 1
+
+        wd15b = Watchdog(idle_timeout=3.0, held_drain_timeout=2.0, term_grace=1.0, reap_bound=2.0, tail_limit=4096)
+        result15b = wd15b.run(
+            [sys.executable, "-c", "print('queue-ok')"],
+            cwd=tmp_path,
+            env=_os.environ.copy(),
+        )
+        if result15b.returncode != 0:
+            print(f"bridge self-test: test15 queue-liveness FAILED (second returncode={result15b.returncode})", file=sys.stderr)
+            return 1
+        if "queue-ok" not in result15b.stdout_tail:
+            print("bridge self-test: test15 queue-liveness FAILED (second no output)", file=sys.stderr)
+            return 1
+
+        # ── Test 16: Diagnostics remain sanitized and bounded ──
+        large_text = "A" * 10000 + "token ghp_abcdefghijklmnop" + "B" * 10000
+        excerpt16 = diagnostic_excerpt(large_text, "")
+        if len(excerpt16) > DIAGNOSTIC_LIMIT + 200:
+            print(f"bridge self-test: test16 diag-bound FAILED (len={len(excerpt16)})", file=sys.stderr)
+            return 1
+        if "ghp_" in excerpt16:
+            print("bridge self-test: test16 redaction FAILED", file=sys.stderr)
+            return 1
+
+        # ── Test 17: parse_env_int module import survives all env corruptions ──
+        bads = ["", "abc", "1.5", "True", "None", " "]
+        for bad in bads:
+            _os.environ["BRIDGE_WATCHDOG_IDLE_TIMEOUT"] = bad
+            val = parse_env_int("BRIDGE_WATCHDOG_IDLE_TIMEOUT", 100, 10, 5000)
+            if val != 100:
+                print(f"bridge self-test: test17 parse FAILED for {bad!r}: {val}", file=sys.stderr)
+                return 1
+        _os.environ.pop("BRIDGE_WATCHDOG_IDLE_TIMEOUT", None)
+        # Null byte: parse_env_int must not crash on poisoned env
+        try:
+            _os.environ["BRIDGE_WATCHDOG_IDLE_TIMEOUT"] = "\x00"
+            val = parse_env_int("BRIDGE_WATCHDOG_IDLE_TIMEOUT", 100, 10, 5000)
+            if val != 100:
+                print(f"bridge self-test: test17 null-byte FAILED: {val}", file=sys.stderr)
+                return 1
+        except (ValueError, OSError):
+            pass
+        _os.environ.pop("BRIDGE_WATCHDOG_IDLE_TIMEOUT", None)
+
+        # ── Test 18: _drain_nonblocking / _join_tail correctness ──
+        chunks: list[str] = []
+        r, w = _os.pipe()
+        _os.write(w, b"chunk1")
+        _os.write(w, b"chunk2")
+        _os.close(w)
+        total = _drain_nonblocking(r, chunks)
+        _os.close(r)
+        if total != 12:
+            print(f"bridge self-test: test18 drain FAILED (total={total})", file=sys.stderr)
+            return 1
+        joined = _join_tail(chunks, 5)
+        if joined != "hunk2":
+            print(f"bridge self-test: test18 join_tail FAILED ({joined!r})", file=sys.stderr)
+            return 1
+
+        # ── Test 19: Explicit classification not overridden by text ──
+        got19 = classify_opencode_failure("some output", "some error", "held-pipe-cleanup")
+        if got19 != "held-pipe-cleanup":
+            print(f"bridge self-test: test19 explicit FAILED ({got19})", file=sys.stderr)
+            return 1
+
+        # ── Test 20: WatchdogResult dataclass fields accessible ──
+        wr = WatchdogResult(
+            returncode=1, stdout_tail="out", stderr_tail="err",
+            classification="watchdog-timeout", reason="test",
+            term_sent=True, kill_sent=False, terminal_signal=15,
+            leader_reaped=True, elapsed=1.23,
+        )
+        if wr.returncode != 1 or wr.classification != "watchdog-timeout":
+            print("bridge self-test: test20 dataclass FAILED", file=sys.stderr)
+            return 1
+
     print("bridge self-test: PASS")
     return 0
 
@@ -913,7 +1763,7 @@ def main() -> int:
     parser.add_argument(
         "--interval",
         type=int,
-        default=int(os.getenv("BRIDGE_POLL_SECONDS", "60")),
+        default=parse_env_int("BRIDGE_POLL_SECONDS", 60, 10, 3600),
     )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--self-test", action="store_true")
