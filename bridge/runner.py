@@ -13,8 +13,10 @@ import fcntl
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -25,6 +27,9 @@ BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
 DEFAULT_TRUSTED_AUTHORS = {"jmw7629"}
 DIAGNOSTIC_LIMIT = 1800
+OUTPUT_BUFFER_LIMIT = 65536
+DEFAULT_IDLE_TIMEOUT = int(os.getenv("BRIDGE_OPENCODE_IDLE_TIMEOUT", "600"))
+DEFAULT_KILL_GRACE = int(os.getenv("BRIDGE_OPENCODE_KILL_GRACE", "30"))
 MODEL_HINT_LINE_RE = re.compile(r"(?m)^PROJECT_BYTE_MODEL_HINT:[ \t]*([^\r\n]+?)[ \t]*$")
 MODEL_HINT_VALUE_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
@@ -36,6 +41,7 @@ TERMINAL_STATUSES = {
     "diff-check-failed",
     "no-changes",
     "skipped-existing-remote-branch",
+    "opencode-idle-timeout",
 }
 RECOVERABLE_PREFIX = "recovery-blocked-"
 LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
@@ -390,6 +396,101 @@ def diagnostic_excerpt(stdout: str, stderr: str) -> str:
     return excerpt
 
 
+def _read_available(fd, buf: bytearray) -> bytes:
+    chunk = os.read(fd, 8192)
+    if chunk:
+        buf.extend(chunk)
+    return chunk
+
+
+class BoundedResult:
+    __slots__ = ("returncode", "stdout", "stderr", "timed_out")
+
+    def __init__(self, returncode: int, stdout: str, stderr: str, timed_out: bool):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def run_opencode_bounded(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: int = DEFAULT_IDLE_TIMEOUT,
+    kill_grace: int = DEFAULT_KILL_GRACE,
+) -> BoundedResult:
+    proc = subprocess.Popen(
+        args,
+        cwd=str(cwd) if cwd else None,
+        text=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=True,
+    )
+
+    stdout_buf = bytearray()
+    stderr_buf = bytearray()
+    last_progress = time.monotonic()
+    timed_out = False
+
+    fds = {
+        proc.stdout.fileno(): (proc.stdout, stdout_buf),
+        proc.stderr.fileno(): (proc.stderr, stderr_buf),
+    }
+
+    deadline = 0.0
+
+    while fds:
+        elapsed = time.monotonic() - last_progress
+        timeout_remaining = max(0.0, idle_timeout - elapsed)
+
+        if timeout_remaining <= 0 and not timed_out:
+            timed_out = True
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            deadline = time.monotonic() + kill_grace
+
+        if timed_out and time.monotonic() >= deadline:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            break
+
+        wait = min(timeout_remaining, 1.0) if not timed_out else max(0.0, deadline - time.monotonic())
+        readable, _, _ = select.select(list(fds.keys()), [], [], wait)
+
+        for fd in readable:
+            stream, buf = fds[fd]
+            data = _read_available(fd, buf)
+            if not data:
+                stream.close()
+                del fds[fd]
+                continue
+            last_progress = time.monotonic()
+
+    proc.wait()
+
+    if timed_out and proc.returncode is None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.wait()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    return BoundedResult(
+        returncode=proc.returncode if proc.returncode is not None else -9,
+        stdout=bytes(stdout_buf[-OUTPUT_BUFFER_LIMIT:]).decode("utf-8", errors="replace"),
+        stderr=bytes(stderr_buf[-OUTPUT_BUFFER_LIMIT:]).decode("utf-8", errors="replace"),
+        timed_out=timed_out,
+    )
+
+
 def resolve_opencode_binary(configured: str) -> str:
     if os.path.isabs(configured):
         candidate = Path(configured).expanduser()
@@ -664,16 +765,43 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    proc = run_opencode_bounded(command, cwd=worktree, env=env)
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
+        f"exit={proc.returncode}\n"
+        f"idle_timeout={proc.timed_out}\n\n"
+        f"STDOUT\n{proc.stdout or ''}\n\n"
         f"STDERR\n{proc.stderr or ''}\n"
     )
     os.chmod(log_path, 0o600)
+
+    if proc.timed_out:
+        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
+        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+        state["processed"][str(number)] = {
+            "status": "opencode-idle-timeout",
+            "classification": classification,
+            "branch": branch,
+            "log": str(log_path),
+            "model": model,
+            "model_source": model_source,
+            "time": int(time.time()),
+        }
+        save_state(state_path, state)
+        comment_issue(
+            repo,
+            number,
+            "OpenCode was terminated after exceeding the idle/no-output timeout. "
+            "No PR was created.\n\n"
+            f"Classification: `{classification}`\n\n"
+            "Sanitized diagnostic excerpt:\n"
+            f"```text\n{excerpt}\n```\n\n"
+            f"The full local log remains at `{log_path}` on the bridge host.",
+        )
+        return
 
     if proc.returncode != 0:
         classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
@@ -897,6 +1025,79 @@ def self_test() -> int:
     if malicious:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
+
+    silent = run_opencode_bounded(
+        ["sleep", "300"], idle_timeout=1, kill_grace=1,
+    )
+    if not silent.timed_out:
+        print("bridge self-test: silent child NOT timed out as expected", file=sys.stderr)
+        return 1
+    if silent.returncode in (None, 0):
+        print(f"bridge self-test: silent child exit={silent.returncode} unexpected", file=sys.stderr)
+        return 1
+
+    t0 = time.monotonic()
+    progress = run_opencode_bounded(
+        [sys.executable, "-c",
+         "import time,sys\n"
+         "for _ in range(6):\n"
+         "    print('progress', flush=True)\n"
+         "    time.sleep(0.3)\n"
+         "print('done')"],
+        idle_timeout=1,
+        kill_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    if progress.timed_out:
+        print("bridge self-test: progress child was incorrectly timed out", file=sys.stderr)
+        return 1
+    if progress.returncode != 0:
+        print(f"bridge self-test: progress child exit={progress.returncode}", file=sys.stderr)
+        return 1
+    if elapsed < 1.5:
+        print(f"bridge self-test: progress child finished too fast ({elapsed:.2f}s)", file=sys.stderr)
+        return 1
+    if "progress" not in (progress.stdout or ""):
+        print("bridge self-test: progress child output missing", file=sys.stderr)
+        return 1
+
+    big = run_opencode_bounded(
+        [sys.executable, "-c",
+         "import sys\n"
+         "for i in range(20000):\n"
+         "    print(f'line {i:06d}' * 10, flush=True)"],
+        idle_timeout=10,
+        kill_grace=1,
+    )
+    out_len = len(big.stdout or "")
+    err_len = len(big.stderr or "")
+    if out_len > OUTPUT_BUFFER_LIMIT + 8192:
+        print(f"bridge self-test: stdout buffer {out_len} exceeds limit {OUTPUT_BUFFER_LIMIT}", file=sys.stderr)
+        return 1
+    if err_len > OUTPUT_BUFFER_LIMIT + 8192:
+        print(f"bridge self-test: stderr buffer {err_len} exceeds limit {OUTPUT_BUFFER_LIMIT}", file=sys.stderr)
+        return 1
+    if big.returncode != 0:
+        print(f"bridge self-test: big output child exit={big.returncode}", file=sys.stderr)
+        return 1
+
+    watch_pid = os.getpid()
+    other = subprocess.Popen(["sleep", "300"])
+    try:
+        isolation = run_opencode_bounded(
+            ["sleep", "300"], idle_timeout=1, kill_grace=1,
+        )
+        if isolation.returncode in (None, 0):
+            print(f"bridge self-test: isolation child exit={isolation.returncode} unexpected", file=sys.stderr)
+            return 1
+        try:
+            os.kill(other.pid, 0)
+        except ProcessLookupError:
+            print("bridge self-test: unrelated process was killed", file=sys.stderr)
+            return 1
+    finally:
+        other.terminate()
+        other.wait()
 
     print("bridge self-test: PASS")
     return 0
