@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
+// Talks to provider-neutral backend with StickDeath personality + knowledge
 //
 // Knowledge is embedded permanently via SpatterKnowledgeBase.swift
 // (120 modules: 100 brain + 20 core) — no external JSON needed.
@@ -14,9 +14,7 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    private let backendEndpoint: URL?
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -43,8 +41,6 @@ final class SpatterService {
     - Community: Challenges, creator support, reward loops, creator identity
     - Business: Owner ops, payment entitlements, bug triage, investor reporting, moderation
     - Lore: Old Internet Mode, Corrupted Spatter Mode
-    - Advanced: Sound design, style DNA, remix DNA, destruction engine, procedural effects,
-      AI scene escalation, legendary frame detection, audio choreography, marketplace
 
     Rules:
     - Keep responses concise and actionable
@@ -81,6 +77,12 @@ final class SpatterService {
         }
     }
 
+    // MARK: - Init
+
+    init() {
+        self.backendEndpoint = AppConfig.backendURL
+    }
+
     // MARK: - Chat
 
     /// Send a message to Spatter and get a response
@@ -103,7 +105,13 @@ final class SpatterService {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build API messages
+        // 4. Build context string
+        var contextStr = ""
+        if let ctx = context {
+            contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
+        }
+
+        // 5. Build API messages
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
@@ -117,14 +125,18 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
+        // 6. Call backend
+        guard let endpoint = backendEndpoint else {
+            throw SpatterServiceError.unavailable(
+                "Spatter AI backend not configured. Set AppConfig.backendURL to a provider-neutral endpoint."
+            )
+        }
+
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.addValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": model,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
@@ -132,9 +144,8 @@ final class SpatterService {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-
-        return response.choices.first?.message.content ?? "..."
+        let decoded = try? JSONDecoder().decode(Response.self, from: data)
+        return decoded?.choices.first?.message.content ?? "Spatter AI unavailable — backend not configured."
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -165,7 +176,11 @@ struct SpatterContext {
     let userName: String
 }
 
-struct OpenAIResponse: Codable {
+enum SpatterServiceError: Error {
+    case unavailable(String)
+}
+
+private struct Response: Codable {
     let choices: [Choice]
 
     struct Choice: Codable {
