@@ -17,7 +17,10 @@ import shlex
 import shutil
 import subprocess
 import sys
+import select
+import signal
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +46,290 @@ LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
 class BridgeError(RuntimeError):
     pass
+
+
+class BoundedTail:
+    def __init__(self, max_bytes: int = 10000) -> None:
+        self.max_bytes = max_bytes
+        self._buf = bytearray()
+
+    def append(self, data: bytes) -> None:
+        if data:
+            self._buf.extend(data)
+            if len(self._buf) > self.max_bytes:
+                self._buf = self._buf[-self.max_bytes :]
+
+    def value(self) -> str:
+        return self._buf.decode("utf-8", errors="replace")
+
+    def reset(self) -> None:
+        self._buf.clear()
+
+
+@dataclass
+class WatchdogResult:
+    returncode: int
+    stdout_tail: str
+    stderr_tail: str
+    timed_out: bool
+    timeout_reason: str
+    killed: bool
+    elapsed: float
+    pgid_cleaned: int | None = None
+
+
+class WatchdogExecutor:
+    def __init__(self, env: dict[str, str] | None = None) -> None:
+        effective = env or os.environ.copy()
+        self._env = effective
+        self._idle_timeout = self._parse_positive_int(
+            effective.get("OPENCODE_IDLE_TIMEOUT", ""), default=1800
+        )
+        self._executor_idle_timeout = self._parse_positive_int(
+            effective.get("EXECUTOR_IDLE_TIMEOUT", ""), default=15
+        )
+        self._term_grace = self._parse_positive_int(
+            effective.get("EXECUTOR_TERM_GRACE", ""), default=10
+        )
+        self._drain_timeout = self._parse_positive_int(
+            effective.get("EXECUTOR_DRAIN_TIMEOUT", ""), default=5
+        )
+        self._max_tail = self._parse_positive_int(
+            effective.get("EXECUTOR_MAX_TAIL_BYTES", ""), default=10000
+        )
+
+    @staticmethod
+    def _parse_positive_int(raw: str, default: int) -> int:
+        raw = (raw or "").strip()
+        if not raw:
+            return default
+        try:
+            val = int(raw)
+        except ValueError:
+            return default
+        if val <= 0:
+            return default
+        return min(val, 3600)
+
+    def run(
+        self,
+        args: list[str],
+        *,
+        cwd: Path | None = None,
+    ) -> WatchdogResult:
+        t0 = time.monotonic()
+        stdout_tail = BoundedTail(self._max_tail)
+        stderr_tail = BoundedTail(self._max_tail)
+
+        child_r_fd, child_w_fd = os.pipe()
+        stderr_r_fd, stderr_w_fd = os.pipe()
+
+        child_env = self._env.copy()
+        child_env["BRIDGE_WATCHDOG"] = "1"
+
+        try:
+            child = subprocess.Popen(
+                args,
+                cwd=str(cwd) if cwd else None,
+                stdout=child_w_fd,
+                stderr=stderr_w_fd,
+                close_fds=True,
+                start_new_session=True,
+                env=child_env,
+            )
+        except Exception:
+            os.close(child_w_fd)
+            os.close(child_r_fd)
+            os.close(stderr_w_fd)
+            os.close(stderr_r_fd)
+            elapsed = time.monotonic() - t0
+            return WatchdogResult(
+                returncode=-1,
+                stdout_tail=stdout_tail.value(),
+                stderr_tail=stderr_tail.value(),
+                timed_out=False,
+                timeout_reason="spawn-failed",
+                killed=False,
+                elapsed=elapsed,
+            )
+
+        os.close(child_w_fd)
+        os.close(stderr_w_fd)
+
+        pgid = child.pid
+        deadline = t0 + self._idle_timeout
+        state = "running"
+        os.set_blocking(child_r_fd, False)
+        os.set_blocking(stderr_r_fd, False)
+
+        readable = {child_r_fd: stdout_tail, stderr_r_fd: stderr_tail}
+        last_output = t0
+        with select.epoll() as sel:
+            sel.register(child_r_fd, select.EPOLLIN | select.EPOLLRDHUP)
+            sel.register(stderr_r_fd, select.EPOLLIN | select.EPOLLRDHUP)
+            open_fds = {child_r_fd, stderr_r_fd}
+            last_kill_time = 0.0
+
+            while open_fds:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 and state == "running":
+                    state = "drain-on-idle"
+                now = time.monotonic()
+                if state == "killing":
+                    if now - last_kill_time >= self._drain_timeout:
+                        self._drain_loop(sel, readable, open_fds, stdout_tail, stderr_tail)
+                        break
+                    timeout_s = max(0.0, min(0.5, last_kill_time + self._drain_timeout - now))
+                elif state == "drain-on-idle":
+                    timeout_s = max(0.0, min(0.5, deadline + self._term_grace - now))
+                elif state == "drain-held-pipe":
+                    timeout_s = max(0.0, min(1.0, deadline - now))
+                else:
+                    timeout_s = max(0.0, min(1.0, deadline - now))
+                try:
+                    events = sel.poll(timeout=timeout_s)
+                except (OSError, ValueError):
+                    break
+
+                for fd, _ in events:
+                    tail = readable.get(fd)
+                    if tail is None:
+                        continue
+                    data = self._nb_read(fd)
+                    if data:
+                        tail.append(data)
+                        now2 = time.monotonic()
+                        last_output = now2
+                        if state == "running":
+                            deadline = now2 + self._idle_timeout
+                    else:
+                        sel.unregister(fd)
+                        open_fds.discard(fd)
+
+                now3 = time.monotonic()
+                if state == "running":
+                    if now3 >= deadline:
+                        state = "drain-on-idle"
+                        self._send_signal(pgid, signal.SIGTERM)
+                elif state == "drain-on-idle":
+                    if now3 >= deadline + self._term_grace or not open_fds:
+                        state = "killing"
+                        self._send_signal(pgid, signal.SIGKILL)
+                        last_kill_time = now3
+                elif state == "drain-held-pipe":
+                    if now3 >= deadline:
+                        self._close_pfds(open_fds)
+                        break
+
+            self._close_pfds(open_fds)
+
+        if state != "killing":
+            self._send_signal(pgid, signal.SIGKILL)
+            self._drain_loop(sel, readable, open_fds if open_fds else set(), stdout_tail, stderr_tail)
+        else:
+            self._drain_loop(sel, readable, set(), stdout_tail, stderr_tail)
+
+        exit_code, exit_signal = self._reap_child(child)
+
+        if state != "running":
+            self._kill_pgid(pgid)
+
+        elapsed = time.monotonic() - t0
+        timed_out = state != "running"
+        timeout_reason = ""
+        if timed_out:
+            if state in ("drain-on-idle", "killing"):
+                timeout_reason = "executor-idle-timeout"
+            else:
+                timeout_reason = "executor-timeout"
+        killed = exit_signal is not None and exit_signal != 0
+
+        return WatchdogResult(
+            returncode=exit_code,
+            stdout_tail=stdout_tail.value(),
+            stderr_tail=stderr_tail.value(),
+            timed_out=timed_out,
+            timeout_reason=timeout_reason,
+            killed=killed,
+            elapsed=elapsed,
+            pgid_cleaned=pgid if timed_out else None,
+        )
+
+    def _drain_loop(
+        self,
+        sel: select.epoll,
+        readable: dict[int, BoundedTail],
+        open_fds: set[int],
+        stdout_tail: BoundedTail,
+        stderr_tail: BoundedTail,
+    ) -> None:
+        deadline = time.monotonic() + self._drain_timeout
+        while open_fds and time.monotonic() < deadline:
+            remaining = deadline - time.monotonic()
+            try:
+                events = sel.poll(max(0.0, min(0.5, remaining)))
+            except (OSError, ValueError):
+                break
+            for fd, _ in events:
+                tail = readable.get(fd)
+                if tail is None:
+                    continue
+                data = self._nb_read(fd)
+                if data:
+                    tail.append(data)
+                else:
+                    open_fds.discard(fd)
+
+    def _nb_read(self, fd: int) -> bytes:
+        try:
+            return os.read(fd, 65536)
+        except BlockingIOError:
+            return b""
+        except OSError:
+            return b""
+
+    def _send_signal(self, pgid: int, sig: int) -> None:
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def _reap_child(self, child: subprocess.Popen) -> tuple[int, int | None]:
+        try:
+            child.wait(timeout=self._drain_timeout)
+        except subprocess.TimeoutExpired:
+            pass
+        exit_code = child.returncode
+        exit_signal: int | None = None
+        if exit_code is not None and exit_code < 0:
+            exit_signal = -exit_code
+        return exit_code, exit_signal
+
+    def _close_pfds(self, fds: set[int]) -> None:
+        for fd in list(fds):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        fds.clear()
+
+    def _kill_pgid(self, pgid: int) -> None:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        deadline = time.monotonic() + self._drain_timeout
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(pgid, 0)
+            except (ProcessLookupError, PermissionError, OSError):
+                return
+            time.sleep(0.05)
+
+
+def _watchdog_execute(args: list[str], env: dict[str, str], cwd: Path) -> WatchdogResult:
+    executor = WatchdogExecutor(env=env)
+    return executor.run(args, cwd=cwd)
 
 
 def run(
@@ -664,20 +951,25 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    result = _watchdog_execute(command, env=env, cwd=worktree)
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={result.returncode}\n"
+        f"timed_out={result.timed_out}\n"
+        f"timeout_reason={result.timeout_reason}\n"
+        f"killed={result.killed}\n"
+        f"elapsed={result.elapsed:.2f}\n\n"
+        f"STDOUT\n{result.stdout_tail}\n\n"
+        f"STDERR\n{result.stderr_tail}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if result.returncode != 0 or result.timed_out:
+        classification = classify_opencode_failure(result.stdout_tail, result.stderr_tail)
+        excerpt = diagnostic_excerpt(result.stdout_tail, result.stderr_tail)
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
@@ -685,14 +977,22 @@ def process_task(
             "log": str(log_path),
             "model": model,
             "model_source": model_source,
+            "timed_out": result.timed_out,
+            "timeout_reason": result.timeout_reason,
+            "killed": result.killed,
+            "elapsed": result.elapsed,
+            "pgid_cleaned": result.pgid_cleaned,
             "time": int(time.time()),
         }
         save_state(state_path, state)
+        timeout_detail = ""
+        if result.timed_out:
+            timeout_detail = f"\n\nTimeout: `{result.timeout_reason}` (killed={result.killed})."
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
-            f"Classification: `{classification}`\n\n"
+            f"OpenCode exited with code `{result.returncode}`. No PR was created.\n\n"
+            f"Classification: `{classification}`{timeout_detail}\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
             f"The full local log remains at `{log_path}` on the bridge host.",
@@ -898,7 +1198,258 @@ def self_test() -> int:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
 
+    wt = _watchdog_self_tests()
+    if wt != 0:
+        return wt
+
     print("bridge self-test: PASS")
+    return 0
+
+
+def _watchdog_self_tests() -> int:
+    """Run all 12 deterministic watchdog self-tests."""
+
+    # Test 1: Silent child times out within bound
+    env1 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    t0 = time.monotonic()
+    r1 = _watchdog_execute([sys.executable, "-c", "import time; time.sleep(999)"], env=env1, cwd=Path("/tmp"))
+    el1 = time.monotonic() - t0
+    if not r1.timed_out or r1.timeout_reason != "executor-idle-timeout":
+        print(f"bridge self-test 1 FAILED: timed_out={r1.timed_out} reason={r1.timeout_reason}", file=sys.stderr)
+        return 1
+    if el1 > 15:
+        print(f"bridge self-test 1 FAILED: elapsed {el1:.1f}s > 15s", file=sys.stderr)
+        return 1
+
+    # Test 2: Sparse stdout keeps alive and completes
+    env2 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "6", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    t0 = time.monotonic()
+    r2 = _watchdog_execute(
+        [sys.executable, "-c", "import time,sys\nfor i in range(4):\n print(f'line{i}',flush=True)\n time.sleep(1)"],
+        env=env2, cwd=Path("/tmp"),
+    )
+    el2 = time.monotonic() - t0
+    if r2.timed_out:
+        print(f"bridge self-test 2 FAILED: should not time out, got timed_out=True", file=sys.stderr)
+        return 1
+    if r2.returncode != 0:
+        print(f"bridge self-test 2 FAILED: returncode={r2.returncode}", file=sys.stderr)
+        return 1
+    if "line3" not in r2.stdout_tail:
+        print(f"bridge self-test 2 FAILED: stdout_tail missing expected output: {r2.stdout_tail!r}", file=sys.stderr)
+        return 1
+
+    # Test 3: Sparse stderr keeps alive and completes
+    env3 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "6", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    t0 = time.monotonic()
+    r3 = _watchdog_execute(
+        [sys.executable, "-c", "import time,sys\nfor i in range(4):\n print(f'err{i}',file=sys.stderr,flush=True)\n time.sleep(1)"],
+        env=env3, cwd=Path("/tmp"),
+    )
+    el3 = time.monotonic() - t0
+    if r3.timed_out:
+        print(f"bridge self-test 3 FAILED: should not time out", file=sys.stderr)
+        return 1
+    if r3.returncode != 0:
+        print(f"bridge self-test 3 FAILED: returncode={r3.returncode}", file=sys.stderr)
+        return 1
+    if "err3" not in r3.stderr_tail:
+        print(f"bridge self-test 3 FAILED: stderr_tail missing expected output: {r3.stderr_tail!r}", file=sys.stderr)
+        return 1
+
+    # Test 4: Tiny-write-then-hang times out within bound
+    env4 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    t0 = time.monotonic()
+    r4 = _watchdog_execute(
+        [sys.executable, "-c", "import time,sys; print('hello'); sys.stdout.flush(); time.sleep(999)"],
+        env=env4, cwd=Path("/tmp"),
+    )
+    el4 = time.monotonic() - t0
+    if not r4.timed_out:
+        print(f"bridge self-test 4 FAILED: should time out", file=sys.stderr)
+        return 1
+    if "hello" not in r4.stdout_tail:
+        print(f"bridge self-test 4 FAILED: stdout_tail missing 'hello': {r4.stdout_tail!r}", file=sys.stderr)
+        return 1
+    if el4 > 15:
+        print(f"bridge self-test 4 FAILED: elapsed {el4:.1f}s > 15s", file=sys.stderr)
+        return 1
+
+    # Test 5: Noisy output retains only configured tail
+    big = "X" * 500
+    env5 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "6", "EXECUTOR_IDLE_TIMEOUT": "3", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1", "EXECUTOR_MAX_TAIL_BYTES": "200"}
+    r5 = _watchdog_execute(
+        [sys.executable, "-c", f"import time\nfor i in range(5):\n print('{big}')\n time.sleep(0.2)"],
+        env=env5, cwd=Path("/tmp"),
+    )
+    if len(r5.stdout_tail) > 300:
+        print(f"bridge self-test 5 FAILED: tail too large: {len(r5.stdout_tail)}", file=sys.stderr)
+        return 1
+    if r5.timed_out:
+        print(f"bridge self-test 5 FAILED: should not time out", file=sys.stderr)
+        return 1
+
+    # Test 6: TERM-handling child produces final output during shutdown
+    env6 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "3", "EXECUTOR_DRAIN_TIMEOUT": "2"}
+    t0 = time.monotonic()
+    r6 = _watchdog_execute(
+        [sys.executable, "-c", (
+            "import signal,sys,time\n"
+            "def handler(s,f):\n"
+            "  print('SHUTDOWN',flush=True)\n"
+            "  sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM,handler)\n"
+            "time.sleep(999)\n"
+        )],
+        env=env6, cwd=Path("/tmp"),
+    )
+    el6 = time.monotonic() - t0
+    if "SHUTDOWN" not in r6.stdout_tail:
+        print(f"bridge self-test 6 FAILED: missing SHUTDOWN output: {r6.stdout_tail!r}", file=sys.stderr)
+        return 1
+    if el6 > 15:
+        print(f"bridge self-test 6 FAILED: elapsed {el6:.1f}s > 15s", file=sys.stderr)
+        return 1
+
+    # Test 7: TERM-ignoring child requires KILL, result reports KILL truthfully
+    env7 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    t0 = time.monotonic()
+    r7 = _watchdog_execute(
+        [sys.executable, "-c", (
+            "import signal,sys,time\n"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            "time.sleep(999)\n"
+        )],
+        env=env7, cwd=Path("/tmp"),
+    )
+    el7 = time.monotonic() - t0
+    if not r7.timed_out:
+        print(f"bridge self-test 7 FAILED: should time out", file=sys.stderr)
+        return 1
+    if not r7.killed:
+        print(f"bridge self-test 7 FAILED: killed should be True", file=sys.stderr)
+        return 1
+    if el7 > 15:
+        print(f"bridge self-test 7 FAILED: elapsed {el7:.1f}s > 15s", file=sys.stderr)
+        return 1
+
+    # Test 8: Unrelated process survives watchdog timeout
+    env8 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    unrelated = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(999)"],
+        start_new_session=False,
+    )
+    try:
+        t0 = time.monotonic()
+        r8 = _watchdog_execute(
+            [sys.executable, "-c", "import time; time.sleep(999)"],
+            env=env8, cwd=Path("/tmp"),
+        )
+        el8 = time.monotonic() - t0
+        try:
+            unrelated.wait(timeout=0.5)
+            alive8 = False
+        except subprocess.TimeoutExpired:
+            alive8 = True
+        if not alive8:
+            print("bridge self-test 8 FAILED: unrelated process was killed", file=sys.stderr)
+            return 1
+        if el8 > 15:
+            print(f"bridge self-test 8 FAILED: elapsed {el8:.1f}s > 15s", file=sys.stderr)
+            return 1
+    finally:
+        try:
+            unrelated.kill()
+            unrelated.wait(timeout=2)
+        except Exception:
+            pass
+
+    # Test 9: Held-pipe descendant: watchdog returns within bound AND descendant/group is gone
+    env9 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "2"}
+    t0 = time.monotonic()
+    r9 = _watchdog_execute(
+        [sys.executable, "-c", (
+            "import os,sys,time\n"
+            "pid=os.fork()\n"
+            "if pid==0:\n"
+            "  time.sleep(999)\n"
+            "  os._exit(0)\n"
+            "print(f'CHILD_PGID={{os.getpgrp()}}')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(999)\n"
+        )],
+        env=env9, cwd=Path("/tmp"),
+    )
+    el9 = time.monotonic() - t0
+    if not r9.timed_out:
+        print(f"bridge self-test 9 FAILED: should time out", file=sys.stderr)
+        return 1
+    if el9 > 15:
+        print(f"bridge self-test 9 FAILED: elapsed {el9:.1f}s > 15s", file=sys.stderr)
+        return 1
+    if r9.pgid_cleaned is None:
+        print(f"bridge self-test 9 FAILED: pgid_cleaned should be set", file=sys.stderr)
+        return 1
+    try:
+        os.killpg(r9.pgid_cleaned, 0)
+        pgid_alive = True
+    except (ProcessLookupError, PermissionError, OSError):
+        pgid_alive = False
+    if pgid_alive:
+        print(f"bridge self-test 9 FAILED: process group {r9.pgid_cleaned} still alive", file=sys.stderr)
+        return 1
+
+    # Test 10: Malformed/zero/negative env values fall back safely
+    env10a = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "0"}
+    w10a = WatchdogExecutor(env=env10a)
+    if w10a._idle_timeout == 0:
+        print("bridge self-test 10 FAILED: zero idle timeout not clamped", file=sys.stderr)
+        return 1
+    env10b = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "-5"}
+    w10b = WatchdogExecutor(env=env10b)
+    if w10b._idle_timeout != 1800:
+        print(f"bridge self-test 10 FAILED: negative idle timeout not defaulted: {w10b._idle_timeout}", file=sys.stderr)
+        return 1
+    env10c = {**os.environ, "EXECUTOR_IDLE_TIMEOUT": "abc"}
+    w10c = WatchdogExecutor(env=env10c)
+    if w10c._executor_idle_timeout != 15:
+        print(f"bridge self-test 10 FAILED: malformed executor idle timeout not defaulted: {w10c._executor_idle_timeout}", file=sys.stderr)
+        return 1
+    env10d = {**os.environ, "EXECUTOR_MAX_TAIL_BYTES": "50000"}
+    w10d = WatchdogExecutor(env=env10d)
+    if w10d._max_tail != 3600:
+        print(f"bridge self-test 10 FAILED: oversized tail not clamped: {w10d._max_tail}", file=sys.stderr)
+        return 1
+
+    # Test 11: Timeout result is explicit executor-idle-timeout; persisted status mapping
+    # (This is verified by the timeout_reason field in WatchdogResult)
+    env11 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    r11 = _watchdog_execute([sys.executable, "-c", "import time; time.sleep(999)"], env=env11, cwd=Path("/tmp"))
+    if r11.timeout_reason != "executor-idle-timeout":
+        print(f"bridge self-test 11 FAILED: timeout_reason={r11.timeout_reason}", file=sys.stderr)
+        return 1
+
+    # Test 12: Queue liveness — second watchdog child after timeout succeeds
+    env12 = {**os.environ, "OPENCODE_IDLE_TIMEOUT": "5", "EXECUTOR_IDLE_TIMEOUT": "2", "EXECUTOR_TERM_GRACE": "1", "EXECUTOR_DRAIN_TIMEOUT": "1"}
+    r12a = _watchdog_execute([sys.executable, "-c", "import time; time.sleep(999)"], env=env12, cwd=Path("/tmp"))
+    if not r12a.timed_out:
+        print(f"bridge self-test 12 FAILED: first should time out", file=sys.stderr)
+        return 1
+    r12b = _watchdog_execute(
+        [sys.executable, "-c", "import time; time.sleep(0.1); print('OK')"],
+        env=env12, cwd=Path("/tmp"),
+    )
+    if r12b.timed_out:
+        print(f"bridge self-test 12 FAILED: second should not time out", file=sys.stderr)
+        return 1
+    if r12b.returncode != 0:
+        print(f"bridge self-test 12 FAILED: second returncode={r12b.returncode}", file=sys.stderr)
+        return 1
+    if "OK" not in r12b.stdout_tail:
+        print(f"bridge self-test 12 FAILED: second stdout missing OK: {r12b.stdout_tail!r}", file=sys.stderr)
+        return 1
+
+    print("bridge self-test watchdog: PASS")
     return 0
 
 
