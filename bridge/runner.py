@@ -9,12 +9,16 @@ strict validation; no issue text is ever interpreted by a shell.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
+import math
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +47,45 @@ LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
 class BridgeError(RuntimeError):
     pass
+
+
+def _safe_float_env(raw: str | None, default: float, *, clamp_min: float = 0.0,
+                    clamp_max: float | None = None) -> float:
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (ValueError, OverflowError):
+        return default
+    if math.isnan(value) or math.isinf(value):
+        return default
+    value = max(clamp_min, value)
+    if clamp_max is not None:
+        value = min(clamp_max, value)
+    return value
+
+
+def _safe_int_env(raw: str | None, default: int, *, clamp_min: int = 1,
+                  clamp_max: int | None = None) -> int:
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        fval = float(raw)
+    except (ValueError, OverflowError):
+        return default
+    if math.isnan(fval) or math.isinf(fval):
+        return default
+    value = int(fval)
+    value = max(clamp_min, value)
+    if clamp_max is not None:
+        value = min(clamp_max, value)
+    return value
 
 
 def run(
@@ -586,6 +629,319 @@ def prepare_issue_branch(
     return True
 
 
+class TailBuffer:
+    """Newest-N-byte tail with a hard retained-memory bound."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = max(1, int(limit))
+        self.data = bytearray()
+        self.total_bytes = 0
+        self.max_retained = 0
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.total_bytes += len(chunk)
+        if len(chunk) >= self.limit:
+            self.data[:] = chunk[-self.limit:]
+        else:
+            overflow = len(self.data) + len(chunk) - self.limit
+            if overflow > 0:
+                del self.data[:overflow]
+            self.data.extend(chunk)
+        self.max_retained = max(self.max_retained, len(self.data))
+
+    def text(self) -> str:
+        return bytes(self.data).decode("utf-8", errors="replace")
+
+
+class Watchdog:
+    """Bounded OpenCode executor watchdog.
+
+    The leader process runs in its own session/process group. stdout/stderr are
+    consumed with nonblocking ``os.read`` into true rolling tail buffers. Leader
+    lifecycle, pipe lifecycle, and process-group lifecycle are tracked
+    independently so an exited leader cannot strand descendants or the queue.
+    """
+
+    POLL_MASK = select.POLLIN | select.POLLHUP | select.POLLERR
+
+    def __init__(
+        self,
+        cwd: Path,
+        *,
+        idle_timeout: float,
+        tail_limit: int,
+        holdpipe_timeout: float,
+        final_reap_timeout: float,
+        read_chunk: int,
+    ) -> None:
+        self.cwd = cwd
+        self.idle_timeout = max(0.05, float(idle_timeout))
+        self.tail_limit = max(1, int(tail_limit))
+        self.holdpipe_timeout = max(0.05, float(holdpipe_timeout))
+        self.final_reap_timeout = max(0.05, float(final_reap_timeout))
+        self.read_chunk = max(1, min(int(read_chunk), self.tail_limit))
+
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._pgid: int | None = None
+        self._stdout_fd = -1
+        self._stderr_fd = -1
+        self._stdout_eof = False
+        self._stderr_eof = False
+        self._stdout_tail = TailBuffer(self.tail_limit)
+        self._stderr_tail = TailBuffer(self.tail_limit)
+        self._last_activity = time.monotonic()
+        self._leader_exit_seen: float | None = None
+        self._term_sent = False
+        self._kill_sent = False
+        self._leader_reaped = False
+        self._returncode: int | None = None
+        self._timeout_type = ""
+        self._classification = ""
+
+    def _spawn(self, command: list[str], env: dict[str, str]) -> None:
+        self._proc = subprocess.Popen(
+            command,
+            cwd=str(self.cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        assert self._proc.stdout is not None and self._proc.stderr is not None
+        self._stdout_fd = self._proc.stdout.fileno()
+        self._stderr_fd = self._proc.stderr.fileno()
+        for fd in (self._stdout_fd, self._stderr_fd):
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._pgid = os.getpgid(self._proc.pid)
+        self._last_activity = time.monotonic()
+
+    def _tail_for_fd(self, fd: int) -> TailBuffer:
+        return self._stdout_tail if fd == self._stdout_fd else self._stderr_tail
+
+    def _is_eof(self, fd: int) -> bool:
+        return self._stdout_eof if fd == self._stdout_fd else self._stderr_eof
+
+    def _mark_eof(self, fd: int, poller: select.poll | None = None) -> None:
+        if fd == self._stdout_fd:
+            self._stdout_eof = True
+        elif fd == self._stderr_fd:
+            self._stderr_eof = True
+        if poller is not None:
+            try:
+                poller.unregister(fd)
+            except (KeyError, OSError, ValueError):
+                pass
+
+    def _read_fd(self, fd: int, poller: select.poll | None = None) -> str:
+        """Consume all currently available bytes without ever blocking.
+
+        Returns DATA when bytes were consumed, EOF on a zero-length read, and
+        WOULD_BLOCK on EAGAIN/EWOULDBLOCK. EAGAIN is never treated as EOF.
+        """
+        if fd < 0 or self._is_eof(fd):
+            return "EOF"
+        saw_data = False
+        while True:
+            try:
+                chunk = os.read(fd, self.read_chunk)
+            except OSError as exc:
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return "DATA" if saw_data else "WOULD_BLOCK"
+                if exc.errno in (errno.EBADF, errno.EINVAL):
+                    self._mark_eof(fd, poller)
+                    return "EOF"
+                raise
+            if not chunk:
+                self._mark_eof(fd, poller)
+                return "DATA" if saw_data else "EOF"
+            self._tail_for_fd(fd).append(chunk)
+            self._last_activity = time.monotonic()
+            saw_data = True
+
+    def _make_poller(self) -> select.poll:
+        poller = select.poll()
+        for fd in (self._stdout_fd, self._stderr_fd):
+            if fd >= 0 and not self._is_eof(fd):
+                poller.register(fd, self.POLL_MASK)
+        return poller
+
+    def _poll_and_drain(self, poller: select.poll, timeout_ms: int) -> None:
+        try:
+            events = poller.poll(max(0, timeout_ms))
+        except (OSError, ValueError):
+            return
+        for fd, event in events:
+            if event & self.POLL_MASK:
+                self._read_fd(fd, poller)
+
+    def _drain_until(self, deadline: float) -> None:
+        """Drain readable bytes only until *deadline*, with bounded tails."""
+        poller = self._make_poller()
+        while time.monotonic() < deadline and not (self._stdout_eof and self._stderr_eof):
+            remaining = deadline - time.monotonic()
+            self._poll_and_drain(poller, min(50, max(0, int(remaining * 1000))))
+            # One nonblocking read per still-open fd covers readiness races/HUP.
+            for fd in (self._stdout_fd, self._stderr_fd):
+                if fd >= 0 and not self._is_eof(fd):
+                    self._read_fd(fd, poller)
+            if remaining <= 0.01:
+                break
+
+    def _reap_once(self) -> bool:
+        if self._proc is None:
+            return False
+        if self._leader_reaped:
+            return True
+        rc = self._proc.poll()
+        if rc is None:
+            return False
+        self._leader_reaped = True
+        self._returncode = rc
+        if self._leader_exit_seen is None:
+            self._leader_exit_seen = time.monotonic()
+        return True
+
+    def _bounded_reap(self, deadline: float) -> bool:
+        while time.monotonic() < deadline:
+            if self._reap_once():
+                return True
+            time.sleep(0.01)
+        return self._reap_once()
+
+    def _pgid_alive(self) -> bool:
+        if self._pgid is None:
+            return False
+        try:
+            os.killpg(self._pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    def _wait_group_gone(self, deadline: float) -> bool:
+        poller = self._make_poller()
+        while time.monotonic() < deadline:
+            self._reap_once()
+            if not self._pgid_alive():
+                self._drain_until(min(deadline, time.monotonic() + 0.1))
+                return True
+            remaining = deadline - time.monotonic()
+            self._poll_and_drain(poller, min(50, max(0, int(remaining * 1000))))
+        self._reap_once()
+        return not self._pgid_alive()
+
+    def _signal_group(self, sig: int) -> bool:
+        if self._pgid is None or not self._pgid_alive():
+            return False
+        try:
+            os.killpg(self._pgid, sig)
+        except ProcessLookupError:
+            return False
+        except (PermissionError, OSError):
+            return False
+        if sig == signal.SIGTERM:
+            self._term_sent = True
+        elif sig == signal.SIGKILL:
+            self._kill_sent = True
+        return True
+
+    def _cleanup_group(self) -> None:
+        """Bounded TERM -> KILL -> reap/drain. Never calls unbounded wait()."""
+        now = time.monotonic()
+        if self._pgid_alive():
+            self._signal_group(signal.SIGTERM)
+            if not self._wait_group_gone(now + self.holdpipe_timeout):
+                self._signal_group(signal.SIGKILL)
+                if not self._wait_group_gone(time.monotonic() + self.final_reap_timeout):
+                    self._classification = "pgid-still-alive"
+        self._bounded_reap(time.monotonic() + self.final_reap_timeout)
+        self._drain_until(time.monotonic() + self.final_reap_timeout)
+        if not self._leader_reaped and not self._classification:
+            self._classification = "leader-unreaped"
+
+    def _close_streams(self) -> None:
+        if self._proc is not None:
+            for stream in (self._proc.stdout, self._proc.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        self._stdout_fd = -1
+        self._stderr_fd = -1
+
+    def run(self, command: list[str], env: dict[str, str]) -> dict[str, Any]:
+        self._spawn(command, env)
+        poller = self._make_poller()
+        try:
+            while True:
+                self._poll_and_drain(poller, 200)
+                self._reap_once()
+                now = time.monotonic()
+
+                if not self._leader_reaped and now - self._last_activity >= self.idle_timeout:
+                    self._timeout_type = "idle"
+                    self._cleanup_group()
+                    break
+
+                if self._leader_reaped:
+                    assert self._leader_exit_seen is not None
+                    if not self._pgid_alive():
+                        # The group is gone; give kernel pipe buffers a short bounded drain.
+                        self._drain_until(time.monotonic() + min(0.25, self.holdpipe_timeout))
+                        if not (self._stdout_eof and self._stderr_eof):
+                            self._classification = "pipe-still-open"
+                        break
+                    # Leader is gone but same-PGID descendants remain. Do not wait on the
+                    # normal idle timeout; clean the leaked group after a short grace.
+                    if now - self._leader_exit_seen >= self.holdpipe_timeout:
+                        self._cleanup_group()
+                        break
+
+                if self._stdout_eof and self._stderr_eof and not self._leader_reaped:
+                    # EOF is not success by itself. Continue bounded polling until leader
+                    # exits or the idle deadline fires.
+                    continue
+        finally:
+            self._reap_once()
+            if self._leader_reaped and self._pgid_alive() and not self._classification:
+                self._cleanup_group()
+            if not self._leader_reaped and not self._classification and not self._timeout_type:
+                self._classification = "leader-unreaped"
+            self._close_streams()
+
+        rc = self._returncode
+        terminal_signal = -rc if self._leader_reaped and rc is not None and rc < 0 else None
+        success = (
+            self._leader_reaped
+            and rc == 0
+            and not self._timeout_type
+            and not self._classification
+        )
+        return {
+            "stdout": self._stdout_tail.text(),
+            "stderr": self._stderr_tail.text(),
+            "returncode": rc,
+            "term_sent": self._term_sent,
+            "kill_sent": self._kill_sent,
+            "leader_reaped": self._leader_reaped,
+            "timeout_type": self._timeout_type,
+            "classification": self._classification,
+            "terminal_signal": terminal_signal,
+            "success": success,
+            "total_stdout_bytes": self._stdout_tail.total_bytes,
+            "total_stderr_bytes": self._stderr_tail.total_bytes,
+            "max_stdout_retained": self._stdout_tail.max_retained,
+            "max_stderr_retained": self._stderr_tail.max_retained,
+        }
+
+
 def process_task(
     root: Path,
     repo: str,
@@ -664,23 +1020,73 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    idle_timeout = _safe_float_env(
+        os.getenv("BRIDGE_WATCHDOG_IDLE_TIMEOUT"), 3600.0, clamp_min=10.0, clamp_max=86400.0
+    )
+    tail_limit = _safe_int_env(
+        os.getenv("BRIDGE_WATCHDOG_TAIL_LIMIT"), 2 * 1024 * 1024,
+        clamp_min=4096, clamp_max=8 * 1024 * 1024,
+    )
+    holdpipe_timeout = _safe_float_env(
+        os.getenv("BRIDGE_WATCHDOG_HOLDPIPE_TIMEOUT"), 5.0, clamp_min=1.0, clamp_max=60.0
+    )
+    final_reap_timeout = _safe_float_env(
+        os.getenv("BRIDGE_WATCHDOG_FINAL_REAP_TIMEOUT"), 5.0, clamp_min=1.0, clamp_max=30.0
+    )
+    read_chunk = _safe_int_env(
+        os.getenv("BRIDGE_WATCHDOG_READ_CHUNK"), 65536, clamp_min=1024, clamp_max=65536
+    )
+
+    wd = Watchdog(
+        worktree,
+        idle_timeout=idle_timeout,
+        tail_limit=tail_limit,
+        holdpipe_timeout=holdpipe_timeout,
+        final_reap_timeout=final_reap_timeout,
+        read_chunk=read_chunk,
+    )
+    result = wd.run(command, env)
+
+    stdout = result["stdout"]
+    stderr = result["stderr"]
+    rc = result["returncode"]
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={rc}\n"
+        f"term_sent={result['term_sent']}\n"
+        f"kill_sent={result['kill_sent']}\n"
+        f"leader_reaped={result['leader_reaped']}\n"
+        f"timeout_type={result['timeout_type']}\n"
+        f"classification={result['classification']}\n"
+        f"terminal_signal={result['terminal_signal']}\n"
+        f"watchdog_success={result['success']}\n\n"
+        f"STDOUT\n{stdout}\n\n"
+        f"STDERR\n{stderr}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if not result["success"]:
+        classification = result["classification"] or classify_opencode_failure(stdout, stderr)
+        excerpt = diagnostic_excerpt(stdout, stderr)
+        reason_parts = []
+        if result["timeout_type"]:
+            reason_parts.append(f"timeout={result['timeout_type']}")
+        if result["classification"]:
+            reason_parts.append(f"classification={result['classification']}")
+        if not result["leader_reaped"]:
+            reason_parts.append("leader_reaped=False")
+        if result["term_sent"]:
+            reason_parts.append("term_sent")
+        if result["kill_sent"]:
+            reason_parts.append("kill_sent")
+        reason = "; ".join(reason_parts) or "watchdog-failure"
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
+            "watchdog_reason": reason,
             "branch": branch,
             "log": str(log_path),
             "model": model,
@@ -691,7 +1097,8 @@ def process_task(
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"OpenCode exited with code `{rc}`. No PR was created.\n\n"
+            f"Watchdog: `{reason}`\n"
             f"Classification: `{classification}`\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
@@ -898,8 +1305,342 @@ def self_test() -> int:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
 
+    test_failures = _run_watchdog_self_tests()
+    if test_failures:
+        for msg in test_failures:
+            print(f"bridge self-test: {msg}", file=sys.stderr)
+        return 1
+
     print("bridge self-test: PASS")
     return 0
+
+
+def _run_watchdog_self_tests() -> list[str]:
+    failures: list[str] = []
+    tmp = Path("/tmp/bridge-watchdog-test")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+
+    def td() -> Path:
+        d = tmp / f"t_{time.monotonic_ns()}"
+        d.mkdir()
+        return d
+
+    def write_py(path: Path, code: str) -> None:
+        path.write_text(code)
+        os.chmod(path, 0o755)
+
+    def wd(d: Path, *, idle: float = 0.5, tail: int = 4096,
+           hold: float = 0.25, reap: float = 0.5, chunk: int = 4096) -> Watchdog:
+        return Watchdog(
+            d,
+            idle_timeout=idle,
+            tail_limit=tail,
+            holdpipe_timeout=hold,
+            final_reap_timeout=reap,
+            read_chunk=chunk,
+        )
+
+    def quick_ok(d: Path) -> str | None:
+        r = wd(d, idle=1.0).run([sys.executable, "-c", "print('queue-ok')"], os.environ.copy())
+        if not r["success"] or r["returncode"] != 0 or "queue-ok" not in r["stdout"]:
+            return f"queue did not recover: {r}"
+        return None
+
+    def t1_worktree() -> str | None:
+        d = td()
+        sentinel = d / "SENTINEL"
+        write_py(d / "child.py", "import os, pathlib\npathlib.Path('SENTINEL').write_text(os.getcwd())\n")
+        r = wd(d, idle=1.0).run([sys.executable, str(d / "child.py")], os.environ.copy())
+        if not r["success"] or sentinel.read_text() != str(d.resolve()):
+            return f"worktree isolation failed: {r}"
+        return None
+
+    def t2_silent_timeout() -> str | None:
+        d = td()
+        t0 = time.monotonic()
+        r = wd(d, idle=0.35, hold=0.15, reap=0.3).run(["sleep", "30"], os.environ.copy())
+        elapsed = time.monotonic() - t0
+        if r["success"] or r["timeout_type"] != "idle" or elapsed > 2.5:
+            return f"silent timeout not bounded: elapsed={elapsed:.2f} r={r}"
+        return quick_ok(d)
+
+    def sparse(stream: str) -> str | None:
+        d = td()
+        code = (
+            "import sys,time\n"
+            f"out=sys.{stream}\n"
+            "for i in range(8):\n"
+            " out.write(f'tick-{i}\\n'); out.flush(); time.sleep(0.2)\n"
+        )
+        write_py(d / "sparse.py", code)
+        t0 = time.monotonic()
+        r = wd(d, idle=0.35, hold=0.2).run([sys.executable, str(d / "sparse.py")], os.environ.copy())
+        elapsed = time.monotonic() - t0
+        text = r["stdout"] if stream == "stdout" else r["stderr"]
+        if not r["success"] or elapsed <= 0.35 or "tick-7" not in text:
+            return f"sparse {stream} liveness failed: elapsed={elapsed:.2f} r={r}"
+        return None
+
+    def t5_tiny_then_hang() -> str | None:
+        d = td()
+        write_py(d / "tiny.py", "import sys,time\nsys.stdout.write('abc');sys.stdout.flush();time.sleep(30)\n")
+        t0 = time.monotonic()
+        r = wd(d, idle=0.4, hold=0.15, reap=0.3).run([sys.executable, str(d / "tiny.py")], os.environ.copy())
+        if r["success"] or r["timeout_type"] != "idle" or "abc" not in r["stdout"]:
+            return f"tiny-then-hang failed: {r}"
+        if time.monotonic() - t0 > 2.5:
+            return "tiny-then-hang exceeded bound"
+        return None
+
+    def t6_eagain() -> str | None:
+        d = td()
+        rfd, wfd = os.pipe()
+        try:
+            flags = fcntl.fcntl(rfd, fcntl.F_GETFL)
+            fcntl.fcntl(rfd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            w = wd(d)
+            w._stdout_fd = rfd
+            w._stderr_fd = -1
+            w._stdout_tail = TailBuffer(128)
+            w.read_chunk = 64
+            poller = select.poll()
+            poller.register(rfd, Watchdog.POLL_MASK)
+            first = w._read_fd(rfd, poller)
+            if first != "WOULD_BLOCK" or w._stdout_eof:
+                return f"EAGAIN misclassified: {first} eof={w._stdout_eof}"
+            os.write(wfd, b"later-data")
+            second = w._read_fd(rfd, poller)
+            if second != "DATA" or b"later-data" not in w._stdout_tail.data:
+                return f"data after EAGAIN lost: {second} {bytes(w._stdout_tail.data)!r}"
+        finally:
+            os.close(wfd)
+            os.close(rfd)
+        return None
+
+    def t7_hup_final_bytes() -> str | None:
+        d = td()
+        r = wd(d, idle=1.0).run(
+            [sys.executable, "-c", "import os; os.write(1,b'FINAL-BYTES')"], os.environ.copy()
+        )
+        if not r["success"] or "FINAL-BYTES" not in r["stdout"]:
+            return f"HUP final bytes lost: {r}"
+        return None
+
+    def t8_big_output() -> str | None:
+        d = td()
+        code = (
+            "import os\n"
+            "for i in range(12000):\n"
+            " os.write(1,(f'O{i:05d}-'+'x'*180+'\\n').encode())\n"
+            " os.write(2,(f'E{i:05d}-'+'y'*180+'\\n').encode())\n"
+            "os.write(1,b'OUT-LAST-MARKER')\n"
+            "os.write(2,b'ERR-LAST-MARKER')\n"
+        )
+        write_py(d / "big.py", code)
+        r = wd(d, idle=2.0, tail=4096, chunk=2048).run([sys.executable, str(d / "big.py")], os.environ.copy())
+        if not r["success"]:
+            return f"large output failed: {r}"
+        if r["max_stdout_retained"] > 4096 or r["max_stderr_retained"] > 4096:
+            return f"tail bound exceeded: {r['max_stdout_retained']}/{r['max_stderr_retained']}"
+        if "OUT-LAST-MARKER" not in r["stdout"] or "ERR-LAST-MARKER" not in r["stderr"]:
+            return "rolling tail did not retain newest bytes"
+        if r["total_stdout_bytes"] < 2_000_000 or r["total_stderr_bytes"] < 2_000_000:
+            return f"large output not fully consumed: {r['total_stdout_bytes']}/{r['total_stderr_bytes']}"
+        return None
+
+    def t9_single_burst() -> str | None:
+        d = td()
+        r = wd(d, idle=1.0, tail=1024, chunk=1024).run(
+            [sys.executable, "-c", "import os;os.write(1,b'A'*200000+b'BURST-END')"], os.environ.copy()
+        )
+        if not r["success"] or r["max_stdout_retained"] > 1024 or "BURST-END" not in r["stdout"]:
+            return f"single burst bound/tail failed: {r}"
+        return None
+
+    def t10_term_handler_rc0() -> str | None:
+        d = td()
+        code = (
+            "import os,signal,time,sys\n"
+            "def h(sig,frm): os.write(1,b'TERM-FINAL'); sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM,h)\n"
+            "time.sleep(30)\n"
+        )
+        write_py(d / "term0.py", code)
+        r = wd(d, idle=0.35, hold=0.2, reap=0.4).run([sys.executable, str(d / "term0.py")], os.environ.copy())
+        if r["success"] or r["timeout_type"] != "idle" or not r["term_sent"] or r["kill_sent"]:
+            return f"TERM handler state wrong: {r}"
+        if r["returncode"] != 0 or r["terminal_signal"] is not None or "TERM-FINAL" not in r["stdout"]:
+            return f"TERM handler disposition/final bytes wrong: {r}"
+        return quick_ok(d)
+
+    def t11_sigkill_signal_truth() -> str | None:
+        d = td()
+        write_py(d / "ignore.py", "import signal,time\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\ntime.sleep(30)\n")
+        r = wd(d, idle=0.35, hold=0.15, reap=0.4).run([sys.executable, str(d / "ignore.py")], os.environ.copy())
+        if r["success"] or not r["term_sent"] or not r["kill_sent"]:
+            return f"SIGKILL escalation missing: {r}"
+        if r["returncode"] != -9 or r["terminal_signal"] != 9:
+            return f"leader terminal signal untruthful: {r}"
+        return None
+
+    def t12_held_pipe_descendant() -> str | None:
+        d = td()
+        pidfile = d / "child.pid"
+        code = (
+            "import os,signal,time,pathlib,sys\n"
+            "pid=os.fork()\n"
+            "if pid==0:\n"
+            " signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            f" pathlib.Path({str(pidfile)!r}).write_text(str(os.getpid()))\n"
+            " os.write(1,b'child-alive\\n'); time.sleep(30); sys.exit(0)\n"
+            "os.write(1,b'leader-exit\\n'); sys.exit(0)\n"
+        )
+        write_py(d / "held.py", code)
+        unrelated = subprocess.Popen(["sleep", "30"], start_new_session=True)
+        try:
+            t0 = time.monotonic()
+            r = wd(d, idle=2.0, hold=0.25, reap=0.5).run([sys.executable, str(d / "held.py")], os.environ.copy())
+            elapsed = time.monotonic() - t0
+            if r["returncode"] != 0 or r["terminal_signal"] is not None:
+                return f"leader disposition changed by descendant kill: {r}"
+            if not r["term_sent"] or not r["kill_sent"] or not r["success"] or elapsed > 2.5:
+                return f"held-pipe cleanup failed/boundedness: elapsed={elapsed:.2f} r={r}"
+            if unrelated.poll() is not None:
+                return "unrelated process was killed"
+            if not pidfile.exists():
+                return "held descendant PID was not recorded"
+            child_pid = int(pidfile.read_text())
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.02)
+            else:
+                return f"held descendant still alive: {child_pid}"
+            return quick_ok(d)
+        finally:
+            unrelated.terminate()
+            try:
+                unrelated.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                unrelated.kill()
+
+    def t13_pgid_still_alive_seam() -> str | None:
+        class StuckGroupWatchdog(Watchdog):
+            def _wait_group_gone(self, deadline: float) -> bool:
+                super()._wait_group_gone(min(deadline, time.monotonic() + 0.03))
+                return False
+            def _pgid_alive(self) -> bool:
+                if self._kill_sent:
+                    return True
+                return super()._pgid_alive()
+        d = td()
+        w = StuckGroupWatchdog(d, idle_timeout=0.25, tail_limit=1024,
+                               holdpipe_timeout=0.1, final_reap_timeout=0.15, read_chunk=1024)
+        r = w.run(["sleep", "30"], os.environ.copy())
+        if r["success"] or r["classification"] != "pgid-still-alive":
+            return f"pgid-still-alive seam not explicit: {r}"
+        if quick_ok(d):
+            return "queue did not continue after pgid-still-alive seam"
+        return None
+
+    def t14_unreaped_seam() -> str | None:
+        class UnreapedWatchdog(Watchdog):
+            def _reap_once(self) -> bool:
+                return False
+            def _bounded_reap(self, deadline: float) -> bool:
+                return False
+            def _pgid_alive(self) -> bool:
+                # Deterministic seam: group cleanup reports gone while the leader
+                # remains pathologically unreapable. Production must surface that
+                # independently instead of fabricating a return code.
+                return False
+        d = td()
+        w = UnreapedWatchdog(d, idle_timeout=0.25, tail_limit=1024,
+                             holdpipe_timeout=0.1, final_reap_timeout=0.15, read_chunk=1024)
+        r = w.run(["sleep", "30"], os.environ.copy())
+        # Production result must preserve the pathological truth.
+        if r["success"] or r["leader_reaped"] or r["returncode"] is not None:
+            return f"unreaped state was fabricated: {r}"
+        if r["classification"] != "leader-unreaped":
+            return f"unreaped classification missing: {r}"
+        # Test-only cleanup so the seam cannot leak its synthetic child.
+        if w._proc is not None:
+            try:
+                os.killpg(w._pgid, signal.SIGKILL) if w._pgid else None
+            except OSError:
+                pass
+            try:
+                w._proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        return quick_ok(d)
+
+    def t15_env_clamps() -> str | None:
+        float_cases = [
+            ("abc", 100.0, 1.0, 200.0, 100.0),
+            ("NaN", 100.0, 1.0, 200.0, 100.0),
+            ("inf", 100.0, 1.0, 200.0, 100.0),
+            ("0", 100.0, 1.0, 200.0, 1.0),
+            ("-9", 100.0, 1.0, 200.0, 1.0),
+            ("999999", 100.0, 1.0, 200.0, 200.0),
+        ]
+        for raw, default, lo, hi, expected in float_cases:
+            got = _safe_float_env(raw, default, clamp_min=lo, clamp_max=hi)
+            if got != expected:
+                return f"float clamp {raw!r}: {got} != {expected}"
+        int_cases = [
+            ("bad", 4096, 1024, 65536, 4096),
+            ("0", 4096, 1024, 65536, 1024),
+            ("-2", 4096, 1024, 65536, 1024),
+            ("9999999", 4096, 1024, 65536, 65536),
+        ]
+        for raw, default, lo, hi, expected in int_cases:
+            got = _safe_int_env(raw, default, clamp_min=lo, clamp_max=hi)
+            if got != expected:
+                return f"int clamp {raw!r}: {got} != {expected}"
+        return None
+
+    def t16_no_unbounded_wait_static() -> str | None:
+        source = Path(__file__).read_text()
+        block = source[source.index("class Watchdog:"):source.index("\ndef process_task(", source.index("class Watchdog:"))]
+        if ".wait(" in block or "waitpid(" in block:
+            return "Watchdog contains a potentially blocking wait/waitpid call"
+        if "capture_output=True" in block or "communicate(" in block:
+            return "Watchdog contains full-output accumulator path"
+        return None
+
+    tests = [
+        ("worktree isolation", t1_worktree),
+        ("silent timeout", t2_silent_timeout),
+        ("sparse stdout", lambda: sparse("stdout")),
+        ("sparse stderr", lambda: sparse("stderr")),
+        ("tiny data then hang", t5_tiny_then_hang),
+        ("EAGAIN distinct from EOF", t6_eagain),
+        ("HUP final bytes", t7_hup_final_bytes),
+        ("multi-megabyte rolling tails", t8_big_output),
+        ("oversized single burst", t9_single_burst),
+        ("TERM handler rc0 truth", t10_term_handler_rc0),
+        ("SIGKILL terminal signal truth", t11_sigkill_signal_truth),
+        ("held-pipe descendant cleanup", t12_held_pipe_descendant),
+        ("pgid-still-alive seam", t13_pgid_still_alive_seam),
+        ("unreaped seam", t14_unreaped_seam),
+        ("safe env min/max clamps", t15_env_clamps),
+        ("no unbounded wait/static accumulator", t16_no_unbounded_wait_static),
+    ]
+    for name, fn in tests:
+        try:
+            err = fn()
+        except Exception as exc:
+            err = f"exception {type(exc).__name__}: {exc}"
+        if err:
+            failures.append(f"{name}: {err}")
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
 
 
 def main() -> int:
