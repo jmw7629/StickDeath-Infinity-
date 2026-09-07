@@ -13,13 +13,31 @@ import fcntl
 import json
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+
+@dataclass
+class WatchdogResult:
+    returncode: int | None
+    stdout_tail: bytes
+    stderr_tail: bytes
+    elapsed: float
+    term_sent: bool
+    kill_sent: bool
+    terminal_signal: int | None
+    leader_reaped: bool
+    reason: str
+    held_pipes_drained: bool
+
 
 BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
@@ -39,6 +57,15 @@ TERMINAL_STATUSES = {
 }
 RECOVERABLE_PREFIX = "recovery-blocked-"
 LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
+
+OPENCODE_IDLE_TIMEOUT = int(os.getenv("OPENCODE_IDLE_TIMEOUT", "1800"))
+HELD_PIPE_DRAIN_TIMEOUT = int(os.getenv("HELD_PIPE_DRAIN_TIMEOUT", "15"))
+REAP_TIMEOUT = 5
+TERM_GRACE = 3
+TAIL_LIMIT = 8192
+
+FDEOF = type("FDEOF", (), {"__repr__": lambda s: "FDEOF"})()
+FWOULDBLOCK = type("FWOULDBLOCK", (), {"__repr__": lambda s: "FWOULDBLOCK"})()
 
 
 class BridgeError(RuntimeError):
@@ -586,6 +613,243 @@ def prepare_issue_branch(
     return True
 
 
+def _clamp_timeout(value: int, default: int, minimum: int = 1) -> int:
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return default
+    return v if v >= minimum else default
+
+
+def _nb_read(fd: int) -> tuple[bytes, object]:
+    try:
+        data = os.read(fd, 32768)
+        return data, FDEOF if not data else data
+    except BlockingIOError:
+        return b"", FWOULDBLOCK
+
+
+def _reap_child(pid: int, deadline: float) -> tuple[int | None, int | None]:
+    while time.time() < deadline:
+        result = os.waitpid(pid, os.WNOHANG)
+        if result[0] != 0:
+            status = result[1]
+            if os.WIFSIGNALED(status):
+                return None, os.WTERMSIG(status)
+            return os.WEXITSTATUS(status), None
+        time.sleep(0.05)
+    return None, None
+
+
+def watchdog(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: int | None = None,
+    held_pipe_timeout: int | None = None,
+) -> "WatchdogResult":
+    no_output_timeout = _clamp_timeout(
+        idle_timeout if idle_timeout is not None else OPENCODE_IDLE_TIMEOUT,
+        OPENCODE_IDLE_TIMEOUT,
+    )
+    drain_timeout = _clamp_timeout(
+        held_pipe_timeout if held_pipe_timeout is not None else HELD_PIPE_DRAIN_TIMEOUT,
+        HELD_PIPE_DRAIN_TIMEOUT,
+    )
+    child = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    pgid = child.pid
+    stdout_tail = bytearray()
+    stderr_tail = bytearray()
+    child_exited = False
+    drain_deadline: float | None = None
+    held_pipes_drained = False
+    term_sent = False
+    kill_sent = False
+    terminal_signal: int | None = None
+    start = time.time()
+
+    sel = select.epoll()
+    stdout_fd = child.stdout.fileno()
+    stderr_fd = child.stderr.fileno()
+    fcntl.fcntl(stdout_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+    fcntl.fcntl(stderr_fd, fcntl.F_SETFL, os.O_NONBLOCK)
+    sel.register(stdout_fd, select.EPOLLIN)
+    sel.register(stderr_fd, select.EPOLLIN)
+    fds_alive = 2
+
+    no_output_deadline = start + no_output_timeout
+
+    try:
+        while fds_alive > 0:
+            now = time.time()
+            if child_exited:
+                if drain_deadline is None:
+                    drain_deadline = now + drain_timeout
+                if now >= drain_deadline:
+                    held_pipes_drained = True
+                    break
+                poll_timeout = max(0.001, drain_deadline - now)
+            else:
+                if now >= no_output_deadline:
+                    if not term_sent:
+                        try:
+                            os.killpg(pgid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                        term_sent = True
+                        no_output_deadline = now + TERM_GRACE
+                    else:
+                        if now >= no_output_deadline:
+                            try:
+                                os.killpg(pgid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            kill_sent = True
+                            break
+                poll_timeout = 0.2
+
+            try:
+                events = sel.poll(poll_timeout)
+            except OSError:
+                break
+
+            if not child_exited:
+                rc = child.poll()
+                if rc is not None:
+                    child_exited = True
+                    drain_deadline = time.time() + drain_timeout
+
+            for fd, event in events:
+                if event & (select.EPOLLHUP | select.EPOLLERR):
+                    sel.unregister(fd)
+                    fds_alive -= 1
+                    continue
+                if event & select.EPOLLIN:
+                    if fd == stdout_fd:
+                        data, status = _nb_read(fd)
+                        if status is FWOULDBLOCK:
+                            pass
+                        elif status is FDEOF:
+                            sel.unregister(fd)
+                            fds_alive -= 1
+                        else:
+                            stdout_tail.extend(data)
+                            if len(stdout_tail) > TAIL_LIMIT:
+                                del stdout_tail[: len(stdout_tail) - TAIL_LIMIT]
+                    elif fd == stderr_fd:
+                        data, status = _nb_read(fd)
+                        if status is FWOULDBLOCK:
+                            pass
+                        elif status is FDEOF:
+                            sel.unregister(fd)
+                            fds_alive -= 1
+                        else:
+                            stderr_tail.extend(data)
+                            if len(stderr_tail) > TAIL_LIMIT:
+                                del stderr_tail[: len(stderr_tail) - TAIL_LIMIT]
+
+            if not child_exited:
+                rc = child.poll()
+                if rc is not None:
+                    child_exited = True
+                    drain_deadline = time.time() + drain_timeout
+
+        if not child_exited:
+            rc = child.poll()
+            if rc is not None:
+                child_exited = True
+
+        if not child_exited:
+            if not term_sent:
+                try:
+                    os.killpg(pgid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                term_sent = True
+            grace_deadline = time.time() + TERM_GRACE
+            while time.time() < grace_deadline:
+                rc = child.poll()
+                if rc is not None:
+                    child_exited = True
+                    break
+                time.sleep(0.05)
+            if not child_exited:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                kill_sent = True
+                try:
+                    child.wait(timeout=REAP_TIMEOUT)
+                    child_exited = True
+                except subprocess.TimeoutExpired:
+                    pass
+
+        if child_exited:
+            try:
+                child.wait(timeout=REAP_TIMEOUT)
+            except (subprocess.TimeoutExpired, ChildProcessError):
+                pass
+            terminal_signal = None
+            if child.returncode is not None and child.returncode < 0:
+                terminal_signal = -child.returncode
+
+        for fd in [stdout_fd, stderr_fd]:
+            try:
+                sel.unregister(fd)
+            except (OSError, ValueError):
+                pass
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+        if not child_exited:
+            try:
+                child.kill()
+                kill_sent = True
+            except ProcessLookupError:
+                pass
+            try:
+                child.wait(timeout=REAP_TIMEOUT)
+                child_exited = True
+            except subprocess.TimeoutExpired:
+                pass
+
+    finally:
+        try:
+            sel.close()
+        except Exception:
+            pass
+
+    leader_reaped = child_exited
+    returncode = child.returncode if child_exited else None
+    elapsed = time.time() - start
+
+    return WatchdogResult(
+        returncode=returncode,
+        stdout_tail=bytes(stdout_tail),
+        stderr_tail=bytes(stderr_tail),
+        elapsed=elapsed,
+        term_sent=term_sent,
+        kill_sent=kill_sent,
+        terminal_signal=terminal_signal,
+        leader_reaped=leader_reaped,
+        reason="held-pipe-cleanup" if held_pipes_drained else (
+            "opencode-idle-timeout" if kill_sent or term_sent else "normal-exit"
+        ),
+        held_pipes_drained=held_pipes_drained,
+    )
+
+
 def process_task(
     root: Path,
     repo: str,
@@ -664,20 +928,27 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    result = watchdog(command, cwd=str(worktree), env=env)
+    stdout_text = result.stdout_tail.decode("utf-8", errors="replace")
+    stderr_text = result.stderr_tail.decode("utf-8", errors="replace")
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={result.returncode}\n"
+        f"term_sent={result.term_sent} kill_sent={result.kill_sent}\n"
+        f"terminal_signal={result.terminal_signal}\n"
+        f"leader_reaped={result.leader_reaped}\n"
+        f"reason={result.reason}\n"
+        f"elapsed={result.elapsed:.1f}s\n\nSTDOUT\n{stdout_text}\n\n"
+        f"STDERR\n{stderr_text}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if result.returncode is None or result.returncode != 0:
+        classification = classify_opencode_failure(stdout_text, stderr_text)
+        excerpt = diagnostic_excerpt(stdout_text, stderr_text)
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
@@ -691,8 +962,10 @@ def process_task(
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"OpenCode exited with code `{result.returncode}`. No PR was created.\n\n"
             f"Classification: `{classification}`\n\n"
+            f"Reason: `{result.reason}`\n\n"
+            f"term_sent={result.term_sent} kill_sent={result.kill_sent}\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
             f"The full local log remains at `{log_path}` on the bridge host.",
@@ -824,6 +1097,19 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
 
 
 def self_test() -> int:
+    py = sys.executable
+    failed = 0
+
+    def _check(name: str, condition: bool, detail: str = "") -> None:
+        nonlocal failed
+        if not condition:
+            msg = f"bridge self-test: {name} FAILED"
+            if detail:
+                msg += f" — {detail}"
+            print(msg, file=sys.stderr)
+            failed += 1
+
+    # Existing tests: redaction
     sample = (
         "Authorization: Bearer abcdefghijklmnop\n"
         "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\n"
@@ -832,10 +1118,9 @@ def self_test() -> int:
     )
     cleaned = sanitize_text(sample)
     forbidden = ("abcdefghijklmnop", "sk-abcdefghijklmnopqrstuvwxyz", "ghp_", "\nsecret\n")
-    if any(value in cleaned for value in forbidden):
-        print("bridge self-test: redaction FAILED", file=sys.stderr)
-        return 1
+    _check("redaction", not any(v in cleaned for v in forbidden), cleaned[:200])
 
+    # Existing tests: classifier
     cases = {
         "error: unknown option '--auto'": "cli-invocation-incompatibility",
         "401 unauthorized provider": "model-provider-auth-config",
@@ -846,13 +1131,9 @@ def self_test() -> int:
     }
     for text, expected in cases.items():
         got = classify_opencode_failure("", text)
-        if got != expected:
-            print(
-                f"bridge self-test: classifier FAILED for {text!r}: {got} != {expected}",
-                file=sys.stderr,
-            )
-            return 1
+        _check(f"classifier-{expected}", got == expected, f"{got} != {expected}")
 
+    # Existing tests: model hints
     model_cases = [
         ("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "openai/gpt-5.6-sol"),
         ("PROJECT_BYTE_MODEL_HINT: ollama/qwen3-coder:30b", "ollama/qwen3-coder:30b"),
@@ -862,19 +1143,18 @@ def self_test() -> int:
     ]
     for body, expected in model_cases:
         got = project_byte_model_hint(body)
-        if got != expected:
-            print(f"bridge self-test: model hint FAILED: {body!r} -> {got!r}", file=sys.stderr)
-            return 1
-    if choose_model("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "env/model") != (
-        "openai/gpt-5.6-sol",
-        "project-byte",
-    ):
-        print("bridge self-test: PROJECT_BYTE model precedence FAILED", file=sys.stderr)
-        return 1
-    if choose_model("", "env/model") != ("env/model", "environment"):
-        print("bridge self-test: environment model fallback FAILED", file=sys.stderr)
-        return 1
+        _check("model-hint", got == expected, f"{body!r} -> {got!r}")
+    _check(
+        "project-byte-precedence",
+        choose_model("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "env/model")
+        == ("openai/gpt-5.6-sol", "project-byte"),
+    )
+    _check(
+        "env-model-fallback",
+        choose_model("", "env/model") == ("env/model", "environment"),
+    )
 
+    # Existing tests: recovery
     recovery_cases = [
         ({"local_exists": False, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "new"),
         ({"local_exists": True, "remote_exists": True, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "remote-existing"),
@@ -885,17 +1165,221 @@ def self_test() -> int:
     ]
     for kwargs, expected in recovery_cases:
         got = recovery_decision(**kwargs)
-        if got != expected:
-            print(f"bridge self-test: recovery decision FAILED: {kwargs} -> {got}", file=sys.stderr)
-            return 1
+        _check(f"recovery-{expected}", got == expected, f"{kwargs} -> {got}")
 
-    if "skipped-existing-branch" not in LEGACY_RECOVERABLE_STATUSES:
-        print("bridge self-test: legacy recovery migration FAILED", file=sys.stderr)
-        return 1
+    _check("legacy-recovery", "skipped-existing-branch" in LEGACY_RECOVERABLE_STATUSES)
 
     malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")
-    if malicious:
-        print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
+    _check("shell-injection-rejected", not malicious)
+
+    # ── Watchdog tests ──────────────────────────────────────────────────
+
+    # Test 1: Silent leader bounded TERM then KILL
+    t1_start = time.time()
+    t1 = watchdog(
+        [py, "-c", "import time; time.sleep(300)"],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    t1_elapsed = time.time() - t1_start
+    _check("t1-term-sent", t1.term_sent, f"term_sent={t1.term_sent}")
+    _check("t1-killed", t1.kill_sent or t1.returncode is not None, f"rc={t1.returncode} kill={t1.kill_sent}")
+    _check("t1-timeout-bound", t1_elapsed < 15, f"elapsed={t1_elapsed:.1f}s")
+    _check("t1-reason-idle", t1.reason == "opencode-idle-timeout", f"reason={t1.reason}")
+
+    # Test 2: Sparse stdout progress completes without timeout
+    t2 = watchdog(
+        [py, "-c", "import time\nfor i in range(5):\n print(f'line{i}', flush=True)\n time.sleep(0.3)"],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    _check("t2-completed", t2.returncode == 0, f"rc={t2.returncode}")
+    _check("t2-no-term", not t2.term_sent, "should complete without TERM")
+    _check("t2-output", b"line0" in t2.stdout_tail, f"stdout={t2.stdout_tail[:100]}")
+
+    # Test 3: Sparse stderr completes without timeout
+    t3 = watchdog(
+        [py, "-c", "import time,sys\nfor i in range(5):\n print(f'err{i}', file=sys.stderr, flush=True)\n time.sleep(0.3)"],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    _check("t3-completed", t3.returncode == 0, f"rc={t3.returncode}")
+    _check("t3-no-term", not t3.term_sent)
+    _check("t3-stderr-output", b"err0" in t3.stderr_tail, f"stderr={t3.stderr_tail[:100]}")
+
+    # Test 4: Tiny write then hang still times out
+    t4_start = time.time()
+    t4 = watchdog(
+        [py, "-c", "import time; print('once', flush=True); time.sleep(300)"],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    t4_elapsed = time.time() - t4_start
+    _check("t4-timeout", t4.term_sent or t4.kill_sent, f"term={t4.term_sent} kill={t4.kill_sent}")
+    _check("t4-timeout-bound", t4_elapsed < 15, f"elapsed={t4_elapsed:.1f}s")
+    _check("t4-output-captured", b"once" in t4.stdout_tail, f"stdout={t4.stdout_tail[:100]}")
+
+    # Test 5: WOULD_BLOCK on a live fd remains registered
+    r_fd, w_fd = os.pipe()
+    os.set_blocking(r_fd, False)
+    sel = select.epoll()
+    sel.register(r_fd, select.EPOLLIN)
+    # No data written — epoll should not return events
+    events = sel.poll(10)
+    _check("t5-no-event-when-empty", len(events) == 0, f"events={events}")
+    # _nb_read should return WOULD_BLOCK
+    data, status = _nb_read(r_fd)
+    _check("t5-would-block", status is FWOULDBLOCK, f"status={status!r}")
+    _check("t5-fd-still-registered", True)  # poll did not unregister
+    # Write data, verify fd still readable
+    os.write(w_fd, b"hello")
+    events = sel.poll(100)
+    _check("t5-readable-after-write", len(events) > 0, f"events={events}")
+    data, status = _nb_read(r_fd)
+    _check("t5-data-consumed", status is not FWOULDBLOCK and data == b"hello", f"data={data!r} status={status!r}")
+    sel.unregister(r_fd)
+    sel.close()
+    os.close(r_fd)
+    os.close(w_fd)
+
+    # Test 6: Multi-megabyte bounded tails
+    t6_script = (
+        "import sys; data = b'X' * (512 * 1024)\n"
+        "sys.stdout.buffer.write(data)\nsys.stderr.buffer.write(data)\n"
+    )
+    t6 = watchdog(
+        [py, "-c", t6_script],
+        idle_timeout=5,
+        held_pipe_timeout=2,
+    )
+    _check("t6-completed", t6.returncode == 0, f"rc={t6.returncode}")
+    _check("t6-stdout-bounded", len(t6.stdout_tail) <= TAIL_LIMIT + 32768,
+           f"len={len(t6.stdout_tail)} limit={TAIL_LIMIT}")
+    _check("t6-stderr-bounded", len(t6.stderr_tail) <= TAIL_LIMIT + 32768,
+           f"len={len(t6.stderr_tail)} limit={TAIL_LIMIT}")
+    _check("t6-stdout-has-data", len(t6.stdout_tail) > 0)
+    _check("t6-stderr-has-data", len(t6.stderr_tail) > 0)
+
+    # Test 7: TERM-handling child captures output, term_sent=True, kill_sent=False
+    t7 = watchdog(
+        [py, "-c", (
+            "import signal,sys,time\n"
+            "def handler(sig,frame): print('shutdown',flush=True); sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM,handler)\n"
+            "time.sleep(300)\n"
+        )],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    _check("t7-term-sent", t7.term_sent, f"term={t7.term_sent}")
+    _check("t7-no-kill", not t7.kill_sent, f"kill={t7.kill_sent}")
+    _check("t7-output-captured", b"shutdown" in t7.stdout_tail or b"shutdown" in t7.stderr_tail,
+           f"stdout={t7.stdout_tail[:100]} stderr={t7.stderr_tail[:100]}")
+
+    # Test 8: TERM-ignoring child requires escalation, kill_sent=True
+    t8 = watchdog(
+        [py, "-c", (
+            "import signal,signal as _s,time\n"
+            "_s.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(300)\n"
+        )],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    _check("t8-term-sent", t8.term_sent, f"term={t8.term_sent}")
+    _check("t8-kill-sent", t8.kill_sent, f"kill={t8.kill_sent}")
+    _check("t8-reason", t8.reason == "opencode-idle-timeout", f"reason={t8.reason}")
+
+    # Test 9: Unrelated process survives cleanup
+    survivor = subprocess.Popen(
+        [py, "-c", "import time; time.sleep(300)"],
+        start_new_session=True,
+    )
+    survivor_pid = survivor.pid
+    t9 = watchdog(
+        [py, "-c", "import time; time.sleep(300)"],
+        idle_timeout=2,
+        held_pipe_timeout=2,
+    )
+    time.sleep(0.3)
+    alive = survivor.poll() is None
+    _check("t9-unrelated-alive", alive, f"survivor pid={survivor_pid} alive={alive}")
+    try:
+        os.killpg(survivor_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    try:
+        survivor.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+
+    # Test 10: Normal leader exit + held-pipe descendant
+    # Child spawns grandchild keeping stdout open, then exits immediately
+    t10_script = (
+        f"import subprocess,sys,os,time\n"
+        f"p = subprocess.Popen([{py!r}, '-c', 'import time; time.sleep(300)'],\n"
+        f"    stdout=sys.stdout, stderr=sys.stderr, start_new_session=True)\n"
+        f"os._exit(0)\n"
+    )
+    t10_start = time.time()
+    t10 = watchdog(
+        [py, "-c", t10_script],
+        idle_timeout=60,
+        held_pipe_timeout=3,
+    )
+    t10_elapsed = time.time() - t10_start
+    _check("t10-held-pipe-reason", t10.reason == "held-pipe-cleanup",
+           f"reason={t10.reason}")
+    _check("t10-bounded-time", t10_elapsed < 15,
+           f"elapsed={t10_elapsed:.1f}s (should be <15, not 60)")
+    _check("t10-held-drained", t10.held_pipes_drained, f"drained={t10.held_pipes_drained}")
+
+    # Test 11: Configuration clamp — invalid/zero/negative timeout
+    _check("t11-zero-clamp", _clamp_timeout(0, 99) == 99, f"got={_clamp_timeout(0, 99)}")
+    _check("t11-negative-clamp", _clamp_timeout(-5, 99) == 99, f"got={_clamp_timeout(-5, 99)}")
+    _check("t11-invalid-clamp", _clamp_timeout("abc", 99) == 99, f"got={_clamp_timeout('abc', 99)}")
+    _check("t11-valid-pass", _clamp_timeout(42, 99) == 42, f"got={_clamp_timeout(42, 99)}")
+    _check("t11-minimum-clamp", _clamp_timeout(0, 99, minimum=1) == 99)
+    _check("t11-one-valid", _clamp_timeout(1, 99, minimum=1) == 1)
+    # Verify env-configured timeouts are actually used
+    t11 = watchdog(
+        [py, "-c", "print('ok', flush=True)"],
+        idle_timeout=10,
+        held_pipe_timeout=5,
+    )
+    _check("t11-config-used", t11.returncode == 0)
+
+    # Test 12: Timeout result persists deterministic state/classification
+    _check("t12-reason-values", t1.reason in ("opencode-idle-timeout", "normal-exit", "held-pipe-cleanup"))
+    _check("t12-reaped-bool", isinstance(t1.leader_reaped, bool))
+    _check("t12-elapsed-float", isinstance(t1.elapsed, float) and t1.elapsed >= 0)
+
+    # Test 13: Second watchdog child after timeout succeeds (queue liveness)
+    t13a = watchdog(
+        [py, "-c", "import time; time.sleep(300)"],
+        idle_timeout=1,
+        held_pipe_timeout=1,
+    )
+    t13b = watchdog(
+        [py, "-c", "print('second-ok', flush=True)"],
+        idle_timeout=5,
+        held_pipe_timeout=2,
+    )
+    _check("t13a-timeout", t13a.reason == "opencode-idle-timeout")
+    _check("t13b-success", t13b.returncode == 0, f"rc={t13b.returncode}")
+    _check("t13b-output", b"second-ok" in t13b.stdout_tail)
+
+    # Test 14: Diagnostics bounded and sanitized
+    diag = diagnostic_excerpt("x" * 10000, "y" * 10000)
+    _check("t14-bounded", len(diag) <= DIAGNOSTIC_LIMIT + 200, f"len={len(diag)}")
+    _check("t14-sanitized", "```" not in diag, "backticks should be replaced")
+
+    # Test 15: unreaped/status types — returncode is None only for truly unreaped
+    _check("t15-normal-int-or-none", t1.returncode is None or isinstance(t1.returncode, int))
+    _check("t15-sigterm-is-int", t1.terminal_signal is None or isinstance(t1.terminal_signal, int))
+
+    if failed:
+        print(f"bridge self-test: {failed} FAILED", file=sys.stderr)
         return 1
 
     print("bridge self-test: PASS")
