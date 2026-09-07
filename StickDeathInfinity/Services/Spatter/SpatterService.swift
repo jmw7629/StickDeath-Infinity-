@@ -41,6 +41,8 @@ final class SpatterService {
     - Community: Challenges, creator support, reward loops, creator identity
     - Business: Owner ops, payment entitlements, bug triage, investor reporting, moderation
     - Lore: Old Internet Mode, Corrupted Spatter Mode
+    - Advanced: Sound design, style DNA, remix DNA, destruction engine, procedural effects,
+      AI scene escalation, legendary frame detection, audio choreography, marketplace
 
     Rules:
     - Keep responses concise and actionable
@@ -105,13 +107,7 @@ final class SpatterService {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build context string
-        var contextStr = ""
-        if let ctx = context {
-            contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
-        }
-
-        // 5. Build API messages
+        // 4. Build API messages
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
@@ -125,7 +121,7 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 6. Call backend
+        // 5. Call backend
         guard let endpoint = backendEndpoint else {
             throw SpatterServiceError.unavailable(
                 "Spatter AI backend not configured. Set AppConfig.backendURL to a provider-neutral endpoint."
