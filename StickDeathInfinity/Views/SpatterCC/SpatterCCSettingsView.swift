@@ -1,18 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterCCSettingsView — Command Center global settings
 // Matches: spatter-admin /settings exactly
-// - AI Engine config (OpenAI key, Gemini key)
 // - Notifications (Slack webhook URL)
 // - Appearance (dark/light toggle)
 // - Emergency Controls (kill all bots)
-// ═══════════════════════════════════════════════════════════════════
+// - Backend status display
+// ════════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
 struct SpatterCCSettingsView: View {
     @ObservedObject private var botService = SpatterBotService.shared
-    @State private var openAIKey: String = AppConfig.openAIAPIKey
-    @State private var geminiKey: String = AppConfig.geminiAPIKey
     @State private var slackWebhook: String = ""
     @State private var showEmergencyConfirm = false
     @State private var showSavedToast = false
@@ -27,17 +25,6 @@ struct SpatterCCSettingsView: View {
                 Text("Global configuration for Spatter Social Autopilot")
                     .font(.system(size: 14))
                     .foregroundColor(.sdTextSecondary)
-            }
-
-            // AI Engine section
-            CCSettingsSection(title: "AI Engine", icon: "brain.fill",
-                              description: "Spatter uses AI to generate platform-native content. Configure your AI provider below.") {
-                VStack(spacing: 14) {
-                    CCSecureField(label: "OpenAI API Key (GPT-4)", value: $openAIKey,
-                                  placeholder: "sk-...")
-                    CCSecureField(label: "Google Gemini API Key", value: $geminiKey,
-                                  placeholder: "AI...")
-                }
             }
 
             // Notifications section
@@ -72,6 +59,34 @@ struct SpatterCCSettingsView: View {
                     .padding(14)
                     .background(Color.sdSurface2)
                     .cornerRadius(10)
+                }
+            }
+
+            // Backend status section
+            CCSettingsSection(title: "AI Backend", icon: "cloud.fill",
+                              description: "Spatter AI requests route through a provider-neutral backend boundary.") {
+                VStack(alignment: .leading, spacing: 12) {
+                    if AppConfig.backendURL != nil {
+                        HStack {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.sdSuccess)
+                            Text("Backend configured — AI requests routed through neutral boundary")
+                                .font(.system(size: 13))
+                                .foregroundColor(.sdTextPrimary)
+                        }
+                    } else {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundColor(.sdDestructive)
+                            Text("No backend configured — AI responses from local knowledge base only")
+                                .font(.system(size: 13))
+                                .foregroundColor(.sdTextMuted)
+                        }
+                    }
+
+                    Text("Set AppConfig.backendURL to enable online AI requests.")
+                        .font(.system(size: 11))
+                        .foregroundColor(.sdTextSecondary)
                 }
             }
 
@@ -127,8 +142,6 @@ struct SpatterCCSettingsView: View {
 
             // Save button
             Button {
-                botService.openAIKey = openAIKey
-                botService.geminiKey = geminiKey
                 botService.slackWebhook = slackWebhook
                 withAnimation { showSavedToast = true }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2) {

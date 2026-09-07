@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
+// Provider-neutral backend boundary — routes through AppConfig.backendURL
+// when configured, degrades gracefully when absent.
 //
 // Knowledge is embedded permanently via SpatterKnowledgeBase.swift
 // (120 modules: 100 brain + 20 core) — no external JSON needed.
@@ -14,9 +15,10 @@ import Supabase
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    // Provider-neutral backend URL — configured via AppConfig
+    private let backendEndpoint: URL?
+
+    // Spatter's core personality prompt (from brain module 001 + 003)
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -103,7 +105,7 @@ final class SpatterService {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
 
-        // 4. Build API messages
+        // 4. Build system prompt with embedded knowledge
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
             + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
@@ -117,14 +119,18 @@ final class SpatterService {
             apiMessages.append(["role": msg.role, "content": msg.content])
         }
 
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
+        // 5. Provider-neutral backend call
+        guard let backend = AppConfig.backendURL else {
+            throw SpatterServiceError.unavailable(
+                "Spatter AI backend not configured. Set AppConfig.backendURL to enable AI requests."
+            )
+        }
+
+        var request = URLRequest(url: backend)
         request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let body: [String: Any] = [
-            "model": model,
             "messages": apiMessages,
             "max_tokens": 500,
             "temperature": 0.8
@@ -174,5 +180,16 @@ struct OpenAIResponse: Codable {
 
     struct Message: Codable {
         let content: String
+    }
+}
+
+enum SpatterServiceError: LocalizedError {
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable(let message):
+            return message
+        }
     }
 }
