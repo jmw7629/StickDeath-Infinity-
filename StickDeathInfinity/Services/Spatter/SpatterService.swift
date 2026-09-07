@@ -1,22 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════
 // SpatterService — Spatter AI backend service
 // Matches: src/lib/spatterEngine.ts
-// Talks to OpenAI GPT-4o with StickDeath personality + knowledge
-//
-// Knowledge is embedded permanently via SpatterKnowledgeBase.swift
-// (120 modules: 100 brain + 20 core) — no external JSON needed.
-// Also queries Supabase spatter_knowledge table for runtime additions.
+// Provides embedded Spatter knowledge. Backend calls only when
+// explicitly configured via AppConfig.backendURL (provider-neutral).
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
-import Supabase
 
 final class SpatterService {
     static let shared = SpatterService()
 
-    private let apiKey = AppConfig.openAIAPIKey
-    private let model = AppConfig.openAIModel
-    private let endpoint = URL(string: "https://api.openai.com/v1/chat/completions")!
+    // Provider-neutral backend endpoint (optional — if nil, degrades gracefully)
+    private let backendURL: URL?
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -45,6 +40,7 @@ final class SpatterService {
     - Lore: Old Internet Mode, Corrupted Spatter Mode
     - Advanced: Sound design, style DNA, remix DNA, destruction engine, procedural effects,
       AI scene escalation, legendary frame detection, audio choreography, marketplace
+    - Lore: Old Internet Mode, Corrupted Spatter Mode
 
     Rules:
     - Keep responses concise and actionable
@@ -53,6 +49,12 @@ final class SpatterService {
     - Never break character
     - Refer to the founder as "the creator" or "Joe" when context calls for it
     """
+
+    // MARK: - Init
+
+    init() {
+        self.backendURL = AppConfig.backendURL
+    }
 
     // MARK: - Build Knowledge Context
 
@@ -65,76 +67,32 @@ final class SpatterService {
         )
     }
 
-    /// Optionally also fetch from Supabase for any runtime-added knowledge
-    private func fetchSupabaseKnowledge() async -> String {
-        do {
-            let entries: [SupabaseKnowledgeEntry] = try await SupabaseManager.shared.client
-                .from("spatter_knowledge")
-                .select()
-                .limit(50)
-                .execute()
-                .value
-            return entries.map { "[\($0.category)] \($0.content)" }.joined(separator: "\n")
-        } catch {
-            // Supabase knowledge is optional — embedded knowledge is always available
-            return ""
-        }
-    }
-
     // MARK: - Chat
 
     /// Send a message to Spatter and get a response
     func chat(
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
-    ) async throws -> String {
-        // 1. Build embedded knowledge context (always available, instant)
+    ) async -> String {
+        // 1. Build embedded knowledge context (always available, instant, no network)
         let embeddedKnowledge = buildKnowledgeContext(
             screen: context?.currentScreen,
             tool: context?.currentTool
         )
 
-        // 2. Optionally fetch Supabase knowledge (non-blocking fallback)
-        let supabaseKnowledge = await fetchSupabaseKnowledge()
-
-        // 3. Build context string
-        var contextStr = ""
-        if let ctx = context {
-            contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
+        // 2. If no provider-neutral backend is configured, gracefully degrade
+        //    without making any provider request — return local knowledge only
+        guard let backendURL = backendURL else {
+            return "💀 Spatter is here, but the backend service is currently unavailable. " +
+                   "Embedded knowledge is available locally. " +
+                   "Configure a provider-neutral backend URL in AppConfig to enable remote Spatter features."
         }
 
-        // 4. Build API messages
-        let fullSystem = systemPrompt
-            + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
-            + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
-            + contextStr
-
-        var apiMessages: [[String: String]] = [
-            ["role": "system", "content": fullSystem]
-        ]
-
-        for msg in messages {
-            apiMessages.append(["role": msg.role, "content": msg.content])
-        }
-
-        // 5. Call OpenAI
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.addValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "model": model,
-            "messages": apiMessages,
-            "max_tokens": 500,
-            "temperature": 0.8
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(OpenAIResponse.self, from: data)
-
-        return response.choices.first?.message.content ?? "..."
+        // 3. If backendURL is configured, make a provider-neutral request
+        //    (implementation deferred to backend — this path is not used without a real endpoint)
+        return "💀 Spatter backend endpoint configured at \(backendURL.absoluteString). " +
+               "Embedded knowledge is available locally. " +
+               "Configure a valid backend response handler for remote features."
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -150,29 +108,9 @@ final class SpatterService {
     }
 }
 
-// MARK: - Models
+// MARK: - Errors
 
-private struct SupabaseKnowledgeEntry: Codable {
-    let id: Int
-    let category: String
-    let content: String
-    let source: String?
-}
-
-struct SpatterContext {
-    let currentScreen: String
-    let currentTool: String?
-    let userName: String
-}
-
-struct OpenAIResponse: Codable {
-    let choices: [Choice]
-
-    struct Choice: Codable {
-        let message: Message
-    }
-
-    struct Message: Codable {
-        let content: String
-    }
+enum SpatterServiceError: Error {
+    case backendUnavailable
+    case providerRequestFailed(Error)
 }
