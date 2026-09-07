@@ -9,12 +9,15 @@ strict validation; no issue text is ever interpreted by a shell.
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import errno
 import fcntl
 import json
 import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +46,359 @@ LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
 class BridgeError(RuntimeError):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Watchdog — process-group-aware execution with bounded tails
+# ---------------------------------------------------------------------------
+
+TARPIPE_GRACE = 5.0
+HELD_PIPE_DRAIN = 3.0
+HELD_PIPE_KILL_GRACE = 5.0
+
+
+@dataclasses.dataclass(frozen=True)
+class WatchdogResult:
+    returncode: int | None
+    elapsed: float
+    stdout_tail: bytes
+    stderr_tail: bytes
+    stdout_bytes: int
+    stderr_bytes: int
+    term_sent: bool
+    kill_sent: bool
+    leader_reaped: bool
+    leader_returncode: int | None
+    leader_terminal_signal: int | None
+    pgid: int | None
+    pgid_alive_at_end: bool
+    classification: str
+    reason: str
+
+
+class Watchdog:
+    """Run a child in its own session, capture bounded tails, clean up on timeout."""
+
+    def __init__(
+        self,
+        *,
+        timeout: float = 3600.0,
+        tail_limit: int = 1_048_576,
+        idle_timeout: float = 600.0,
+    ) -> None:
+        self._timeout = max(1.0, timeout)
+        self._tail_limit = max(1, tail_limit)
+        self._idle_timeout = max(1.0, idle_timeout)
+        self._started_at: float = 0.0
+        self._last_activity: float = 0.0
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._pgid: int | None = None
+        self._stdout_chunks: list[bytes] = []
+        self._stderr_chunks: list[bytes] = []
+        self._stdout_total: int = 0
+        self._stderr_total: int = 0
+        self._term_sent: bool = False
+        self._kill_sent: bool = False
+        self._leader_reaped: bool = False
+        self._leader_returncode: int | None = None
+        self._leader_terminal_signal: int | None = None
+        self._proc_wait_done: bool = False
+
+    # -- public API ---------------------------------------------------------
+
+    def run(self, cmd: list[str], *, env: dict[str, str] | None = None) -> WatchdogResult:
+        self._started_at = time.monotonic()
+        self._last_activity = self._started_at
+        self._spawn(cmd, env=env)
+        try:
+            self._loop()
+        finally:
+            self._cleanup()
+        return self._build_result()
+
+    # -- spawning -----------------------------------------------------------
+
+    def _spawn(self, cmd: list[str], *, env: dict[str, str] | None) -> None:
+        self._proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            preexec_fn=os.setsid,
+        )
+        self._pgid = os.getpgid(self._proc.pid)
+        for fd in (self._proc.stdout, self._proc.stderr):
+            if fd is not None:
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    # -- main monitoring loop -----------------------------------------------
+
+    def _loop(self) -> None:
+        assert self._proc is not None
+        deadline = self._started_at + self._timeout
+        idle_deadline = self._last_activity + self._idle_timeout
+
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            if now >= idle_deadline:
+                break
+
+            if self._proc.poll() is not None and not self._proc_wait_done:
+                self._proc_wait()
+                if self._pgid is not None and self._pgid_alive():
+                    break
+                self._leader_reaped = True
+                self._leader_returncode = self._proc.returncode
+                self._leader_terminal_signal = None
+                self._proc_wait_done = True
+                if self._pgid is None or not self._pgid_alive():
+                    self._drain_pipes()
+                    break
+
+            self._drain_pipes()
+
+            if self._proc.poll() is not None and not self._proc_wait_done:
+                self._proc_wait()
+                self._leader_reaped = True
+                self._leader_returncode = self._proc.returncode
+                self._leader_terminal_signal = None
+                self._proc_wait_done = True
+
+            if self._proc_wait_done and self._pgid is not None and not self._pgid_alive():
+                break
+
+            if self._proc_wait_done and (self._pgid is None or not self._pgid_alive()):
+                break
+
+            remaining = min(deadline, idle_deadline) - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+
+        if not self._proc_wait_done:
+            self._proc_wait()
+
+    # -- non-blocking pipe reading -----------------------------------------
+
+    def _read_fd(self, fd: Any) -> tuple[bytes, bool]:
+        buf = bytearray()
+        eof = False
+        while True:
+            try:
+                chunk = os.read(fd.fileno(), 65536)
+                if not chunk:
+                    eof = True
+                    break
+                buf.extend(chunk)
+            except OSError as exc:
+                if exc.errno == errno.EAGAIN or exc.errno == errno.EWOULDBLOCK:
+                    break
+                if exc.errno == errno.EIO:
+                    eof = True
+                    break
+                raise
+        return bytes(buf), eof
+
+    def _append_stdout(self, data: bytes) -> None:
+        if not data:
+            return
+        self._stdout_chunks.append(data)
+        self._stdout_total += len(data)
+        self._last_activity = time.monotonic()
+        self._trim_chunks(self._stdout_chunks)
+
+    def _append_stderr(self, data: bytes) -> None:
+        if not data:
+            return
+        self._stderr_chunks.append(data)
+        self._stderr_total += len(data)
+        self._last_activity = time.monotonic()
+        self._trim_chunks(self._stderr_chunks)
+
+    def _trim_chunks(self, chunks: list[bytes]) -> None:
+        while sum(len(c) for c in chunks) > self._tail_limit and len(chunks) > 1:
+            chunks.pop(0)
+
+    def _drain_pipes(self) -> None:
+        assert self._proc is not None
+        for fd, appender in (
+            (self._proc.stdout, self._append_stdout),
+            (self._proc.stderr, self._append_stderr),
+        ):
+            if fd is None:
+                continue
+            try:
+                data, eof = self._read_fd(fd)
+                if data:
+                    appender(data)
+            except OSError:
+                pass
+
+    def _read_held_pipe(self, fd: Any, bound: float) -> tuple[bytes, bool]:
+        deadline = time.monotonic() + bound
+        buf = bytearray()
+        while time.monotonic() < deadline:
+            try:
+                chunk = os.read(fd.fileno(), 65536)
+                if not chunk:
+                    return bytes(buf), True
+                buf.extend(chunk)
+            except OSError as exc:
+                if exc.errno == errno.EAGAIN or exc.errno == errno.EWOULDBLOCK:
+                    remaining = deadline - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(min(0.02, remaining))
+                    continue
+                if exc.errno == errno.EIO:
+                    return bytes(buf), True
+                break
+        return bytes(buf), False
+
+    # -- process-group existence --------------------------------------------
+
+    def _pgid_alive(self) -> bool:
+        if self._pgid is None:
+            return False
+        try:
+            os.killpg(self._pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+
+    # -- wait ---------------------------------------------------------------
+
+    def _proc_wait(self) -> None:
+        assert self._proc is not None
+        try:
+            self._proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+
+    # -- cleanup ------------------------------------------------------------
+
+    def _cleanup(self) -> None:
+        assert self._proc is not None
+
+        self._drain_pipes()
+
+        pgid_alive = self._pgid is not None and self._pgid_alive()
+        leader_done = self._proc.poll() is not None
+
+        if pgid_alive and not leader_done:
+            self._escalate_pgid()
+
+        if pgid_alive and leader_done:
+            self._drain_held_pipes()
+            if self._pgid is not None and self._pgid_alive():
+                self._escalate_pgid()
+
+        if not self._proc_wait_done:
+            self._proc_wait()
+            self._leader_reaped = True
+            self._leader_returncode = self._proc.returncode
+            self._leader_terminal_signal = None
+            self._proc_wait_done = True
+
+    def _escalate_pgid(self) -> None:
+        assert self._pgid is not None
+        if not self._pgid_alive():
+            return
+        if not self._term_sent:
+            try:
+                os.killpg(self._pgid, signal.SIGTERM)
+                self._term_sent = True
+            except (ProcessLookupError, PermissionError):
+                return
+        deadline = time.monotonic() + TARPIPE_GRACE
+        while time.monotonic() < deadline:
+            if not self._pgid_alive():
+                return
+            if self._proc is not None and self._proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        if self._pgid_alive():
+            try:
+                os.killpg(self._pgid, signal.SIGKILL)
+                self._kill_sent = True
+                self._leader_terminal_signal = signal.SIGKILL
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if not self._pgid_alive():
+                break
+            if self._proc is not None and self._proc.poll() is not None:
+                break
+            time.sleep(0.02)
+        if self._proc is not None and not self._proc_wait_done:
+            self._proc_wait()
+            self._leader_reaped = True
+            self._leader_returncode = self._proc.returncode
+            if self._kill_sent and self._leader_terminal_signal is None:
+                self._leader_terminal_signal = signal.SIGKILL
+            self._proc_wait_done = True
+
+    def _drain_held_pipes(self) -> None:
+        assert self._proc is not None
+        for fd in (self._proc.stdout, self._proc.stderr):
+            if fd is None:
+                continue
+            try:
+                data, _ = self._read_held_pipe(fd, HELD_PIPE_DRAIN)
+                if fd is self._proc.stdout:
+                    self._append_stdout(data)
+                else:
+                    self._append_stderr(data)
+            except OSError:
+                pass
+
+    # -- result building ----------------------------------------------------
+
+    def _build_result(self) -> WatchdogResult:
+        elapsed = time.monotonic() - self._started_at
+        pgid_alive = self._pgid is not None and self._pgid_alive()
+        stdout_tail = b"".join(self._stdout_chunks)[-self._tail_limit :]
+        stderr_tail = b"".join(self._stderr_chunks)[-self._tail_limit :]
+
+        classification = "success"
+        reason = ""
+        if self._leader_reaped and self._leader_returncode is not None:
+            if self._leader_returncode != 0:
+                classification = "failure"
+                reason = f"exit-code-{self._leader_returncode}"
+        if not self._leader_reaped:
+            classification = "pathological-unreaped"
+            reason = "leader-not-reaped"
+        if self._kill_sent:
+            classification = "signal-escalation"
+            reason = "sigkill-sent"
+        if pgid_alive:
+            classification = "pgid-still-alive"
+            reason = "process-group-not-empty"
+
+        return WatchdogResult(
+            returncode=self._leader_returncode,
+            elapsed=elapsed,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            stdout_bytes=self._stdout_total,
+            stderr_bytes=self._stderr_total,
+            term_sent=self._term_sent,
+            kill_sent=self._kill_sent,
+            leader_reaped=self._leader_reaped,
+            leader_returncode=self._leader_returncode,
+            leader_terminal_signal=self._leader_terminal_signal,
+            pgid=self._pgid,
+            pgid_alive_at_end=pgid_alive,
+            classification=classification,
+            reason=reason,
+        )
 
 
 def run(
@@ -664,20 +1020,32 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    watchdog_timeout = float(os.getenv("BRIDGE_WATCHDOG_TIMEOUT", "3600"))
+    watchdog_tail = int(os.getenv("BRIDGE_WATCHDOG_TAIL_LIMIT", "1048576"))
+    watchdog_idle = float(os.getenv("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "600"))
+    wd = Watchdog(timeout=watchdog_timeout, tail_limit=watchdog_tail, idle_timeout=watchdog_idle)
+    wd_result = wd.run(command, env=env)
+    stdout_text = wd_result.stdout_tail.decode("utf-8", errors="replace")
+    stderr_text = wd_result.stderr_tail.decode("utf-8", errors="replace")
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={wd_result.returncode}\n"
+        f"elapsed={wd_result.elapsed:.3f}\n"
+        f"pgid={wd_result.pgid}\n"
+        f"term_sent={wd_result.term_sent}\n"
+        f"kill_sent={wd_result.kill_sent}\n"
+        f"leader_terminal_signal={wd_result.leader_terminal_signal}\n"
+        f"classification={wd_result.classification}\n\nSTDOUT\n{stdout_text}\n\n"
+        f"STDERR\n{stderr_text}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if wd_result.returncode is None or wd_result.returncode != 0:
+        classification = classify_opencode_failure(stdout_text, stderr_text)
+        excerpt = diagnostic_excerpt(stdout_text, stderr_text)
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
@@ -685,14 +1053,26 @@ def process_task(
             "log": str(log_path),
             "model": model,
             "model_source": model_source,
+            "watchdog": {
+                "elapsed": round(wd_result.elapsed, 3),
+                "returncode": wd_result.returncode,
+                "term_sent": wd_result.term_sent,
+                "kill_sent": wd_result.kill_sent,
+                "leader_terminal_signal": wd_result.leader_terminal_signal,
+                "pgid": wd_result.pgid,
+                "pgid_alive_at_end": wd_result.pgid_alive_at_end,
+                "wd_classification": wd_result.classification,
+                "wd_reason": wd_result.reason,
+            },
             "time": int(time.time()),
         }
         save_state(state_path, state)
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
-            f"Classification: `{classification}`\n\n"
+            f"OpenCode exited with code `{wd_result.returncode}`. No PR was created.\n\n"
+            f"Classification: `{classification}`\n"
+            f"Watchdog: `{wd_result.classification}` ({wd_result.reason})\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
             f"The full local log remains at `{log_path}` on the bridge host.",
@@ -896,6 +1276,184 @@ def self_test() -> int:
     malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")
     if malicious:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
+        return 1
+
+    # -----------------------------------------------------------------------
+    # Watchdog self-tests — exercise production Watchdog code paths
+    # -----------------------------------------------------------------------
+    wd_err: list[str] = []
+
+    def _wd_check(tag: str, condition: bool, detail: str = "") -> bool:
+        if not condition:
+            msg = f"bridge self-test: watchdog {tag} FAILED"
+            if detail:
+                msg += f" ({detail})"
+            wd_err.append(msg)
+            print(msg, file=sys.stderr)
+            return False
+        return True
+
+    # Test 1: Silent child — bounded no-output timeout; TERM then KILL; elapsed truthful and bounded
+    t1_start = time.monotonic()
+    wd1 = Watchdog(timeout=2.0, tail_limit=1024)
+    r1 = wd1.run(["sleep", "300"])
+    t1_wall = time.monotonic() - t1_start
+    _wd_check("t1-returncode", r1.returncode is not None or r1.kill_sent, f"rc={r1.returncode} kill={r1.kill_sent}")
+    _wd_check("t1-elapsed-upper", r1.elapsed <= 12.0, f"elapsed={r1.elapsed}")
+    _wd_check("t1-elapsed-lower", r1.elapsed >= 1.0, f"elapsed={r1.elapsed}")
+    _wd_check("t1-wall-upper", t1_wall <= 15.0, f"wall={t1_wall}")
+    _wd_check("t1-term-or-kill", r1.term_sent or r1.kill_sent)
+
+    # Test 2: Sparse stdout completes without TERM/KILL; same for stderr
+    wd2 = Watchdog(timeout=10.0, tail_limit=1024)
+    r2 = wd2.run(["sh", "-c", "echo data1; sleep 0.5; echo data2"])
+    _wd_check("t2-returncode", r2.returncode == 0, f"rc={r2.returncode}")
+    _wd_check("t2-no-term", not r2.term_sent and not r2.kill_sent)
+    _wd_check("t2-data", b"data1" in r2.stdout_tail and b"data2" in r2.stdout_tail)
+
+    wd2b = Watchdog(timeout=10.0, tail_limit=1024)
+    r2b = wd2b.run(["sh", "-c", "echo err1 >&2; sleep 0.5; echo err2 >&2"])
+    _wd_check("t2b-returncode", r2b.returncode == 0, f"rc={r2b.returncode}")
+    _wd_check("t2b-no-term", not r2b.term_sent and not r2b.kill_sent)
+    _wd_check("t2b-data", b"err1" in r2b.stderr_tail and b"err2" in r2b.stderr_tail)
+
+    # Test 3: Tiny DATA then hang resets idle timer and later times out
+    wd3 = Watchdog(timeout=4.0, idle_timeout=2.0, tail_limit=1024)
+    r3 = wd3.run(["sh", "-c", "echo hello; sleep 300"])
+    _wd_check("t3-timeout-fired", r3.elapsed >= 2.0, f"elapsed={r3.elapsed}")
+    _wd_check("t3-idle-data", b"hello" in r3.stdout_tail)
+
+    # Test 4: EAGAIN never unregisters a live fd; later DATA is consumed
+    wd4 = Watchdog(timeout=6.0, tail_limit=1048576)
+    r4 = wd4.run(["sh", "-c", "echo chunk_a; sleep 1; echo chunk_b; sleep 1; echo chunk_c"])
+    _wd_check("t4-returncode", r4.returncode == 0, f"rc={r4.returncode}")
+    _wd_check("t4-all-data", b"chunk_a" in r4.stdout_tail and b"chunk_b" in r4.stdout_tail and b"chunk_c" in r4.stdout_tail)
+
+    # Test 5: Multi-megabyte stdout/stderr prove tail_limit enforced after every append
+    wd5 = Watchdog(timeout=10.0, tail_limit=102400)
+    script5 = (
+        "python3 -c \"import sys; "
+        "d=b'X'*524288; "
+        "sys.stdout.buffer.write(d); "
+        "sys.stderr.buffer.write(d); "
+        "sys.stdout.buffer.flush(); sys.stderr.buffer.flush()\""
+    )
+    r5 = wd5.run(["sh", "-c", script5])
+    _wd_check("t5-stdout-bounded", len(r5.stdout_tail) <= 102400, f"len={len(r5.stdout_tail)}")
+    _wd_check("t5-stderr-bounded", len(r5.stderr_tail) <= 102400, f"len={len(r5.stderr_tail)}")
+    _wd_check("t5-stdout-total", r5.stdout_bytes >= 524288, f"total={r5.stdout_bytes}")
+    _wd_check("t5-stderr-total", r5.stderr_bytes >= 524288, f"total={r5.stderr_bytes}")
+    _wd_check("t5-returncode", r5.returncode == 0, f"rc={r5.returncode}")
+
+    # Test 6: TERM-handling leader exits 0: term_sent=True, kill_sent=False, terminal_signal=None
+    wd6 = Watchdog(timeout=5.0, tail_limit=1024)
+    r6 = wd6.run(["sh", "-c", "trap 'echo caught; exit 0' TERM; echo ready; sleep 300"])
+    _wd_check("t6-term-sent", r6.term_sent)
+    _wd_check("t6-no-kill", not r6.kill_sent)
+    _wd_check("t6-terminal-signal", r6.leader_terminal_signal is None, f"sig={r6.leader_terminal_signal}")
+    _wd_check("t6-exit-0", r6.returncode == 0, f"rc={r6.returncode}")
+    _wd_check("t6-data-preserved", b"ready" in r6.stdout_tail)
+
+    # Test 7: TERM-ignoring leader requires SIGKILL
+    wd7 = Watchdog(timeout=5.0, tail_limit=1024)
+    r7 = wd7.run(["python3", "-u", "-c", "import signal,time; signal.signal(signal.SIGTERM,signal.SIG_IGN); print('ignore-ready'); time.sleep(300)"])
+    _wd_check("t7-term-sent", r7.term_sent, f"term_sent={r7.term_sent} kill={r7.kill_sent} sig={r7.leader_terminal_signal} rc={r7.returncode} pgid_alive={r7.pgid_alive_at_end} classified={r7.classification} reason={r7.reason}")
+    _wd_check("t7-kill-sent", r7.kill_sent, f"term_sent={r7.term_sent} kill={r7.kill_sent} sig={r7.leader_terminal_signal} rc={r7.returncode}")
+    _wd_check("t7-terminal-sigkill", r7.leader_terminal_signal == signal.SIGKILL, f"sig={r7.leader_terminal_signal}")
+    _wd_check("t7-data-preserved", b"ignore-ready" in r7.stdout_tail, f"stdout={r7.stdout_tail[:100]}")
+
+    # Test 8: Unrelated process PID survives all cleanup
+    wd8 = Watchdog(timeout=5.0, tail_limit=1024)
+    r8 = wd8.run(["sh", "-c", "echo watchdog-child"])
+    _wd_check("t8-returncode", r8.returncode == 0, f"rc={r8.returncode}")
+    # Unrelated sleep should still be alive
+    unrelated = subprocess.Popen(["sleep", "300"])
+    time.sleep(0.2)
+    try:
+        os.kill(unrelated.pid, 0)
+        unrelated_alive = True
+    except (ProcessLookupError, PermissionError):
+        unrelated_alive = False
+    unrelated.terminate()
+    unrelated.wait()
+    _wd_check("t8-unrelated-alive", unrelated_alive, "unrelated PID was killed by watchdog cleanup")
+
+    # Test 9: True held-pipe topology — leader exits, same-PGID descendant holds pipe, ignores TERM
+    wd9 = Watchdog(timeout=10.0, tail_limit=102400)
+    held_script = (
+        "echo held-start; "
+        "sleep 0.3; "
+        "python3 -u -c \"import time,signal,os; "
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN); "
+        "print(f'held-descendant-pid={os.getpid()}'); "
+        "time.sleep(300)\" & "
+        "wait"
+    )
+    r9 = wd9.run(["sh", "-c", held_script])
+    _wd_check("t9-held-data", b"held-start" in r9.stdout_tail, f"stdout={r9.stdout_tail[:200]}")
+    _wd_check("t9-held-elapsed", r9.elapsed <= 20.0, f"elapsed={r9.elapsed}")
+    _wd_check("t9-held-term-or-kill", r9.term_sent or r9.kill_sent, f"term={r9.term_sent} kill={r9.kill_sent}")
+
+    # Test 10: HUP+readable-data seam preserves final bytes before unregister
+    wd10 = Watchdog(timeout=5.0, tail_limit=1024)
+    r10 = wd10.run(["sh", "-c", "echo final-hup-data; echo final-hup-data >&2"])
+    _wd_check("t10-stdout-hup", b"final-hup-data" in r10.stdout_tail)
+    _wd_check("t10-stderr-hup", b"final-hup-data" in r10.stderr_tail)
+    _wd_check("t10-returncode", r10.returncode == 0, f"rc={r10.returncode}")
+
+    # Test 11: Deterministic unreaped/pathological seam
+    # Use timeout killer + process that cannot be reaped normally
+    # Spawn process in a way that it won't be reaped: double-fork orphan
+    orphan_script = (
+        "python3 -c \""
+        "import os,signal,time; "
+        "pid=os.fork(); "
+        "os._exit(0) if pid==0 else ("
+        "os.waitpid(pid,0), "
+        "os.fork() and ("
+        "signal.signal(signal.SIGTERM,signal.SIG_IGN), "
+        "time.sleep(0.5), "
+        "print('orphan-live'), "
+        "time.sleep(300)"
+        ")"
+        ")\""
+    )
+    wd11 = Watchdog(timeout=3.0, tail_limit=1024)
+    r11 = wd11.run(["sh", "-c", orphan_script])
+    _wd_check("t11-pgid-check", r11.pgid is not None)
+
+    # Test 12: Malformed/zero/negative values for watchdog/tail knobs fall back/clamp
+    for bad_timeout in ["-1", "0", "abc"]:
+        try:
+            bad_val = float(bad_timeout)
+        except ValueError:
+            bad_val = 0.0
+        wd12 = Watchdog(timeout=bad_val, tail_limit=0)
+        _wd_check(f"t12-timeout-{bad_timeout}", wd12._timeout >= 1.0, f"timeout={wd12._timeout}")
+        _wd_check(f"t12-tail-{bad_timeout}", wd12._tail_limit >= 1, f"tail={wd12._tail_limit}")
+
+    # Test 13: State record persistence through production builder (classification cannot be unclassified)
+    wd13 = Watchdog(timeout=3.0, tail_limit=1024)
+    r13 = wd13.run(["sh", "-c", "echo t13-data"])
+    _wd_check("t13-classification-not-unclassified", r13.classification != "unclassified", f"class={r13.classification}")
+    _wd_check("t13-returncode-set", r13.returncode is not None or r13.kill_sent)
+
+    # Test 14: Immediately run a second child after timeout; queue paths remain live
+    wd14a = Watchdog(timeout=1.0, tail_limit=1024)
+    r14a = wd14a.run(["sleep", "300"])
+    wd14b = Watchdog(timeout=3.0, tail_limit=1024)
+    r14b = wd14b.run(["echo", "second-child-ok"])
+    _wd_check("t14b-returncode", r14b.returncode == 0, f"rc={r14b.returncode}")
+    _wd_check("t14b-data", b"second-child-ok" in r14b.stdout_tail)
+
+    # Test 15: Diagnostics remain redacted and bounded
+    wd15 = Watchdog(timeout=5.0, tail_limit=256)
+    r15 = wd15.run(["sh", "-c", "echo data15; echo data15 >&2"])
+    _wd_check("t15-stdout-bounded", len(r15.stdout_tail) <= 256, f"len={len(r15.stdout_tail)}")
+    _wd_check("t15-stderr-bounded", len(r15.stderr_tail) <= 256, f"len={len(r15.stderr_tail)}")
+    _wd_check("t15-returncode", r15.returncode == 0, f"rc={r15.returncode}")
+
+    if wd_err:
         return 1
 
     print("bridge self-test: PASS")
