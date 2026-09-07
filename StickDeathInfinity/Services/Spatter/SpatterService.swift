@@ -11,10 +11,9 @@
 import Foundation
 import Supabase
 
+@MainActor
 final class SpatterService {
     static let shared = SpatterService()
-
-    private let backendEndpoint: URL?
 
     // Spatter's core personality prompt (from brain module 001 + 003)
     private let systemPrompt = """
@@ -79,12 +78,6 @@ final class SpatterService {
         }
     }
 
-    // MARK: - Init
-
-    init() {
-        self.backendEndpoint = AppConfig.backendURL
-    }
-
     // MARK: - Chat
 
     /// Send a message to Spatter and get a response
@@ -92,56 +85,38 @@ final class SpatterService {
         messages: [(role: String, content: String)],
         context: SpatterContext? = nil
     ) async throws -> String {
-        // 1. Build embedded knowledge context (always available, instant)
+        guard AppConfig.backendURL != nil else { throw SpatterClientError.notConfigured }
+        // Obtain an SDK-managed authenticated session before any optional knowledge request.
+        guard let sessionToken = try? await SupabaseManager.shared.client.auth.session.accessToken,
+              !sessionToken.isEmpty else { throw SpatterClientError.notAuthenticated }
+        try Task.checkCancellation()
+
         let embeddedKnowledge = buildKnowledgeContext(
-            screen: context?.currentScreen,
-            tool: context?.currentTool
+            screen: context?.currentScreen, tool: context?.currentTool
         )
-
-        // 2. Optionally fetch Supabase knowledge (non-blocking fallback)
         let supabaseKnowledge = await fetchSupabaseKnowledge()
-
-        // 3. Build context string
         var contextStr = ""
         if let ctx = context {
             contextStr = "\n\nCurrent context: Screen=\(ctx.currentScreen), Tool=\(ctx.currentTool ?? "none"), User=\(ctx.userName)"
         }
-
-        // 4. Build API messages
         let fullSystem = systemPrompt
             + "\n\n--- EMBEDDED KNOWLEDGE ---\n" + embeddedKnowledge
-            + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + supabaseKnowledge)
+            + (supabaseKnowledge.isEmpty ? "" : "\n\n--- RUNTIME KNOWLEDGE ---\n" + String(supabaseKnowledge.prefix(6000)))
             + contextStr
-
-        var apiMessages: [[String: String]] = [
-            ["role": "system", "content": fullSystem]
-        ]
-
-        for msg in messages {
-            apiMessages.append(["role": msg.role, "content": msg.content])
+        var apiMessages = [SpatterChatMessage(role: .system, content: fullSystem)]
+        for message in messages.suffix(20) {
+            guard let role = SpatterChatMessage.Role(rawValue: message.role), role != .system else {
+                throw SpatterClientError.invalidRequest
+            }
+            apiMessages.append(SpatterChatMessage(role: role, content: message.content))
         }
-
-        // 5. Call backend
-        guard let endpoint = backendEndpoint else {
-            throw SpatterServiceError.unavailable(
-                "Spatter AI backend not configured. Set AppConfig.backendURL to a provider-neutral endpoint."
-            )
-        }
-
-        var request = URLRequest(url: endpoint)
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-
-        let body: [String: Any] = [
-            "messages": apiMessages,
-            "max_tokens": 500,
-            "temperature": 0.8
-        ]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let decoded = try? JSONDecoder().decode(Response.self, from: data)
-        return decoded?.choices.first?.message.content ?? "Spatter AI unavailable — backend not configured."
+        let client = SpatterBackendClient(sessionToken: {
+            // Refuse an account/session change while optional knowledge was loading.
+            let current = try await SupabaseManager.shared.client.auth.session.accessToken
+            guard current == sessionToken else { throw SpatterClientError.notAuthenticated }
+            return current
+        })
+        return try await client.complete(messages: apiMessages)
     }
 
     // MARK: - Quick Knowledge Lookup
@@ -170,20 +145,4 @@ struct SpatterContext {
     let currentScreen: String
     let currentTool: String?
     let userName: String
-}
-
-enum SpatterServiceError: Error {
-    case unavailable(String)
-}
-
-private struct Response: Codable {
-    let choices: [Choice]
-
-    struct Choice: Codable {
-        let message: Message
-    }
-
-    struct Message: Codable {
-        let content: String
-    }
 }

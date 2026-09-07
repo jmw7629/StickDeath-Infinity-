@@ -1,20 +1,21 @@
-/// AppConfig — public, provider-neutral configuration boundary
-/// Loaded from app configuration source (plist/UserDefaults). No API keys, no secrets.
-/// Exposes only an optional backend URL for provider-neutral AI routing.
-
 import Foundation
 
+/// Public build configuration only. Provider credentials belong on the backend.
 struct AppConfig {
-    /// Optional provider-neutral backend URL for AI routing.
-    /// When nil, AI chat functions must provide truthful unavailable/local-degradation behavior.
-    static var backendURL: URL?
+    /// Configure SPATTER_BACKEND_URL in the app's Info.plist/xcconfig.
+    /// Read on each use; do not keep a mutable endpoint or cache a missing value.
+    static var backendURL: URL? {
+        backendURL(from: Bundle.main.infoDictionary ?? [:])
+    }
 
-    /// Call rate tier for R3 billing (per-minute rates).
+    static func backendURL(from values: [String: Any]) -> URL? {
+        guard let value = values["SPATTER_BACKEND_URL"] as? String else { return nil }
+        return SpatterEndpoint.url(from: value)
+    }
+
+    /// Existing display rates; actual billing authorization remains server-side.
     enum CallRateTier: String, CaseIterable {
-        case standard = "standard"
-        case creator = "creator"
-        case pro = "pro"
-        case studio = "studio"
+        case standard, creator, pro, studio
 
         var ratePerMinute: Double {
             switch self {
@@ -24,5 +25,7 @@ struct AppConfig {
             case .studio: return 0.25
             }
         }
+
+        var displayName: String { rawValue.capitalized }
     }
 }

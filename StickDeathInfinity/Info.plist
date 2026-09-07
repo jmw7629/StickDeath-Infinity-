@@ -62,5 +62,7 @@
         <string>Anybody-Regular.ttf</string>
         <string>Anybody-Bold.ttf</string>
     </array>
+	<key>SPATTER_BACKEND_URL</key>
+	<string>$(SPATTER_BACKEND_URL)</string>
 </dict>
 </plist>

@@ -7,6 +7,7 @@
 	objects = {
 
 		/* Begin PBXBuildFile section */
+		9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */; };
 		C5642734BE308D75EA71656D /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F0641C2912938924BF6012F /* AppConfig.swift */; };
 		D7FC858751F69D65296D596F /* AppFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCB50A611A602BCFD47486E /* AppFlowView.swift */; };
 		170FE91D743943923A25ECBF /* StickDeathInfinityApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53F1F7CD7C6E65D5367CCF7C /* StickDeathInfinityApp.swift */; };
@@ -74,6 +75,7 @@
 		/* End PBXBuildFile section */
 
 		/* Begin PBXFileReference section */
+		2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBackendClient.swift; sourceTree = "<group>"; };
 		C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StickDeathInfinity.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3F0641C2912938924BF6012F /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		DCCB50A611A602BCFD47486E /* AppFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppFlowView.swift; sourceTree = "<group>"; };
@@ -190,6 +192,7 @@
 		BC5112DECBA7F6330A2F99AE /* App */ = {
 			isa = PBXGroup;
 			children = (
+				2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */,
 				3F0641C2912938924BF6012F /* AppConfig.swift */,
 				DCCB50A611A602BCFD47486E /* AppFlowView.swift */,
 				53F1F7CD7C6E65D5367CCF7C /* StickDeathInfinityApp.swift */,
@@ -602,6 +605,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */,
 				C5642734BE308D75EA71656D /* AppConfig.swift in Sources */,
 				D7FC858751F69D65296D596F /* AppFlowView.swift in Sources */,
 				170FE91D743943923A25ECBF /* StickDeathInfinityApp.swift in Sources */,
@@ -809,7 +813,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.9;
+				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
@@ -838,7 +842,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.9;
+				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
