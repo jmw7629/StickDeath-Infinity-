@@ -20,6 +20,8 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+import selectors
+import signal
 
 BRIDGE_MARKER = "<!-- joeos-opencode-bridge:v1 -->"
 DEFAULT_REPO = "jmw7629/StickDeath-Infinity-"
@@ -39,6 +41,244 @@ TERMINAL_STATUSES = {
 }
 RECOVERABLE_PREFIX = "recovery-blocked-"
 LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
+
+# --- Bounded streaming watchdog ---
+
+DEFAULT_OUTPUT_BUFFER_LIMIT = 1 * 1024 * 1024
+OUTPUT_BUFFER_ENV = "BRIDGE_OUTPUT_BUFFER_LIMIT"
+IDLE_TIMEOUT_ENV = "BRIDGE_IDLE_TIMEOUT"
+DEFAULT_IDLE_TIMEOUT = 600
+KILL_GRACE_SECONDS = 5
+FINAL_WAIT_SECONDS = 10
+
+
+def _parse_int_env(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(raw)
+    except ValueError:
+        return default
+    if val < minimum:
+        return default
+    return val
+
+
+class BoundedBuffer:
+    """Tail buffer that retains at most ``max_bytes`` of the most recent data."""
+
+    def __init__(self, max_bytes: int) -> None:
+        self._max_bytes = max(1, max_bytes)
+        self._chunks: list[bytes] = []
+        self._total_len = 0
+
+    def append(self, data: bytes) -> None:
+        if not data:
+            return
+        self._chunks.append(data)
+        self._total_len += len(data)
+        self._trim()
+
+    def _trim(self) -> None:
+        while self._total_len > self._max_bytes and len(self._chunks) > 1:
+            dropped = self._chunks.pop(0)
+            self._total_len -= len(dropped)
+        if self._total_len > self._max_bytes and self._chunks:
+            excess = self._total_len - self._max_bytes
+            self._chunks[0] = self._chunks[0][excess:]
+            self._total_len -= excess
+
+    @property
+    def value(self) -> bytes:
+        return b"".join(self._chunks)
+
+    @property
+    def value_str(self) -> str:
+        return self.value.decode("utf-8", errors="replace")
+
+    @property
+    def retained_bytes(self) -> int:
+        return self._total_len
+
+    @property
+    def max_retained(self) -> int:
+        return self._max_bytes
+
+
+def _drain_pipes(
+    proc: subprocess.Popen,
+    sel: selectors.DefaultSelector,
+    stdout_buf: BoundedBuffer,
+    stderr_buf: BoundedBuffer,
+    deadline: float,
+) -> None:
+    while sel.get_map() and time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        try:
+            events = sel.select(timeout=min(remaining, 0.5))
+        except (OSError, ValueError):
+            break
+        for key, _ in events:
+            stream_name, stream = key.data
+            try:
+                chunk = stream.read(65536)
+            except (OSError, ValueError):
+                try:
+                    sel.unregister(stream)
+                except (KeyError, ValueError):
+                    pass
+                continue
+            if chunk:
+                if stream_name == "stdout":
+                    stdout_buf.append(chunk)
+                else:
+                    stderr_buf.append(chunk)
+            else:
+                try:
+                    sel.unregister(stream)
+                except (KeyError, ValueError):
+                    pass
+
+
+def _terminate_process_group(
+    proc: subprocess.Popen,
+    sel: selectors.DefaultSelector,
+    stdout_buf: BoundedBuffer,
+    stderr_buf: BoundedBuffer,
+    grace: int,
+    final: int,
+) -> str:
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    deadline = time.monotonic() + grace
+    _drain_pipes(proc, sel, stdout_buf, stderr_buf, deadline)
+
+    if proc.poll() is not None:
+        return ""
+
+    try:
+        pgid = os.getpgid(proc.pid)
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    deadline = time.monotonic() + final
+    _drain_pipes(proc, sel, stdout_buf, stderr_buf, deadline)
+
+    if proc.poll() is None:
+        try:
+            proc.wait(timeout=final)
+        except subprocess.TimeoutExpired:
+            return "+reap-failed"
+    return ""
+
+
+def run_opencode_streaming(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    idle_timeout: int,
+    output_buffer_limit: int,
+) -> tuple[int, BoundedBuffer, BoundedBuffer, str]:
+    """Run *command* with bounded streaming output and idle timeout.
+
+    Returns ``(returncode, stdout_buf, stderr_buf, timeout_status)``.
+    ``timeout_status`` is ``""`` on normal completion or a short description
+    when the idle timeout fired.
+    """
+    stdout_buf = BoundedBuffer(output_buffer_limit)
+    stderr_buf = BoundedBuffer(output_buffer_limit)
+    timeout_status = ""
+
+    proc = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        preexec_fn=os.setsid,
+    )
+
+    sel = selectors.DefaultSelector()
+    if proc.stdout:
+        sel.register(proc.stdout, selectors.EVENT_READ, data=("stdout", proc.stdout))
+    if proc.stderr:
+        sel.register(proc.stderr, selectors.EVENT_READ, data=("stderr", proc.stderr))
+
+    last_activity = time.monotonic()
+    timed_out = False
+
+    try:
+        while sel.get_map():
+            remaining = idle_timeout - (time.monotonic() - last_activity)
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                events = sel.select(timeout=min(remaining, 1.0))
+            except (OSError, ValueError):
+                break
+            for key, _ in events:
+                stream_name, stream = key.data
+                try:
+                    chunk = stream.read(65536)
+                except (OSError, ValueError):
+                    try:
+                        sel.unregister(stream)
+                    except (KeyError, ValueError):
+                        pass
+                    continue
+                if chunk:
+                    last_activity = time.monotonic()
+                    if stream_name == "stdout":
+                        stdout_buf.append(chunk)
+                    else:
+                        stderr_buf.append(chunk)
+                else:
+                    try:
+                        sel.unregister(stream)
+                    except (KeyError, ValueError):
+                        pass
+    finally:
+        if timed_out:
+            timeout_status = f"idle-timeout-{idle_timeout}s"
+            reap_extra = _terminate_process_group(
+                proc, sel, stdout_buf, stderr_buf,
+                KILL_GRACE_SECONDS, FINAL_WAIT_SECONDS,
+            )
+            timeout_status += reap_extra
+        else:
+            if proc.poll() is None:
+                try:
+                    proc.wait(timeout=FINAL_WAIT_SECONDS)
+                except subprocess.TimeoutExpired:
+                    try:
+                        pgid = os.getpgid(proc.pid)
+                        os.killpg(pgid, signal.SIGKILL)
+                    except (ProcessLookupError, PermissionError, OSError):
+                        pass
+                    try:
+                        proc.wait(timeout=FINAL_WAIT_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        timeout_status = "+reap-failed"
+        sel.close()
+        for stream in (proc.stdout, proc.stderr):
+            if stream and not stream.closed:
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+
+    rc = proc.returncode
+    if rc is None:
+        rc = -1
+    return rc, stdout_buf, stderr_buf, timeout_status
 
 
 class BridgeError(RuntimeError):
@@ -664,20 +904,33 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    idle_timeout = _parse_int_env(IDLE_TIMEOUT_ENV, DEFAULT_IDLE_TIMEOUT, minimum=10)
+    buffer_limit = _parse_int_env(OUTPUT_BUFFER_ENV, DEFAULT_OUTPUT_BUFFER_LIMIT, minimum=4096)
+    returncode, stdout_buf, stderr_buf, timeout_status = run_opencode_streaming(
+        command, cwd=worktree, env=env,
+        idle_timeout=idle_timeout, output_buffer_limit=buffer_limit,
+    )
+    stdout_text = stdout_buf.value_str
+    stderr_text = stderr_buf.value_str
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={returncode}\n"
+        f"timeout={timeout_status or 'none'}\n"
+        f"buffer_limit={buffer_limit}\n\n"
+        f"STDOUT\n{stdout_text}\n\n"
+        f"STDERR\n{stderr_text}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if timeout_status or returncode != 0:
+        if timeout_status:
+            classification = "idle-timeout"
+        else:
+            classification = classify_opencode_failure(stdout_text, stderr_text)
+        excerpt = diagnostic_excerpt(stdout_text, stderr_text)
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
@@ -691,7 +944,7 @@ def process_task(
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"OpenCode exited with code `{returncode}`. No PR was created.\n\n"
             f"Classification: `{classification}`\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
@@ -897,6 +1150,166 @@ def self_test() -> int:
     if malicious:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
+
+    # --- Bounded buffer unit tests ---
+    buf = BoundedBuffer(100)
+    for _ in range(200):
+        buf.append(b"x" * 50)
+    if buf.retained_bytes > 100:
+        print(f"bridge self-test: bounded buffer FAILED: retained {buf.retained_bytes} > 100", file=sys.stderr)
+        return 1
+    if buf.max_retained != 100:
+        print("bridge self-test: bounded buffer max_retained FAILED", file=sys.stderr)
+        return 1
+
+    buf2 = BoundedBuffer(50)
+    buf2.append(b"hello")
+    buf2.append(b"world")
+    if buf2.value != b"helloworld":
+        print(f"bridge self-test: bounded buffer value FAILED: {buf2.value!r}", file=sys.stderr)
+        return 1
+    if buf2.retained_bytes != 10:
+        print(f"bridge self-test: bounded buffer retained FAILED: {buf2.retained_bytes}", file=sys.stderr)
+        return 1
+
+    buf3 = BoundedBuffer(10)
+    buf3.append(b"x" * 20)
+    if buf3.retained_bytes > 10:
+        print(f"bridge self-test: bounded buffer overflow FAILED: retained {buf3.retained_bytes}", file=sys.stderr)
+        return 1
+
+    buf4 = BoundedBuffer(100)
+    for _ in range(1000):
+        buf4.append(b"a" * 50)
+    if buf4.retained_bytes > 100:
+        print(f"bridge self-test: bounded buffer stress FAILED: retained {buf4.retained_bytes}", file=sys.stderr)
+        return 1
+
+    # --- Streaming watchdog integration tests ---
+    tmp_env = os.environ.copy()
+
+    t0 = time.monotonic()
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=2, output_buffer_limit=4096,
+    )
+    elapsed = time.monotonic() - t0
+    if not tout or "idle-timeout" not in tout:
+        print(f"bridge self-test: silent child timeout FAILED: tout={tout!r}", file=sys.stderr)
+        return 1
+    if elapsed > 20:
+        print(f"bridge self-test: silent child timeout BOUND FAILED: {elapsed:.1f}s", file=sys.stderr)
+        return 1
+
+    t0 = time.monotonic()
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c",
+         "import sys,time\n"
+         "for i in range(20):\n"
+         "    sys.stdout.write(f'tick {i}\\n')\n"
+         "    sys.stdout.flush()\n"
+         "    time.sleep(0.5)\n"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=3, output_buffer_limit=4096,
+    )
+    elapsed = time.monotonic() - t0
+    if tout:
+        print(f"bridge self-test: stdout progress FAILED: tout={tout!r}", file=sys.stderr)
+        return 1
+    if elapsed < 2:
+        print(f"bridge self-test: stdout progress too fast: {elapsed:.1f}s", file=sys.stderr)
+        return 1
+
+    t0 = time.monotonic()
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c",
+         "import sys,time\n"
+         "for i in range(20):\n"
+         "    sys.stderr.write(f'tick {i}\\n')\n"
+         "    sys.stderr.flush()\n"
+         "    time.sleep(0.5)\n"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=3, output_buffer_limit=4096,
+    )
+    elapsed = time.monotonic() - t0
+    if tout:
+        print(f"bridge self-test: stderr progress FAILED: tout={tout!r}", file=sys.stderr)
+        return 1
+    if elapsed < 2:
+        print(f"bridge self-test: stderr progress too fast: {elapsed:.1f}s", file=sys.stderr)
+        return 1
+
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c",
+         "import sys\n"
+         "for _ in range(2000):\n"
+         "    sys.stdout.write('x'*10000+'\\n')\n"
+         "    sys.stdout.flush()\n"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=60, output_buffer_limit=8192,
+    )
+    if sout.retained_bytes > 8192:
+        print(f"bridge self-test: large output buffer FAILED: retained {sout.retained_bytes}", file=sys.stderr)
+        return 1
+    if sout.max_retained != 8192:
+        print("bridge self-test: large output max_retained FAILED", file=sys.stderr)
+        return 1
+
+    bg = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    time.sleep(0.3)
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=2, output_buffer_limit=4096,
+    )
+    if bg.poll() is not None:
+        print("bridge self-test: unrelated process killed FAILED", file=sys.stderr)
+        bg.kill()
+        return 1
+    bg.kill()
+    bg.wait()
+
+    t0 = time.monotonic()
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c",
+         "import signal,time\n"
+         "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+         "time.sleep(60)\n"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=2, output_buffer_limit=4096,
+    )
+    elapsed = time.monotonic() - t0
+    if not tout:
+        print("bridge self-test: TERM-ignorer timeout FAILED", file=sys.stderr)
+        return 1
+    if elapsed > 30:
+        print(f"bridge self-test: TERM-ignorer reap BOUND FAILED: {elapsed:.1f}s", file=sys.stderr)
+        return 1
+
+    t0 = time.monotonic()
+    rc, sout, serr, tout = run_opencode_streaming(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        cwd=Path("/tmp"), env=tmp_env, idle_timeout=1, output_buffer_limit=4096,
+    )
+    elapsed = time.monotonic() - t0
+    max_bound = 1 + KILL_GRACE_SECONDS + FINAL_WAIT_SECONDS * 2 + 5
+    if elapsed > max_bound:
+        print(f"bridge self-test: reap bound FAILED: {elapsed:.1f}s > {max_bound}s", file=sys.stderr)
+        return 1
+
+    os.environ[IDLE_TIMEOUT_ENV] = "0"
+    if _parse_int_env(IDLE_TIMEOUT_ENV, 100, minimum=10) != 100:
+        print("bridge self-test: env zero rejection FAILED", file=sys.stderr)
+        return 1
+    os.environ[IDLE_TIMEOUT_ENV] = "-5"
+    if _parse_int_env(IDLE_TIMEOUT_ENV, 100, minimum=10) != 100:
+        print("bridge self-test: env negative rejection FAILED", file=sys.stderr)
+        return 1
+    os.environ[IDLE_TIMEOUT_ENV] = "abc"
+    if _parse_int_env(IDLE_TIMEOUT_ENV, 100, minimum=10) != 100:
+        print("bridge self-test: env invalid rejection FAILED", file=sys.stderr)
+        return 1
+    os.environ[IDLE_TIMEOUT_ENV] = "30"
+    if _parse_int_env(IDLE_TIMEOUT_ENV, 100, minimum=10) != 30:
+        print("bridge self-test: env valid FAILED", file=sys.stderr)
+        return 1
+    os.environ.pop(IDLE_TIMEOUT_ENV, None)
+    os.environ.pop(OUTPUT_BUFFER_ENV, None)
 
     print("bridge self-test: PASS")
     return 0
