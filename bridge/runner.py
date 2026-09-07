@@ -9,12 +9,16 @@ strict validation; no issue text is ever interpreted by a shell.
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import json
+import math
 import os
 import re
+import select
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +47,45 @@ LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
 
 class BridgeError(RuntimeError):
     pass
+
+
+def _safe_float_env(raw: str | None, default: float, *, clamp_min: float = 0.0,
+                    clamp_max: float | None = None) -> float:
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except (ValueError, OverflowError):
+        return default
+    if math.isnan(value) or math.isinf(value):
+        return default
+    value = max(clamp_min, value)
+    if clamp_max is not None:
+        value = min(clamp_max, value)
+    return value
+
+
+def _safe_int_env(raw: str | None, default: int, *, clamp_min: int = 1,
+                  clamp_max: int | None = None) -> int:
+    if raw is None:
+        return default
+    raw = raw.strip()
+    if not raw:
+        return default
+    try:
+        fval = float(raw)
+    except (ValueError, OverflowError):
+        return default
+    if math.isnan(fval) or math.isinf(fval):
+        return default
+    value = int(fval)
+    value = max(clamp_min, value)
+    if clamp_max is not None:
+        value = min(clamp_max, value)
+    return value
 
 
 def run(
@@ -586,6 +629,351 @@ def prepare_issue_branch(
     return True
 
 
+class Watchdog:
+    """Process watchdog with bounded output, independent leader/pgid lifecycle,
+    safe env-parsing, and authoritative failure classification."""
+
+    def __init__(
+        self,
+        cwd: Path,
+        *,
+        idle_timeout: float = 0.0,
+        hard_timeout: float = 0.0,
+        tail_limit: int = 0,
+        holdpipe_timeout: float = 0.0,
+    ) -> None:
+        self.cwd = cwd
+        self._cfg_idle = idle_timeout
+        self._cfg_hard = hard_timeout
+        self._cfg_tail = tail_limit
+        self._cfg_holdpipe = holdpipe_timeout
+
+        self._proc: subprocess.Popen[str] | None = None
+        self._pgid: int | None = None
+        self._stdout_fd: int = -1
+        self._stderr_fd: int = -1
+        self._stdout_buf = bytearray()
+        self._stderr_buf = bytearray()
+        self._stdout_eof = False
+        self._stderr_eof = False
+        self._last_activity = time.monotonic()
+        self._start = time.monotonic()
+        self._done = False
+        self._term_sent = False
+        self._kill_sent = False
+        self._leader_reaped = False
+        self._returncode: int | None = None
+        self._timeout_type = ""
+        self._classification = ""
+        self._total_stdout = 0
+        self._total_stderr = 0
+
+    @staticmethod
+    def _env_float(env_var: str, default: float, **kw: Any) -> float:
+        return _safe_float_env(os.getenv(env_var), default, **kw)
+
+    @staticmethod
+    def _env_int(env_var: str, default: int, **kw: Any) -> int:
+        return _safe_int_env(os.getenv(env_var), default, **kw)
+
+    def idle_limit(self) -> float:
+        return self._env_float("BRIDGE_WATCHDOG_IDLE_TIMEOUT", self._cfg_idle, clamp_min=1.0)
+
+    def hard_limit(self) -> float:
+        return self._env_float("BRIDGE_WATCHDOG_HARD_TIMEOUT", self._cfg_hard, clamp_min=5.0)
+
+    def tail_limit(self) -> int:
+        val = self._env_int("BRIDGE_WATCHDOG_TAIL_LIMIT", self._cfg_tail, clamp_min=1024,
+                            clamp_max=64 * 1024 * 1024)
+        return val if val > 0 else 2 * 1024 * 1024
+
+    def holdpipe_limit(self) -> float:
+        return self._env_float("BRIDGE_WATCHDOG_HOLDPIPE_TIMEOUT", self._cfg_holdpipe, clamp_min=1.0)
+
+    def _spawn(self, command: list[str], env: dict[str, str]) -> None:
+        self._proc = subprocess.Popen(
+            command,
+            cwd=str(self.cwd),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+        self._stdout_fd = self._proc.stdout.fileno()
+        self._stderr_fd = self._proc.stderr.fileno()
+        for fd in (self._stdout_fd, self._stderr_fd):
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        self._pgid = os.getpgid(self._proc.pid)
+        self._update_activity()
+
+    def _update_activity(self) -> None:
+        self._last_activity = time.monotonic()
+
+    def _read_fd(self, fd: int, buf: bytearray, limit: int, poller: select.poll) -> None:
+        chunk_limit = min(limit, 65536)
+        while True:
+            try:
+                data = os.read(fd, chunk_limit)
+            except OSError as exc:
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return
+                raise
+            if not data:
+                poller.unregister(fd)
+                if fd == self._stdout_fd:
+                    self._stdout_eof = True
+                else:
+                    self._stderr_eof = True
+                return
+            n = len(data)
+            if fd == self._stdout_fd:
+                self._total_stdout += n
+            else:
+                self._total_stderr += n
+            if len(buf) < limit:
+                buf.extend(data)
+                if len(buf) > limit:
+                    del buf[: len(buf) - limit]
+            self._update_activity()
+
+    def _drain_pipe(self, fd: int, buf: bytearray, limit: int) -> None:
+        chunk_limit = min(limit, 65536)
+        while len(buf) < limit:
+            try:
+                data = os.read(fd, chunk_limit)
+            except OSError as exc:
+                if exc.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+                    return
+                raise
+            if not data:
+                return
+            buf.extend(data)
+            if fd == self._stdout_fd:
+                self._total_stdout += len(data)
+            else:
+                self._total_stderr += len(data)
+            if len(buf) > limit:
+                del buf[: len(buf) - limit]
+            self._update_activity()
+
+    def _pgid_alive(self) -> bool:
+        if self._pgid is None:
+            return False
+        try:
+            os.kill(-self._pgid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        except OSError:
+            return False
+
+    def _reap(self, block: bool = False) -> None:
+        if self._proc is None:
+            return
+        if self._leader_reaped:
+            return
+        flags = 0 if block else os.WNOHANG
+        try:
+            pid, status = os.waitpid(self._proc.pid, flags)
+        except ChildProcessError:
+            self._leader_reaped = True
+            if self._returncode is None and self._proc.returncode is not None:
+                self._returncode = self._proc.returncode
+            return
+        if pid == 0:
+            if self._proc.poll() is not None:
+                self._leader_reaped = True
+                if self._returncode is None and self._proc.returncode is not None:
+                    self._returncode = self._proc.returncode
+            return
+        self._leader_reaped = True
+        if os.WIFSIGNALED(status):
+            self._returncode = -os.WTERMSIG(status)
+        elif os.WIFEXITED(status):
+            self._returncode = os.WEXITSTATUS(status)
+        else:
+            self._returncode = None
+
+    def _loop(self, command: list[str], env: dict[str, str]) -> None:
+        self._spawn(command, env)
+        poller = select.poll()
+        if not self._stdout_eof:
+            poller.register(self._stdout_fd, select.POLLIN)
+        if not self._stderr_eof:
+            poller.register(self._stderr_fd, select.POLLIN)
+        idle_deadline = self._last_activity + self.idle_limit()
+        hard_deadline = self._start + self.hard_limit()
+
+        while not self._done:
+            try:
+                result = poller.poll(200)
+            except (OSError, ValueError):
+                break
+            for fd, event in result:
+                if event & (select.POLLHUP | select.POLLIN):
+                    buf = self._stdout_buf if fd == self._stdout_fd else self._stderr_buf
+                    if not (self._stdout_eof if fd == self._stdout_fd else self._stderr_eof):
+                        self._read_fd(fd, buf, self.tail_limit(), poller)
+                if event & select.POLLERR:
+                    try:
+                        os.read(fd, 1)
+                    except OSError:
+                        pass
+            if self._proc is not None and self._proc.poll() is not None:
+                self._update_activity()
+            now = time.monotonic()
+            if now - self._start >= self.hard_limit():
+                self._timeout_type = "hard"
+                self._cleanup()
+                return
+            idle_deadline = max(idle_deadline, self._last_activity + self.idle_limit())
+            if now >= idle_deadline:
+                self._timeout_type = "idle"
+                self._cleanup()
+                return
+            if self._stdout_eof and self._stderr_eof:
+                if self._proc is not None:
+                    try:
+                        self._proc.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+                    self._reap(block=True)
+                    if not self._leader_reaped and self._pgid_alive():
+                        self._cleanup()
+                return
+
+    def _cleanup(self) -> None:
+        if self._proc is None or self._pgid is None:
+            return
+        if self._stdout_fd >= 0 and not self._stdout_eof:
+            try:
+                poller = select.poll()
+                poller.register(self._stdout_fd, select.POLLIN)
+                self._drain_pipe(self._stdout_fd, self._stdout_buf, self.tail_limit())
+            except (OSError, ValueError):
+                pass
+            try:
+                poller.unregister(self._stdout_fd)
+            except (OSError, ValueError):
+                pass
+        self._stdout_fd = -1
+        if self._stderr_fd >= 0 and not self._stderr_eof:
+            try:
+                poller = select.poll()
+                poller.register(self._stderr_fd, select.POLLIN)
+                self._drain_pipe(self._stderr_fd, self._stderr_buf, self.tail_limit())
+            except (OSError, ValueError):
+                pass
+            try:
+                poller.unregister(self._stderr_fd)
+            except (OSError, ValueError):
+                pass
+        self._stderr_fd = -1
+        if self._pgid_alive():
+            self._escalate_pgid()
+
+    def _escalate_pgid(self) -> None:
+        if self._proc is None or self._pgid is None:
+            return
+        if not self._pgid_alive():
+            return
+        try:
+            os.killpg(self._pgid, signal.SIGTERM)
+            self._term_sent = True
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            self._proc.wait(timeout=self.holdpipe_limit())
+            self._reap(block=False)
+            if not self._classification:
+                self._classification = "term-sent-leader-exited"
+            return
+        except (subprocess.TimeoutExpired, ChildProcessError, OSError):
+            pass
+        if self._pgid_alive():
+            self._held_pipe_kill()
+            return
+        self._reap(block=False)
+        if not self._classification:
+            self._classification = "term-sent-group-gone"
+
+    def _held_pipe_kill(self) -> None:
+        if self._proc is None or self._pgid is None:
+            return
+        try:
+            os.killpg(self._pgid, signal.SIGKILL)
+            self._kill_sent = True
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            self._proc.wait(timeout=self.holdpipe_limit())
+            self._reap(block=False)
+            return
+        except (subprocess.TimeoutExpired, ChildProcessError, OSError):
+            pass
+        self._reap(block=False)
+        if self._pgid_alive():
+            self._classification = "pgid-still-alive"
+            return
+
+    def run(self, command: list[str], env: dict[str, str]) -> dict[str, Any]:
+        self._loop(command, env)
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                if self._pgid_alive():
+                    self._cleanup()
+                else:
+                    try:
+                        self._proc.wait(timeout=5)
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
+            self._reap(block=False)
+        if self._proc is not None and self._proc.stdout is not None:
+            try:
+                self._proc.stdout.close()
+            except OSError:
+                pass
+        if self._proc is not None and self._proc.stderr is not None:
+            try:
+                self._proc.stderr.close()
+            except OSError:
+                pass
+        stdout = bytes(self._stdout_buf).decode("utf-8", errors="replace")
+        stderr = bytes(self._stderr_buf).decode("utf-8", errors="replace")
+        rc = self._returncode
+        if self._leader_reaped and rc is not None and rc < 0:
+            term_sig = rc
+        else:
+            term_sig = None
+        success = (
+            self._leader_reaped
+            and rc is not None
+            and rc == 0
+            and not self._timeout_type
+            and not self._classification
+            and not self._term_sent
+            and not self._kill_sent
+        )
+        return {
+            "stdout": stdout,
+            "stderr": stderr,
+            "returncode": rc,
+            "term_sent": self._term_sent,
+            "kill_sent": self._kill_sent,
+            "leader_reaped": self._leader_reaped,
+            "timeout_type": self._timeout_type,
+            "classification": self._classification,
+            "terminal_signal": term_sig,
+            "success": success,
+            "total_stdout_bytes": self._total_stdout,
+            "total_stderr_bytes": self._total_stderr,
+        }
+
+
 def process_task(
     root: Path,
     repo: str,
@@ -664,23 +1052,61 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    idle_timeout = _safe_float_env(os.getenv("BRIDGE_WATCHDOG_IDLE_TIMEOUT"), 14400.0, clamp_min=1.0)
+    hard_timeout = _safe_float_env(os.getenv("BRIDGE_WATCHDOG_HARD_TIMEOUT"), 28800.0, clamp_min=5.0)
+    tail_limit = _safe_int_env(os.getenv("BRIDGE_WATCHDOG_TAIL_LIMIT"), 2 * 1024 * 1024,
+                               clamp_min=1024, clamp_max=64 * 1024 * 1024)
+    holdpipe_timeout = _safe_float_env(os.getenv("BRIDGE_WATCHDOG_HOLDPIPE_TIMEOUT"), 10.0, clamp_min=1.0)
+
+    wd = Watchdog(
+        worktree,
+        idle_timeout=idle_timeout,
+        hard_timeout=hard_timeout,
+        tail_limit=tail_limit,
+        holdpipe_timeout=holdpipe_timeout,
+    )
+    result = wd.run(command, env)
+
+    stdout = result["stdout"]
+    stderr = result["stderr"]
+    rc = result["returncode"]
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
         f"Model: {model or '(OpenCode default)'}\n"
         f"$ {shlex.join(command[:-1])} <PROMPT>\n\n"
-        f"exit={proc.returncode}\n\nSTDOUT\n{proc.stdout or ''}\n\n"
-        f"STDERR\n{proc.stderr or ''}\n"
+        f"exit={rc}\n"
+        f"term_sent={result['term_sent']}\n"
+        f"kill_sent={result['kill_sent']}\n"
+        f"leader_reaped={result['leader_reaped']}\n"
+        f"timeout_type={result['timeout_type']}\n"
+        f"classification={result['classification']}\n"
+        f"terminal_signal={result['terminal_signal']}\n"
+        f"watchdog_success={result['success']}\n\n"
+        f"STDOUT\n{stdout}\n\n"
+        f"STDERR\n{stderr}\n"
     )
     os.chmod(log_path, 0o600)
 
-    if proc.returncode != 0:
-        classification = classify_opencode_failure(proc.stdout or "", proc.stderr or "")
-        excerpt = diagnostic_excerpt(proc.stdout or "", proc.stderr or "")
+    if not result["success"]:
+        classification = result["classification"] or classify_opencode_failure(stdout, stderr)
+        excerpt = diagnostic_excerpt(stdout, stderr)
+        reason_parts = []
+        if result["timeout_type"]:
+            reason_parts.append(f"timeout={result['timeout_type']}")
+        if result["classification"]:
+            reason_parts.append(f"classification={result['classification']}")
+        if not result["leader_reaped"]:
+            reason_parts.append("leader_reaped=False")
+        if result["term_sent"]:
+            reason_parts.append("term_sent")
+        if result["kill_sent"]:
+            reason_parts.append("kill_sent")
+        reason = "; ".join(reason_parts) or "watchdog-failure"
         state["processed"][str(number)] = {
             "status": "opencode-failed",
             "classification": classification,
+            "watchdog_reason": reason,
             "branch": branch,
             "log": str(log_path),
             "model": model,
@@ -691,7 +1117,8 @@ def process_task(
         comment_issue(
             repo,
             number,
-            f"OpenCode exited with code `{proc.returncode}`. No PR was created.\n\n"
+            f"OpenCode exited with code `{rc}`. No PR was created.\n\n"
+            f"Watchdog: `{reason}`\n"
             f"Classification: `{classification}`\n\n"
             "Sanitized diagnostic excerpt:\n"
             f"```text\n{excerpt}\n```\n\n"
@@ -898,8 +1325,377 @@ def self_test() -> int:
         print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
         return 1
 
+    test_failures = _run_watchdog_self_tests()
+    if test_failures:
+        for msg in test_failures:
+            print(f"bridge self-test: {msg}", file=sys.stderr)
+        return 1
+
     print("bridge self-test: PASS")
     return 0
+
+
+def _run_watchdog_self_tests() -> list[str]:
+    failures: list[str] = []
+    tmp = Path("/tmp/bridge-watchdog-test")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True)
+
+    def _td() -> Path:
+        d = tmp / f"t{id(tmp)}_{time.monotonic_ns()}"
+        d.mkdir()
+        return d
+
+    def _write_py(path: Path, code: str) -> None:
+        path.write_text(code)
+        os.chmod(path, 0o755)
+
+    def _t1() -> str | None:
+        d = _td()
+        sentinel = d / "SENTINEL"
+        _write_py(d / "child.py", (
+            "import os\n"
+            f"f = open('{sentinel}', 'w')\n"
+            "f.write(os.getcwd())\n"
+            "f.close()\n"
+        ))
+        wd = Watchdog(d, hard_timeout=10, idle_timeout=5)
+        r = wd.run(["python3", str(d / "child.py")], os.environ.copy())
+        if r["returncode"] != 0 or not sentinel.exists():
+            return "T1: child failed"
+        pwd_content = sentinel.read_text()
+        if pwd_content != str(d.resolve()):
+            return f"T1: pwd mismatch: {pwd_content!r} != {d.resolve()!r}"
+        ctrl = Path.cwd()
+        if ctrl in d.parents or d == ctrl or d.is_relative_to(ctrl):
+            return "T1: worktree is control checkout"
+        return None
+
+    def _t2() -> str | None:
+        d = _td()
+        wd = Watchdog(d, hard_timeout=2, idle_timeout=1)
+        r = wd.run(["sleep", "30"], os.environ.copy())
+        if r["success"]:
+            return "T2: silent child should fail"
+        if not r["timeout_type"]:
+            return "T2: no timeout_type"
+        return None
+
+    def _t3() -> str | None:
+        d = _td()
+        _write_py(d / "slow.py", (
+            "import sys, time\n"
+            "for i in range(20):\n"
+            "    print(f'line {i}', flush=True)\n"
+            "    time.sleep(0.4)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=15, idle_timeout=4)
+        r = wd.run(["python3", str(d / "slow.py")], os.environ.copy())
+        if not r["success"]:
+            return f"T3: should survive: tt={r['timeout_type']} cls={r['classification']}"
+        if r["returncode"] != 0:
+            return f"T3: rc={r['returncode']}"
+        return None
+
+    def _t4() -> str | None:
+        d = _td()
+        _write_py(d / "tinyhang.py", (
+            "import time, sys\n"
+            "print('hi', flush=True)\n"
+            "time.sleep(12)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=15, idle_timeout=3)
+        r = wd.run(["python3", str(d / "tinyhang.py")], os.environ.copy())
+        if r["success"]:
+            return "T4: should timeout after hang"
+        if not r["timeout_type"]:
+            return "T4: no timeout"
+        if "hi" not in r["stdout"]:
+            return "T4: missing initial output"
+        return None
+
+    def _t5() -> str | None:
+        d = _td()
+        _write_py(d / "eagain.py", (
+            "import os, sys, time, fcntl, errno\n"
+            "r, w = os.pipe()\n"
+            "flags = fcntl.fcntl(r, fcntl.F_GETFL)\n"
+            "fcntl.fcntl(r, fcntl.F_SETFL, flags | os.O_NONBLOCK)\n"
+            "os.write(w, b'data1\\n')\n"
+            "time.sleep(0.2)\n"
+            "os.write(w, b'data2\\n')\n"
+            "time.sleep(0.1)\n"
+            "os.close(w)\n"
+            "buf = bytearray()\n"
+            "while True:\n"
+            "    try:\n"
+            "        d = os.read(r, 1024)\n"
+            "        if not d:\n"
+            "            break\n"
+            "        buf.extend(d)\n"
+            "    except OSError as e:\n"
+            "        if e.errno in (errno.EAGAIN, errno.EWOULDBLOCK):\n"
+            "            break\n"
+            "        raise\n"
+            "print(f'read={len(buf)}', flush=True)\n"
+            "time.sleep(1)\n"
+            "print('after_wait', flush=True)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=10, idle_timeout=5)
+        r = wd.run(["python3", str(d / "eagain.py")], os.environ.copy())
+        if r["returncode"] != 0:
+            return f"T5: rc={r['returncode']}"
+        if "after_wait" not in r["stdout"]:
+            return "T5: missing output after wait"
+        return None
+
+    def _t6() -> str | None:
+        d = _td()
+        _write_py(d / "big.py", (
+            "import sys\n"
+            "for i in range(8000):\n"
+            "    sys.stdout.write('O' * 200 + '\\n')\n"
+            "    sys.stderr.write('E' * 200 + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "sys.stderr.flush()\n"
+        ))
+        wd = Watchdog(d, hard_timeout=30, idle_timeout=15, tail_limit=4096)
+        r = wd.run(["python3", str(d / "big.py")], os.environ.copy())
+        if r["returncode"] != 0:
+            return f"T6: rc={r['returncode']}"
+        if len(wd._stdout_buf) > 4096:
+            return f"T6: stdout_buf={len(wd._stdout_buf)}"
+        if len(wd._stderr_buf) > 4096:
+            return f"T6: stderr_buf={len(wd._stderr_buf)}"
+        if r["total_stdout_bytes"] != 8000 * 201:
+            return f"T6: total_stdout={r['total_stdout_bytes']}"
+        return None
+
+    def _t7() -> str | None:
+        d = _td()
+        big = "X" * 100000
+        _write_py(d / "burst.py", (
+            "import time\n"
+            f"print('{big}')\n"
+            "time.sleep(0.3)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=10, idle_timeout=5, tail_limit=4096)
+        r = wd.run(["python3", str(d / "burst.py")], os.environ.copy())
+        if r["returncode"] != 0:
+            return f"T7: rc={r['returncode']}"
+        if len(wd._stdout_buf) > 4096:
+            return f"T7: stdout_buf={len(wd._stdout_buf)}"
+        return None
+
+    def _t8() -> str | None:
+        d = _td()
+        _write_py(d / "term_ok.py", (
+            "import sys, time, os\n"
+            "sys.stdout.write('final bytes\\n')\n"
+            "sys.stdout.flush()\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    time.sleep(30)\n"
+            "    sys.exit(0)\n"
+            "time.sleep(0.1)\n"
+            "sys.exit(0)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=4, idle_timeout=3, holdpipe_timeout=1)
+        r = wd.run(["python3", str(d / "term_ok.py")], os.environ.copy())
+        if r["success"]:
+            return "T8: should not succeed (held pipe)"
+        if not r["term_sent"]:
+            return "T8: term not sent"
+        if r["kill_sent"]:
+            return "T8: kill should not be sent (descendant killed by TERM)"
+        if r["terminal_signal"] is not None:
+            return f"T8: term_sig={r['terminal_signal']}"
+        if r["returncode"] != 0:
+            return f"T8: rc={r['returncode']}"
+        if "final bytes" not in r["stdout"]:
+            return "T8: missing final bytes"
+        return None
+
+    def _t9() -> str | None:
+        d = _td()
+        _write_py(d / "ignore_term.py", (
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(30)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=6, idle_timeout=5, holdpipe_timeout=1)
+        r = wd.run(["python3", str(d / "ignore_term.py")], os.environ.copy())
+        if r["success"]:
+            return "T9: should not succeed"
+        if not r["term_sent"]:
+            return "T9: term not sent"
+        if not r["kill_sent"]:
+            return "T9: kill not sent"
+        if r["terminal_signal"] != -9:
+            return f"T9: term_sig={r['terminal_signal']}"
+        return None
+
+    def _t10() -> str | None:
+        d = _td()
+        _write_py(d / "leader_exit.py", (
+            "import sys, time, os\n"
+            "sys.stdout.write('leader_data\\n')\n"
+            "sys.stdout.flush()\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    time.sleep(30)\n"
+            "    sys.exit(0)\n"
+            "time.sleep(0.1)\n"
+            "sys.exit(0)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=4, idle_timeout=3, holdpipe_timeout=1)
+        r = wd.run(["python3", str(d / "leader_exit.py")], os.environ.copy())
+        if r["success"]:
+            return "T10: should not succeed with held pipe"
+        if r["terminal_signal"] is not None:
+            return f"T10: term_sig={r['terminal_signal']}"
+        if r["returncode"] != 0:
+            return f"T10: leader rc={r['returncode']}"
+        if "leader_data" not in r["stdout"]:
+            return "T10: missing leader_data"
+        return None
+
+    def _t11() -> str | None:
+        d = _td()
+        _write_py(d / "alive.py", (
+            "import time, os, sys\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "    time.sleep(60)\n"
+            "    sys.exit(0)\n"
+            "time.sleep(0.1)\n"
+            "sys.exit(0)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=5, idle_timeout=4, holdpipe_timeout=1)
+        r = wd.run(["python3", str(d / "alive.py")], os.environ.copy())
+        if r["success"]:
+            return "T11: should not succeed"
+        if not r["classification"]:
+            return "T11: no classification"
+        return None
+
+    def _t12() -> str | None:
+        d = _td()
+        _write_py(d / "unreap.py", (
+            "import time, os, signal, sys\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(60)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=5, idle_timeout=4, holdpipe_timeout=1)
+        r = wd.run(["python3", str(d / "unreap.py")], os.environ.copy())
+        if r["success"]:
+            return "T12: should not succeed"
+        if not r["kill_sent"]:
+            return "T12: kill not sent"
+        if r["returncode"] != -9:
+            return f"T12: rc={r['returncode']}"
+        if not r["leader_reaped"]:
+            return "T12: should be reaped after SIGKILL"
+        return None
+
+    def _t13() -> str | None:
+        d = _td()
+        wd = Watchdog(d, hard_timeout=2, idle_timeout=1)
+        r = wd.run(["sleep", "30"], os.environ.copy())
+        if r["success"]:
+            return "T13: timeout should not be success"
+        if r["returncode"] == 0 and r["success"]:
+            return "T13: rc=0 with timeout should fail"
+        return None
+
+    def _t14() -> str | None:
+        tests = [
+            ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "abc", 100.0, 100.0),
+            ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "-5", 100.0, 1.0),
+            ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "NaN", 100.0, 100.0),
+            ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "inf", 100.0, 100.0),
+            ("BRIDGE_WATCHDOG_IDLE_TIMEOUT", "0", 100.0, 1.0),
+            ("BRIDGE_WATCHDOG_HARD_TIMEOUT", "999999999999", 100.0, 999999999999.0),
+            ("BRIDGE_WATCHDOG_HARD_TIMEOUT", "NaN", 100.0, 100.0),
+            ("BRIDGE_WATCHDOG_HARD_TIMEOUT", "abc", 100.0, 100.0),
+            ("BRIDGE_WATCHDOG_TAIL_LIMIT", "xyz", 1024, 1024),
+            ("BRIDGE_WATCHDOG_TAIL_LIMIT", "0", 1024, 1024),
+            ("BRIDGE_WATCHDOG_TAIL_LIMIT", "-100", 1024, 1024),
+        ]
+        for var, val, default, expected in tests:
+            os.environ[var] = val
+            try:
+                if "TAIL" in var:
+                    got = _safe_int_env(val, int(default), clamp_min=1024, clamp_max=64*1024*1024)
+                else:
+                    got = _safe_float_env(val, default, clamp_min=1.0)
+                if got != expected:
+                    return f"T14: {var}={val}: got {got}, expected {expected}"
+            finally:
+                os.environ.pop(var, None)
+        return None
+
+    def _t15() -> str | None:
+        d = _td()
+        wd = Watchdog(d, hard_timeout=2, idle_timeout=1)
+        r1 = wd.run(["sleep", "30"], os.environ.copy())
+        if r1["success"]:
+            return "T15: first should fail"
+        wd2 = Watchdog(d, hard_timeout=2, idle_timeout=1)
+        r2 = wd2.run(["python3", "-c", "print('ok')"], os.environ.copy())
+        if r2["returncode"] != 0:
+            return f"T15: second rc={r2['returncode']}"
+        if "ok" not in r2["stdout"]:
+            return "T15: second missing output"
+        return None
+
+    def _t16() -> str | None:
+        d = _td()
+        _write_py(d / "diag.py", (
+            "import sys, time\n"
+            "for i in range(1000):\n"
+            "    sys.stdout.write('X' * 500 + '\\n')\n"
+            "sys.stdout.flush()\n"
+            "time.sleep(0.1)\n"
+        ))
+        wd = Watchdog(d, hard_timeout=10, idle_timeout=5, tail_limit=2048)
+        r = wd.run(["python3", str(d / "diag.py")], os.environ.copy())
+        combined = r["stdout"] + r["stderr"]
+        if len(combined) > 8000:
+            return "T16: diagnostics too large"
+        if not combined.strip():
+            return "T16: no diagnostics"
+        return None
+
+    test_fns = [
+        ("T1: worktree isolation", _t1),
+        ("T2: silent timeout", _t2),
+        ("T3: sparse stdout survives", _t3),
+        ("T4: tiny data then hang", _t4),
+        ("T5: EAGAIN does not unregister", _t5),
+        ("T6: multi-megabyte bounded", _t6),
+        ("T7: single burst bounded", _t7),
+        ("T8: TERM-handled leader", _t8),
+        ("T9: TERM-ignoring leader", _t9),
+        ("T10: held-pipe topology", _t10),
+        ("T11: PGID-still-alive", _t11),
+        ("T12: unreaped seam", _t12),
+        ("T13: watchdog failure rejected", _t13),
+        ("T14: safe env parsing", _t14),
+        ("T15: queue liveness", _t15),
+        ("T16: diagnostics bounded", _t16),
+    ]
+    for name, fn in test_fns:
+        try:
+            err = fn()
+        except Exception as exc:
+            err = f"{name}: exception {exc}"
+        if err:
+            failures.append(err)
+
+    shutil.rmtree(tmp, ignore_errors=True)
+    return failures
 
 
 def main() -> int:
