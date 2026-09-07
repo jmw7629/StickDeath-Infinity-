@@ -13,11 +13,15 @@ import fcntl
 import json
 import os
 import re
+import selectors
+import selectors as _selectors_mod
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +43,303 @@ TERMINAL_STATUSES = {
 }
 RECOVERABLE_PREFIX = "recovery-blocked-"
 LEGACY_RECOVERABLE_STATUSES = {"skipped-existing-branch"}
+
+# Subprocess watcher constants.
+READ_CHUNK = int(os.getenv("BRIDGE_READ_CHUNK", "4096"))
+RING_BUFFER_BYTES = int(os.getenv("BRIDGE_RING_BUFFER_BYTES", str(512 * 1024)))
+IDLE_TIMEOUT = int(os.getenv("BRIDGE_IDLE_TIMEOUT", "300"))
+TERM_GRACE = int(os.getenv("BRIDGE_TERM_GRACE", "5"))
+DRAIN_GRACE = int(os.getenv("BRIDGE_DRAIN_GRACE", "10"))
+
+
+def _nonblocking_read(fd: int, limit: int = READ_CHUNK) -> bytes:
+    """Read at most *limit* bytes from a non-blocking fd.
+
+    Returns the bytes read, or ``b""`` on EOF / no-data-available.
+    Raises ``BlockingIOError`` on EAGAIN/EWOULDBLOCK.
+    Never blocks.
+    """
+    return os.read(fd, limit)
+
+
+def _process_pipe_data(
+    fd: int,
+    ring: list[bytes],
+    output: list[bytes],
+    limit: int,
+) -> tuple[list[bytes], list[bytes], bool]:
+    """Ingest bytes from *fd* into bounded ring + running output buffers.
+
+    Returns ``(ring, output, has_data)`` where *has_data* is ``True`` when at
+    least one byte was consumed.  Returns ``has_data=False`` on EAGAIN or EOF.
+    Both ring and output are bounded to *limit* bytes (tail retention).
+    """
+    try:
+        chunk = os.read(fd, READ_CHUNK)
+    except BlockingIOError:
+        return ring, output, False
+    except OSError:
+        return ring, output, False
+    if not chunk:
+        return ring, output, False
+    ring.append(chunk)
+    total = sum(len(p) for p in ring)
+    while total > limit:
+        total -= len(ring[0])
+        ring.pop(0)
+    output.append(chunk)
+    total_out = sum(len(p) for p in output)
+    while total_out > limit:
+        total_out -= len(output[0])
+        output.pop(0)
+    return ring, output, True
+
+
+def _drain_pipes(
+    stdout_ring: list[bytes],
+    stdout_out: list[bytes],
+    stderr_ring: list[bytes],
+    stderr_out: list[bytes],
+    stdout_fd: int,
+    stderr_fd: int,
+    deadline: float,
+) -> tuple[str, str, float]:
+    """Bounded drain of remaining pipe data after process termination.
+
+    Uses the same non-blocking read primitive as the main loop.  Returns
+    ``(stdout_text, stderr_text, drain_time)``.
+    """
+    stdout_ring = list(stdout_ring)
+    stdout_out = list(stdout_out)
+    stderr_ring = list(stderr_ring)
+    stderr_out = list(stderr_out)
+    fd_bufs: dict[int, tuple[list[bytes], list[bytes]]] = {
+        stdout_fd: (stdout_ring, stdout_out),
+        stderr_fd: (stderr_ring, stderr_out),
+    }
+    start = time.monotonic()
+    while fd_bufs and time.monotonic() < deadline:
+        for fd in list(fd_bufs.keys()):
+            ring, out = fd_bufs[fd]
+            try:
+                data = os.read(fd, READ_CHUNK)
+            except BlockingIOError:
+                continue
+            except OSError:
+                del fd_bufs[fd]
+                continue
+            if not data:
+                del fd_bufs[fd]
+                continue
+            ring.append(data)
+            out.append(data)
+    return (
+        b"".join(stdout_out).decode("utf-8", errors="replace"),
+        b"".join(stderr_out).decode("utf-8", errors="replace"),
+        time.monotonic() - start,
+    )
+
+
+class SubprocessWatcher:
+    """Selector-driven, non-blocking streaming loop with idle watchdog.
+
+    Uses ``selectors`` + ``os.read()`` (never ``BufferedReader.read()``) so that
+    ingestion never blocks waiting for additional bytes after selector readiness.
+    Maintains bounded per-stream ring buffers and enforces idle / drain deadlines.
+    """
+
+    def __init__(
+        self,
+        cmd: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        idle_timeout: int = IDLE_TIMEOUT,
+        term_grace: int = TERM_GRACE,
+        drain_grace: int = DRAIN_GRACE,
+        output_limit: int = RING_BUFFER_BYTES,
+    ) -> None:
+        self.cmd = cmd
+        self.cwd = cwd
+        self.env = env or os.environ.copy()
+        self.idle_timeout = max(idle_timeout, 1)
+        self.term_grace = max(term_grace, 1)
+        self.drain_grace = max(drain_grace, 1)
+        self.output_limit = max(output_limit, READ_CHUNK)
+
+    def run(self) -> tuple[str, str, int, float]:
+        """Execute the command and return ``(stdout, stderr, returncode, elapsed)``."""
+        start = time.monotonic()
+
+        proc = subprocess.Popen(
+            self.cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=self.cwd,
+            env=self.env,
+            start_new_session=True,
+        )
+
+        assert proc.stdout is not None
+        assert proc.stderr is not None
+
+        stdout_fd = proc.stdout.fileno()
+        stderr_fd = proc.stderr.fileno()
+
+        for fd in (stdout_fd, stderr_fd):
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+        stdout_ring: list[bytes] = []
+        stdout_out: list[bytes] = []
+        stderr_ring: list[bytes] = []
+        stderr_out: list[bytes] = []
+
+        sel = selectors.DefaultSelector()
+        sel.register(stdout_fd, selectors.EVENT_READ)
+        sel.register(stderr_fd, selectors.EVENT_READ)
+
+        active_fds: set[int] = {stdout_fd, stderr_fd}
+        last_activity = time.monotonic()
+
+        while True:
+            elapsed_wall = time.monotonic() - start
+            if proc.poll() is not None and not active_fds:
+                break
+            if time.monotonic() - last_activity > self.idle_timeout and proc.poll() is None:
+                print(
+                    f"[watchdog] idle {self.idle_timeout}s exceeded, terminating",
+                    file=sys.stderr,
+                )
+                self._force_kill(proc)
+                break
+            if not active_fds:
+                break
+
+            timeout = max(0.1, self.idle_timeout - (time.monotonic() - last_activity))
+            events = sel.select(timeout=timeout)
+            if not events:
+                continue
+
+            for key, _mask in events:
+                fd = key.fd
+                ring, out = (
+                    (stdout_ring, stdout_out) if fd == stdout_fd
+                    else (stderr_ring, stderr_out)
+                )
+                ring, out, got_data = _process_pipe_data(fd, ring, out, self.output_limit)
+                if fd == stdout_fd:
+                    stdout_ring, stdout_out = ring, out
+                else:
+                    stderr_ring, stderr_out = ring, out
+                if got_data:
+                    last_activity = time.monotonic()
+                else:
+                    # Could be EAGAIN or EOF.  Probe distinguishes them:
+                    # EAGAIN raises BlockingIOError; EOF returns b"".
+                    try:
+                        probe = os.read(fd, 1)
+                    except (BlockingIOError, OSError):
+                        probe = b"x"  # EAGAIN — keep fd registered
+                    if not probe:
+                        sel.unregister(fd)
+                        active_fds.discard(fd)
+                    else:
+                        ring.append(probe)
+                        total = sum(len(p) for p in ring)
+                        while total > self.output_limit:
+                            total -= len(ring[0])
+                            ring.pop(0)
+                        out.append(probe)
+                        last_activity = time.monotonic()
+                        if fd == stdout_fd:
+                            stdout_ring, stdout_out = ring, out
+                        else:
+                            stderr_ring, stderr_out = ring, out
+
+        sel.close()
+
+        pipe_fds: list[int] = []
+        if proc.poll() is None:
+            pipe_fds = [fd for fd in (stdout_fd, stderr_fd) if fd in active_fds]
+            if pipe_fds:
+                deadline = time.monotonic() + self.drain_grace
+                stdout_text, stderr_text, _drain_t = _drain_pipes(
+                    stdout_ring, stdout_out,
+                    stderr_ring, stderr_out,
+                    stdout_fd, stderr_fd,
+                    deadline,
+                )
+                self._force_kill(proc)
+                proc.wait()
+                elapsed = time.monotonic() - start
+                return stdout_text, stderr_text, proc.returncode if proc.returncode is not None else -1, elapsed
+
+        stdout_text, stderr_text, _drain_t = _drain_pipes(
+            stdout_ring, stdout_out,
+            stderr_ring, stderr_out,
+            stdout_fd, stderr_fd,
+            time.monotonic() + self.drain_grace,
+        )
+
+        self._force_kill(proc)
+        proc.wait()
+        elapsed = time.monotonic() - start
+        return stdout_text, stderr_text, proc.returncode if proc.returncode is not None else -1, elapsed
+
+    def _force_kill(self, proc: subprocess.Popen[int]) -> None:
+        """Escalate TERM -> KILL within the bridge-owned process group."""
+        if proc.poll() is not None:
+            return
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=self.term_grace)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def run_with_watchdog(
+    cmd: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    idle_timeout: int = IDLE_TIMEOUT,
+    term_grace: int = TERM_GRACE,
+    drain_grace: int = DRAIN_GRACE,
+    output_limit: int = RING_BUFFER_BYTES,
+) -> subprocess.CompletedProcess[str]:
+    """Run *cmd* with non-blocking streaming and an idle watchdog.
+
+    Returns a ``CompletedProcess`` compatible result.
+    """
+    watcher = SubprocessWatcher(
+        cmd,
+        cwd=cwd,
+        env=env,
+        idle_timeout=idle_timeout,
+        term_grace=term_grace,
+        drain_grace=drain_grace,
+        output_limit=output_limit,
+    )
+    stdout_text, stderr_text, returncode, elapsed = watcher.run()
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=returncode,
+        stdout=stdout_text,
+        stderr=stderr_text,
+    )
 
 
 class BridgeError(RuntimeError):
@@ -664,7 +965,7 @@ def process_task(
     env["PATH"] = f"{safe_bin}:{env.get('PATH', '')}"
     env["GIT_TERMINAL_PROMPT"] = "0"
 
-    proc = run(command, cwd=worktree, check=False, capture=True, env=env)
+    proc = run_with_watchdog(command, cwd=str(worktree), env=env)
     log_path.write_text(
         f"OpenCode version: {opencode_version}\n"
         f"Model source: {model_source}\n"
@@ -824,6 +1125,19 @@ def bridge_once(root: Path, repo: str, state_path: Path, worktree_root: Path) ->
 
 
 def self_test() -> int:
+    passed = 0
+    failed = 0
+
+    def check(condition: bool, name: str) -> None:
+        nonlocal passed, failed
+        if condition:
+            passed += 1
+        else:
+            failed += 1
+            print(f"bridge self-test: FAILED — {name}", file=sys.stderr)
+
+    # ── Existing unit tests ──────────────────────────────────────────────
+
     sample = (
         "Authorization: Bearer abcdefghijklmnop\n"
         "OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz\n"
@@ -832,9 +1146,10 @@ def self_test() -> int:
     )
     cleaned = sanitize_text(sample)
     forbidden = ("abcdefghijklmnop", "sk-abcdefghijklmnopqrstuvwxyz", "ghp_", "\nsecret\n")
-    if any(value in cleaned for value in forbidden):
-        print("bridge self-test: redaction FAILED", file=sys.stderr)
-        return 1
+    check(
+        not any(value in cleaned for value in forbidden),
+        "redaction",
+    )
 
     cases = {
         "error: unknown option '--auto'": "cli-invocation-incompatibility",
@@ -846,12 +1161,7 @@ def self_test() -> int:
     }
     for text, expected in cases.items():
         got = classify_opencode_failure("", text)
-        if got != expected:
-            print(
-                f"bridge self-test: classifier FAILED for {text!r}: {got} != {expected}",
-                file=sys.stderr,
-            )
-            return 1
+        check(got == expected, f"classifier {text!r}")
 
     model_cases = [
         ("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "openai/gpt-5.6-sol"),
@@ -862,18 +1172,17 @@ def self_test() -> int:
     ]
     for body, expected in model_cases:
         got = project_byte_model_hint(body)
-        if got != expected:
-            print(f"bridge self-test: model hint FAILED: {body!r} -> {got!r}", file=sys.stderr)
-            return 1
-    if choose_model("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "env/model") != (
-        "openai/gpt-5.6-sol",
-        "project-byte",
-    ):
-        print("bridge self-test: PROJECT_BYTE model precedence FAILED", file=sys.stderr)
-        return 1
-    if choose_model("", "env/model") != ("env/model", "environment"):
-        print("bridge self-test: environment model fallback FAILED", file=sys.stderr)
-        return 1
+        check(got == expected, f"model hint {body!r}")
+
+    check(
+        choose_model("PROJECT_BYTE_MODEL_HINT: openai/gpt-5.6-sol", "env/model")
+        == ("openai/gpt-5.6-sol", "project-byte"),
+        "PROJECT_BYTE model precedence",
+    )
+    check(
+        choose_model("", "env/model") == ("env/model", "environment"),
+        "environment model fallback",
+    )
 
     recovery_cases = [
         ({"local_exists": False, "remote_exists": False, "worktree_is_bridge_owned": True, "worktree_dirty": False, "ahead_count": 0}, "new"),
@@ -885,20 +1194,196 @@ def self_test() -> int:
     ]
     for kwargs, expected in recovery_cases:
         got = recovery_decision(**kwargs)
-        if got != expected:
-            print(f"bridge self-test: recovery decision FAILED: {kwargs} -> {got}", file=sys.stderr)
-            return 1
+        check(got == expected, f"recovery {expected}")
 
-    if "skipped-existing-branch" not in LEGACY_RECOVERABLE_STATUSES:
-        print("bridge self-test: legacy recovery migration FAILED", file=sys.stderr)
-        return 1
+    check("skipped-existing-branch" in LEGACY_RECOVERABLE_STATUSES, "legacy recovery migration")
 
     malicious = project_byte_model_hint("PROJECT_BYTE_MODEL_HINT: openai/gpt$(touch /tmp/pwned)")
-    if malicious:
-        print("bridge self-test: shell-like model hint was accepted", file=sys.stderr)
-        return 1
+    check(not malicious, "shell-like model hint rejected")
 
-    print("bridge self-test: PASS")
+    # ── Subprocess watcher integration tests ─────────────────────────────
+
+    # Test 1: Silent child times out and returns within deterministic bound.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        ["python3", "-c", "import time; time.sleep(120)"],
+        idle_timeout=2, term_grace=1, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    check(r.returncode != 0, "test1: silent child exit code")
+    check(elapsed < 15, f"test1: elapsed {elapsed:.1f}s > 15s")
+
+    # Test 2: Sparse stdout progress resets idle timeout.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import time,sys\n"
+            "for i in range(12):\n"
+            "  sys.stdout.write('x'); sys.stdout.flush()\n"
+            "  time.sleep(1)\n",
+        ],
+        idle_timeout=3, term_grace=1, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    check(r.returncode == 0, "test2: sparse stdout exit code")
+    check(elapsed >= 9, f"test2: elapsed {elapsed:.1f}s < 9s (child killed early)")
+
+    # Test 3: Sparse stderr progress resets idle timeout.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import time,sys\n"
+            "for i in range(12):\n"
+            "  sys.stderr.write('y'); sys.stderr.flush()\n"
+            "  time.sleep(1)\n",
+        ],
+        idle_timeout=3, term_grace=1, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    check(r.returncode == 0, "test3: sparse stderr exit code")
+    check(elapsed >= 9, f"test3: elapsed {elapsed:.1f}s < 9s (child killed early)")
+
+    # Test 4: Tiny-write-then-hang is terminated by idle timeout.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import time,sys\n"
+            "sys.stdout.write('a'); sys.stdout.flush()\n"
+            "time.sleep(120)\n",
+        ],
+        idle_timeout=3, term_grace=1, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    check(r.returncode != 0, "test4: tiny-write-hang exit code")
+    check(elapsed < 15, f"test4: elapsed {elapsed:.1f}s > 15s")
+    check("a" in (r.stdout or ""), "test4: tiny-write captured")
+
+    # Test 5: Multi-megabyte output is consumed without deadlock and bounded.
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import sys; sys.stdout.write('M' * (1024*1024)); "
+            "sys.stderr.write('E' * (1024*1024)); "
+            "sys.stdout.flush(); sys.stderr.flush()",
+        ],
+        idle_timeout=30, term_grace=1, drain_grace=1,
+        output_limit=256 * 1024,
+    )
+    check(r.returncode == 0, "test5: large output exit code")
+    out_len = len(r.stdout or "")
+    err_len = len(r.stderr or "")
+    check(out_len <= 256 * 1024 + READ_CHUNK, f"test5: stdout {out_len} > bound")
+    check(err_len <= 256 * 1024 + READ_CHUNK, f"test5: stderr {err_len} > bound")
+
+    # Test 6: TERM-ignoring child escalates to KILL.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import signal,time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "time.sleep(120)\n",
+        ],
+        idle_timeout=2, term_grace=2, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    check(r.returncode != 0, "test6: TERM-ignoring exit code")
+    check(elapsed < 15, f"test6: elapsed {elapsed:.1f}s > 15s")
+
+    # Test 7: Unrelated process survives timeout handling.
+    marker = str(uuid.uuid4())
+    sleeper = subprocess.Popen(
+        ["python3", "-c", f"import time; open('/tmp/{marker}', 'w').write('ok'); time.sleep(300)"],
+        start_new_session=True,
+    )
+    time.sleep(0.3)
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        ["python3", "-c", "import time; time.sleep(120)"],
+        idle_timeout=2, term_grace=1, drain_grace=1,
+    )
+    elapsed = time.monotonic() - t0
+    alive = sleeper.poll() is None
+    check(alive, "test7: unrelated process killed")
+    check(elapsed < 15, f"test7: elapsed {elapsed:.1f}s > 15s")
+    try:
+        os.killpg(os.getpgid(sleeper.pid), signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        sleeper.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(sleeper.pid), signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            sleeper.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        os.unlink(f"/tmp/{marker}")
+    except OSError:
+        pass
+
+    # Test 8: Held-pipe descendant — bounded drain returns within bound.
+    t0 = time.monotonic()
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import os,time\n"
+            "pid = os.fork()\n"
+            "if pid == 0:\n"
+            "  time.sleep(300)\n"
+            "else:\n"
+            "  time.sleep(120)\n",
+        ],
+        idle_timeout=2, term_grace=1, drain_grace=3,
+    )
+    elapsed = time.monotonic() - t0
+    check(elapsed < 15, f"test8: elapsed {elapsed:.1f}s > 15s")
+
+    # Test 9: Queue processing continues after timeout.
+    r1 = run_with_watchdog(
+        ["python3", "-c", "import time; time.sleep(120)"],
+        idle_timeout=1, term_grace=1, drain_grace=1,
+    )
+    check(r1.returncode != 0, "test9a: first timeout")
+    r2 = run_with_watchdog(
+        ["python3", "-c", "import sys; sys.stdout.write('ok'); sys.stdout.flush()"],
+        idle_timeout=10, term_grace=1, drain_grace=1,
+    )
+    check(r2.returncode == 0, "test9b: second after timeout")
+    check("ok" in (r2.stdout or ""), "test9b: output after timeout")
+
+    # Test 10: Diagnostics bounded and sanitized.
+    r = run_with_watchdog(
+        [
+            "python3", "-c",
+            "import sys\n"
+            "for _ in range(20000):\n"
+            "  sys.stdout.write('A' * 200)\n"
+            "sys.stdout.flush()",
+        ],
+        idle_timeout=30, term_grace=1, drain_grace=1,
+        output_limit=8192,
+    )
+    out = r.stdout or ""
+    check(len(out) <= 8192 + READ_CHUNK, f"test10: output {len(out)} > bound")
+    check("AAAAAA" in out, "test10: truncated output contains data")
+
+    # ── Summary ──────────────────────────────────────────────────────────
+
+    if failed:
+        print(
+            f"bridge self-test: {failed} FAILED, {passed} passed",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"bridge self-test: PASS ({passed} tests)")
     return 0
 
 
