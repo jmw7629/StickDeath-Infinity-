@@ -87,6 +87,19 @@ jobs:
             Tests/StudioDocument/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-document-tests"
           "$RUNNER_TEMP/sdi-studio-document-tests"
+      - name: Verify deterministic native brush geometry and actual pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            Tests/StudioBrushes/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-brush-tests"
+          "$RUNNER_TEMP/sdi-studio-brush-tests"
       - name: Verify actual SwiftUI renderer pixels on macOS
         shell: bash
         run: |
