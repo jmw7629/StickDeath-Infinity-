@@ -1,68 +1,44 @@
-# Native iOS recovery: Spatter client verification
+# Native iOS recovery and Studio verification
 
-This is work on the existing StickDeath Infinity iOS app, not STICKDEATH_BYTE.
-Studio, media, community, messaging, calls and publishing remain in scope; historical demo values are not live product evidence.
-Base for this repair: `a14ea263df85591f9e5a98e5285215a3152e36c3` on PR #111.
+Codex continues issue #110 and PR #111 under Joseph Willis's 2026-09-08 ownership transfer. Native SwiftUI Studio is the product. Media, community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope. Historical demo values are not live product evidence.
 
-## Current verified native compiler milestone — 2026-09-08
+## Latest completed native run
 
-Commit `e505892d3c70aeb6b5983f0cf32bca8108a0bb4f` passed all three jobs in [run 34257440327](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34257440327). The actual native job `102166707236` used Xcode 16.4 and reported `BUILD SUCCEEDED` and `XCODE_IOS_BUILD=PASS`. Source security, 29 production Spatter/configuration tests, and three complete production model tests passed. Earlier failures below are historical evidence. This proves application compilation; simulator interaction, signing and TestFlight were not part of that run.
+Exact source `b3ca09f22001879f502aa4a8794b51e796c075ae`, [run 34271791257](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34271791257):
 
-The next slice adds offline Studio document persistence, preserved historical assets, a single editable layer/frame model and actual renderer tests. Its checked-in UI test target must pass a new exact-head CI run before native save/reopen or visual verification is reported. The workflow records portrait/landscape screenshots, stroke/undo/redo and save/quit/reopen pixels against the actual app on an existing isolated CI simulator. Build configuration is inspected before launch to require empty backend endpoints and public keys. The recording is decoded and the test exit status is preserved. These are pending gates, not results.
+- **App build passed:** actual Xcode 16.4 native job `102214893246` reported `BUILD SUCCEEDED` at 20:07:59 UTC on 2026-09-08.
+- **115 production checks passed:** 29 Spatter/configuration, three complete model, 24 actual storage, ten Studio document, eight macOS SwiftUI renderer pixel, 13 decoded PNG export, 16 typed command and 12 actual Studio view-model command/persistence cases. Source security passed separately.
+- **Native UI suite failed/incomplete:** the actual iPhone 16 Pro / iOS 26.2 portrait-and-landscape test passed, including the unchanged canvas size assertions. The new export test exceeded its 120-second allowance while repeatedly querying accessibility and then failed a 538-versus-540 screenshot-dimension assertion. The overall 480-second deadline interrupted the restarted drawing test before completion; the spritesheet recovery test never started.
+- The original recording decodes, but the abruptly terminated xcodebuild left an incomplete result bundle. This is not a passing regression run and is not eligible for merge. The original artifact `10075035447` is preserved; SHA-256 `ebbf426992459d2d058464ad2ce5b9ee28d31363b5ee523dcbd061e11062ed67`.
 
-## Codex ownership checkpoint — 2026-09-08
+Earlier source `7a21be7cf486295924741119e95a970fffb6fdfb`, [run 34268560396](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34268560396), passed the app build and 103 production checks. Its real simulator drawing/undo/redo/manual-save/library/terminate/relaunch/reopen journey passed the reopened raster comparison (at most four changed pixels). Its landscape test failed; the b3 run above verifies that particular repair. Neither run establishes complete visual parity or physical-device/TestFlight readiness.
 
-The owner transferred this project to Codex in issue #110. This continues PR #111 from `fe191ee79d93f625ec3c36540d72f87f69f7de92`; it is not a new recovery branch.
+## Reviewed continuation awaiting exact-head CI
 
-- Read the actual failed native job. Removed stale ExportView/FloatingToolbar build inputs and included the current Studio panels, header, tool strip, brain loader and retained app screens.
-- All 80 target Swift source paths exist and are unique. The historical alternate LiveKit service is explicitly excluded from XcodeGen to avoid defining a second service; the nested canonical service remains included.
-- Corrected historical raster storage references to its existing StoredAnimationFrame type; no migration, file deletion or asset rewrite runs in this change.
-- Restored public Supabase and LiveKit configuration with validation and explicit unavailable errors. No SDK client is initialized without valid public configuration. Existing subscription families use rank without introducing prices or quotas.
-- Focused production tests: 29/29 PASS on the local Mac (the original 22 Spatter tests plus seven configuration/rank cases). Source-security and integration-reference checks, plist syntax and diff checks PASS.
-- Native application build has NOT passed. Local Xcode 26.3 completed dependency compilation but asset compilation failed because its iOS 26.2 SDK has no matching simulator runtime. Separate source compiler and exact-head macOS CI evidence remain required. No simulator app interaction, signing or TestFlight pass is claimed.
-- Offline persistence, canonical layers/history, real media/audio/export, Spatter editor commands and authenticated backend journeys remain incomplete and separately tracked. A private web companion is a review surface only.
+The subsequent committed continuation adds local Spatter guidance and separate conversation state for Studio and Messages, explicit cloud choice/disclosure, immutable submitted prompts, cancellation and stale-project/account protection. It preserves embedded knowledge/personality and routes cloud advice through the existing authenticated backend client. Thirteen actual production coordinator cases and the 29 transport/configuration cases passed independent review. **Chat remains advice-only:** it does not generate editable documents, execute commands, export or publish.
 
-## Compiler continuation checkpoint — 2026-09-08
+The new native audio importer decodes actual selected file bytes through Apple AVFoundation, produces measured waveform peaks, enforces encoded/decoded limits, preserves originals and cleans only owned temporary files. Fourteen production decoder/storage tests and an additional compressed-audio limit probe passed independent review. This foundation alone does not prove Files-picker interaction, clip preview, timeline synchronization, trimming, mixing or audio export. MP3 and raw ADTS-AAC routes lack codec-specific runtime fixtures.
 
-- Commit `84e579a9864e123b2cc685a05ca5c6f848354510` passed source-security and 29 production transport/config tests in run `34255291902`; native job `102159426052` failed. The actual compiler output exposed duplicate ChallengeItem/ContactRow definitions and missing FeedPost/AuthManager contracts after the omitted screens became target members.
-- The continuation uses canonical Challenge, Post, Comment and AuthViewModel types and existing services; supplies the missing SwiftUI FlowLayout; repairs the actual tutorial binding, StoreKit actor isolation, and canonical ChatMessage construction. The target now contains 81 unique existing Swift source paths.
-- UI mutations preserve in-flight drafts, report failures, distinguish confirmed comment insertion from a failed refresh, and treat an unavailable like query as unknown. Unconnected watch-party sending preserves the draft and reports that it was not sent. No live backend messages, posts, StoreKit charges or publication were tested.
-- Three durable model tests compile the complete production models on macOS and cover construction, full wire roundtrip and historical sparse/null decoding. All three pass locally and are included in the native CI job. The 29 configuration/transport tests still pass.
-- Independent cross-review of disjoint native changes caught and corrected draft-loss and fractional-date issues. Native application compilation remains pending on this continuation; parser/type checks and Foundation tests do not replace it.
-- The original React Studio review companion is privately deployed and independently exercised over HTTPS with phone-size Chromium and WebKit. Drawing, frame clipboard, undo/redo, save/reopen and actual PNG decoding pass. It is not an iOS build and does not establish native visual parity.
+The complete 87-source app candidate passed an iOS 17 device-SDK typecheck with unchanged inputs. The checked-in project retains every previous app source and its separate UI target. This local typecheck is not a replacement for the next Xcode CI build or simulator run.
 
-## Historical executed evidence
+The native harness now permits four bounded 180-second journeys plus startup within a 900-second suite deadline; the macOS job remains capped at 35 minutes. Only child processes owned by the harness receive bounded SIGINT/TERM/KILL cleanup, allowing it a chance to finalize its result. Timeout/failure codes remain red, and missing required result evidence cannot turn a successful test process green. Independent process/reporting checks passed; actual native finalization still requires the next run. The export-specific capture correction is separately reviewed before inclusion.
 
-- Swift 6.2.1, target `x86_64-unknown-linux-gnu`, in Swift 5 language mode.
-- Command: `swiftc -swift-version 5 -parse-as-library StickDeathInfinity/App/AppConfig.swift StickDeathInfinity/App/SpatterBackendClient.swift Tests/SpatterClient/main.swift -o /tmp/sdi-spatter-client-tests`.
-- Ran the resulting executable under a 30-second outer timeout: **22/22 tests PASS**.
-- Tests compile the actual app configuration/backend source; no mirror client implementation is used.
-- Network responses use test-only URLProtocol fixtures or injected transports, never real accounts/providers.
-- Source, test and verifier files transferred to JoeVPS with SHA-256 equality checks against the tested bytes.
-- Ran `BASE_SHA=c8b7cab481328bdc10654906d17093e00eccf1dc python3 scripts/verify_spatter_client.py` on JoeVPS: source-security, integration-reference and diff checks PASS.
-- `git diff --check` against the base passed.
+## Production contracts and evidence boundaries
 
-## What the executable tests cover
+The workflow compiles complete production sources for each focused suite, not mirrored client, storage, editor or renderer implementations. Test networking uses declared URLProtocol fixtures/injected transports; no live provider, messages, charges or public uploads are used. The actual simulator app is preflighted to require empty backend configuration before launch.
 
-Configuration loading; HTTPS/provider/credential/query validation; zero transport calls for missing configuration/session; malformed session headers; current endpoint/token lookup; request shape and size; response size; HTTP, malformed JSON and empty-response distinctions; actual delegate chunk/burst limits; denied redirects; cancellation of a stalled fixture followed by a successful second request.
+Offline Studio uses one canonical editable document and layer/frame identities, full-document history, immutable retained raster/audio records and atomic versioned saves. Historical originals are not overwritten; incomplete legacy timing fails explicitly. PNG sequence/spritesheet output is rendered from that document, bounded, cancellable and decoded from real output files. The native share panel exposes those returned files; platform delivery must not be claimed before a real result.
 
-The request delegate uses an NSLock around all shared completion/response state. Its explicit Sendable declaration bridges URLSession delegate requirements; mutable state is not exposed.
+Typed Studio commands use validated project/revision preconditions, bounded transactions, rollback and the actual view-model history/autosave path. The synchronous work preflight may explicitly refuse commands on very complex projects. This is not natural-language generation or arbitrary shell/admin access.
 
-## App wiring
+`SPATTER_BACKEND_URL` is a public Info.plist build setting. Missing/invalid configuration cannot create a request. SDK-managed authentication precedes optional runtime knowledge transport, and an account/session change aborts the request. Provider keys stay server-side. The current response contract is `choices[0].message.content`; the backend must validate sessions and authorization. Server `appMetadata` is not a substitute for an RLS/security audit.
 
-Both chat paths route through SpatterService and the same authenticated backend client. Embedded personality/knowledge and optional runtime knowledge remain. Cloud configuration/session checks precede optional runtime knowledge transport. A changed session during knowledge loading aborts rather than forwarding a stale account token.
+## Review surface and remaining gates
 
-Provider-key controls/state and email-list privilege assignment are removed. Admin UI reflects authenticated server `appMetadata` only; this is not a substitute for backend authorization or an RLS audit. Profile creation no longer sends a role assignment.
+[Private Studio review](https://stickdeath-infinity-review.joewillisny.chatgpt.site) reuses the original React Studio with isolated browser projects. Its v5 publication passed actual HTTPS Chromium/WebKit drawing, undo/redo, frame clipboard, save/reopen, PNG decoding, font and native screenshot/recording checks. The evidence gallery labels its native source separately. A browser companion is not a native iOS build and does not prove exact pixel parity.
 
-`SPATTER_BACKEND_URL` is a public build setting expanded into Info.plist. Missing/invalid/unexpanded values cannot create a request. No endpoint or credential default is supplied. Configure the real application backend, not an AI-provider endpoint. The current JSON response contract is `choices[0].message.content`; the backend must validate the session and keep provider credentials server-side.
+Remaining gates include the complete next-head native regression suite; exposed Studio tools/brushes/layers and full document journeys; real audio/video workflows and MP4/GIF; Spatter document generation/export; authenticated and moderated community/calls; consent-aware official publication with owner OAuth; signing, physical devices and TestFlight. The local full Xcode build still lacks a matching installed simulator runtime, so approved macOS CI supplies actual native evidence. No release or merge has been claimed.
 
-The checked-in Xcode target includes the exact new backend source. Swift language settings use `5.0`, not the compiler release number `5.9`.
+## Historical compiler recovery
 
-## Still blocking full app readiness
-
-- A new exact-head workflow runs the focused tests/security gate and a separate unsigned native simulator-target build. Its actual result must be inspected; workflow existence is not PASS.
-- Local full Xcode build is blocked by the installed SDK/runtime mismatch. Exact-head CI compilation passed at `e505892` as recorded above; the offline Studio continuation still requires its own native build and user journeys. Linux tests are not an iOS build or simulator run.
-- Any new native failures must be resolved using the actual exact-head compiler or test log; the earlier source-membership and compiler blockers are fixed at `e505892`.
-- Live backend/auth/provider end-to-end behavior is NOT RUN.
-- Device/visual interaction verification is NOT RUN.
-- No native release, public upload or merge has occurred. The isolated private web review companion is deployed; production backend readiness is not verified.
+The original `fe191ee` continuation corrected actual compiler-reported configuration and source membership issues in the existing branch. [Run 34257440327](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34257440327) at `e505892d3c70aeb6b5983f0cf32bca8108a0bb4f` was the first verified native build milestone. Earlier Linux-only 22-test reports and later 29-test client reports proved their focused source behavior, not native compilation. The current results above supersede those historical readiness states.

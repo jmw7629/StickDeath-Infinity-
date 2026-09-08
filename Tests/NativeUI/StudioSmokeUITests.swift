@@ -102,7 +102,8 @@ final class StudioSmokeUITests: XCTestCase {
         try exportControl("studio.export.format.png", app: app, scrollUp: false).tap()
         try exportControl("studio.export.start", app: app).tap()
         let blankPreview = try waitForPNGPreview(app)
-        let blankPixels = try pixels(blankPreview.screenshot().image)
+        let blankPixels = try exportPreviewPixels(blankPreview, app: app, name: "blank")
+        XCTAssertEqual(exportInkMask(blankPixels).count, 0, "The fresh export must contain no red drawing")
         capture(app, name: "png-export-blank-preview")
         try closeExportPanel(app)
 
@@ -117,7 +118,8 @@ final class StudioSmokeUITests: XCTestCase {
         try openExportPanel(app)
         try exportControl("studio.export.start", app: app).tap()
         let drawnPreview = try waitForPNGPreview(app)
-        let drawnPixels = try pixels(drawnPreview.screenshot().image)
+        let drawnPixels = try exportPreviewPixels(drawnPreview, app: app, name: "drawn")
+        XCTAssertGreaterThan(exportInkMask(drawnPixels).count, 12, "The actual PNG preview contains no red stroke")
         XCTAssertGreaterThan(try changedPixelCount(blankPixels, drawnPixels), 12,
                              "Drawing did not change the preview decoded from the actual exported PNG")
         XCTAssertTrue(app.staticTexts["frame_000000.png"].exists)
@@ -140,8 +142,10 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. Your export is still available."),
                                   evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         let retainedPreview = try exportControl("studio.export.preview", app: app)
-        XCTAssertLessThanOrEqual(try changedPixelCount(drawnPixels, pixels(retainedPreview.screenshot().image)), 4,
-                                 "Cancelling the share sheet lost or changed the export preview")
+        let retainedPixels = try exportPreviewPixels(retainedPreview, app: app, name: "retained-after-share")
+        XCTAssertGreaterThan(exportInkMask(retainedPixels).count, 12, "Cancelling sharing lost the exported stroke")
+        XCTAssertEqual(unmatchedExportInk(drawnPixels, retainedPixels), 0,
+                       "Cancelling sharing changed the exported content beyond one normalized pixel")
         XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled,
                       "Cancelled sharing must leave real files available for retry")
         capture(app, name: "png-share-cancelled-files-retained")
@@ -196,34 +200,140 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true) throws -> XCUIElement {
+    private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true,
+                               waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
-        XCTAssertTrue(element.waitForExistence(timeout: 8), "Missing export control: \(identifier)")
-        let panel = app.scrollViews.containing(.button, identifier: "studio.export.format.png").firstMatch
-        func isFullyVisible() -> Bool {
-            element.isHittable && panel.exists && panel.frame.insetBy(dx: 0, dy: 2).contains(element.frame)
+        if waitForExistence {
+            XCTAssertTrue(element.waitForExistence(timeout: 8), "Missing export control: \(identifier)")
         }
-        for _ in 0..<8 where !isFullyVisible() {
-            XCTAssertTrue(panel.exists, "The export ScrollView is missing")
-            let upward = element.frame.isEmpty ? scrollUp : element.frame.maxY > panel.frame.maxY - 2
-            // Small drags within the actual ScrollView avoid overshooting a
-            // partially visible preview; no guessed window coordinates.
+        let panel = app.scrollViews.containing(.button, identifier: "studio.export.format.png").firstMatch
+        XCTAssertTrue(panel.exists, "The export ScrollView is missing")
+        // Each AX query can take a second on CI. Return as soon as the actual
+        // element is fully visible; never re-evaluate a satisfied loop filter.
+        for attempt in 0...8 {
+            let panelFrame = panel.frame
+            let elementFrame = element.frame
+            if !elementFrame.isEmpty && panelFrame.insetBy(dx: 0, dy: 2).contains(elementFrame) {
+                XCTAssertTrue(element.isHittable, "Export control is obstructed: \(identifier)")
+                return element
+            }
+            guard attempt < 8 else { break }
+            let upward = elementFrame.isEmpty ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
+            // Small drags use the actual ScrollView, never window coordinates.
             let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.7 : 0.3))
             let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
             start.press(forDuration: 0.1, thenDragTo: end)
         }
-        XCTAssertTrue(isFullyVisible(), "Export control is not fully reachable: \(identifier)")
-        return element
+        XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
+        throw NSError(domain: "NativeExportSmoke", code: 1)
     }
 
     @MainActor
     private func waitForPNGPreview(_ app: XCUIApplication) throws -> XCUIElement {
         let preview = app.descendants(matching: .any)["studio.export.preview"].firstMatch
         XCTAssertTrue(preview.waitForExistence(timeout: 30), "No preview decoded from the actual PNG output appeared")
-        let visible = try exportControl("studio.export.preview", app: app)
-        XCTAssertGreaterThan(visible.frame.width, 20); XCTAssertGreaterThan(visible.frame.height, 20)
+        let visible = try exportControl("studio.export.preview", app: app, waitForExistence: false)
+        let frame = visible.frame
+        XCTAssertGreaterThan(frame.width, 20); XCTAssertGreaterThan(frame.height, 20)
         XCTAssertTrue(app.staticTexts["studio.export.status"].label.contains("Export ready"))
         return visible
+    }
+
+    @MainActor
+    private func exportPreviewPixels(_ preview: XCUIElement, app: XCUIApplication, name: String) throws -> Raster {
+        let previewFrame = preview.frame
+        let appFrame = app.frame
+        let screenshot = try XCTUnwrap(app.screenshot().image.cgImage)
+        let image = try normalizedExportPreview(screenshot, previewFrame: previewFrame, appFrame: appFrame)
+        let attachment = XCTAttachment(image: UIImage(cgImage: image))
+        attachment.name = "png-preview-normalized-" + name; attachment.lifetime = .keepAlways
+        add(attachment)
+        return try pixels(UIImage(cgImage: image))
+    }
+
+    // Export-specific fixture: default white 1080x1920 PNG, fitted in the real
+    // 180pt preview. b3 native captures clipped the AX element to 538 vs 540px.
+    // Crop from a full app capture instead, using the actual AX rectangle with
+    // a 2pt rounding margin. White PNG bounds exclude the dark card/letterbox;
+    // normalize those bounds, not the canvas or independently rounded AX image.
+    private func normalizedExportPreview(_ screenshot: CGImage, previewFrame: CGRect,
+                                         appFrame: CGRect) throws -> CGImage {
+        func invalid(_ message: String) -> NSError {
+            NSError(domain: "NativeExportSmoke", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
+        }
+        guard appFrame.width > 0, appFrame.height > 0,
+              screenshot.width <= 4096, screenshot.height <= 4096,
+              abs(previewFrame.height - 180) <= 1,
+              appFrame.contains(previewFrame) else { throw invalid("Unexpected PNG preview capture geometry") }
+        let scaleX = CGFloat(screenshot.width) / appFrame.width
+        let scaleY = CGFloat(screenshot.height) / appFrame.height
+        guard abs(scaleX - scaleY) < 0.01 else { throw invalid("Screenshot axes use different scales") }
+        let padded = previewFrame.insetBy(dx: -2, dy: -2).intersection(appFrame)
+        let bounds = CGRect(x: (padded.minX - appFrame.minX) * scaleX,
+                            y: (padded.minY - appFrame.minY) * scaleY,
+                            width: padded.width * scaleX, height: padded.height * scaleY).integral
+        guard let crop = screenshot.cropping(to: bounds) else { throw invalid("Preview crop is outside screenshot") }
+        let raster = try pixels(UIImage(cgImage: crop))
+        var minX = raster.width, minY = raster.height, maxX = -1, maxY = -1, whiteCount = 0
+        for y in 0..<raster.height {
+            for x in 0..<raster.width {
+                let offset = (y * raster.width + x) * 4
+                if (0..<4).allSatisfy({ raster.bytes[offset + $0] >= 240 }) {
+                    minX = min(minX, x); maxX = max(maxX, x)
+                    minY = min(minY, y); maxY = max(maxY, y); whiteCount += 1
+                }
+            }
+        }
+        let width = maxX - minX + 1, height = maxY - minY + 1
+        guard width > 20, height > 20,
+              abs(CGFloat(width) - CGFloat(height) * 9 / 16) <= 2,
+              abs(CGFloat(height) - 180 * scaleY) <= 2,
+              Double(whiteCount) / Double(width * height) > 0.9,
+              let png = crop.cropping(to: CGRect(x: minX, y: minY, width: width, height: height)),
+              let context = CGContext(data: nil, width: 288, height: 512, bitsPerComponent: 8,
+                  bytesPerRow: 288 * 4, space: CGColorSpaceCreateDeviceRGB(),
+                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)
+        else { throw invalid("Expected complete white portrait PNG is missing, clipped or obscured") }
+        context.interpolationQuality = .high
+        context.draw(png, in: CGRect(x: 0, y: 0, width: 288, height: 512))
+        return try XCTUnwrap(context.makeImage())
+    }
+
+    private func exportInkMask(_ raster: Raster) -> Set<Int> {
+        Set((0..<(raster.width * raster.height)).filter { pixel in
+            let offset = pixel * 4
+            let red = Int(raster.bytes[offset])
+            return red - Int(raster.bytes[offset + 1]) > 24 && red - Int(raster.bytes[offset + 2]) > 24
+        })
+    }
+
+    private func exportForegroundMask(_ raster: Raster) -> Set<Int> {
+        Set((0..<(raster.width * raster.height)).filter { pixel in
+            (0..<3).contains { raster.bytes[pixel * 4 + $0] < 231 }
+        })
+    }
+
+    // Subpixel scrolling can alter edge antialiasing after sheet dismissal.
+    // Both the red stroke and all nonwhite foreground must match in both
+    // directions; new blue/black content cannot hide behind unchanged red ink.
+    // At most one normalized pixel of rasterization movement is accepted.
+    private func unmatchedExportInk(_ lhs: Raster, _ rhs: Raster) -> Int {
+        guard lhs.width == rhs.width, lhs.height == rhs.height else { return Int.max }
+        let a = exportInkMask(lhs), b = exportInkMask(rhs)
+        func unmatched(_ source: Set<Int>, _ target: Set<Int>) -> Int {
+            source.filter { pixel in
+                let x = pixel % lhs.width, y = pixel / lhs.width
+                return !(-1...1).contains { dy in
+                    (-1...1).contains { dx in
+                        let nx = x + dx, ny = y + dy
+                        return nx >= 0 && nx < lhs.width && ny >= 0 && ny < lhs.height && target.contains(ny * lhs.width + nx)
+                    }
+                }
+            }.count
+        }
+        let foregroundA = exportForegroundMask(lhs), foregroundB = exportForegroundMask(rhs)
+        return unmatched(a, b) + unmatched(b, a)
+            + unmatched(foregroundA, foregroundB) + unmatched(foregroundB, foregroundA)
     }
 
     @MainActor
