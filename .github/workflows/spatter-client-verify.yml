@@ -102,6 +102,36 @@ jobs:
             Tests/StudioRenderer/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-renderer-tests"
           "$RUNNER_TEMP/sdi-studio-renderer-tests"
+      - name: Verify real PNG exports and cancellation cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            Tests/StudioExport/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-export-tests"
+          "$RUNNER_TEMP/sdi-studio-export-tests"
+      - name: Verify typed Studio command transactions
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            Tests/StudioCommands/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-command-tests"
+          "$RUNNER_TEMP/sdi-studio-command-tests"
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |

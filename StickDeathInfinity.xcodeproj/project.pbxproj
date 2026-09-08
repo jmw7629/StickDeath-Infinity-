@@ -98,6 +98,8 @@
 		9CAD63238FECA9CD84730364 /* StudioDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A825FFE562998F1F6A18B6E /* StudioDocument.swift */; };
 		019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 986F538B15F4B5FBAB96124E /* StudioFrameRenderer.swift */; };
 		427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */; };
+		74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54AE165BB4C0408388138753 /* StudioExportService.swift */; };
+		CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -202,6 +204,8 @@
 		3A825FFE562998F1F6A18B6E /* StudioDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioDocument.swift; sourceTree = SOURCE_ROOT; };
 		986F538B15F4B5FBAB96124E /* StudioFrameRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift; sourceTree = SOURCE_ROOT; };
 		0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift; sourceTree = SOURCE_ROOT; };
+		54AE165BB4C0408388138753 /* StudioExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioExportService.swift; sourceTree = SOURCE_ROOT; };
+		BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioCommands.swift; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -299,6 +303,7 @@
 		31B4F99131B295EC586BBC18 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */,
 				3A825FFE562998F1F6A18B6E /* StudioDocument.swift */,
 				62D2F0EA2FB3C1485B089D1F /* Models.swift */,
 				63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */,
@@ -317,6 +322,7 @@
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				54AE165BB4C0408388138753 /* StudioExportService.swift */,
 				B0E4783C6B928344EBD69AB2 /* Auth */,
 				E17A356E63009412D6C19673 /* Challenge */,
 				9C3AA15F438B3492BD9D60C3 /* LiveKit */,
@@ -714,6 +720,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */,
+				74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */,
 				427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */,
 				019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */,
 				9CAD63238FECA9CD84730364 /* StudioDocument.swift in Sources */,
