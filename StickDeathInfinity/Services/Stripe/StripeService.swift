@@ -171,7 +171,7 @@ final class StripeService: ObservableObject {
 
                 if transaction.revocationDate == nil {
                     let tier = StoreProductID.tier(for: transaction.productID)
-                    if tier.price > highestTier.price {
+                    if tier.rank > highestTier.rank {
                         highestTier = tier
                         activeSubId = String(transaction.id)
                     }

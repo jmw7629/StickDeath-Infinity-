@@ -86,8 +86,9 @@ final class SpatterService {
         context: SpatterContext? = nil
     ) async throws -> String {
         guard AppConfig.backendURL != nil else { throw SpatterClientError.notConfigured }
+        let supabase = try SupabaseManager.shared.client
         // Obtain an SDK-managed authenticated session before any optional knowledge request.
-        guard let sessionToken = try? await SupabaseManager.shared.client.auth.session.accessToken,
+        guard let sessionToken = try? await supabase.auth.session.accessToken,
               !sessionToken.isEmpty else { throw SpatterClientError.notAuthenticated }
         try Task.checkCancellation()
 

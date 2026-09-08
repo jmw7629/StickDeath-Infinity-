@@ -134,13 +134,13 @@ class DeviceStorageManager {
         let metadata = try JSONDecoder().decode(AnimationMetadata.self, from: data)
         
         // Load frames
-        var frames: [AnimationFrame] = []
+        var frames: [StoredAnimationFrame] = []
         var index = 0
         while true {
             let frameURL = projectDir.appendingPathComponent("frame_\(index).png")
             guard FileManager.default.fileExists(atPath: frameURL.path) else { break }
             let imageData = try Data(contentsOf: frameURL)
-            frames.append(AnimationFrame(imageData: imageData))
+            frames.append(StoredAnimationFrame(imageData: imageData))
             index += 1
         }
         
@@ -193,7 +193,7 @@ class DeviceStorageManager {
 struct AnimationProject {
     let id: UUID
     let metadata: AnimationMetadata
-    var frames: [AnimationFrame]
+    var frames: [StoredAnimationFrame]
     var audioTracks: [AudioTrack]
 }
 

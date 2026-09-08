@@ -9,7 +9,9 @@ import Supabase
 @MainActor
 final class SocialService {
     static let shared = SocialService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
 
     // MARK: - Posts
     func createPost(content: String, mediaURL: String?, projectID: String?) async throws -> Post {

@@ -65,8 +65,69 @@ struct SpatterClientTests {
         return BoundedSpatterRequest(request: URLRequest(url: URL(string: "https://backend.example" + path)!), configuration: config)
     }
 
+    /// Construct an unsigned, deliberately unusable legacy-key shape for local
+    /// role-classification tests. No real project key is included in fixtures.
+    static func legacyKey(role: String, issuer: String = "supabase", algorithm: String = "HS256") throws -> String {
+        func encode(_ value: [String: String]) throws -> String {
+            try JSONSerialization.data(withJSONObject: value, options: .sortedKeys)
+                .base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+        }
+        return try encode(["alg": algorithm, "typ": "JWT"]) + "."
+            + encode(["role": role, "iss": issuer]) + ".test_signature_not_valid"
+    }
+
     static func main() async {
         do {
+            try await test("Supabase requires both a valid URL and a public key") {
+                let key = "sb_publishable_test_fixture_not_a_real_key"
+                for values: [String: Any] in [[:], ["SUPABASE_URL": "https://project.example"], ["SUPABASE_PUBLISHABLE_KEY": key], ["SUPABASE_URL": 17, "SUPABASE_PUBLISHABLE_KEY": key], ["SUPABASE_URL": "$(SUPABASE_URL)", "SUPABASE_PUBLISHABLE_KEY": key]] {
+                    try require(AppConfig.supabaseConfiguration(from: values) == nil, "incomplete config accepted")
+                }
+                let config = AppConfig.supabaseConfiguration(from: ["SUPABASE_URL": " https://project.example/ ", "SUPABASE_PUBLISHABLE_KEY": key])
+                try require(config?.url.absoluteString == "https://project.example/" && config?.publishableKey == key, "public config not loaded")
+            }
+            try await test("Supabase rejects insecure or credential-bearing endpoints") {
+                for endpoint in ["http://project.example", "file:///tmp/project", "/relative", "https://user:pass@project.example", "https://project.example?secret=value", "https://project.example/#token", "https://project.example:444", "https://project.example/rest/v1", "https://project.example/\npath", "https://pro ject.example"] {
+                    try require(AppConfig.supabaseConfiguration(from: ["SUPABASE_URL": endpoint, "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_fixture"]) == nil, "unsafe Supabase endpoint accepted")
+                }
+            }
+            try await test("Supabase permits publishable and legacy anon keys only") {
+                let anon = try legacyKey(role: "anon")
+                let config = ["SUPABASE_URL": "https://project.example", "SUPABASE_ANON_KEY": anon]
+                try require(AppConfig.supabaseConfiguration(from: config)?.publishableKey == anon, "legacy anon compatibility missing")
+                for key in ["sb_secret_fixture", "sb_publishable_", "sb_publishable_bad\nheader", "unrecognized", try legacyKey(role: "service_role"), try legacyKey(role: "authenticated"), try legacyKey(role: "anon", issuer: "untrusted"), try legacyKey(role: "anon", algorithm: "none"), "e30.e30.signature", String(repeating: "a", count: 8193)] {
+                    try require(AppConfig.supabaseConfiguration(from: ["SUPABASE_URL": "https://project.example", "SUPABASE_PUBLISHABLE_KEY": key]) == nil, "privileged or malformed key accepted")
+                }
+            }
+            try await test("explicit invalid primary key cannot fall back to a legacy key") {
+                let anon = try legacyKey(role: "anon")
+                let values = ["SUPABASE_URL": "https://project.example", "SUPABASE_PUBLISHABLE_KEY": "sb_secret_fixture", "SUPABASE_ANON_KEY": anon]
+                try require(AppConfig.supabaseConfiguration(from: values) == nil, "invalid primary key bypassed")
+                let unresolvedPrimary = ["SUPABASE_URL": "https://project.example", "SUPABASE_PUBLISHABLE_KEY": "$(SUPABASE_PUBLISHABLE_KEY)", "SUPABASE_ANON_KEY": anon]
+                try require(AppConfig.supabaseConfiguration(from: unresolvedPrimary)?.publishableKey == anon, "optional unexpanded primary blocks explicit legacy config")
+            }
+            try await test("public configuration reads reflect changed or removed values") {
+                var values = ["SUPABASE_URL": "https://one.example", "SUPABASE_PUBLISHABLE_KEY": "sb_publishable_fixture"]
+                try require(AppConfig.supabaseConfiguration(from: values)?.url.host == "one.example", "initial host")
+                values["SUPABASE_URL"] = "https://two.example"
+                try require(AppConfig.supabaseConfiguration(from: values)?.url.host == "two.example", "stale host")
+                values.removeValue(forKey: "SUPABASE_PUBLISHABLE_KEY")
+                try require(AppConfig.supabaseConfiguration(from: values) == nil, "removed config cached")
+            }
+            try await test("LiveKit requires a secure configured endpoint without credentials") {
+                try require(AppConfig.liveKitWSURL(from: ["LIVEKIT_WS_URL": "wss://calls.example"])?.host == "calls.example", "secure LiveKit URL rejected")
+                try require(AppConfig.liveKitWSURL(from: [:]) == nil, "missing LiveKit defaulted")
+                for endpoint in ["", "$(LIVEKIT_WS_URL)", "${LIVEKIT_WS_URL}", "https://calls.example", "ws://calls.example", "wss://user:pass@calls.example", "wss://calls.example?token=test", "wss://calls.example#token", "wss://calls.example:7880", "wss://calls.example/\npath"] {
+                    try require(AppConfig.liveKitWSURL(from: ["LIVEKIT_WS_URL": endpoint]) == nil, "unsafe LiveKit endpoint accepted")
+                }
+            }
+            try await test("subscription family order is independent of prices") {
+                let tiers = AppConfig.SubscriptionTier.allCases
+                try require(tiers.map(\.rawValue) == ["free", "creator", "pro", "studio"], "existing product families changed")
+                try require(tiers.map(\.rank) == [0, 1, 2, 3], "StoreKit selection order invalid")
+                try require(AppConfig.SubscriptionTier(rawValue: "unknown") == nil, "invented product family")
+            }
             try await test("configuration loads only public plist key") {
                 try require(AppConfig.backendURL(from: [:]) == nil, "missing config")
                 try require(AppConfig.backendURL(from: ["SPATTER_BACKEND_URL": 17]) == nil, "invalid config type")

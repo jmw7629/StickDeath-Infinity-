@@ -115,8 +115,8 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Project List Operations
     func loadProjects() async {
         guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
         do {
+            let supabase = try SupabaseManager.shared.client
             let projects: [StudioProject] = try await supabase
                 .from("studio_projects")
                 .select("*")
@@ -361,8 +361,8 @@ final class StudioViewModel: ObservableObject {
     // MARK: - Save/Load
     func save() async {
         guard let userId = AuthService.shared.userId else { return }
-        let supabase = SupabaseManager.shared.client
         do {
+            let supabase = try SupabaseManager.shared.client
             let encoder = JSONEncoder()
             let frameData = try encoder.encode(frames)
             let frameJSON = String(data: frameData, encoding: .utf8) ?? "[]"

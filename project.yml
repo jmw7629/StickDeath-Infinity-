@@ -20,7 +20,10 @@ targets:
     type: application
     platform: iOS
     sources:
-      - StickDeathInfinity
+      - path: StickDeathInfinity
+        excludes:
+          # Historical alternate service; the canonical service is Services/LiveKit/LiveKitService.swift.
+          - Services/LiveKitService.swift
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist

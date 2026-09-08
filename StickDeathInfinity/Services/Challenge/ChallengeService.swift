@@ -9,7 +9,9 @@ import Supabase
 @MainActor
 final class ChallengeService {
     static let shared = ChallengeService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
 
     /// Fetch all active challenges
     func fetchChallenges() async throws -> [Challenge] {

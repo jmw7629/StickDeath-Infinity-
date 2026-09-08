@@ -21,7 +21,9 @@ final class SpatterBotService: ObservableObject {
     @Published var slackWebhook: String = ""
     @Published var globalPaused: Bool = false
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
 
     // MARK: - Owner Check
     var isOwner: Bool {

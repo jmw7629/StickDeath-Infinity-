@@ -1,5 +1,6 @@
 import Foundation
 import LiveKit
+import Supabase
 
 /// LiveKit integration for StickDeath ∞
 /// Handles: video/audio calls, screen sharing, collab rooms, war rooms, watch together
@@ -12,6 +13,7 @@ import LiveKit
 ///   - Watch Together (synced video playback)
 ///   - Collab Room (multi-user canvas sharing)
 
+@MainActor
 class LiveKitService: ObservableObject {
     static let shared = LiveKitService()
     
@@ -24,12 +26,13 @@ class LiveKitService: ObservableObject {
     
     private var room: Room?
     
-    // LiveKit server config
-    private let serverURL = "wss://stickdeath-live.livekit.cloud"
     
     // MARK: - Connection
     
     func connect(roomName: String, token: String) async throws {
+        guard let serverURL = AppConfig.liveKitWSURL else {
+            throw AppConfigurationError.liveKitUnavailable
+        }
         let room = Room()
         self.room = room
         
@@ -44,7 +47,7 @@ class LiveKitService: ObservableObject {
             defaultAudioCaptureOptions: AudioCaptureOptions()
         )
         
-        try await room.connect(url: serverURL, token: token, connectOptions: connectOptions, roomOptions: roomOptions)
+        try await room.connect(url: serverURL.absoluteString, token: token, connectOptions: connectOptions, roomOptions: roomOptions)
         
         await MainActor.run {
             self.isConnected = true
@@ -112,21 +115,17 @@ class LiveKitService: ObservableObject {
     // For development, use Supabase Edge Function
     
     func getToken(roomName: String, participantName: String) async throws -> String {
-        let url = URL(string: "https://iohubnamsqnzyburydxr.supabase.co/functions/v1/livekit-token")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlvaHVibmFtc3FuenlidXJ5ZHhyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU5MzQ4MjcsImV4cCI6MjA5MTUxMDgyN30.5kwCtvB7SxInFZFISuDKgE9z6RvOFJPzi2VfefrL7m0",
-                    forHTTPHeaderField: "Authorization")
-        
-        let body: [String: String] = [
-            "room": roomName,
-            "participant": participantName
-        ]
-        request.httpBody = try JSONEncoder().encode(body)
-        
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let response = try JSONDecoder().decode(TokenResponse.self, from: data)
+        guard AppConfig.liveKitWSURL != nil else {
+            throw AppConfigurationError.liveKitUnavailable
+        }
+        let client = try SupabaseManager.shared.client
+        guard let session = try? await client.auth.session, !session.accessToken.isEmpty else {
+            throw AuthService.AuthError.notAuthenticated
+        }
+        let body = ["room": roomName, "participant": participantName]
+        let response: TokenResponse = try await client.functions.invoke(
+            "livekit-token", options: .init(body: body)
+        )
         return response.token
     }
 }
