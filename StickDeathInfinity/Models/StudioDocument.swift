@@ -33,7 +33,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
 
     func validate() throws {
-        guard schemaVersion == 1 else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard (1...2).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -83,6 +83,7 @@ struct StudioDocument: Codable, Equatable {
                 throw StudioDocumentError.invalid("An audio clip has invalid timing.")
             }
         }
+        try StudioBrushGeometryCache.validate(document: self)
     }
 }
 
@@ -171,6 +172,7 @@ struct StudioDocumentEditor {
             }
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The drawing frame is unavailable.") }
             value.frames[index].elements.append(element)
+            if element.brush != nil { value.schemaVersion = 2 }
         }
     }
     mutating func addFrame() throws {
@@ -194,10 +196,12 @@ struct StudioDocumentEditor {
             let index = value.frames.firstIndex(where: { $0.id == value.activeFrameID })!
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
-                             width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID)
+                             width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
+                             brush: element.brush)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
+            if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = 2 }
         }
     }
     mutating func deleteFrame(_ id: String) throws {
@@ -252,7 +256,8 @@ struct StudioDocumentEditor {
             for frameIndex in value.frames.indices {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
-                                 width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id)
+                                 width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
+                                 brush: element.brush)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -282,6 +287,110 @@ struct StudioDocumentEditor {
         var bytes = undoDocuments.reduce(0) { $0 + cost($1) }
         while undoDocuments.count > 50 || (bytes > 32 * 1024 * 1024 && undoDocuments.count > 1) {
             bytes -= cost(undoDocuments.removeFirst())
+        }
+    }
+}
+
+/// Bounded cache of immutable, validated brush geometry. Keys retain the full
+/// element for equality checking, so reused IDs or hash collisions cannot reuse
+/// another drawing's marks. Sample/key storage is included in the byte budget.
+enum StudioBrushGeometryCache {
+    static let maximumStrokePoints = 8_192
+    static let maximumStrokeMarks = 32_768
+    static let maximumFrameMarks = 131_072
+    static let maximumDocumentMarks = 262_144
+    static let maximumDocumentPoints = 100_000
+    static let maximumDocumentElements = 2_048
+    static let maximumCacheBytes = 24 * 1024 * 1024
+    static let maximumCacheEntries = 2_048
+    private struct Entry {
+        let element: DrawnElement
+        let geometry: StudioBrushRenderer.Geometry
+        let bytes: Int
+        var used: UInt64
+    }
+    private static let lock = NSLock()
+    private static var entries: [String: Entry] = [:]
+    private static var bytes = 0
+    private static var clock: UInt64 = 0
+
+    static var footprint: (entries: Int, bytes: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (entries.count, bytes)
+    }
+
+    static func color(_ hex: String) throws -> StudioBrushColor {
+        let value = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard value.utf8.count == 6,
+              value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }),
+              let rgb = UInt32(value, radix: 16) else {
+            throw StudioBrushError.invalidSettings("This brush requires a valid RGB color.")
+        }
+        return StudioBrushColor(red: Double((rgb >> 16) & 255) / 255,
+            green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+    }
+
+    static func geometry(for element: DrawnElement) throws -> StudioBrushRenderer.Geometry {
+        guard let brush = element.brush else { throw StudioBrushError.invalidSettings("This drawing uses the historical renderer.") }
+        guard !element.id.isEmpty, element.id.utf8.count <= 120,
+              [.pencil, .pen, .brush, .marker, .crayon].contains(element.tool),
+              element.points.count <= maximumStrokePoints, element.fillColor == nil,
+              (element.layerID?.utf8.count ?? 0) <= 120 else {
+            throw StudioBrushError.workLimit("This brush stroke exceeds the 8,192 sample limit or has an unsupported identity/tool. Draw a shorter stroke.")
+        }
+        let settings = try brush.settings(width: element.width, opacity: element.opacity)
+        _ = try color(element.color)
+        lock.lock()
+        if var hit = entries[element.id], hit.element == element {
+            clock &+= 1; hit.used = clock; entries[element.id] = hit
+            lock.unlock(); return hit.geometry
+        }
+        lock.unlock()
+        // Validation is synchronous and deterministic. Callers owning async jobs
+        // check cancellation around this bounded operation, never during drawing.
+        let result = try StudioBrushRenderer.geometry(points: element.points, settings: settings, seed: brush.seed,
+            checkCancellation: {})
+        guard result.marks.count <= maximumStrokeMarks else {
+            throw StudioBrushError.workLimit("This stroke exceeds the 32,768 brush mark limit. Increase size, reduce texture, or draw a shorter stroke.")
+        }
+        let cost = result.marks.count * MemoryLayout<StudioBrushRenderer.Mark>.stride
+            + element.points.count * MemoryLayout<StrokePoint>.stride
+            + element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0) + 1024
+        guard cost <= maximumCacheBytes else { throw StudioBrushError.workLimit("This brush stroke exceeds the rendering memory budget.") }
+        lock.lock(); defer { lock.unlock() }
+        if let prior = entries.removeValue(forKey: element.id) { bytes -= prior.bytes }
+        while bytes + cost > maximumCacheBytes || entries.count >= maximumCacheEntries {
+            guard let oldest = entries.min(by: { $0.value.used < $1.value.used }) else { break }
+            bytes -= oldest.value.bytes; entries.removeValue(forKey: oldest.key)
+        }
+        clock &+= 1
+        entries[element.id] = Entry(element: element, geometry: result, bytes: cost, used: clock)
+        bytes += cost
+        return result
+    }
+
+    static func validate(document: StudioDocument) throws {
+        var marks = 0, points = 0, elements = 0
+        for frame in document.frames {
+            var frameMarks = 0
+            for element in frame.elements where element.brush != nil {
+                elements += 1
+                guard elements <= maximumDocumentElements else {
+                    throw StudioBrushError.workLimit("This project exceeds 2,048 styled brush elements. Undo or remove selected content before adding more.")
+                }
+                guard document.schemaVersion == 2 else {
+                    throw StudioBrushError.invalidSettings("Brush documents require version 2. The original project has not changed.")
+                }
+                points += element.points.count
+                guard points <= maximumDocumentPoints else {
+                    throw StudioBrushError.workLimit("This project exceeds 100,000 styled brush samples. Undo or remove selected content before adding more.")
+                }
+                let count = try geometry(for: element).marks.count
+                frameMarks += count; marks += count
+                guard frameMarks <= maximumFrameMarks, marks <= maximumDocumentMarks else {
+                    throw StudioBrushError.workLimit("This project exceeds its brush rendering budget (131,072 marks per frame; 262,144 per project). Undo or remove selected content before adding more.")
+                }
+            }
         }
     }
 }

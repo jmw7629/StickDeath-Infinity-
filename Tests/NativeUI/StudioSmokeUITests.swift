@@ -296,6 +296,111 @@ final class StudioSmokeUITests: XCTestCase {
                                 "Advice-only chat changed the actual canvas")
     }
 
+    /// Uses real library controls and touch input. Comparing two families at
+    /// identical settings catches a library that only changes its selected label.
+    @MainActor
+    func testBrushLibrarySettingsUndoAndPersistence() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8)); XCTAssertTrue(canvas.isHittable)
+        let undo = app.buttons["studio.undo"]
+        let redo = app.buttons["studio.redo"]
+        XCTAssertFalse(undo.isEnabled, "The brush journey requires a new blank project")
+
+        try waitForButton("Brush", in: app).tap()
+        let library = app.buttons["studio.brush-library"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let round = app.buttons["studio.brush-family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout: 5)); XCTAssertTrue(round.isHittable); round.tap()
+        let size = app.sliders["studio.setting.size"]
+        let opacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(size.waitForExistence(timeout: 5)); XCTAssertTrue(size.isHittable)
+        XCTAssertTrue(opacity.isHittable)
+        let initialSize = try XCTUnwrap(size.value as? String)
+        let initialOpacity = try XCTUnwrap(opacity.value as? String)
+        size.adjust(toNormalizedSliderPosition: 0.75)
+        opacity.adjust(toNormalizedSliderPosition: 0.6)
+        let selectedSize = try XCTUnwrap(size.value as? String)
+        let selectedOpacity = try XCTUnwrap(opacity.value as? String)
+        XCTAssertNotEqual(selectedSize, initialSize)
+        XCTAssertNotEqual(selectedOpacity, initialOpacity)
+        capture(app, name: "brush-round-settings")
+        let closeSettings = app.buttons["studio.tool-settings.close"]
+        XCTAssertTrue(closeSettings.isHittable); closeSettings.tap()
+        let before = try pixels(canvas.screenshot().image)
+        XCTAssertTrue(exportInkMask(before).isEmpty, "The actual starting canvas contains red ink")
+
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5),
+                      "The real touch stroke did not commit and release its active-input guard")
+        let roundRaster = try pixels(canvas.screenshot().image)
+        let roundInk = exportInkMask(roundRaster)
+        XCTAssertGreaterThan(roundInk.count, 12)
+        // The default document is 1080 pixels wide. A size near 38 must produce
+        // substantially more thickness than the default 3, at the actual scale.
+        let inkRows = roundInk.map { $0 / roundRaster.width }
+        let inkHeight = try XCTUnwrap(inkRows.max()) - XCTUnwrap(inkRows.min()) + 1
+        XCTAssertGreaterThan(Double(inkHeight), Double(roundRaster.width) * 20 / 1080,
+                             "Size changed its label without increasing rendered stroke width")
+        let greenChannels = roundInk.map { Int(roundRaster.bytes[$0 * 4 + 1]) }.sorted()
+        let medianGreen = greenChannels[greenChannels.count / 2]
+        XCTAssertGreaterThan(medianGreen, 60, "Opacity stayed fully opaque despite the actual slider adjustment")
+        XCTAssertLessThan(medianGreen, 180, "The selected opacity produced only nearly invisible ink")
+        undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+
+        try waitForButton("Brush", in: app).tap()
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let stipple = app.buttons["studio.brush-family.stipple"]
+        XCTAssertTrue(stipple.waitForExistence(timeout: 5)); XCTAssertTrue(stipple.isHittable); stipple.tap()
+        XCTAssertTrue(library.label.contains("Stipple"))
+        XCTAssertEqual(size.value as? String, selectedSize, "Changing family unexpectedly changed size")
+        XCTAssertEqual(opacity.value as? String, selectedOpacity, "Changing family unexpectedly changed opacity")
+        capture(app, name: "brush-stipple-settings")
+        closeSettings.tap()
+        start.press(forDuration: 0.05, thenDragTo: end)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        let stippleRaster = try pixels(canvas.screenshot().image)
+        let stippleInk = exportInkMask(stippleRaster)
+        XCTAssertGreaterThan(stippleInk.count, 12, "Stipple rendered no visible dots")
+        XCTAssertLessThan(Double(stippleInk.count), Double(roundInk.count) * 0.8,
+                          "Stipple did not render distinctly sparser ink than Round at the same settings")
+        XCTAssertGreaterThan(try changedPixelCount(roundRaster, stippleRaster), 12)
+        capture(app, name: "brush-stipple-drawn")
+        undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
+                                 "Undo did not remove the complete styled stroke")
+        redo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(stippleRaster, pixels(canvas.screenshot().image)), 4,
+                                 "Redo changed the deterministic Stipple pattern")
+
+        let save = app.buttons["studio.save"]
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap()
+        let savedProject = app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(savedProject.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopenedApp = try launchGuestStudio()
+        defer { reopenedApp.terminate() }
+        let reopenedProject = reopenedApp.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(reopenedProject.waitForExistence(timeout: 8)); reopenedProject.tap()
+        let reopenedCanvas = reopenedApp.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8))
+        let reopened = try pixels(reopenedCanvas.screenshot().image)
+        XCTAssertLessThanOrEqual(try changedPixelCount(stippleRaster, reopened), 4,
+                                 "Save/relaunch/reopen did not retain the brush settings and stable seeded pattern")
+        XCTAssertGreaterThan(try changedPixelCount(before, reopened), 12)
+        capture(reopenedApp, name: "brush-stipple-persisted-reopened")
+    }
+
     @MainActor
     private func openExportPanel(_ app: XCUIApplication) throws {
         let open = app.buttons["studio.export.open"]

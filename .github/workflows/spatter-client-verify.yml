@@ -55,6 +55,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             Tests/NativeModels/main.swift \
@@ -67,6 +69,8 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             Tests/DeviceStorage/main.swift \
@@ -78,6 +82,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -100,12 +106,36 @@ jobs:
             Tests/StudioBrushes/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-brush-tests"
           "$RUNNER_TEMP/sdi-studio-brush-tests"
+      - name: Verify native brush edits, live rendering and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            Tests/StudioBrushIntegration/main.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            -o "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
+          "$RUNNER_TEMP/sdi-studio-brush-integration-tests"
       - name: Verify actual SwiftUI renderer pixels on macOS
         shell: bash
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -123,6 +153,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -141,6 +173,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
@@ -154,6 +188,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -169,6 +205,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -182,6 +220,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -208,6 +248,8 @@ jobs:
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \

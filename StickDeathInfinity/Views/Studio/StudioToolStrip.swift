@@ -79,7 +79,7 @@ struct StudioToolStrip: View {
                         if isSelected && hasSettings(def.tool) {
                             vm.activePanel = vm.activePanel == .toolSettings ? .none : .toolSettings
                         } else {
-                            vm.selectedTool = def.tool
+                            vm.selectDrawingTool(def.tool)
                             if hasSettings(def.tool) {
                                 vm.activePanel = .toolSettings
                             } else {

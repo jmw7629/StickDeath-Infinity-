@@ -9,6 +9,15 @@ final class StudioViewModel: ObservableObject {
     @Published private(set) var isSaving = false
     @Published private(set) var lastSaveTime: Date?
     @Published var message: String?
+    struct PendingBrushStroke {
+        let projectID: UUID
+        let frameID: String
+        let element: DrawnElement
+        let reason: String
+        let inputComplete: Bool
+    }
+    @Published private(set) var pendingBrushStroke: PendingBrushStroke?
+    @Published private(set) var activeStrokeID: String?
     private var savedRevision: Int?
     private let storage: DeviceStorageManager
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
@@ -46,6 +55,7 @@ final class StudioViewModel: ObservableObject {
     var currentFrameIndex: Int {
         get { playbackFrameIndex ?? (frames.firstIndex { $0.id == document.activeFrameID } ?? 0) }
         set {
+            guard allowDocumentEditDuringInput() else { return }
             guard frames.indices.contains(newValue) else { return }
             stopPlayback()
             if editor.selectFrame(frames[newValue].id) { scheduleSave() }
@@ -57,13 +67,13 @@ final class StudioViewModel: ObservableObject {
     }
     var currentFrame: AnimationFrame { frames[currentFrameIndex] }
     var previousFrame: AnimationFrame? { currentFrameIndex > 0 ? frames[currentFrameIndex - 1] : nil }
-    var canUndo: Bool { editor.canUndo }
-    var canRedo: Bool { editor.canRedo }
-    var canPaste: Bool { editor.canPaste }
+    var canUndo: Bool { activeStrokeID == nil && editor.canUndo }
+    var canRedo: Bool { activeStrokeID == nil && editor.canRedo }
+    var canPaste: Bool { activeStrokeID == nil && editor.canPaste }
     var canDeleteSelected: Bool { !editor.selectedElementIDs.isEmpty }
     var selectedElementIDs: Set<String> { editor.selectedElementIDs }
-    var isDirty: Bool { savedRevision != document.revision }
-    var saveTimeAgo: String { isSaving ? "Saving…" : isDirty ? "Unsaved" : "Saved" }
+    var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil }
+    var saveTimeAgo: String { activeStrokeID != nil ? "Drawing…" : isSaving ? "Saving…" : isDirty ? "Unsaved" : "Saved" }
 
     @Published var selectedTool: DrawingTool = .brush
     @Published var strokeColor: Color = .red
@@ -71,7 +81,12 @@ final class StudioViewModel: ObservableObject {
     @Published var strokeOpacity: Double = 1
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
     @Published var smoothing: Double = 3
-    @Published var pressureSensitivity = true
+    @Published var pressureSensitivity = false
+    @Published var brushFamily: StudioBrushFamily = .round
+    @Published var brushTipAngle: Double = 45
+    @Published var brushTexture: Double = 0.5
+    @Published var brushGrain: Double = 0.3
+    @Published var brushGradientEndColor: Color = .blue
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
     @Published var fillGapClose: Double = 0
@@ -94,6 +109,33 @@ final class StudioViewModel: ObservableObject {
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
+    var capturedStrokeOpacity: Double {
+        #if canImport(UIKit)
+        var alpha: CGFloat = 1
+        UIColor(strokeColor).getRed(nil, green: nil, blue: nil, alpha: &alpha)
+        return strokeOpacity * Double(alpha)
+        #else
+        return strokeOpacity
+        #endif
+    }
+    func brushDescriptor(elementID: String, seed: UInt64? = nil) throws -> StudioBrushDescriptor {
+        let value = StudioBrushDescriptor(family: brushFamily, seed: seed ?? StudioBrushRenderer.seed(for: elementID),
+            smoothing: smoothing, pressureEnabled: false, tipAngleDegrees: brushTipAngle,
+            texture: brushTexture, grain: brushGrain,
+            gradientEndColor: brushFamily == .gradient ? try StudioBrushGeometryCache.color(Self.hex(brushGradientEndColor)) : nil)
+        _ = try value.settings(width: strokeWidth, opacity: capturedStrokeOpacity)
+        return value
+    }
+    func selectDrawingTool(_ tool: DrawingTool) {
+        selectedTool = tool
+        switch tool {
+        case .marker: brushFamily = .calligraphy
+        case .crayon: brushFamily = .grain
+        case .pen: brushFamily = .roughPen
+        case .pencil: brushFamily = .round
+        default: break
+        }
+    }
 
     /// Snapshot of this Studio route, not a claim about another foreground tab.
     /// This snapshot contains no request bodies, audio bytes, provider credentials
@@ -143,7 +185,8 @@ final class StudioViewModel: ObservableObject {
             retainedAudio: projectAudioTracks.map {
                 .init(id: $0.id, name: $0.name, format: $0.format, startTime: $0.startTime, duration: $0.duration,
                       timingKnown: $0.legacySourceFilename == nil, hasAudioData: $0.audioData != nil)
-            }, canApplyCommands: !isSaving, isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo)
+            }, canApplyCommands: !isSaving && pendingBrushStroke == nil && activeStrokeID == nil,
+            isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo)
     }
 
     /// The returned receipt describes an in-memory edit, never a successful save,
@@ -179,6 +222,8 @@ final class StudioViewModel: ObservableObject {
     private func requireOpenCommandEditor() throws {
         guard isEditing else { throw StudioDocumentError.unavailable("Open or create a project before applying Studio commands.") }
         guard !isSaving else { throw StudioDocumentError.unavailable("Wait for the current save before applying Studio commands.") }
+        guard pendingBrushStroke == nil else { throw StudioDocumentError.unavailable("Retry or discard the rejected brush draft before applying Studio commands.") }
+        guard activeStrokeID == nil else { throw StudioDocumentError.unavailable("Finish the current touch stroke before applying Studio commands.") }
     }
 
     /// The current executor validates the whole document after each staged edit.
@@ -255,7 +300,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
-        guard !isEditing else { message = "Save and return to projects before creating another animation."; return false }
+        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
             retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
@@ -265,7 +310,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func openProject(_ metadata: AnimationMetadata) async -> Bool {
-        guard !isEditing else { message = "Save and return to projects before opening another animation."; return false }
+        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil else { message = "Finish or discard any drawing draft, then save and return to projects before opening another animation."; return false }
         do {
             guard let stored = try storage.loadAnimation(id: metadata.id) else { throw StudioDocumentError.invalid("This project is no longer available.") }
             var decoded: StudioDocument
@@ -348,11 +393,23 @@ final class StudioViewModel: ObservableObject {
                 audioTracks: try audioTracksForSave(snapshot), editableDocumentData: payload))
             savedRevision = snapshot.revision; lastSaveTime = Date(); message = nil
             await loadProjects()
+            // A save may persist prior committed work during a long stroke, but
+            // must not acknowledge the uncommitted touch capture as saved.
+            if activeStrokeID != nil { return false }
+            if pendingBrushStroke != nil {
+                message = "The committed project is saved. A rejected brush draft is still unsaved; retry or discard it before leaving."
+                return false
+            }
             return true
         } catch { message = "Save failed. Your edits are still open: \(error.localizedDescription)"; return false }
     }
     func backToProjects() async {
         stopPlayback()
+        guard activeStrokeID == nil else { message = "Finish the current touch stroke before leaving this project."; return }
+        guard pendingBrushStroke == nil else {
+            message = "Retry or explicitly discard the rejected brush draft before leaving this project."
+            return
+        }
         guard await save(), !isDirty else { return }
         isEditing = false; activePanel = .none; await loadProjects()
     }
@@ -368,24 +425,86 @@ final class StudioViewModel: ObservableObject {
         autosaveTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
             guard !Task.isCancelled, let self else { return }
+            if self.activeStrokeID != nil { self.scheduleSave(); return }
             _ = await self.save()
         }
     }
     private func command(_ operation: (inout StudioDocumentEditor) throws -> Void) {
+        guard allowDocumentEditDuringInput() else { return }
         do { try operation(&editor); pruneManagedAudio(); scheduleSave() } catch { message = error.localizedDescription }
+    }
+    private func allowDocumentEditDuringInput() -> Bool {
+        guard activeStrokeID == nil else { message = "Finish the current touch stroke before changing the document."; return false }
+        return true
     }
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
     func addFrame() { stopPlayback(); command { try $0.addFrame() } }
     func duplicateFrame() { stopPlayback(); command { try $0.duplicateFrame() } }
-    func copyFrame() { editor.copyFrame() }
+    func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame() } }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func deleteFrame(_ id: String) { stopPlayback(); command { try $0.deleteFrame(id) } }
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
     func nextFrame() { if currentFrameIndex + 1 < frames.count { currentFrameIndex += 1 } }
     func prevFrame() { if currentFrameIndex > 0 { currentFrameIndex -= 1 } }
-    func commitElement(_ element: DrawnElement, frameID: String? = nil) {
+    @discardableResult
+    func commitElement(_ element: DrawnElement, frameID: String? = nil) -> Bool {
+        guard activeStrokeID == nil || activeStrokeID == element.id else {
+            message = "Finish the current touch stroke before adding another drawing."
+            return false
+        }
+        guard pendingBrushStroke == nil || pendingBrushStroke?.element.id == element.id else {
+            message = "Retry or discard the rejected drawing draft before adding another drawing."
+            return false
+        }
         let target = frameID ?? document.activeFrameID
-        command { try $0.commit(element, frameID: target) }
+        do {
+            try editor.commit(element, frameID: target)
+            if pendingBrushStroke?.element.id == element.id { pendingBrushStroke = nil }
+            pruneManagedAudio(); scheduleSave()
+            return true
+        } catch {
+            if element.brush != nil { retainRejectedBrush(element, frameID: target, reason: error.localizedDescription) }
+            else { message = error.localizedDescription }
+            return false
+        }
+    }
+    func retainRejectedBrush(_ element: DrawnElement, frameID: String, reason: String, inputComplete: Bool = true) {
+        guard pendingBrushStroke == nil || pendingBrushStroke?.element.id == element.id else {
+            message = "Resolve the existing rejected drawing draft before adding another."
+            return
+        }
+        pendingBrushStroke = PendingBrushStroke(projectID: document.id, frameID: frameID,
+            element: element, reason: reason, inputComplete: inputComplete)
+        message = reason + " The rejected draft remains open. Retry with current brush settings or discard it explicitly."
+    }
+    func beginStrokeInput(id: String) -> Bool {
+        guard isEditing, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil else { return false }
+        activeStrokeID = id
+        return true
+    }
+    func finishStrokeInput(id: String) { if activeStrokeID == id { activeStrokeID = nil } }
+    func interruptStrokeInput(_ input: StudioStrokeInput, reason: String) {
+        guard activeStrokeID == input.id else { return }
+        activeStrokeID = nil
+        guard !input.points.isEmpty else { return }
+        retainRejectedBrush(input.element, frameID: input.frameID, reason: reason, inputComplete: false)
+    }
+    func discardRejectedBrush() { pendingBrushStroke = nil; message = nil }
+    func retryRejectedBrush() {
+        guard let pending = pendingBrushStroke else { return }
+        guard pending.inputComplete, pending.projectID == document.id, isEditing else {
+            message = "This rejected draft cannot be retried because its input is incomplete or its original project is unavailable. Discard it explicitly and draw a shorter stroke."
+            return
+        }
+        do {
+            var element = pending.element
+            element.width = strokeWidth; element.color = strokeColorHex
+            if element.brush != nil {
+                element.opacity = capturedStrokeOpacity
+                element.brush = try brushDescriptor(elementID: element.id, seed: element.brush?.seed)
+            } else { element.opacity = strokeOpacity }
+            _ = commitElement(element, frameID: pending.frameID)
+        } catch { message = error.localizedDescription }
     }
     func deleteSelected() { command { try $0.deleteSelected() } }
     func selectElement(at point: CGPoint) {
@@ -403,6 +522,7 @@ final class StudioViewModel: ObservableObject {
     }
     func clearCanvas() { message = "Select elements explicitly before deleting. The canvas has not changed." }
     func selectLayer(_ id: String) {
+        guard allowDocumentEditDuringInput() else { return }
         stopPlayback()
         if editor.selectLayer(id) { scheduleSave() }
     }
@@ -491,10 +611,11 @@ final class StudioViewModel: ObservableObject {
         change { $0.audioClips.removeAll { $0.id == id } }; selectedAudioClip = nil
     }
     func rasterData(_ assetID: String?) -> Data? { assetID.flatMap { retainedRasterFrames[$0]?.imageData } }
-    func undo() { stopPlayback(); editor.undo(); pruneManagedAudio(); scheduleSave() }
-    func redo() { stopPlayback(); editor.redo(); pruneManagedAudio(); scheduleSave() }
+    func undo() { guard allowDocumentEditDuringInput() else { return }; stopPlayback(); editor.undo(); pruneManagedAudio(); scheduleSave() }
+    func redo() { guard allowDocumentEditDuringInput() else { return }; stopPlayback(); editor.redo(); pruneManagedAudio(); scheduleSave() }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private func startPlayback() {
+        guard allowDocumentEditDuringInput() else { return }
         guard frames.count > 1 else { return }
         playbackFrameIndex = currentFrameIndex; isPlaying = true
         playbackTimer = Timer.scheduledTimer(withTimeInterval: 1 / Double(fps), repeats: true) { [weak self] _ in

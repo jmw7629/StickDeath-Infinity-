@@ -66,6 +66,35 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
+    /// Absent on historical drawings: their original rendering stays unchanged.
+    /// Width and opacity remain canonical above, never duplicated in this value.
+    var brush: StudioBrushDescriptor? = nil
+}
+
+struct StudioBrushDescriptor: Codable, Equatable {
+    var version = 1
+    var family: StudioBrushFamily
+    var seed: UInt64
+    var smoothing: Double = 3
+    var pressureEnabled = false
+    var tipAngleDegrees: Double = 45
+    var texture: Double = 0.5
+    var grain: Double = 0.3
+    var gradientEndColor: StudioBrushColor?
+
+    func settings(width: Double, opacity: Double) throws -> StudioBrushSettings {
+        guard version == 1 else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
+        let result = StudioBrushSettings(family: family, size: width, opacity: opacity,
+            smoothing: smoothing, pressureEnabled: pressureEnabled, tipAngleDegrees: tipAngleDegrees,
+            texture: texture, grain: grain, gradientEndColor: gradientEndColor)
+        try result.validate()
+        // DrawnElement's current color is opaque RGB; picker alpha is captured
+        // once into its canonical opacity. Unequal endpoint alpha is unsupported.
+        if family == .gradient, gradientEndColor?.alpha != 1 {
+            throw StudioBrushError.invalidSettings("Gradient endpoint transparency is unavailable. Choose an opaque end color.")
+        }
+        return result
+    }
 }
 
 struct StrokePoint: Codable, Equatable {
@@ -73,6 +102,46 @@ struct StrokePoint: Codable, Equatable {
     var y: CGFloat
     var pressure: CGFloat?
     var timestamp: TimeInterval?
+}
+
+/// Captures one touch operation's identity/settings and actual event times.
+/// The same element is previewed and committed; copying it later retains seed.
+struct StudioStrokeInput {
+    let id: String
+    let frameID: String
+    let layerID: String
+    let tool: DrawingTool
+    let color: String
+    let width: Double
+    let opacity: Double
+    let brush: StudioBrushDescriptor?
+    let documentSize: CGSize
+    let viewportSize: CGSize
+    let startedAt: Date
+    private(set) var points: [StrokePoint] = []
+
+    mutating func append(location: CGPoint, time: Date) throws {
+        guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
+            throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
+        }
+        let limit = brush == nil ? 100_000 : 8_192
+        guard points.count < limit else {
+            throw StudioBrushError.workLimit("Touch capture reached its \(limit) sample limit. This entire stroke was rejected; no shortened stroke was saved. Discard the draft and draw a shorter stroke.")
+        }
+        let elapsed = time.timeIntervalSince(startedAt)
+        guard elapsed.isFinite, elapsed >= 0, elapsed >= (points.last?.timestamp ?? 0) else {
+            throw StudioBrushError.invalidSettings("Touch event timing changed unexpectedly. The stroke was not committed.")
+        }
+        points.append(StrokePoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
+            y: min(max(location.y / viewportSize.height, 0), 1) * documentSize.height,
+            pressure: nil, timestamp: elapsed))
+    }
+    var element: DrawnElement {
+        let shape = [.line, .rectangle, .circle].contains(tool)
+        let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
+        return DrawnElement(id: id, tool: tool, points: rendered, color: color,
+            width: width, opacity: opacity, layerID: layerID, brush: brush)
+    }
 }
 
 enum DrawingTool: String, Codable, CaseIterable {

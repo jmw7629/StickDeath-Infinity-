@@ -4,22 +4,59 @@ struct StudioFrameThumbnail: View {
     @ObservedObject var vm: StudioViewModel
     let frame: AnimationFrame
     var body: some View {
+        let prepared = Result { try StudioFrameRenderer.prepare(frame: frame) }
         Canvas { context, size in
             let scale = min(size.width / CGFloat(vm.canvasWidth), size.height / CGFloat(vm.canvasHeight))
             let fitted = CGSize(width: CGFloat(vm.canvasWidth) * scale, height: CGFloat(vm.canvasHeight) * scale)
             context.translateBy(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2)
             context.fill(Path(CGRect(origin: .zero, size: fitted)), with: .color(.white))
-            StudioFrameRenderer.draw(context: &context, frame: frame, layers: vm.layers,
-                canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
-                rasterData: vm.rasterData(frame.rasterAssetID))
+            switch prepared {
+            case .success(let brushes):
+                if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: vm.layers,
+                    canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
+                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes) {
+                    StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
+                }
+            case .failure(let error): StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
+            }
         }
     }
 }
 
 /// One compositing path for the live canvas, timeline and frames viewer.
 struct StudioFrameRenderer {
+    struct PreparedBrushes {
+        fileprivate let elements: [DrawnElement]
+        fileprivate let strokes: [String: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)]
+    }
+    /// Performs all brush validation/allocation before a Canvas or export draws.
+    static func prepare(frame: AnimationFrame, liveElement: DrawnElement? = nil) throws -> PreparedBrushes {
+        let elements = (frame.elements + (liveElement.map { [$0] } ?? [])).filter { $0.brush != nil }
+        var strokes: [String: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)] = [:]
+        var marks = 0
+        for element in elements {
+            guard strokes[element.id] == nil else { throw StudioDocumentError.invalid("A brush identity is duplicated.") }
+            let geometry = try StudioBrushGeometryCache.geometry(for: element)
+            marks += geometry.marks.count
+            guard marks <= StudioBrushGeometryCache.maximumFrameMarks else {
+                throw StudioBrushError.workLimit("This frame exceeds the brush rendering budget. The stroke has not been committed.")
+            }
+            strokes[element.id] = (geometry, try StudioBrushGeometryCache.color(element.color))
+        }
+        return PreparedBrushes(elements: elements, strokes: strokes)
+    }
+    @discardableResult
     static func draw(context: inout GraphicsContext, frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
-                     size: CGSize, rasterData: Data? = nil, liveElement: DrawnElement? = nil) {
+                     size: CGSize, rasterData: Data? = nil, liveElement: DrawnElement? = nil,
+                     preparedBrushes: PreparedBrushes? = nil) -> Error? {
+        let prepared: PreparedBrushes
+        do {
+            prepared = try preparedBrushes ?? prepare(frame: frame, liveElement: liveElement)
+            guard prepared.elements == (frame.elements + (liveElement.map { [$0] } ?? [])).filter({ $0.brush != nil }) else {
+                throw StudioDocumentError.invalid("Prepared brushes do not match this frame. No frame was rendered.")
+            }
+        } catch { return error }
+        var failure: Error?
         for layer in layers.reversed() where layer.visible {
             var composite = context
             composite.opacity *= layer.opacity
@@ -31,14 +68,22 @@ struct StudioFrameRenderer {
                 }
                 for element in frame.elements where element.layerID == layer.id {
                     var elementContext = local
-                    drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize)
+                    do { try drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
+                        brush: prepared.strokes[element.id]) } catch { failure = error; return }
                 }
                 if let element = liveElement, element.layerID == layer.id {
                     var elementContext = local
-                    drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize)
+                    do { try drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
+                        brush: prepared.strokes[element.id]) } catch { failure = error }
                 }
             }
+            if let failure { return failure }
         }
+        return nil
+    }
+    static func drawFailure(_ error: Error, context: inout GraphicsContext, size: CGSize) {
+        context.draw(Text("Render unavailable: \(error.localizedDescription)").font(.system(size: 11)).foregroundColor(.red),
+                     in: CGRect(origin: .zero, size: size))
     }
     private static func blend(_ name: String) -> GraphicsContext.BlendMode {
         switch name.lowercased() {
@@ -50,10 +95,20 @@ struct StudioFrameRenderer {
         default: return .normal
         }
     }
-    private static func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize, canvasSize: CGSize) {
+    private static func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize, canvasSize: CGSize,
+                                   brush: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)?) throws {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
+
+        if element.brush != nil {
+            guard let brush else { throw StudioDocumentError.invalid("A prepared brush is missing.") }
+            context.scaleBy(x: scaleX, y: scaleY)
+            // Geometry already contains canonical element opacity. Applying it
+            // again to this context would square it and break layer/onion alpha.
+            try StudioBrushRenderer.draw(brush.geometry, color: brush.color, context: &context)
+            return
+        }
 
         context.opacity = element.opacity
 

@@ -108,6 +108,7 @@
 		7E34DF01A5F1E9C233CD945F /* StudioBrush.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */; };
 		6AC1BB20EC1C813B2E328E30 /* StudioBrushRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */; };
 				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */; };
+		56219F44EBDC7EC5A4102518 /* StudioBrushLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -222,6 +223,7 @@
 		8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioBrush.swift; sourceTree = SOURCE_ROOT; };
 		1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioBrushRenderer.swift; sourceTree = SOURCE_ROOT; };
 				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioImageImportService.swift; sourceTree = SOURCE_ROOT; };
+		4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/Panels/StudioBrushLibraryView.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -263,6 +265,7 @@
 				494AC6F74CB2D08620CB97E1 /* ProjectSettingsPanel.swift */,
 				DCD77398DECA45B35A95AD6A /* StickerEmojiPanel.swift */,
 				528E2D8F2EF2A6CEDAB7B452 /* ToolSettingsPanel.swift */,
+				4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */,
 				99C468D56A8D5305DAB4726C /* StudioHeaderBar.swift */,
 				B9CBE341E9CF08FEABD9C119 /* StudioToolStrip.swift */,
 				801AD5DE5029C5501A10D7D3 /* StickDeathInfinity */,
@@ -779,6 +782,7 @@
 				5670CB683B1A6C80DF3B8F9B /* ProjectSettingsPanel.swift in Sources */,
 				B2611F36C704B12389342BF0 /* StickerEmojiPanel.swift in Sources */,
 				39CA50954B2997BE5578050C /* ToolSettingsPanel.swift in Sources */,
+				56219F44EBDC7EC5A4102518 /* StudioBrushLibraryView.swift in Sources */,
 				A75686966A9E0A0E9AC1ED36 /* StudioHeaderBar.swift in Sources */,
 				07C5AC651D80360C34DEBE73 /* StudioToolStrip.swift in Sources */,
 				9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */,

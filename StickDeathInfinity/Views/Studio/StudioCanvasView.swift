@@ -2,26 +2,20 @@ import SwiftUI
 
 struct StudioCanvasView: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var input: CanvasInput?
+    @Environment(\.scenePhase) private var scenePhase
+    @GestureState private var gestureActive = false
+    @State private var input: StudioStrokeInput?
     @State private var panOrigin: CGSize?
-
-    private struct CanvasInput {
-        let frameID: String
-        let layerID: String
-        let tool: DrawingTool
-        let color: String
-        let width: Double
-        let opacity: Double
-        var points: [StrokePoint]
-        var element: DrawnElement {
-            let shape = [.line, .rectangle, .circle].contains(tool)
-            let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
-            return DrawnElement(id: "live", tool: tool, points: rendered, color: color, width: width, opacity: opacity, layerID: layerID)
-        }
-    }
+    @State private var liveElement: DrawnElement?
+    @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
+    @State private var inputFailure: String?
+    @State private var previewFailure: String?
+    @State private var lastPreviewTime: TimeInterval = 0
     var body: some View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
+            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: vm.currentFrame) }
+            let onionPrepared = vm.showOnionSkin ? vm.previousFrame.map { frame in Result { try StudioFrameRenderer.prepare(frame: frame) } } : nil
             ZStack {
                 Color.clear
                 ZStack {
@@ -30,14 +24,26 @@ struct StudioCanvasView: View {
                         if vm.showOnionSkin, let previous = vm.previousFrame {
                             var onion = context
                             onion.opacity = 0.2
-                            StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
-                                canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                                rasterData: vm.rasterData(previous.rasterAssetID))
+                            if case .success(let brushes)? = onionPrepared {
+                                if let error = StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
+                                    canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
+                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes) {
+                                    StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                                }
+                            } else if case .failure(let error)? = onionPrepared {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            }
                         }
-                        StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
-                            canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                            rasterData: vm.rasterData(vm.currentFrame.rasterAssetID),
-                            liveElement: input?.frameID == vm.currentFrame.id ? input?.element : nil)
+                        switch currentPrepared {
+                        case .success(let brushes):
+                            if let error = StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
+                                canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
+                                rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
+                                preparedBrushes: brushes) {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            }
+                        case .failure(let error): StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                        }
                         for element in vm.currentFrame.elements where vm.selectedElementIDs.contains(element.id) {
                             guard let first = element.points.first else { continue }
                             let xs = element.points.map(\.x), ys = element.points.map(\.y)
@@ -64,8 +70,34 @@ struct StudioCanvasView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
+            .overlay(alignment: .bottom) {
+                if let pending = vm.pendingBrushStroke {
+                    VStack(spacing: 6) {
+                        Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
+                        Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
+                            .lineLimit(4)
+                        HStack(spacing: 12) {
+                            Button("Retry with settings") { vm.retryRejectedBrush() }
+                                .disabled(!pending.inputComplete)
+                                .accessibilityIdentifier("studio.brush-retry")
+                            Button("Discard draft") { vm.discardRejectedBrush() }
+                                .accessibilityIdentifier("studio.brush-discard")
+                        }.font(.system(size: 11, weight: .bold))
+                    }.padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .padding(8)
+                }
+            }
         }
-        .onChange(of: vm.currentFrame.id) { _ in input = nil }
+        .onChange(of: vm.currentFrame.id) { _, _ in
+            interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
+        }
+        .onChange(of: gestureActive) { _, active in
+            if !active { interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.") }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
+        }
+        .onDisappear { interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
     }
     private func canvasRect(in size: CGSize) -> CGSize {
         let ratio = CGFloat(vm.canvasWidth) / CGFloat(vm.canvasHeight)
@@ -74,41 +106,80 @@ struct StudioCanvasView: View {
     }
     private func gesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
+            .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
-                if vm.selectedTool == .hand {
+                guard vm.pendingBrushStroke == nil else { return }
+                if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
                     vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
                                              height: (panOrigin?.height ?? 0) + value.translation.height)
                     return
                 }
-                guard [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(vm.selectedTool), !vm.isPlaying else { return }
-                guard let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible, !layer.isFullyLocked else { return }
-                let point = StrokePoint(x: min(max(value.location.x / size.width, 0), 1) * CGFloat(vm.canvasWidth),
-                                        y: min(max(value.location.y / size.height, 0), 1) * CGFloat(vm.canvasHeight))
+                guard inputFailure == nil else { return }
                 if input == nil {
-                    input = CanvasInput(frameID: vm.currentFrame.id, layerID: vm.activeLayerID, tool: vm.selectedTool,
-                        color: vm.strokeColorHex, width: vm.strokeWidth, opacity: vm.strokeOpacity, points: [])
+                    guard [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(vm.selectedTool), !vm.isPlaying else { return }
+                    guard let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible, !layer.isFullyLocked else { return }
+                    do {
+                        let id = UUID().uuidString
+                        let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
+                        let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
+                        guard vm.beginStrokeInput(id: id) else { return }
+                        input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
+                            tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
+                            opacity: styled ? vm.capturedStrokeOpacity : vm.strokeOpacity,
+                            brush: brush,
+                            documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
+                            startedAt: value.time)
+                    } catch { vm.message = error.localizedDescription; return }
                 }
-                input?.points.append(point)
+                do { try input?.append(location: value.location, time: value.time) }
+                catch { inputFailure = error.localizedDescription; return }
+                let now = ProcessInfo.processInfo.systemUptime
+                // Capture every supported sample; only preview regeneration is
+                // coalesced to 30Hz. Commit always prepares the complete input.
+                if now - lastPreviewTime >= 1 / 30, previewFailure == nil, let input {
+                    do {
+                        let next = try StudioFrameRenderer.prepare(frame: vm.currentFrame, liveElement: input.element)
+                        liveElement = input.element; livePrepared = next; lastPreviewTime = now
+                    } catch { previewFailure = error.localizedDescription }
+                }
             }
             .onEnded { value in
-                defer { input = nil; panOrigin = nil }
-                if vm.selectedTool == .hand { return }
+                defer { clearInput() }
+                guard vm.pendingBrushStroke == nil else { return }
+                if panOrigin != nil { return }
+                if var captured = input, !captured.points.isEmpty {
+                    if let inputFailure {
+                        vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
+                            reason: inputFailure, inputComplete: false)
+                    } else {
+                        do {
+                            try captured.append(location: value.location, time: value.time)
+                            _ = vm.commitElement(captured.element, frameID: captured.frameID)
+                        } catch {
+                            vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
+                                reason: error.localizedDescription, inputComplete: false)
+                        }
+                    }
+                    return
+                }
                 if vm.selectedTool == .zoom { vm.zoomIn(); return }
                 if vm.selectedTool == .move {
                     vm.selectElement(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
                                                  y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
                     return
                 }
-                guard let captured = input, !captured.points.isEmpty else {
-                    vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
-                    return
-                }
-                let source = captured.element
-                let element = DrawnElement(id: UUID().uuidString, tool: source.tool, points: source.points, color: source.color,
-                    width: source.width, opacity: source.opacity, layerID: source.layerID)
-                vm.commitElement(element, frameID: captured.frameID)
+                vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
+    }
+    private func clearInput() {
+        if let input { vm.finishStrokeInput(id: input.id) }
+        input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
+        inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
+    }
+    private func interruptInput(_ reason: String) {
+        if let input { vm.interruptStrokeInput(input, reason: reason) }
+        clearInput()
     }
 }
 
