@@ -16,12 +16,30 @@ final class StudioSmokeUITests: XCTestCase {
         XCUIDevice.shared.orientation = .landscapeLeft
         let landscape = NSPredicate { _, _ in app.frame.width > app.frame.height }
         XCTAssertTrue(expectation(for: landscape, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
-        capture(app, name: "studio-landscape")
         XCTAssertTrue(button("FIT", in: app).isHittable, "Landscape fit control is inaccessible")
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 5), "The actual rendered canvas needs its accessibility identifier")
         XCTAssertGreaterThan(canvas.frame.width, 80, "Landscape canvas collapsed")
         XCTAssertGreaterThan(canvas.frame.height, 80, "Landscape canvas collapsed")
+        // The window reports landscape before the display rotation completes.
+        // Require settled, visible geometry before recording full-screen proof.
+        var previousFrame = CGRect.null
+        var stableSince = Date()
+        let settled = NSPredicate { _, _ in
+            let frame = canvas.frame
+            guard app.frame.width > app.frame.height, app.frame.contains(frame),
+                  canvas.isHittable, frame.width > 80, frame.height > 80 else {
+                previousFrame = .null; stableSince = Date(); return false
+            }
+            if frame != previousFrame { previousFrame = frame; stableSince = Date(); return false }
+            return Date().timeIntervalSince(stableSince) >= 1
+        }
+        XCTAssertTrue(expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "Landscape canvas geometry did not settle within the visible app")
+        let landscapeCapture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        landscapeCapture.name = "studio-landscape"
+        landscapeCapture.lifetime = .keepAlways
+        add(landscapeCapture)
     }
 
     @MainActor
@@ -129,14 +147,17 @@ final class StudioSmokeUITests: XCTestCase {
 
         // Save to Files is a native share action, not a button in our panel.
         // Assert its presentation but do not invoke a destination or upload.
-        let saveToFiles = app.buttons.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        // The recorded iOS share hierarchy exposes file actions as cells in
+        // its remote container, rather than buttons in the application panel.
+        let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
+        let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
         let sheetPresented = saveToFiles.waitForExistence(timeout: 10)
         capture(app, name: "png-native-share-sheet")
         captureHierarchy(app, name: "png-native-share-sheet-hierarchy")
         XCTAssertTrue(sheetPresented, "The native share sheet did not expose its file action")
-        let closeCandidates = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Close", "Cancel"))
-        let dismiss = try XCTUnwrap(closeCandidates.allElementsBoundByIndex.first(where: { $0.isHittable }),
-                                   "Native share sheet has no accessible dismissal control; inspect its recorded hierarchy")
+        XCTAssertTrue(saveToFiles.isHittable, "The real file action is not reachable")
+        let dismiss = nativeShare.buttons["header.closeButton"]
+        XCTAssertTrue(dismiss.isHittable, "The recorded native share dismissal control is not reachable")
         dismiss.tap()
         let status = app.staticTexts["studio.export.status"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. Your export is still available."),
@@ -162,7 +183,9 @@ final class StudioSmokeUITests: XCTestCase {
         // above the declared 16,777,216 limit. The PNG sequence stays in bounds.
         for _ in 0..<6 { addFrame.tap() }
         try openExportPanel(app)
-        XCTAssertTrue(app.staticTexts["Original canvas · 1080 × 1920"].exists)
+        // SwiftUI localizes numeric interpolation; the verified en_US UI uses
+        // grouping separators while retaining the exact1080×1920 canvas.
+        XCTAssertTrue(app.staticTexts["Original canvas · 1,080 × 1,920"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 frames")).firstMatch.exists)
         try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
         try exportControl("studio.export.start", app: app).tap()
