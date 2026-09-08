@@ -11,6 +11,7 @@ struct MainTabView: View {
     @State private var activeTab: AppTab = .home
     @State private var showTutorial = true
     @EnvironmentObject var spatterVM: SpatterAIViewModel
+    @ObservedObject private var studioVM = StudioViewModel.shared
 
     var body: some View {
         ZStack {
@@ -35,7 +36,7 @@ struct MainTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                 // Bottom nav bar
-                if activeTab != .studio || !StudioState.shared.isEditing {
+                if activeTab != .studio || !studioVM.isEditing {
                     bottomNavBar
                 }
             }
@@ -47,12 +48,7 @@ struct MainTabView: View {
 
             // Tutorial overlay
             if showTutorial {
-                AppTutorialView(
-                    onComplete: { showTutorial = false },
-                    onSwitchTab: { tab in
-                        if let t = AppTab(rawValue: tab) { activeTab = t }
-                    }
-                )
+                AppTutorialView(isPresented: $showTutorial)
             }
         }
     }
@@ -115,10 +111,4 @@ enum AppTab: String, CaseIterable {
         case .profile: return "Profile"
         }
     }
-}
-
-// Studio state tracker
-class StudioState: ObservableObject {
-    static let shared = StudioState()
-    @Published var isEditing = false
 }

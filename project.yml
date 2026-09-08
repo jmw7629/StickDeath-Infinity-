@@ -11,7 +11,7 @@ options:
 settings:
   base:
     INFOPLIST_FILE: StickDeathInfinity/Info.plist
-    SWIFT_VERSION: "5.9"
+    SWIFT_VERSION: "5.0"
     TARGETED_DEVICE_FAMILY: "1,2"
     DEVELOPMENT_TEAM: ""
 
@@ -20,12 +20,15 @@ targets:
     type: application
     platform: iOS
     sources:
-      - StickDeathInfinity
+      - path: StickDeathInfinity
+        excludes:
+          # Historical alternate service; the canonical service is Services/LiveKit/LiveKitService.swift.
+          - Services/LiveKitService.swift
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity
-        SWIFT_VERSION: "5.9"
+        SWIFT_VERSION: "5.0"
         GENERATE_INFOPLIST_FILE: false
     dependencies:
       - package: supabase-swift
@@ -37,6 +40,31 @@ targets:
     capabilities:
       Sign in with Apple: {}
       In-App Purchase: {}
+
+
+  StickDeathInfinityUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/NativeUI
+    dependencies:
+      - target: StickDeathInfinity
+    settings:
+      base:
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: true
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.uitests
+        TEST_TARGET_NAME: StickDeathInfinity
+
+schemes:
+  StickDeathInfinity:
+    build:
+      targets:
+        StickDeathInfinity: all
+        StickDeathInfinityUITests: [test]
+    test:
+      targets:
+        - StickDeathInfinityUITests
 
 packages:
   supabase-swift:

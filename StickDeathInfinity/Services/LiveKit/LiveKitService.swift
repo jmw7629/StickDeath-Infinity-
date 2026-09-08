@@ -146,10 +146,14 @@ final class LiveKitService: ObservableObject {
 
     /// Connect and start call with R3 billing
     func connect(roomName: String, participantName: String) async throws {
-        callPhase = .connecting
+        // Do not fetch an auth session/token unless a secure call server exists.
+        guard let serverURL = AppConfig.liveKitWSURL else {
+            throw AppConfigurationError.liveKitUnavailable
+        }
 
         // Get token from backend
         let token = try await fetchToken(roomName: roomName, participantName: participantName)
+        callPhase = .connecting
 
         let room = Room()
         let connectOptions = ConnectOptions(autoSubscribe: true)
@@ -162,7 +166,7 @@ final class LiveKitService: ObservableObject {
         )
 
         try await room.connect(
-            url: AppConfig.liveKitWSURL,
+            url: serverURL.absoluteString,
             token: token,
             connectOptions: connectOptions,
             roomOptions: roomOptions
@@ -352,7 +356,11 @@ final class LiveKitService: ObservableObject {
             let token: String
         }
 
-        let response: TokenResponse = try await SupabaseManager.shared.client.functions.invoke(
+        let client = try SupabaseManager.shared.client
+        guard let session = try? await client.auth.session, !session.accessToken.isEmpty else {
+            throw AuthService.AuthError.notAuthenticated
+        }
+        let response: TokenResponse = try await client.functions.invoke(
             "livekit-token",
             options: .init(body: TokenRequest(room: roomName, identity: participantName))
         )

@@ -62,5 +62,15 @@
         <string>Anybody-Regular.ttf</string>
         <string>Anybody-Bold.ttf</string>
     </array>
+	<key>SPATTER_BACKEND_URL</key>
+	<string>$(SPATTER_BACKEND_URL)</string>
+    <key>SUPABASE_URL</key>
+    <string>$(SUPABASE_URL)</string>
+    <key>SUPABASE_PUBLISHABLE_KEY</key>
+    <string>$(SUPABASE_PUBLISHABLE_KEY)</string>
+    <key>SUPABASE_ANON_KEY</key>
+    <string>$(SUPABASE_ANON_KEY)</string>
+    <key>LIVEKIT_WS_URL</key>
+    <string>$(LIVEKIT_WS_URL)</string>
 </dict>
 </plist>

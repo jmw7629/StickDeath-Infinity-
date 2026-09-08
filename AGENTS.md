@@ -1,9 +1,18 @@
 # STICKDEATH INFINITY — AGENT OPERATING CONTRACT
 
-This repository is controlled through a ChatGPT ↔ GitHub ↔ OpenCode bridge.
-Treat this file as mandatory project policy.
+Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
-## Roles
+## Current ownership (2026-09-08)
+
+- Codex coordinates implementation, bounded specialist work, tests and independent exact-head review.
+- Continue the existing PR #111 recovery workstream while appropriate; do not start competing recovery branches.
+- The owner authorizes eligible squash merges only after required checks pass and independent review, plus isolated safe review deployments. A web companion does not prove native compilation.
+- Use a single coordinator lock and disjoint file ownership. Preserve dirty work, historical projects, private references and other projects.
+- Native SwiftUI Studio is first priority. Community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope.
+- Do not restart the former dispatcher or the separate STICKDEATH_BYTE/animation/G2 program.
+- These directions supersede the legacy executor roles and bridge-only commit/deployment restrictions below for owner-directed Codex work. All security, IP, preservation and truthful evidence gates remain applicable.
+
+## Legacy bridge roles (historical; only apply to an explicitly resumed bridge run)
 
 - **ChatGPT** is the architect/reviewer. It creates or refines GitHub tasks, inspects diffs, tests, PRs, and directs follow-up work.
 - **OpenCode** is the implementation executor. It edits and tests code for one approved task at a time.

@@ -1,7 +1,7 @@
 import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════
-// Tool Strip — Matches preview EXACTLY per-tool colors from React source
+// Tool Strip — Floating white rail with red active-tool selection
 // ⋮⋮ drag | [color] | Move Lasso Pencil Pen Brush Marker Crayon
 //   Line Rect Circle Fill Picker Eraser Smudge Text Hand Zoom
 // Each tool: unique topColor/bottomColor/glowColor
@@ -20,6 +20,7 @@ struct ToolDef {
 
 struct StudioToolStrip: View {
     @ObservedObject var vm: StudioViewModel
+    var axis: Axis = .horizontal
     
     static let tools: [ToolDef] = [
         ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   shortcut: "V", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
@@ -42,14 +43,14 @@ struct StudioToolStrip: View {
     ]
     
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+        ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: false) {
+            railLayout {
                 // Drag handle (6 dots in 2×3 grid)
                 VStack(spacing: 3) {
                     ForEach(0..<3) { _ in
                         HStack(spacing: 3) {
-                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
-                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
+                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
                         }
                     }
                 }
@@ -78,7 +79,7 @@ struct StudioToolStrip: View {
                         if isSelected && hasSettings(def.tool) {
                             vm.activePanel = vm.activePanel == .toolSettings ? .none : .toolSettings
                         } else {
-                            vm.selectedTool = def.tool
+                            vm.selectDrawingTool(def.tool)
                             if hasSettings(def.tool) {
                                 vm.activePanel = .toolSettings
                             } else {
@@ -92,18 +93,18 @@ struct StudioToolStrip: View {
                             Text(def.label)
                                 .font(.system(size: 7, weight: isSelected ? .bold : .regular, design: .monospaced))
                         }
-                        .foregroundColor(isSelected ? .white : .white.opacity(0.5))
+                        .foregroundColor(isSelected ? .white : .black.opacity(0.75))
                         .frame(width: 52, height: 52)
                         .background(
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(
                                     isSelected
                                         ? LinearGradient(
-                                            colors: [Color(hex: def.topColor), Color(hex: def.bottomColor)],
+                                            colors: [Color.red, Color(red: 0.72, green: 0.05, blue: 0.08)],
                                             startPoint: .top, endPoint: .bottom
                                           )
                                         : LinearGradient(
-                                            colors: [Color(hex: "1E1E2A"), Color(hex: "1E1E2A")],
+                                            colors: [Color.white, Color.white],
                                             startPoint: .top, endPoint: .bottom
                                           )
                                 )
@@ -119,9 +120,17 @@ struct StudioToolStrip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
-        .background(Color(hex: "12121A").opacity(0.95))
+        .frame(width: axis == .vertical ? 68 : nil, height: axis == .horizontal ? 64 : nil)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
     
+    private var railLayout: AnyLayout {
+        axis == .vertical ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4))
+    }
+
     func hasSettings(_ tool: DrawingTool) -> Bool {
         [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .text, .fill, .line, .rectangle, .circle, .move, .lasso].contains(tool)
     }

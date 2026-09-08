@@ -11,7 +11,7 @@ import Foundation
 ///   - Brain modules stored as JSONL on device (bundled in app)
 ///   - Indexed by category + subcategory for fast lookup
 ///   - Used by Spatter AI to provide contextual animation help
-///   - AI queries use free/unlimited models (no API cost)
+///   - Cloud requests use the configured authenticated application backend only.
 
 struct BrainModule: Codable, Identifiable {
     let id: String
@@ -29,6 +29,7 @@ struct BrainModule: Codable, Identifiable {
     }
 }
 
+@MainActor
 class SpatterBrainLoader {
     static let shared = SpatterBrainLoader()
     
@@ -130,74 +131,38 @@ class SpatterBrainLoader {
 
 // MARK: - Spatter AI Chat Engine
 
+@MainActor
 class SpatterAIEngine {
     static let shared = SpatterAIEngine()
-    
     private let brain = SpatterBrainLoader.shared
-    
-    /// Free AI endpoint — no API key needed
-    private let aiEndpoint = "https://text.pollinations.ai/"
-    
-    struct ChatMessage {
-        let role: String // "user" or "assistant"
-        let content: String
-    }
-    
-    private var conversationHistory: [ChatMessage] = []
-    
+    private var conversationHistory: [(role: String, content: String)] = []
+    private var isResponding = false
+
     func chat(userMessage: String) async -> String {
-        // Get relevant brain context
-        let brainContext = brain.contextFor(query: userMessage)
-        
-        // Build messages array
-        let systemPrompt = """
-        You are Spatter AI, the creative assistant inside StickDeath ∞.
-        You help users create amazing stick figure animations.
-        You have deep knowledge of animation, physics, combat choreography, effects, and art.
-        
-        Use this knowledge base to inform your responses:
-        \(brainContext)
-        
-        Be concise, helpful, and creative. Reference specific techniques when relevant.
-        """
-        
-        conversationHistory.append(ChatMessage(role: "user", content: userMessage))
-        
-        // Call free AI endpoint
-        var messages: [[String: String]] = [
-            ["role": "system", "content": systemPrompt]
-        ]
-        for msg in conversationHistory.suffix(10) {
-            messages.append(["role": msg.role, "content": msg.content])
-        }
-        
-        let body: [String: Any] = [
-            "messages": messages,
-            "model": "openai",
-            "stream": false
-        ]
-        
-        guard let jsonData = try? JSONSerialization.data(withJSONObject: body),
-              let url = URL(string: aiEndpoint) else {
-            return "Sorry, I couldn't process that. Try again!"
-        }
-        
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = jsonData
-        
+        guard !isResponding else { return "Spatter is still responding to your previous message." }
+        isResponding = true
+        defer { isResponding = false }
+        await brain.loadBrain()
+        let boundedMessage = String(userMessage.prefix(6000))
+        let context = brain.contextFor(query: boundedMessage)
+        conversationHistory.append((role: "user", content: boundedMessage))
+        conversationHistory = Array(conversationHistory.suffix(20))
+        // Local brain context is reference data; it never supplies executable commands.
+        var requestMessages = conversationHistory
+        requestMessages[requestMessages.count - 1].content += "\n\nLocal animation reference:\n" + context
         do {
-            let (data, _) = try await URLSession.shared.data(for: request)
-            let response = String(data: data, encoding: .utf8) ?? "No response"
-            conversationHistory.append(ChatMessage(role: "assistant", content: response))
+            let response = try await SpatterService.shared.chat(messages: requestMessages)
+            conversationHistory.append((role: "assistant", content: String(response.prefix(6000))))
+            conversationHistory = Array(conversationHistory.suffix(20))
             return response
+        } catch is CancellationError {
+            return "Spatter request cancelled."
         } catch {
-            return "Connection error. Check your internet and try again."
+            let status = (error as? SpatterClientError)?.localizedDescription
+                ?? "Spatter cloud is unavailable."
+            return status + "\n\nLocal animation guide:\n" + brain.getResponse(for: boundedMessage)
         }
     }
-    
-    func clearHistory() {
-        conversationHistory.removeAll()
-    }
+
+    func clearHistory() { conversationHistory.removeAll() }
 }

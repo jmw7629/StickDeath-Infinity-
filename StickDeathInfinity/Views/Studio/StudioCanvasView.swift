@@ -1,319 +1,185 @@
 import SwiftUI
 
-// ═══════════════════════════════════════════════════════════════════════
-// CoreGraphics-based Canvas — Renders drawn elements + live stroke
-// Handles touch input for drawing, shapes, fill, eraser, text, etc.
-// ═══════════════════════════════════════════════════════════════════════
-
 struct StudioCanvasView: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var livePoints: [StrokePoint] = []
-    @State private var shapeStart: CGPoint?
-    @State private var shapeEnd: CGPoint?
-
+    @Environment(\.scenePhase) private var scenePhase
+    @GestureState private var gestureActive = false
+    @State private var input: StudioStrokeInput?
+    @State private var panOrigin: CGSize?
+    @State private var liveElement: DrawnElement?
+    @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
+    @State private var inputFailure: String?
+    @State private var previewFailure: String?
+    @State private var lastPreviewTime: TimeInterval = 0
     var body: some View {
         GeometryReader { geo in
-            let canvasSize = canvasRect(in: geo.size)
-
+            let size = canvasRect(in: geo.size)
+            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: vm.currentFrame) }
+            let onionPrepared = vm.showOnionSkin ? vm.previousFrame.map { frame in Result { try StudioFrameRenderer.prepare(frame: frame) } } : nil
             ZStack {
-                // Canvas background (white)
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.white)
-                    .frame(width: canvasSize.width, height: canvasSize.height)
-                    .shadow(color: .black.opacity(0.4), radius: 12)
-
-                // Rendered elements
-                Canvas { context, size in
-                    let elements = vm.currentFrame.elements
-                    for element in elements {
-                        drawElement(context: &context, element: element, size: size)
+                Color.clear
+                ZStack {
+                    Color.white
+                    Canvas { context, actual in
+                        if vm.showOnionSkin, let previous = vm.previousFrame {
+                            var onion = context
+                            onion.opacity = 0.2
+                            if case .success(let brushes)? = onionPrepared {
+                                if let error = StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
+                                    canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
+                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes) {
+                                    StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                                }
+                            } else if case .failure(let error)? = onionPrepared {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            }
+                        }
+                        switch currentPrepared {
+                        case .success(let brushes):
+                            if let error = StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
+                                canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
+                                rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
+                                preparedBrushes: brushes) {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            }
+                        case .failure(let error): StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                        }
+                        for element in vm.currentFrame.elements where vm.selectedElementIDs.contains(element.id) {
+                            guard let first = element.points.first else { continue }
+                            let xs = element.points.map(\.x), ys = element.points.map(\.y)
+                            let x = xs.min() ?? first.x, y = ys.min() ?? first.y
+                            let rect = CGRect(x: x / CGFloat(vm.canvasWidth) * actual.width - 3,
+                                y: y / CGFloat(vm.canvasHeight) * actual.height - 3,
+                                width: ((xs.max() ?? x) - x) / CGFloat(vm.canvasWidth) * actual.width + 6,
+                                height: ((ys.max() ?? y) - y) / CGFloat(vm.canvasHeight) * actual.height + 6)
+                            context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
                     }
-                    // Live stroke
-                    if !livePoints.isEmpty {
-                        drawLiveStroke(context: &context, points: livePoints, size: size)
-                    }
-                    // Shape preview
-                    if let start = shapeStart, let end = shapeEnd {
-                        drawShapePreview(context: &context, start: start, end: end, size: size)
-                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Animation canvas")
+                    .accessibilityIdentifier("studio.canvas")
+                    if vm.gridEnabled { GridOverlay().allowsHitTesting(false) }
                 }
-                .frame(width: canvasSize.width, height: canvasSize.height)
+                .frame(width: size.width, height: size.height)
                 .clipped()
-                .gesture(drawingGesture(canvasSize: canvasSize, geoSize: geo.size))
-
-                // Grid overlay
-                if vm.gridEnabled {
-                    GridOverlay()
-                        .frame(width: canvasSize.width, height: canvasSize.height)
-                        .allowsHitTesting(false)
-                }
+                .contentShape(Rectangle())
+                .gesture(gesture(size: size))
+                .scaleEffect(vm.canvasScale)
+                .offset(vm.canvasOffset)
+                .shadow(color: .black.opacity(0.4), radius: 12)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .clipped()
+            .overlay(alignment: .bottom) {
+                if let pending = vm.pendingBrushStroke {
+                    VStack(spacing: 6) {
+                        Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
+                        Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
+                            .lineLimit(4)
+                        HStack(spacing: 12) {
+                            Button("Retry with settings") { vm.retryRejectedBrush() }
+                                .disabled(!pending.inputComplete)
+                                .accessibilityIdentifier("studio.brush-retry")
+                            Button("Discard draft") { vm.discardRejectedBrush() }
+                                .accessibilityIdentifier("studio.brush-discard")
+                        }.font(.system(size: 11, weight: .bold))
+                    }.padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .padding(8)
+                }
+            }
         }
-    }
-
-    // MARK: - Canvas Size Calculation
-    func canvasRect(in size: CGSize) -> CGSize {
-        let aspectRatio = CGFloat(vm.canvasWidth) / CGFloat(vm.canvasHeight)
-        let maxW = size.width * 0.9
-        let maxH = size.height * 0.9
-
-        if maxW / maxH > aspectRatio {
-            return CGSize(width: maxH * aspectRatio, height: maxH)
-        } else {
-            return CGSize(width: maxW, height: maxW / aspectRatio)
+        .onChange(of: vm.currentFrame.id) { _, _ in
+            interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
         }
+        .onChange(of: gestureActive) { _, active in
+            if !active { interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.") }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
+        }
+        .onDisappear { interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
     }
-
-    // MARK: - Drawing Gesture
-    func drawingGesture(canvasSize: CGSize, geoSize: CGSize) -> some Gesture {
+    private func canvasRect(in size: CGSize) -> CGSize {
+        let ratio = CGFloat(vm.canvasWidth) / CGFloat(vm.canvasHeight)
+        let width = max(1, size.width * 0.9), height = max(1, size.height * 0.9)
+        return width / height > ratio ? CGSize(width: height * ratio, height: height) : CGSize(width: width, height: width / ratio)
+    }
+    private func gesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
-            .onChanged { val in
-                guard isDrawingTool else { return }
-                let canvasOrigin = CGPoint(
-                    x: (geoSize.width - canvasSize.width) / 2,
-                    y: (geoSize.height - canvasSize.height) / 2
-                )
-                let localX = (val.location.x - canvasOrigin.x) / canvasSize.width * CGFloat(vm.canvasWidth)
-                let localY = (val.location.y - canvasOrigin.y) / canvasSize.height * CGFloat(vm.canvasHeight)
-                let point = StrokePoint(x: localX, y: localY)
-
-                if isShapeTool {
-                    if shapeStart == nil {
-                        shapeStart = CGPoint(x: localX, y: localY)
+            .updating($gestureActive) { _, active, _ in active = true }
+            .onChanged { value in
+                guard vm.pendingBrushStroke == nil else { return }
+                if input == nil && vm.selectedTool == .hand {
+                    if panOrigin == nil { panOrigin = vm.canvasOffset }
+                    vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
+                                             height: (panOrigin?.height ?? 0) + value.translation.height)
+                    return
+                }
+                guard inputFailure == nil else { return }
+                if input == nil {
+                    guard [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(vm.selectedTool), !vm.isPlaying else { return }
+                    guard let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible, !layer.isFullyLocked else { return }
+                    do {
+                        let id = UUID().uuidString
+                        let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
+                        let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
+                        guard vm.beginStrokeInput(id: id) else { return }
+                        input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
+                            tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
+                            opacity: styled ? vm.capturedStrokeOpacity : vm.strokeOpacity,
+                            brush: brush,
+                            documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
+                            startedAt: value.time)
+                    } catch { vm.message = error.localizedDescription; return }
+                }
+                do { try input?.append(location: value.location, time: value.time) }
+                catch { inputFailure = error.localizedDescription; return }
+                let now = ProcessInfo.processInfo.systemUptime
+                // Capture every supported sample; only preview regeneration is
+                // coalesced to 30Hz. Commit always prepares the complete input.
+                if now - lastPreviewTime >= 1 / 30, previewFailure == nil, let input {
+                    do {
+                        let next = try StudioFrameRenderer.prepare(frame: vm.currentFrame, liveElement: input.element)
+                        liveElement = input.element; livePrepared = next; lastPreviewTime = now
+                    } catch { previewFailure = error.localizedDescription }
+                }
+            }
+            .onEnded { value in
+                defer { clearInput() }
+                guard vm.pendingBrushStroke == nil else { return }
+                if panOrigin != nil { return }
+                if var captured = input, !captured.points.isEmpty {
+                    if let inputFailure {
+                        vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
+                            reason: inputFailure, inputComplete: false)
+                    } else {
+                        do {
+                            try captured.append(location: value.location, time: value.time)
+                            _ = vm.commitElement(captured.element, frameID: captured.frameID)
+                        } catch {
+                            vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
+                                reason: error.localizedDescription, inputComplete: false)
+                        }
                     }
-                    shapeEnd = CGPoint(x: localX, y: localY)
-                } else {
-                    livePoints.append(point)
+                    return
                 }
-            }
-            .onEnded { _ in
-                guard isDrawingTool else { return }
-                if isShapeTool, let start = shapeStart, let end = shapeEnd {
-                    commitShape(start: start, end: end)
-                    shapeStart = nil
-                    shapeEnd = nil
-                } else if !livePoints.isEmpty {
-                    commitStroke()
+                if vm.selectedTool == .zoom { vm.zoomIn(); return }
+                if vm.selectedTool == .move {
+                    vm.selectElement(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
+                                                 y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
+                    return
                 }
+                vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
-
-    var isDrawingTool: Bool {
-        switch vm.selectedTool {
-        case .pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge,
-             .line, .rectangle, .circle: return true
-        default: return false
-        }
+    private func clearInput() {
+        if let input { vm.finishStrokeInput(id: input.id) }
+        input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
+        inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
     }
-
-    var isShapeTool: Bool {
-        switch vm.selectedTool {
-        case .line, .rectangle, .circle: return true
-        default: return false
-        }
-    }
-
-    // MARK: - Commit Stroke
-    func commitStroke() {
-        let element = DrawnElement(
-            id: UUID().uuidString,
-            tool: vm.selectedTool,
-            points: livePoints,
-            color: vm.selectedTool == .eraser ? "#FFFFFF" : vm.strokeColorHex,
-            width: vm.strokeWidth,
-            opacity: vm.strokeOpacity,
-            layerID: vm.activeLayerID
-        )
-        vm.commitElement(element)
-        livePoints.removeAll()
-    }
-
-    func commitShape(start: CGPoint, end: CGPoint) {
-        let element = DrawnElement(
-            id: UUID().uuidString,
-            tool: vm.selectedTool,
-            points: [
-                StrokePoint(x: start.x, y: start.y),
-                StrokePoint(x: end.x, y: end.y)
-            ],
-            color: vm.strokeColorHex,
-            width: vm.strokeWidth,
-            opacity: vm.strokeOpacity,
-            layerID: vm.activeLayerID
-        )
-        vm.commitElement(element)
-    }
-
-    // MARK: - Draw Element (CoreGraphics-backed)
-    func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize) {
-        let scaleX = size.width / CGFloat(vm.canvasWidth)
-        let scaleY = size.height / CGFloat(vm.canvasHeight)
-        let color = Color(hex: element.color)
-
-        context.opacity = element.opacity
-
-        switch element.tool {
-        case .pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge:
-            guard element.points.count >= 2 else { return }
-            var path = Path()
-            let first = element.points[0]
-            path.move(to: CGPoint(x: first.x * scaleX, y: first.y * scaleY))
-
-            if element.points.count == 2 {
-                let p = element.points[1]
-                path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
-            } else {
-                for i in 1..<element.points.count {
-                    let prev = element.points[i - 1]
-                    let curr = element.points[i]
-                    let midX = (prev.x + curr.x) / 2 * scaleX
-                    let midY = (prev.y + curr.y) / 2 * scaleY
-                    path.addQuadCurve(
-                        to: CGPoint(x: midX, y: midY),
-                        control: CGPoint(x: prev.x * scaleX, y: prev.y * scaleY)
-                    )
-                }
-                let last = element.points.last!
-                path.addLine(to: CGPoint(x: last.x * scaleX, y: last.y * scaleY))
-            }
-
-            let lineWidth = element.width * scaleX * brushWidthMultiplier(for: element.tool)
-
-            if element.tool == .eraser {
-                context.blendMode = .clear
-            }
-
-            context.stroke(path, with: .color(color), style: StrokeStyle(
-                lineWidth: lineWidth,
-                lineCap: element.tool == .pencil ? .butt : .round,
-                lineJoin: .round
-            ))
-
-            if element.tool == .eraser {
-                context.blendMode = .normal
-            }
-
-        case .line:
-            guard element.points.count >= 2 else { return }
-            var path = Path()
-            path.move(to: CGPoint(x: element.points[0].x * scaleX, y: element.points[0].y * scaleY))
-            path.addLine(to: CGPoint(x: element.points[1].x * scaleX, y: element.points[1].y * scaleY))
-            context.stroke(path, with: .color(color), lineWidth: element.width * scaleX)
-
-        case .rectangle:
-            guard element.points.count >= 2 else { return }
-            let rect = CGRect(
-                x: min(element.points[0].x, element.points[1].x) * scaleX,
-                y: min(element.points[0].y, element.points[1].y) * scaleY,
-                width: abs(element.points[1].x - element.points[0].x) * scaleX,
-                height: abs(element.points[1].y - element.points[0].y) * scaleY
-            )
-            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: element.width * scaleX)
-
-        case .circle:
-            guard element.points.count >= 2 else { return }
-            let center = CGPoint(
-                x: (element.points[0].x + element.points[1].x) / 2 * scaleX,
-                y: (element.points[0].y + element.points[1].y) / 2 * scaleY
-            )
-            let radiusX = abs(element.points[1].x - element.points[0].x) / 2 * scaleX
-            let radiusY = abs(element.points[1].y - element.points[0].y) / 2 * scaleY
-            let path = Path(ellipseIn: CGRect(
-                x: center.x - radiusX, y: center.y - radiusY,
-                width: radiusX * 2, height: radiusY * 2
-            ))
-            context.stroke(path, with: .color(color), lineWidth: element.width * scaleX)
-
-        case .text:
-            if let text = element.fillColor, let first = element.points.first {
-                context.draw(
-                    Text(text).font(.system(size: element.width * 3, design: .monospaced)).foregroundColor(color),
-                    at: CGPoint(x: first.x * scaleX, y: first.y * scaleY),
-                    anchor: .topLeading
-                )
-            }
-
-        default:
-            break
-        }
-
-        context.opacity = 1.0
-    }
-
-    func brushWidthMultiplier(for tool: DrawingTool) -> CGFloat {
-        switch tool {
-        case .pencil: return 0.8
-        case .pen: return 1.0
-        case .brush: return 1.5
-        case .marker: return 2.5
-        case .crayon: return 2.0
-        case .eraser: return 3.0
-        case .smudge: return 2.0
-        default: return 1.0
-        }
-    }
-
-    // MARK: - Draw Live Stroke
-    func drawLiveStroke(context: inout GraphicsContext, points: [StrokePoint], size: CGSize) {
-        guard points.count >= 2 else { return }
-        let scaleX = size.width / CGFloat(vm.canvasWidth)
-        let scaleY = size.height / CGFloat(vm.canvasHeight)
-        let color = vm.selectedTool == .eraser ? Color.white : vm.strokeColor
-
-        var path = Path()
-        path.move(to: CGPoint(x: points[0].x * scaleX, y: points[0].y * scaleY))
-        for i in 1..<points.count {
-            let prev = points[i - 1]
-            let curr = points[i]
-            let midX = (prev.x + curr.x) / 2 * scaleX
-            let midY = (prev.y + curr.y) / 2 * scaleY
-            path.addQuadCurve(
-                to: CGPoint(x: midX, y: midY),
-                control: CGPoint(x: prev.x * scaleX, y: prev.y * scaleY)
-            )
-        }
-
-        context.stroke(path, with: .color(color.opacity(vm.strokeOpacity)), style: StrokeStyle(
-            lineWidth: vm.strokeWidth * scaleX * brushWidthMultiplier(for: vm.selectedTool),
-            lineCap: .round,
-            lineJoin: .round
-        ))
-    }
-
-    // MARK: - Shape Preview
-    func drawShapePreview(context: inout GraphicsContext, start: CGPoint, end: CGPoint, size: CGSize) {
-        let scaleX = size.width / CGFloat(vm.canvasWidth)
-        let scaleY = size.height / CGFloat(vm.canvasHeight)
-        let color = vm.strokeColor
-
-        switch vm.selectedTool {
-        case .line:
-            var path = Path()
-            path.move(to: CGPoint(x: start.x * scaleX, y: start.y * scaleY))
-            path.addLine(to: CGPoint(x: end.x * scaleX, y: end.y * scaleY))
-            context.stroke(path, with: .color(color), lineWidth: vm.strokeWidth * scaleX)
-
-        case .rectangle:
-            let rect = CGRect(
-                x: min(start.x, end.x) * scaleX,
-                y: min(start.y, end.y) * scaleY,
-                width: abs(end.x - start.x) * scaleX,
-                height: abs(end.y - start.y) * scaleY
-            )
-            context.stroke(Path(roundedRect: rect, cornerRadius: 2), with: .color(color), lineWidth: vm.strokeWidth * scaleX)
-
-        case .circle:
-            let cx = (start.x + end.x) / 2 * scaleX
-            let cy = (start.y + end.y) / 2 * scaleY
-            let rx = abs(end.x - start.x) / 2 * scaleX
-            let ry = abs(end.y - start.y) / 2 * scaleY
-            let path = Path(ellipseIn: CGRect(x: cx - rx, y: cy - ry, width: rx * 2, height: ry * 2))
-            context.stroke(path, with: .color(color), lineWidth: vm.strokeWidth * scaleX)
-
-        default:
-            break
-        }
+    private func interruptInput(_ reason: String) {
+        if let input { vm.interruptStrokeInput(input, reason: reason) }
+        clearInput()
     }
 }
 

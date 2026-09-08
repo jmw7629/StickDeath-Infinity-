@@ -57,7 +57,7 @@ struct StudioProject: Codable, Identifiable {
 }
 
 // MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
+struct DrawnElement: Codable, Identifiable, Equatable {
     let id: String
     var tool: DrawingTool
     var points: [StrokePoint]
@@ -66,13 +66,82 @@ struct DrawnElement: Codable, Identifiable {
     var opacity: Double
     var fillColor: String?  // for fill tool / shape fill
     var layerID: String?
+    /// Absent on historical drawings: their original rendering stays unchanged.
+    /// Width and opacity remain canonical above, never duplicated in this value.
+    var brush: StudioBrushDescriptor? = nil
 }
 
-struct StrokePoint: Codable {
+struct StudioBrushDescriptor: Codable, Equatable {
+    var version = 1
+    var family: StudioBrushFamily
+    var seed: UInt64
+    var smoothing: Double = 3
+    var pressureEnabled = false
+    var tipAngleDegrees: Double = 45
+    var texture: Double = 0.5
+    var grain: Double = 0.3
+    var gradientEndColor: StudioBrushColor?
+
+    func settings(width: Double, opacity: Double) throws -> StudioBrushSettings {
+        guard version == 1 else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
+        let result = StudioBrushSettings(family: family, size: width, opacity: opacity,
+            smoothing: smoothing, pressureEnabled: pressureEnabled, tipAngleDegrees: tipAngleDegrees,
+            texture: texture, grain: grain, gradientEndColor: gradientEndColor)
+        try result.validate()
+        // DrawnElement's current color is opaque RGB; picker alpha is captured
+        // once into its canonical opacity. Unequal endpoint alpha is unsupported.
+        if family == .gradient, gradientEndColor?.alpha != 1 {
+            throw StudioBrushError.invalidSettings("Gradient endpoint transparency is unavailable. Choose an opaque end color.")
+        }
+        return result
+    }
+}
+
+struct StrokePoint: Codable, Equatable {
     var x: CGFloat
     var y: CGFloat
     var pressure: CGFloat?
     var timestamp: TimeInterval?
+}
+
+/// Captures one touch operation's identity/settings and actual event times.
+/// The same element is previewed and committed; copying it later retains seed.
+struct StudioStrokeInput {
+    let id: String
+    let frameID: String
+    let layerID: String
+    let tool: DrawingTool
+    let color: String
+    let width: Double
+    let opacity: Double
+    let brush: StudioBrushDescriptor?
+    let documentSize: CGSize
+    let viewportSize: CGSize
+    let startedAt: Date
+    private(set) var points: [StrokePoint] = []
+
+    mutating func append(location: CGPoint, time: Date) throws {
+        guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
+            throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
+        }
+        let limit = brush == nil ? 100_000 : 8_192
+        guard points.count < limit else {
+            throw StudioBrushError.workLimit("Touch capture reached its \(limit) sample limit. This entire stroke was rejected; no shortened stroke was saved. Discard the draft and draw a shorter stroke.")
+        }
+        let elapsed = time.timeIntervalSince(startedAt)
+        guard elapsed.isFinite, elapsed >= 0, elapsed >= (points.last?.timestamp ?? 0) else {
+            throw StudioBrushError.invalidSettings("Touch event timing changed unexpectedly. The stroke was not committed.")
+        }
+        points.append(StrokePoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
+            y: min(max(location.y / viewportSize.height, 0), 1) * documentSize.height,
+            pressure: nil, timestamp: elapsed))
+    }
+    var element: DrawnElement {
+        let shape = [.line, .rectangle, .circle].contains(tool)
+        let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
+        return DrawnElement(id: id, tool: tool, points: rendered, color: color,
+            width: width, opacity: opacity, layerID: layerID, brush: brush)
+    }
 }
 
 enum DrawingTool: String, Codable, CaseIterable {
@@ -83,9 +152,13 @@ enum DrawingTool: String, Codable, CaseIterable {
     case smudge, sharpen, move, hand, zoom
 }
 
-struct AnimationFrame: Codable, Identifiable {
+struct AnimationFrame: Codable, Identifiable, Equatable {
     let id: String
     var elements: [DrawnElement]
+    // An immutable original frame record (pixels and/or opaque layer metadata)
+    // is retained separately from editable strokes.
+    var rasterAssetID: String? = nil
+    var rasterLayerID: String? = nil
 }
 
 // Lock mode enum for type safety
@@ -93,7 +166,7 @@ enum LayerLockMode: String, Codable, CaseIterable {
     case free, full, position, alpha
 }
 
-struct CanvasLayer: Codable, Identifiable {
+struct CanvasLayer: Codable, Identifiable, Equatable {
     let id: String
     var name: String
     var visible: Bool
@@ -104,47 +177,48 @@ struct CanvasLayer: Codable, Identifiable {
     var glowEnabled: Bool = false
     var glowColor: String?
     var colorLabel: String?
-}
 
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
-struct StudioLayer: Identifiable {
-    let id: UUID
-    var name: String
-    var visible: Bool
-    var opacity: Double
-    var lockMode: LayerLockMode
-    var blendMode: String
-    var labelColor: Color
-    
-    init(from canvas: CanvasLayer) {
-        self.id = UUID(uuidString: canvas.id) ?? UUID()
-        self.name = canvas.name
-        self.visible = canvas.visible
-        self.opacity = canvas.opacity
-        self.lockMode = LayerLockMode(rawValue: canvas.lockMode) ?? .free
-        self.blendMode = canvas.blendMode
-        self.labelColor = Color.red // default
+    enum CodingKeys: String, CodingKey {
+        case id, name, visible, locked, opacity, lockMode, blendMode
+        case glowEnabled, glowColor, colorLabel
     }
-    
-    init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
-        self.id = id
-        self.name = name
-        self.visible = visible
-        self.opacity = opacity
-        self.lockMode = lockMode
-        self.blendMode = blendMode
-        self.labelColor = labelColor
+
+    init(id: String, name: String, visible: Bool = true, locked: Bool = false, opacity: Double = 1,
+         lockMode: String = "free", blendMode: String = "normal", glowEnabled: Bool = false,
+         glowColor: String? = nil, colorLabel: String? = nil) {
+        self.id = id; self.name = name; self.visible = visible; self.locked = locked
+        self.opacity = opacity; self.lockMode = locked ? "full" : lockMode
+        self.blendMode = blendMode; self.glowEnabled = glowEnabled
+        self.glowColor = glowColor; self.colorLabel = colorLabel
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        visible = try c.decodeIfPresent(Bool.self, forKey: .visible) ?? true
+        locked = try c.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        lockMode = locked ? "full" : (try c.decodeIfPresent(String.self, forKey: .lockMode) ?? "free")
+        blendMode = try c.decodeIfPresent(String.self, forKey: .blendMode) ?? "normal"
+        glowEnabled = try c.decodeIfPresent(Bool.self, forKey: .glowEnabled) ?? false
+        glowColor = try c.decodeIfPresent(String.self, forKey: .glowColor)
+        colorLabel = try c.decodeIfPresent(String.self, forKey: .colorLabel)
+    }
+
+    var isFullyLocked: Bool { locked || lockMode == "full" }
 }
 
 // MARK: - Audio Clip
-struct AudioClip: Identifiable {
+struct AudioClip: Codable, Identifiable, Equatable {
     let id: String
     var soundName: String
     var track: Int
     var startTime: Double
     var duration: Double
     var volume: Double = 0.8
+    /// Immutable audio bytes in the same AnimationProject snapshot; nil for legacy clips.
+    var assetID: UUID? = nil
 }
 
 // MARK: - Sound Effect
@@ -160,7 +234,7 @@ struct SoundEffect: Identifiable {
         self.name = name
         self.duration = duration
         self.tag = tag
-        self.waveform = (0..<8).map { _ in CGFloat.random(in: 0.2...1.0) }
+        self.waveform = [] // Catalog labels have no licensed/decoded audio asset yet.
     }
 }
 
@@ -313,6 +387,29 @@ struct ChatMessage: Codable, Identifiable {
     var edited: Bool?
     var voiceDuration: Int?
     var threadCount: Int?
+
+    init(
+        id: Int, roomID: Int, senderID: String, senderUsername: String? = nil,
+        content: String, createdAt: String? = nil, mediaURL: String? = nil,
+        type: MessageType? = nil, reactions: [String: ReactionData] = [:],
+        replyTo: ReplyRef? = nil, readStatus: MessageReadStatus? = nil,
+        edited: Bool? = nil, voiceDuration: Int? = nil, threadCount: Int? = nil
+    ) {
+        self.id = id
+        self.roomID = roomID
+        self.senderID = senderID
+        self.senderUsername = senderUsername
+        self.content = content
+        self.createdAt = createdAt
+        self.mediaURL = mediaURL
+        self.type = type
+        self.reactions = reactions
+        self.replyTo = replyTo
+        self.readStatus = readStatus
+        self.edited = edited
+        self.voiceDuration = voiceDuration
+        self.threadCount = threadCount
+    }
 
     var timeString: String {
         // Parse ISO date or return time

@@ -1,72 +1,33 @@
 // ═══════════════════════════════════════════════════════════════════
-// StudioView — Full Animation Studio (matches video frame-by-frame)
+// StudioView — Native Studio shell and offline project editor
 // Header → Tool Strip → Canvas → Frame Timeline → Bottom Toolbar
-// All 17 tools, all panels, all buttons functional
+// Advanced tools, media and connected services remain under implementation.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
 struct StudioView: View {
-    @StateObject private var vm = StudioViewModel()
+    @StateObject private var vm = StudioViewModel.shared
     @Environment(\.dismiss) var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
+        Group {
+            if vm.isEditing { editorBody }
+            else { StudioProjectLibrary(vm: vm) }
+        }
+        .task { await vm.loadProjects() }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { vm.stopPlayback(); Task { await vm.flush() } }
+        }
+        .onDisappear { vm.stopPlayback(); Task { await vm.flush() } }
+    }
+
+    private var editorBody: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
-            VStack(spacing: 0) {
-                // Header (hidden in HIDE mode)
-                if vm.showToolbar {
-                    StudioHeaderBar(vm: vm, onDismiss: { dismiss() })
-                }
-                
-                // Tool strip (floats in center during HIDE mode)
-                if vm.showToolbar {
-                    StudioToolStrip(vm: vm)
-                }
-                
-                ZStack {
-                    StudioCanvasView(vm: vm)
-                    
-                    // Floating tool strip in HIDE mode (centered vertically)
-                    if !vm.showToolbar {
-                        VStack {
-                            Spacer()
-                            StudioToolStrip(vm: vm)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color(hex: "12121A").opacity(0.9))
-                                        .shadow(color: .black.opacity(0.4), radius: 8)
-                                )
-                                .padding(.horizontal, 8)
-                            Spacer()
-                        }
-                    }
-                    
-                    // Floating tool settings
-                    if vm.activePanel == .toolSettings {
-                        FloatingToolSettingsPanel(vm: vm)
-                            .transition(.opacity)
-                    }
-                    
-                    // Zoom controls (right side)
-                    VStack(spacing: 8) {
-                        Spacer()
-                        ZoomButton(label: "+") { vm.zoomIn() }
-                        ZoomButton(label: "−") { vm.zoomOut() }
-                        ZoomButton(label: "FIT") { vm.zoomFit() }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, 8)
-                    .padding(.bottom, 8)
-                }
-                
-                // Timeline + Bottom bar (hidden in HIDE mode)
-                if vm.showToolbar {
-                    StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm)
-                }
-            }
+            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
             
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
@@ -115,6 +76,95 @@ struct StudioView: View {
     }
 }
 
+// The rail moves to the left only when vertical space is scarce. Portrait and
+// regular-height iPad layouts retain the horizontal floating rail.
+struct StudioEditorWorkspace: View {
+    @ObservedObject var vm: StudioViewModel
+    var onDismiss: () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let sideRail = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            VStack(spacing: 0) {
+                if vm.showToolbar {
+                    StudioHeaderBar(vm: vm, onDismiss: onDismiss)
+                }
+                if let message = vm.message {
+                    Text(message).font(.caption).foregroundColor(.white).padding(8)
+                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
+                        .accessibilityIdentifier("studio.status")
+                }
+                if vm.showToolbar && !sideRail {
+                    StudioToolStrip(vm: vm)
+                }
+                HStack(spacing: 0) {
+                    if vm.showToolbar && sideRail {
+                        StudioToolStrip(vm: vm, axis: .vertical)
+                    }
+                    canvasStage
+                }
+                if vm.showToolbar {
+                    StudioTimeline(vm: vm)
+                    StudioBottomBar(vm: vm)
+                }
+            }
+        }
+    }
+
+    private var canvasStage: some View {
+        ZStack {
+            StudioCanvasView(vm: vm)
+
+            // Floating tool strip in HIDE mode (centered vertically)
+            if !vm.showToolbar {
+                VStack {
+                    Spacer()
+                    StudioToolStrip(vm: vm)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(hex: "12121A").opacity(0.9))
+                                .shadow(color: .black.opacity(0.4), radius: 8)
+                        )
+                        .padding(.horizontal, 8)
+                    Spacer()
+                }
+
+            }
+
+            // Floating tool settings
+            if vm.activePanel == .toolSettings {
+                FloatingToolSettingsPanel(vm: vm)
+                    .transition(.opacity)
+            }
+
+            // Zoom controls (right side)
+            VStack(spacing: 8) {
+                Spacer()
+                ZoomButton(label: "+") { vm.zoomIn() }
+                ZoomButton(label: "−") { vm.zoomOut() }
+                ZoomButton(label: "FIT") { vm.zoomFit() }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 8)
+            .padding(.bottom, 8)
+        }
+        .overlay(alignment: .topLeading) {
+            if !vm.showToolbar {
+                Button(action: { vm.showToolbar = true }) {
+                    Text("SHOW TOOLS")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .padding(10)
+                        .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .accessibilityLabel("Show Studio tools")
+                .accessibilityIdentifier("studio.show-tools")
+                .padding(8)
+            }
+        }
+    }
+}
+
 // MARK: - Zoom Button
 struct ZoomButton: View {
     let label: String
@@ -142,29 +192,32 @@ struct StudioBottomBar: View {
             BottomBarButton(icon: "music.note", label: "AUDIO") {
                 vm.activePanel = vm.activePanel == .audioTimeline ? .none : .audioTimeline
             }
+            .accessibilityIdentifier("studio.audio.open")
             
             // Undo
             BottomBarButton(icon: "arrow.uturn.backward", label: "UNDO", enabled: vm.canUndo) {
                 vm.undo()
             }
+            .accessibilityIdentifier("studio.undo")
             
             // Redo
             BottomBarButton(icon: "arrow.uturn.forward", label: "REDO", enabled: vm.canRedo) {
                 vm.redo()
             }
+            .accessibilityIdentifier("studio.redo")
             
             // Copy
             BottomBarButton(icon: "doc.on.doc", label: "COPY") {
-                vm.duplicateFrame()
+                vm.copyFrame()
             }
             
             // Paste
-            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE") {
-                // Paste duplicated frame after current
+            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
+                vm.pasteFrame()
             }
             
             // Delete
-            BottomBarButton(icon: "trash", label: "DEL") {
+            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected) {
                 vm.deleteSelected()
             }
             
@@ -245,19 +298,7 @@ struct FramesViewerPanel: View {
                                             .frame(height: 80)
                                         
                                         // Render frame elements
-                                        Canvas { context, size in
-                                            let scaleX = size.width / CGFloat(vm.canvasWidth)
-                                            let scaleY = size.height / CGFloat(vm.canvasHeight)
-                                            for el in vm.frames[i].elements {
-                                                guard el.points.count >= 2 else { continue }
-                                                var path = Path()
-                                                path.move(to: CGPoint(x: el.points[0].x * scaleX, y: el.points[0].y * scaleY))
-                                                for p in el.points.dropFirst() {
-                                                    path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
-                                                }
-                                                context.stroke(path, with: .color(Color(hex: el.color)), lineWidth: max(1, el.width * scaleX))
-                                            }
-                                        }
+                                        StudioFrameThumbnail(vm: vm, frame: vm.frames[i])
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
@@ -541,6 +582,7 @@ struct StudioMenuSheet: View {
                         vm.activePanel = .spatterAI
                     }
                 }
+                .accessibilityIdentifier("studio.spatter.open")
                 
                 Spacer()
             }
@@ -759,86 +801,102 @@ struct AIVoiceMakerSheet: View {
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    @StateObject private var spatterVM = SpatterAIViewModel()
+    @EnvironmentObject private var authVM: AuthViewModel
     @State private var prompt = ""
-    @State private var messages: [(role: String, text: String)] = [
-        ("assistant", "Hey! I'm Spatter AI 🎨 I can help you animate, suggest techniques, generate effects, and answer any animation questions. What do you want to create?")
-    ]
+    @State private var contextError: String?
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
             VStack(spacing: 0) {
-                // Header
                 HStack {
-                    Text("🎨 Spatter AI")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("🎨 Spatter AI")
+                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
+                        Text(spatterVM.statusText).font(.caption).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("spatter.studio.status")
+                    }
                     Spacer()
-                    Button("Done") { dismiss() }
-                        .foregroundColor(.red)
+                    Button("Done") { dismiss() }.foregroundColor(.red)
+                        .accessibilityIdentifier("spatter.studio.close")
                 }
                 .padding(16)
-                
-                // Messages
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
+                        .disabled(spatterVM.isThinking)
+                        .accessibilityIdentifier("spatter.studio.cloud")
+                    if spatterVM.useCloud {
+                        Text("Sends your message, this sheet's earlier cloud messages and a limited project/tool/layer/frame/audio summary to the configured authenticated backend. Drawings, audio files and file paths are not sent.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                    }
+                    if let notice = contextError ?? spatterVM.notice {
+                        Text(notice).font(.caption).foregroundColor(.white.opacity(0.8))
+                            .accessibilityIdentifier("spatter.studio.notice")
+                    }
+                    if spatterVM.isThinking {
+                        Button("Cancel request") { spatterVM.cancel() }
+                            .accessibilityIdentifier("spatter.studio.cancel")
+                    }
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(messages.indices, id: \.self) { i in
-                            let msg = messages[i]
+                        ForEach(spatterVM.messages) { message in
                             HStack {
-                                if msg.role == "user" { Spacer() }
-                                Text(msg.text)
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.white)
-                                    .padding(12)
-                                    .background(msg.role == "user" ? Color.red : Color(hex: "1A1A24"))
-                                    .cornerRadius(12)
-                                    .frame(maxWidth: 280, alignment: msg.role == "user" ? .trailing : .leading)
-                                if msg.role == "assistant" { Spacer() }
+                                if message.role == .user { Spacer() }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let origin = message.origin {
+                                        Text(origin == .local ? "LOCAL GUIDE" : "CLOUD ADVICE")
+                                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                                    }
+                                    Text(message.content).font(.system(size: 13)).foregroundColor(.white)
+                                }
+                                .padding(12)
+                                .background(message.role == .user ? Color.red : Color(hex: "1A1A24"))
+                                .cornerRadius(12)
+                                .frame(maxWidth: 280, alignment: message.role == .user ? .trailing : .leading)
+                                if message.role == .assistant { Spacer() }
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 16)
                 }
-                
-                // Input
+
                 HStack(spacing: 8) {
-                    TextField("Ask Spatter anything...", text: $prompt)
-                        .font(.system(size: 14))
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(Color(hex: "1A1A24"))
-                        .cornerRadius(12)
-                    
+                    TextField("Ask Spatter for advice...", text: $prompt)
+                        .font(.system(size: 14)).foregroundColor(.white)
+                        .padding(12).background(Color(hex: "1A1A24")).cornerRadius(12)
+                        .accessibilityIdentifier("spatter.studio.input")
                     Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(.red)
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)).foregroundColor(.red)
                     }
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking)
+                    .accessibilityIdentifier("spatter.studio.send")
                 }
                 .padding(16)
             }
         }
+        .onDisappear { spatterVM.endSession() }
+        .onChange(of: authVM.userId) { _ in spatterVM.endSession(); prompt = ""; contextError = nil }
     }
-    
-    func sendMessage() {
-        guard !prompt.isEmpty else { return }
-        messages.append(("user", prompt))
-        let userPrompt = prompt
-        prompt = ""
-        
-        // First show brain knowledge immediately
-        let quickResponse = SpatterBrainLoader.shared.getResponse(for: userPrompt)
-        messages.append(("assistant", quickResponse))
-        
-        // Then call async AI engine for a deeper response
-        Task {
-            let aiResponse = await SpatterAIEngine.shared.chat(userMessage: userPrompt)
-            if !aiResponse.isEmpty && !aiResponse.contains("error") {
-                messages.append(("assistant", aiResponse))
-            }
+
+    private func sendMessage() {
+        guard let context = SpatterContext.studio(vm.commandScreenContext), let snapshot = context.studio else {
+            contextError = "This Studio project is no longer open. Your draft has been kept."
+            return
         }
+        contextError = nil
+        let submitted = prompt
+        if spatterVM.submit(submitted, context: context, stillCurrent: { [weak vm] in
+            guard let vm else { return false }
+            return vm.isEditing && vm.document.id == snapshot.projectID && vm.document.revision == snapshot.revision
+        }) { prompt = "" }
     }
 }
 
@@ -1021,6 +1079,8 @@ struct PanelHeader: View {
                     .font(.system(size: 20))
                     .foregroundColor(.white.opacity(0.4))
             }
+            .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("studio.panel.close.\(title)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

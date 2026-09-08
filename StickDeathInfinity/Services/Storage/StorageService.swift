@@ -10,7 +10,9 @@ import UIKit
 @MainActor
 final class StorageService {
     static let shared = StorageService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
     private let bucket = "media"
 
     // MARK: - Upload Image

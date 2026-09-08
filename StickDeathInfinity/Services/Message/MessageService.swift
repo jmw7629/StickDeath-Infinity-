@@ -9,7 +9,9 @@ import Supabase
 @MainActor
 final class MessageService {
     static let shared = MessageService()
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
 
     /// Fetch all chat rooms for the current user
     func fetchRooms(userID: String) async throws -> [ChatRoom] {

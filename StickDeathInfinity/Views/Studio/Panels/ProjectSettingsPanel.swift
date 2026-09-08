@@ -6,8 +6,6 @@ import SwiftUI
 
 struct ProjectSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var onionEnabled: Bool = false
-    @State private var gridEnabled: Bool = false
     
     var body: some View {
         VStack(spacing: 0) {
@@ -78,7 +76,7 @@ struct ProjectSettingsPanel: View {
                         )
                 }
                 
-                Toggle("", isOn: $onionEnabled)
+                Toggle("", isOn: $vm.showOnionSkin)
                     .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#DC2626")))
                     .labelsHidden()
             }
@@ -106,7 +104,7 @@ struct ProjectSettingsPanel: View {
                         )
                 }
                 
-                Toggle("", isOn: $gridEnabled)
+                Toggle("", isOn: $vm.gridEnabled)
                     .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#DC2626")))
                     .labelsHidden()
             }
@@ -164,4 +162,3 @@ struct PanelSettingsRow: View {
 // ═══════════════════════════════════════════════════════════════════════
 // Frames Viewer Panel
 // ═══════════════════════════════════════════════════════════════════════
-

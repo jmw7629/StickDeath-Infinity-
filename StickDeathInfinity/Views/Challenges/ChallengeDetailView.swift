@@ -1,9 +1,12 @@
 import SwiftUI
 
 struct ChallengeDetailView: View {
-    let challenge: ChallengeItem
+    let challenge: Challenge
     @Environment(\.dismiss) private var dismiss
     @State private var selectedTab: ChallengeTab = .submissions
+    @State private var submissions: [ChallengeSubmission] = []
+    @State private var loadError: String?
+    @State private var showSubmissionNotice = false
     
     enum ChallengeTab: String, CaseIterable {
         case submissions = "Submissions"
@@ -32,16 +35,16 @@ struct ChallengeDetailView: View {
                 VStack(spacing: 0) {
                     // Stats row
                     HStack(spacing: 12) {
-                        StatCard(value: "\(challenge.entries)", label: "Entries", color: .red)
+                        StatCard(value: challenge.submissionCount.map(String.init) ?? "—", label: "Entries", color: .red)
                         StatCard(value: challenge.timeLeft, label: "Left", color: .green)
-                        StatCard(value: "\(challenge.coins)", label: "Coins", color: .yellow)
+                        StatCard(value: challenge.reward, label: "Prize", color: .yellow)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     
                     // Description
                     VStack(alignment: .leading, spacing: 12) {
-                        Text(challenge.description)
+                        Text(challenge.description ?? "No description provided.")
                             .font(.system(size: 13))
                             .foregroundColor(.gray)
                             .lineSpacing(4)
@@ -51,9 +54,7 @@ struct ChallengeDetailView: View {
                             .foregroundColor(.white)
                         
                         VStack(alignment: .leading, spacing: 4) {
-                            RuleRow(text: "Max 5 seconds")
-                            RuleRow(text: "Must include at least 2 characters")
-                            RuleRow(text: "No NSFW content")
+                            RuleRow(text: "Follow the rules in this challenge's description. Additional structured rules are not available from the service.")
                         }
                     }
                     .padding(.horizontal, 16)
@@ -80,17 +81,18 @@ struct ChallengeDetailView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
                     
+                    if let loadError { Text(loadError).font(.caption).foregroundColor(.gray).padding() }
                     // Tab content
                     if selectedTab == .submissions {
-                        SubmissionsGrid()
+                        SubmissionsGrid(submissions: submissions)
                     } else {
-                        LeaderboardList()
+                        LeaderboardList(submissions: submissions)
                     }
                 }
             }
             
             // Submit button
-            Button(action: { /* Navigate to submission */ }) {
+            Button(action: { showSubmissionNotice = true }) {
                 Text("Submit Entry 🎬")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.white)
@@ -102,6 +104,15 @@ struct ChallengeDetailView: View {
             .padding(16)
         }
         .background(Color(hex: "0A0A14"))
+        .task {
+            do { submissions = try await ChallengeService.shared.fetchSubmissions(challengeID: challenge.id) }
+            catch { loadError = "Submissions could not be loaded. Try again when connected." }
+        }
+        .alert("Submission unavailable", isPresented: $showSubmissionNotice) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("A rendered Studio file and the rights/consent submission flow are required. Nothing has been submitted.")
+        }
     }
 }
 
@@ -143,15 +154,8 @@ struct RuleRow: View {
 }
 
 struct SubmissionsGrid: View {
-    let submissions = [
-        ("StickNinja99", "⚔️", 48),
-        ("AnimKing", "🗡️", 42),
-        ("xDeathArtist", "💀", 38),
-        ("FightClubArt", "🔥", 35),
-        ("PixelWarrior", "🥷", 31),
-        ("StickLord", "🏹", 28),
-    ]
-    
+    let submissions: [ChallengeSubmission]
+
     let columns = [
         GridItem(.flexible(), spacing: 8),
         GridItem(.flexible(), spacing: 8)
@@ -159,13 +163,14 @@ struct SubmissionsGrid: View {
     
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(submissions, id: \.0) { sub in
+            if submissions.isEmpty { Text("No submissions available.").font(.caption).foregroundColor(.gray) }
+            ForEach(submissions) { sub in
                 VStack(spacing: 6) {
-                    Text(sub.1).font(.system(size: 32))
-                    Text(sub.0)
+                    Image(systemName: "film").font(.system(size: 32)).foregroundColor(.red)
+                    Text("Submission #\(sub.id)")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.white)
-                    Text("\(sub.2) votes")
+                    Text(sub.voteCount.map { "\($0) votes" } ?? "Votes unavailable")
                         .font(.system(size: 10))
                         .foregroundColor(.gray)
                 }
@@ -184,16 +189,14 @@ struct SubmissionsGrid: View {
 }
 
 struct LeaderboardList: View {
-    let leaders = [
-        ("xDeathArtist", 1240),
-        ("StickNinja99", 1180),
-        ("AnimKing", 980),
-        ("FightClubArt", 840),
-        ("PixelWarrior", 720),
-    ]
-    
+    let submissions: [ChallengeSubmission]
+    private var leaders: [ChallengeSubmission] {
+        submissions.filter { $0.voteCount != nil }.sorted { ($0.voteCount ?? 0) > ($1.voteCount ?? 0) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
+            if leaders.isEmpty { Text("No recorded votes available.").font(.caption).foregroundColor(.gray).padding() }
             ForEach(Array(leaders.enumerated()), id: \.offset) { idx, leader in
                 HStack(spacing: 12) {
                     Text("#\(idx + 1)")
@@ -206,13 +209,13 @@ struct LeaderboardList: View {
                         )
                         .frame(width: 24)
                     
-                    Text(leader.0)
+                    Text("Submission #\(leader.id)")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(.white)
                     
                     Spacer()
                     
-                    Text("\(leader.1) pts")
+                    Text("\(leader.voteCount ?? 0) votes")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.red)
                 }
@@ -227,13 +230,4 @@ struct LeaderboardList: View {
             }
         }
     }
-}
-
-struct ChallengeItem {
-    let id: String
-    let title: String
-    let entries: Int
-    let timeLeft: String
-    let coins: Int
-    let description: String
 }

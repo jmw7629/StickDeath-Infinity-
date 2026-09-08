@@ -23,9 +23,13 @@ final class AuthService: ObservableObject {
     @Published var state: AuthState = .loading
     @Published var currentUser: User?
     @Published var currentProfile: UserProfile?
+    @Published private(set) var configurationError: String?
 
-    private let supabase = SupabaseManager.shared.client
+    private var supabase: SupabaseClient {
+        get throws { try SupabaseManager.shared.client }
+    }
     private var appleSignInDelegate: AppleSignInDelegate?
+    private var authStateTask: Task<Void, Never>?
 
     enum AuthState: Equatable {
         case loading, unauthenticated, authenticated
@@ -34,8 +38,9 @@ final class AuthService: ObservableObject {
     var userId: String? { currentUser?.id.uuidString }
     var isAuthenticated: Bool { state == .authenticated }
     var isSuperAdmin: Bool {
-        guard let email = currentProfile?.email else { return false }
-        return AppConfig.superuserEmails.contains(email.lowercased())
+        // Display hint only: server app metadata, never editable profile/email data.
+        // Backend/RLS authorization must still enforce every privileged operation.
+        return isAuthenticated && currentUser?.appMetadata["role"] == .string("superadmin")
     }
     var displayName: String? { currentProfile?.username }
     var avatarUrl: String? { currentProfile?.avatarURL }
@@ -43,6 +48,19 @@ final class AuthService: ObservableObject {
     // MARK: - Initialize (call on app start)
     func initialize() async {
         state = .loading
+        configurationError = nil
+        authStateTask?.cancel()
+        authStateTask = nil
+        let supabase: SupabaseClient
+        do {
+            supabase = try self.supabase
+        } catch {
+            currentUser = nil
+            currentProfile = nil
+            configurationError = error.localizedDescription
+            state = .unauthenticated
+            return
+        }
         do {
             let session = try await supabase.auth.session
             currentUser = session.user
@@ -53,8 +71,9 @@ final class AuthService: ObservableObject {
         }
 
         // Listen for auth state changes
-        Task {
+        authStateTask = Task {
             for await (event, session) in supabase.auth.authStateChanges {
+                guard !Task.isCancelled else { return }
                 switch event {
                 case .signedIn:
                     if let user = session?.user {
@@ -81,6 +100,8 @@ final class AuthService: ObservableObject {
     /// Generates a nonce, presents the Apple UI, then exchanges the
     /// Apple ID credential with Supabase for a session.
     func signInWithApple() async throws {
+        // Report missing backend configuration before presenting external auth UI.
+        _ = try supabase
         let nonce = generateNonce()
         let hashedNonce = sha256(nonce)
 
@@ -253,13 +274,11 @@ final class AuthService: ObservableObject {
     }
 
     private func ensureProfile(userId: String, email: String?, username: String) async {
-        let role = (email != nil && AppConfig.superuserEmails.contains(email!.lowercased())) ? "superadmin" : "user"
         do {
             try await supabase.from("users").upsert([
                 "id": AnyJSON.string(userId),
                 "email": email.map { AnyJSON.string($0) } ?? .null,
                 "username": .string(username),
-                "role": .string(role),
                 "created_at": .string(ISO8601DateFormatter().string(from: Date()))
             ]).execute()
         } catch {

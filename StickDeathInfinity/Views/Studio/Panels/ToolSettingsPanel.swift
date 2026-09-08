@@ -2,7 +2,7 @@ import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════
 // Floating Tool Settings Panel — positioned over canvas
-// Matches video exactly: tool icon + name, X close, per-tool settings,
+// Tool icon + name, X close, per-tool settings,
 // Shortcut key at bottom
 // Colors: Red for Pencil/Pen/Brush, Green for Fill, Purple for Smudge,
 //         Amber for Crayon, Cyan for Picker, Orange for Eraser,
@@ -11,6 +11,7 @@ import SwiftUI
 
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @State private var showBrushLibrary = false
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -22,6 +23,7 @@ struct FloatingToolSettingsPanel: View {
     }
     
     var body: some View {
+        GeometryReader { available in
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
                 VStack(alignment: .leading, spacing: 10) {
@@ -39,12 +41,17 @@ struct FloatingToolSettingsPanel: View {
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
                         }
+                        .accessibilityLabel("Close tool settings")
+                        .accessibilityIdentifier("studio.tool-settings.close")
                     }
                     
                     Divider().background(Color.white.opacity(0.08))
                     
                     // Tool-specific content
-                    toolSettingsContent(def)
+                    ScrollView {
+                        toolSettingsContent(def)
+                    }
+                    .frame(maxHeight: max(70, min(360, available.size.height - 100)))
                     
                     // Shortcut
                     HStack(spacing: 4) {
@@ -76,43 +83,47 @@ struct FloatingToolSettingsPanel: View {
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.top, 8)
+        }
     }
     
     @ViewBuilder
     func toolSettingsContent(_ def: ToolDef) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
-        case .pencil, .pen, .brush:
+        case .pencil, .pen, .brush, .marker, .crayon:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
-                SettingsToggle(label: "Pressure Sensitivity", isOn: $vm.pressureSensitivity, accent: .red)
-            }
-            
-        // ── MARKER ──
-        case .marker:
-            VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
-                HStack {
-                    Text("Tip Angle")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.4))
-                    Spacer()
-                    Text("45°")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.white.opacity(0.5))
+                Button { showBrushLibrary.toggle() } label: {
+                    HStack {
+                        Text("Brush Library: " + vm.brushFamily.title)
+                            .font(.specialElite(12))
+                        Spacer()
+                        Image(systemName: showBrushLibrary ? "chevron.up" : "chevron.down")
+                    }.foregroundColor(.white)
                 }
-            }
-            
-        // ── CRAYON ──
-        case .crayon:
-            // Video shows minimal panel — just name + shortcut
-            VStack(alignment: .leading, spacing: 8) {
+                .accessibilityIdentifier("studio.brush-library")
+                if showBrushLibrary {
+                    StudioBrushLibraryView(vm: vm) { showBrushLibrary = false }
+                }
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Texture", value: .constant(5.0), range: 0...10, unit: "", accent: accentColor)
-                SettingsSlider(label: "Grain", value: .constant(3.0), range: 0...10, unit: "", accent: accentColor)
+                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
+                if vm.brushFamily == .calligraphy {
+                    SettingsSlider(label: "Tip Angle", value: $vm.brushTipAngle, range: 0...179, unit: "°", accent: accentColor)
+                }
+                if [.stipple, .grain, .roughPen].contains(vm.brushFamily) {
+                    SettingsSlider(label: "Texture", value: Binding(get: { vm.brushTexture * 100 }, set: { vm.brushTexture = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                }
+                if [.stipple, .grain].contains(vm.brushFamily) {
+                    SettingsSlider(label: "Grain", value: Binding(get: { vm.brushGrain * 100 }, set: { vm.brushGrain = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                }
+                if vm.brushFamily == .gradient {
+                    ColorPicker("End Color", selection: $vm.brushGradientEndColor, supportsOpacity: false)
+                        .font(.specialElite(11)).foregroundColor(.white)
+                    Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                }
+                SettingsToggle(label: "Pressure Sensitivity", isOn: .constant(false), accent: .red).disabled(true)
+                Text("Pressure input is unavailable in this build. Size and measured stroke timing work with touch; saved pressure data remains supported.")
+                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
             }
             
         // ── FILL TOOL (GREEN THEME) ──
@@ -384,6 +395,8 @@ struct SettingsSlider: View {
             Slider(value: $value, in: range)
                 .tint(accent)
                 .frame(height: 6)
+                .accessibilityLabel(label)
+                .accessibilityIdentifier("studio.setting." + label.lowercased().replacingOccurrences(of: " ", with: "-"))
         }
     }
 }

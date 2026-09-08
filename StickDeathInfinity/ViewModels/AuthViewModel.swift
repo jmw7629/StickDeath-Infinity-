@@ -29,6 +29,7 @@ final class AuthViewModel: ObservableObject {
         await auth.initialize()
         state = auth.state
         user = auth.currentProfile
+        error = auth.configurationError
     }
 
     // MARK: - Email/Password

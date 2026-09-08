@@ -22,6 +22,7 @@ struct StudioHeaderBar: View {
                 }
                 .foregroundColor(.white.opacity(0.8))
             }
+            .accessibilityIdentifier("studio.back")
             
             // Info pill
             Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
@@ -55,6 +56,9 @@ struct StudioHeaderBar: View {
                 .background(Color(hex: "1A1A24"))
                 .cornerRadius(6)
             }
+            .disabled(vm.isSaving)
+            .accessibilityIdentifier("studio.save")
+            .accessibilityLabel(vm.saveTimeAgo)
             
             // Export
             Button(action: {
@@ -64,6 +68,8 @@ struct StudioHeaderBar: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
             }
+            .accessibilityLabel("Export")
+            .accessibilityIdentifier("studio.export.open")
             
             // Menu (⋯)
             Button(action: {
@@ -73,6 +79,8 @@ struct StudioHeaderBar: View {
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.6))
             }
+            .accessibilityLabel("Studio menu")
+            .accessibilityIdentifier("studio.menu.open")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
