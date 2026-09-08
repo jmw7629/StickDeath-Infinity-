@@ -148,6 +148,8 @@ struct AudioClip: Codable, Identifiable, Equatable {
     var startTime: Double
     var duration: Double
     var volume: Double = 0.8
+    /// Immutable audio bytes in the same AnimationProject snapshot; nil for legacy clips.
+    var assetID: UUID? = nil
 }
 
 // MARK: - Sound Effect
@@ -163,7 +165,7 @@ struct SoundEffect: Identifiable {
         self.name = name
         self.duration = duration
         self.tag = tag
-        self.waveform = (0..<8).map { _ in CGFloat.random(in: 0.2...1.0) }
+        self.waveform = [] // Catalog labels have no licensed/decoded audio asset yet.
     }
 }
 

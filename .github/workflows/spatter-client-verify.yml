@@ -163,6 +163,23 @@ jobs:
             Tests/StudioAudioImport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-audio-import-tests"
           "$RUNNER_TEMP/sdi-studio-audio-import-tests"
+      - name: Verify imported audio edits, preview and atomic persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            Tests/StudioAudioIntegration/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
+          "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |

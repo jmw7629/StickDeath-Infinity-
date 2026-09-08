@@ -13,6 +13,21 @@ final class StudioViewModel: ObservableObject {
     private let storage: DeviceStorageManager
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
     private var retainedAudioTracks: [AudioTrack] = []
+    private var managedAudioTracks: [UUID: AudioTrack] = [:]
+    static let maximumManagedAudioBytes = 32 * 1024 * 1024
+    var managedAudioByteCount: Int { managedAudioTracks.values.reduce(0) { $0 + ($1.audioData?.count ?? 0) } }
+    /// Preserved historical records plus current imported clips' immutable assets.
+    var projectAudioTracks: [AudioTrack] {
+        let ids = document.referencedAudioAssetIDs
+        return retainedAudioTracks + managedAudioTracks.values.filter { ids.contains($0.id) }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+    }
+    func audioTrack(forAssetID id: UUID) -> AudioTrack? {
+        managedAudioTracks[id] ?? retainedAudioTracks.first { $0.id == id }
+    }
+    var selectedCurrentAudioClip: AudioClip? {
+        selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
+    }
     private var autosaveTask: Task<Void, Never>?
     private var playbackTimer: Timer?
     @Published private var playbackFrameIndex: Int?
@@ -77,7 +92,7 @@ final class StudioViewModel: ObservableObject {
     var showOnionSkin: Bool { get { document.onionEnabled } set { change { $0.onionEnabled = newValue } } }
     var gridEnabled: Bool { get { document.gridEnabled } set { change { $0.gridEnabled = newValue } } }
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
-    var audioDuration: Double { Double(frames.count) / Double(fps) }
+    var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
 
     /// Snapshot of this Studio route, not a claim about another foreground tab.
@@ -125,7 +140,7 @@ final class StudioViewModel: ObservableObject {
                 document.audioClips.contains(where: { $0.id == selected.id }) ? selected.id : nil
             }, displayedFrameID: currentFrame.id,
             isPlaying: isPlaying, audioPlayheadTime: audioPlayheadTime,
-            retainedAudio: retainedAudioTracks.map {
+            retainedAudio: projectAudioTracks.map {
                 .init(id: $0.id, name: $0.name, format: $0.format, startTime: $0.startTime, duration: $0.duration,
                       timingKnown: $0.legacySourceFilename == nil, hasAudioData: $0.audioData != nil)
             }, canApplyCommands: !isSaving, isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo)
@@ -145,6 +160,7 @@ final class StudioViewModel: ObservableObject {
         let receipt = try StudioCommandExecutor.execute(request, editor: &editor, checkCancellation: checkCancellation)
         if receipt.outcome != .unchanged {
             stopPlayback()
+            pruneManagedAudio()
             scheduleSave()
         }
         return receipt
@@ -242,7 +258,7 @@ final class StudioViewModel: ObservableObject {
         guard !isEditing else { message = "Save and return to projects before creating another animation."; return false }
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
-            retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll()
+            retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
             savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
             return await save()
         } catch { message = error.localizedDescription; return false }
@@ -296,7 +312,14 @@ final class StudioViewModel: ObservableObject {
                 try decoded.validate()
             }
             let nextEditor = try StudioDocumentEditor(document: decoded)
-            editor = nextEditor; retainedRasterFrames = rasters; retainedAudioTracks = stored.audioTracks
+            let importedIDs = decoded.referencedAudioAssetIDs
+            // Only records explicitly referenced by the new clip schema become
+            // managed; opaque historical/unrelated records remain preserved.
+            let managed = stored.audioTracks.filter { importedIDs.contains($0.id) && $0.legacySourceFilename == nil }
+            editor = nextEditor; retainedRasterFrames = rasters
+            let managedIDs = Set(managed.map(\.id))
+            retainedAudioTracks = stored.audioTracks.filter { !managedIDs.contains($0.id) }
+            managedAudioTracks = Dictionary(uniqueKeysWithValues: managed.map { ($0.id, $0) })
             savedRevision = decoded.revision; lastSaveTime = decoded.modifiedAt
             resetSession(); isEditing = true
             if stored.editableDocumentData == nil { message = "Original frame records, images and audio are preserved. Imported images are flattened; metadata without image pixels stays preserved but cannot be rendered. Draw editable strokes on Layer 1. Audio playback is unfinished." }
@@ -322,7 +345,7 @@ final class StudioViewModel: ObservableObject {
                 layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: nil)
             let payload = try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded()
             try storage.saveAnimation(AnimationProject(id: snapshot.id, metadata: metadata, frames: storedFrames,
-                audioTracks: retainedAudioTracks, editableDocumentData: payload))
+                audioTracks: try audioTracksForSave(snapshot), editableDocumentData: payload))
             savedRevision = snapshot.revision; lastSaveTime = Date(); message = nil
             await loadProjects()
             return true
@@ -349,7 +372,7 @@ final class StudioViewModel: ObservableObject {
         }
     }
     private func command(_ operation: (inout StudioDocumentEditor) throws -> Void) {
-        do { try operation(&editor); scheduleSave() } catch { message = error.localizedDescription }
+        do { try operation(&editor); pruneManagedAudio(); scheduleSave() } catch { message = error.localizedDescription }
     }
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
     func addFrame() { stopPlayback(); command { try $0.addFrame() } }
@@ -403,10 +426,73 @@ final class StudioViewModel: ObservableObject {
     func zoomOut() { canvasScale = max(canvasScale / 1.25, 0.25) }
     func zoomFit() { canvasScale = 1; canvasOffset = .zero }
     func addAudioClip(sound: SoundEffect, track: Int) { message = "Sound playback and licensed asset import are unfinished. No audio clip was added." }
-    func deleteAudioClip(_ id: String) { change { $0.audioClips.removeAll { $0.id == id } }; selectedAudioClip = nil }
+    /// The Files session must decode with StudioAudioImportService first. These
+    /// are ownership/metadata checks, not an independent codec validation claim.
+    @discardableResult
+    func attachImportedAudio(_ track: AudioTrack, expectedProjectID: UUID, expectedRevision: Int,
+                             frameID: String, trackNumber: Int,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
+        try checkCancellation()
+        guard isEditing, !isSaving, document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, let frame = frames.firstIndex(where: { $0.id == frameID }) else {
+            throw StudioDocumentError.unavailable("The project or selected frame changed. Import again in the current project.")
+        }
+        guard (1...4).contains(trackNumber), track.legacySourceFilename == nil,
+              track.startTime == 0, track.duration.isFinite, track.duration > 0, track.duration <= 300,
+              !track.name.isEmpty, track.name.count <= 120,
+              !track.name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              ["wav", "aiff", "aifc", "caf", "m4a", "mp3", "aac"].contains(track.format),
+              let bytes = track.audioData, !bytes.isEmpty, bytes.count <= 16 * 1024 * 1024,
+              audioTrack(forAssetID: track.id) == nil else {
+            throw StudioDocumentError.invalid("The decoded audio asset has invalid metadata or conflicts with an existing asset.")
+        }
+        let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
+            startTime: Double(frame) / Double(fps), duration: track.duration, assetID: track.id)
+        var candidate = editor
+        try candidate.change { $0.audioClips.append(clip) }
+        let liveIDs = candidate.referencedAudioAssetIDsIncludingHistory
+        var next = managedAudioTracks.filter { liveIDs.contains($0.key) }
+        guard next.count < 128,
+              next.values.reduce(0, { $0 + ($1.audioData?.count ?? 0) }) <= Self.maximumManagedAudioBytes - bytes.count else {
+            throw StudioDocumentError.unavailable("Imported audio and its undo history are limited to 32 MB. Remove unused clips and allow their undo history to expire, or use smaller audio files.")
+        }
+        next[track.id] = track
+        try checkCancellation()
+        // Publish the bytes and the single undoable document edit together.
+        managedAudioTracks = next; editor = candidate; selectedAudioClip = clip
+        stopPlayback(); scheduleSave()
+        return clip.id
+    }
+    private func audioTracksForSave(_ snapshot: StudioDocument) throws -> [AudioTrack] {
+        let tracks = retainedAudioTracks + managedAudioTracks.values.filter { snapshot.referencedAudioAssetIDs.contains($0.id) }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        for clip in snapshot.audioClips where clip.assetID != nil {
+            guard let asset = tracks.first(where: { $0.id == clip.assetID }), asset.audioData != nil,
+                  asset.duration > 0, clip.duration <= asset.duration + 0.001 else {
+                throw StudioDocumentError.invalid("An imported audio asset is missing or has inconsistent timing. No save was made.")
+            }
+        }
+        return tracks
+    }
+    private func pruneManagedAudio() {
+        let needed = editor.referencedAudioAssetIDsIncludingHistory
+        managedAudioTracks = managedAudioTracks.filter { needed.contains($0.key) }
+    }
+    func setAudioClipVolume(_ id: String, volume: Double) {
+        guard selectedCurrentAudioClip?.id == id else { return }
+        change { value in
+            guard let index = value.audioClips.firstIndex(where: { $0.id == id }) else { return }
+            value.audioClips[index].volume = volume
+        }
+        selectedAudioClip = document.audioClips.first { $0.id == id }
+    }
+    func deleteAudioClip(_ id: String) {
+        guard selectedCurrentAudioClip?.id == id else { return }
+        change { $0.audioClips.removeAll { $0.id == id } }; selectedAudioClip = nil
+    }
     func rasterData(_ assetID: String?) -> Data? { assetID.flatMap { retainedRasterFrames[$0]?.imageData } }
-    func undo() { stopPlayback(); editor.undo(); scheduleSave() }
-    func redo() { stopPlayback(); editor.redo(); scheduleSave() }
+    func undo() { stopPlayback(); editor.undo(); pruneManagedAudio(); scheduleSave() }
+    func redo() { stopPlayback(); editor.redo(); pruneManagedAudio(); scheduleSave() }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private func startPlayback() {
         guard frames.count > 1 else { return }

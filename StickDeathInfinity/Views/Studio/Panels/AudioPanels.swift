@@ -1,495 +1,298 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-// ═══════════════════════════════════════════════════════════════════════
-// Sound Library Panel — Browse categories & sounds, add to timeline
-// ═══════════════════════════════════════════════════════════════════════
-
+// The historical catalog is retained as reference labels. Imported Files assets
+// are the only enabled audio source until licensed bundled sounds are supplied.
 struct SoundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var selectedCategoryIndex: Int? = nil
-    @State private var search: String = ""
-
-    var categories: [SoundCategory] { SoundLibrary.categories }
+    @StateObject private var audio = StudioAudioPreviewSession()
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var selectedCategoryIndex: Int?
+    @State private var search = ""
 
     var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 36, height: 4)
-                .padding(.top, 8)
-
-            if let catIdx = selectedCategoryIndex, categories.indices.contains(catIdx) {
-                let cat = categories[catIdx]
-
-                HStack {
-                    Button(action: { selectedCategoryIndex = nil }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.system(size: 10, weight: .bold))
-                            Text(cat.name)
-                                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                        }
-                        .foregroundColor(.white)
-                    }
-
-                    Text("\(cat.sounds.count) sounds")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.35))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.white.opacity(0.06)))
-
-                    Spacer()
-
-                    Button(action: { vm.activePanel = .none }) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.white.opacity(0.4))
-                            .frame(width: 26, height: 26)
-                            .background(Circle().fill(Color.white.opacity(0.08)))
-                    }
+        ScrollView {
+        VStack(spacing: 8) {
+            PanelHeader(title: "Sound Library", icon: "🎵", onClose: { vm.activePanel = .none })
+            AudioFilesImportControls(vm: vm, audio: audio)
+            AudioProjectClips(vm: vm, audio: audio, search: search)
+            HStack {
+                if selectedCategoryIndex != nil {
+                    Button("‹ Categories") { selectedCategoryIndex = nil }.foregroundColor(.sdRed)
                 }
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-
-                // Search
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.25))
-                    TextField("Search sounds...", text: $search)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.white)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(hex: "12121a"))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.06)))
-                )
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
-
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        let sounds = search.isEmpty ? cat.sounds : cat.sounds.filter { $0.name.lowercased().contains(search.lowercased()) }
-                        ForEach(sounds) { sound in
-                            SoundRow(sound: sound, tagColor: cat.color) {
-                                vm.addAudioClip(sound: sound, track: nextAvailableTrack())
-                                vm.activePanel = .audioTimeline
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                }
-                .frame(maxHeight: 220)
-
-            } else {
-                PanelHeader(title: "Sound Library", icon: "🎵", onClose: { vm.activePanel = .none })
-
-                ScrollView {
-                    LazyVStack(spacing: 6) {
-                        ForEach(Array(categories.enumerated()), id: \.element.id) { index, cat in
-                            Button(action: { selectedCategoryIndex = index }) {
-                                HStack(spacing: 10) {
-                                    Text(cat.icon)
-                                        .font(.system(size: 20))
-
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(cat.name)
-                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.white)
-                                        Text("\(cat.sounds.count) sounds")
-                                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                            .foregroundColor(.white.opacity(0.35))
-                                    }
-
-                                    Spacer()
-
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.white.opacity(0.2))
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(hex: "12121a"))
-                                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.05)))
-                                )
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                }
-                .frame(maxHeight: 300)
-            }
-
-            Button(action: { vm.activePanel = .audioTimeline }) {
-                HStack {
-                    Text("🎵")
-                    Text("Open Audio Timeline")
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                }
-                .foregroundColor(Color(hex: "DC2626"))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(hex: "DC2626").opacity(0.1))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(hex: "DC2626").opacity(0.3)))
-                )
+                TextField("Search clips or catalog references", text: $search).font(.specialElite(11))
             }
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            Text("Catalog references · audio files and licensing are unavailable")
+                .font(.caption2).foregroundColor(.white.opacity(0.5)).padding(.horizontal, 14)
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    if let index = selectedCategoryIndex, SoundLibrary.categories.indices.contains(index) {
+                        let category = SoundLibrary.categories[index]
+                        ForEach(category.sounds.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { sound in
+                            SoundRow(sound: sound, tagColor: category.color, onAdd: {})
+                        }
+                    } else {
+                        ForEach(Array(SoundLibrary.categories.enumerated()), id: \.element.id) { index, category in
+                            if search.isEmpty || category.name.localizedCaseInsensitiveContains(search) {
+                                Button { selectedCategoryIndex = index } label: {
+                                    HStack {
+                                        Text(category.icon)
+                                        Text(category.name).font(.specialElite(12)).foregroundColor(.white)
+                                        Spacer(); Image(systemName: "chevron.right").foregroundColor(.white.opacity(0.4))
+                                    }
+                                    .padding(10).background(Color(hex: "12121a")).cornerRadius(8)
+                                }
+                            }
+                        }
+                    }
+                }.padding(.horizontal, 14)
+            }.frame(maxHeight: 130)
+            Button("Open Audio Timeline") { vm.activePanel = .audioTimeline }
+                .font(.specialElite(12)).foregroundColor(.sdRed).padding(.bottom, 10)
         }
-        .background(Color(hex: "1a1a24"))
-        .cornerRadius(16, corners: [.topLeft, .topRight])
-    }
-
-    func nextAvailableTrack() -> Int {
-        let usedTracks = Set(vm.audioClips.map { $0.track })
-        for t in 1...4 {
-            if !usedTracks.contains(t) { return t }
         }
-        return 1
+        .frame(maxWidth: 680, maxHeight: .infinity)
+        .background(Color(hex: "1a1a24")).cornerRadius(16, corners: [.topLeft, .topRight])
+        .onDisappear { audio.close() }
+        .onChange(of: vm.document.id) { _, _ in audio.close() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { audio.close() } }
     }
 }
 
-// MARK: - Sound Row
 struct SoundRow: View {
     let sound: SoundEffect
     let tagColor: Color
-    let onAdd: () -> Void
-
+    let onAdd: () -> Void // Retained signature; absent assets cannot be added.
     var body: some View {
-        HStack(spacing: 10) {
-            Button(action: {}) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white)
-                    .frame(width: 32, height: 32)
-                    .background(Circle().fill(Color.white.opacity(0.08)))
-            }
-
+        HStack {
+            Image(systemName: "speaker.slash").foregroundColor(.white.opacity(0.3))
             VStack(alignment: .leading, spacing: 2) {
-                Text(sound.name)
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-
-                HStack(spacing: 6) {
-                    HStack(spacing: 2) {
-                        Text("⏱")
-                            .font(.system(size: 8))
-                        Text(sound.duration)
-                            .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    }
-                    .foregroundColor(.white.opacity(0.4))
-
-                    HStack(spacing: 1) {
-                        ForEach(0..<sound.waveform.count, id: \.self) { i in
-                            RoundedRectangle(cornerRadius: 1)
-                                .fill(Color.white.opacity(0.3))
-                                .frame(width: 2, height: sound.waveform[i] * 12)
-                        }
-                    }
-
-                    Text(sound.tag)
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(tagColor)
-                }
+                Text(sound.name).font(.specialElite(12)).foregroundColor(.white)
+                Text("Audio unavailable").font(.caption2).foregroundColor(.white.opacity(0.4))
             }
-
             Spacer()
-
-            Button(action: onAdd) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(Color(hex: "DC2626"))
-                    .frame(width: 32, height: 32)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color(hex: "DC2626").opacity(0.4), lineWidth: 1)
-                    )
-            }
+            Text(sound.tag).font(.caption2).foregroundColor(tagColor)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(hex: "12121a"))
-        )
+        .padding(10).background(Color(hex: "12121a")).cornerRadius(8)
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Audio Timeline Panel — Multi-track timeline with transport controls
-// ═══════════════════════════════════════════════════════════════════════
+private struct AudioImportLease {
+    let projectID: UUID, revision: Int, frameID: String, track: Int
+    @MainActor func isCurrent(_ vm: StudioViewModel) -> Bool {
+        vm.isEditing && !vm.isSaving && vm.document.id == projectID && vm.document.revision == revision
+            && vm.document.activeFrameID == frameID
+    }
+}
+
+private struct AudioFilesImportControls: View {
+    @ObservedObject var vm: StudioViewModel
+    @ObservedObject var audio: StudioAudioPreviewSession
+    @State private var showingFiles = false
+    @State private var lease: AudioImportLease?
+    @State private var track = 1
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Button("Import from Files") {
+                    lease = .init(projectID: vm.document.id, revision: vm.document.revision,
+                                  frameID: vm.document.activeFrameID, track: track)
+                    showingFiles = true
+                }
+                .disabled(audio.isBusy || !vm.isEditing || vm.isSaving)
+                .accessibilityIdentifier("studio.audio.import")
+                .font(.specialElite(12)).foregroundColor(.sdRed)
+                Spacer()
+                Picker("Track", selection: $track) {
+                    ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
+                }.font(.caption).tint(.white).disabled(audio.isBusy)
+            }
+            Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
+                .font(.caption2).foregroundColor(.white.opacity(0.45))
+            Text("Adds audio at the selected frame. Preview plays one clip; timeline mixing and audio export are unfinished.")
+                .font(.caption2).foregroundColor(.white.opacity(0.6))
+            if let projectNotice = vm.message {
+                Text(projectNotice).font(.caption).foregroundColor(.sdRed)
+                    .accessibilityIdentifier("studio.audio.projectNotice")
+            }
+            if audio.isBusy {
+                HStack {
+                    ProgressView(value: audio.progress).tint(.sdRed)
+                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdRed)
+                        .accessibilityIdentifier("studio.audio.cancel")
+                }
+            }
+            if let notice = audio.notice {
+                Text(notice).font(.caption).foregroundColor(.sdRed)
+                    .accessibilityIdentifier("studio.audio.notice")
+            } else if let id = audio.lastImportedClipID, vm.audioClips.contains(where: { $0.id == id }) {
+                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.white.opacity(0.6))
+                    .accessibilityIdentifier("studio.audio.imported")
+            }
+        }
+        .padding(.horizontal, 14)
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
+            switch result {
+            case .failure(let error): audio.pickerFailed(error)
+            case .success(let urls):
+                guard let url = urls.first, let target = lease else { return }
+                _ = audio.importFile(url, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                    try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
+                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track)
+                })
+            }
+            lease = nil
+        }
+    }
+}
+
+private struct AudioProjectClips: View {
+    @ObservedObject var vm: StudioViewModel
+    @ObservedObject var audio: StudioAudioPreviewSession
+    var search = ""
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if vm.audioClips.isEmpty {
+                Text("No imported clips. Historical audio records are preserved in the project.")
+                    .font(.caption2).foregroundColor(.white.opacity(0.5))
+            }
+            ScrollView {
+                LazyVStack(spacing: 6) {
+                    ForEach(vm.audioClips.filter { search.isEmpty || $0.soundName.localizedCaseInsensitiveContains(search) }) { clip in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Button { vm.selectedAudioClip = clip } label: {
+                                    VStack(alignment: .leading) {
+                                        Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
+                                        Text(String(format: "Track %d · %.2fs at %.2fs", clip.track, clip.duration, clip.startTime)).font(.caption2)
+                                    }.foregroundColor(.white)
+                                }
+                                Spacer()
+                                if let id = clip.assetID, let asset = vm.audioTrack(forAssetID: id), asset.audioData != nil {
+                                    Button(audio.playingClipID == clip.id ? "Stop" : "Preview") {
+                                        let project = vm.document.id, revision = vm.document.revision
+                                        _ = audio.preview(clip, track: asset, stillCurrent: {
+                                            vm.isEditing && vm.document.id == project && vm.document.revision == revision
+                                                && vm.audioClips.contains(where: { $0.id == clip.id && $0.assetID == id })
+                                        })
+                                    }
+                                    .disabled(audio.isBusy).font(.caption).foregroundColor(.sdRed)
+                                    .accessibilityIdentifier("studio.audio.preview.\(clip.id)")
+                                } else {
+                                    Text("Audio unavailable").font(.caption2).foregroundColor(.white.opacity(0.5))
+                                }
+                            }
+                            if let id = clip.assetID, let measurement = audio.measurements[id] {
+                                MeasuredAudioWaveform(peaks: measurement.peaks).frame(height: 24)
+                                if measurement.clipped { Text("Source contains clipped samples").font(.caption2).foregroundColor(.orange) }
+                            }
+                            if clip.startTime + clip.duration > Double(vm.frames.count) / Double(vm.fps) {
+                                Text("Extends beyond the animation end").font(.caption2).foregroundColor(.white.opacity(0.45))
+                            }
+                            if audio.playingClipID == clip.id {
+                                Text(String(format: "Preview %.2f / %.2fs", audio.currentTime, audio.playbackDuration))
+                                    .font(.caption2).foregroundColor(.sdRed).accessibilityIdentifier("studio.audio.playback")
+                            }
+                        }
+                        .padding(8).background(Color(hex: "12121a")).cornerRadius(8)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(vm.selectedCurrentAudioClip?.id == clip.id ? Color.sdRed : .clear))
+                    }
+                }
+            }.frame(maxHeight: 130)
+            if let clip = vm.selectedCurrentAudioClip {
+                HStack {
+                    Text("Volume").font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Slider(value: Binding(get: { vm.selectedCurrentAudioClip?.volume ?? 0 }, set: { value in
+                        vm.setAudioClipVolume(clip.id, volume: value)
+                        audio.setVolume(value, clipID: clip.id)
+                    }), in: 0...1).tint(.sdRed).accessibilityIdentifier("studio.audio.volume")
+                    Text("\(Int(clip.volume * 100))%").font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Button("Delete") { audio.stop(); vm.deleteAudioClip(clip.id) }
+                        .font(.caption).foregroundColor(.sdRed).accessibilityIdentifier("studio.audio.delete")
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .onChange(of: vm.document.revision) { _, _ in
+            if let id = audio.playingClipID, !vm.audioClips.contains(where: { $0.id == id }) { audio.stop() }
+            if let clip = vm.audioClips.first(where: { $0.id == audio.playingClipID }) { audio.setVolume(clip.volume, clipID: clip.id) }
+        }
+    }
+}
+
+private struct MeasuredAudioWaveform: View {
+    let peaks: [Float]
+    var body: some View {
+        GeometryReader { geometry in
+            Path { path in
+                for (index, peak) in peaks.enumerated() where peak.isFinite && peak > 0 {
+                    let x = (CGFloat(index) + 0.5) / CGFloat(max(1, peaks.count)) * geometry.size.width
+                    let half = CGFloat(min(1, max(0, peak))) * geometry.size.height / 2
+                    path.move(to: CGPoint(x: x, y: geometry.size.height / 2 - half))
+                    path.addLine(to: CGPoint(x: x, y: geometry.size.height / 2 + half))
+                }
+            }.stroke(Color.sdRed.opacity(0.8), lineWidth: 1)
+        }.accessibilityLabel("Measured audio waveform")
+    }
+}
 
 struct AudioTimelinePanel: View {
     @ObservedObject var vm: StudioViewModel
-
-    private let trackColors: [Color] = [
-        Color(hex: "DC2626"), Color(hex: "3B82F6"),
-        Color(hex: "22C55E"), Color(hex: "A855F7")
-    ]
-
+    @StateObject private var audio = StudioAudioPreviewSession()
+    @Environment(\.scenePhase) private var scenePhase
+    private let colors: [Color] = [.sdRed, .blue, .green, .purple]
     var body: some View {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 36, height: 4)
-                .padding(.top, 8)
-
-            // Header
+        ScrollView {
+        VStack(spacing: 8) {
+            PanelHeader(title: "Audio Timeline", icon: "🎵", onClose: { vm.activePanel = .none })
+            AudioFilesImportControls(vm: vm, audio: audio)
             HStack {
-                Text("🎵")
-                    .font(.system(size: 16))
-                Text("Audio Timeline")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-
-                Text("\(vm.audioClips.count) clips")
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.35))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(Capsule().fill(Color.white.opacity(0.06)))
-
-                Button(action: { vm.snapEnabled.toggle() }) {
-                    Text("Snap: \(vm.snapEnabled ? "ON" : "OFF")")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(vm.snapEnabled ? Color(hex: "DC2626") : .white.opacity(0.4))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(vm.snapEnabled ? Color(hex: "DC2626").opacity(0.15) : Color.white.opacity(0.04)))
-                }
-
+                Button(vm.isPlaying ? "Pause animation" : "Play animation") { audio.stop(); vm.togglePlayback() }
+                    .font(.specialElite(11)).foregroundColor(.sdRed)
+                Text("Animation only").font(.caption2).foregroundColor(.white.opacity(0.5))
                 Spacer()
-
-                Button(action: { vm.activePanel = .soundLibrary }) {
-                    Text("+ Add")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(Capsule().fill(Color(hex: "DC2626")))
-                }
-
-                Button(action: { vm.activePanel = .none }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.4))
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(Color.white.opacity(0.08)))
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
-
-            // Transport controls
-            HStack(spacing: 8) {
-                Button(action: { vm.audioPlayheadTime = 0 }) {
-                    Image(systemName: "backward.end.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.6))
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(Color.white.opacity(0.06)))
-                }
-
-                Button(action: { vm.togglePlayback() }) {
-                    Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 14))
-                        .foregroundColor(.white)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(Color(hex: "DC2626")))
-                }
-
-                Button(action: { vm.audioPlayheadTime = vm.audioDuration }) {
-                    Image(systemName: "forward.end.fill")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.6))
-                        .frame(width: 32, height: 32)
-                        .background(Circle().fill(Color.white.opacity(0.06)))
-                }
-
-                Text(formatTime(vm.audioPlayheadTime))
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "DC2626"))
-
-                Text("/")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.3))
-
-                Text(formatTime(vm.audioDuration))
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.5))
-
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 6)
-
-            // Timeline tracks
-            GeometryReader { geo in
-                let trackHeight: CGFloat = 40
-                let rulerHeight: CGFloat = 16
-                let labelWidth: CGFloat = 40
-                let totalWidth = geo.size.width - labelWidth
-
-                ZStack(alignment: .topLeading) {
-                    Color(hex: "0d0d14")
-
-                    // Ruler
-                    HStack(spacing: 0) {
-                        Color.clear.frame(width: labelWidth)
-                        let tickCount = max(1, Int(vm.audioDuration) + 1)
-                        ForEach(0..<tickCount, id: \.self) { sec in
-                            Text(formatTime(Double(sec)))
-                                .font(.system(size: 7, weight: .medium, design: .monospaced))
-                                .foregroundColor(Color(hex: "DC2626").opacity(0.6))
-                                .frame(width: totalWidth / CGFloat(tickCount), alignment: .leading)
-                        }
-                    }
-                    .frame(height: rulerHeight)
-
-                    // Tracks
-                    VStack(spacing: 0) {
-                        Color.clear.frame(height: rulerHeight)
-
-                        ForEach(1...4, id: \.self) { trackNum in
+                Button("Sound Library") { vm.activePanel = .soundLibrary }.font(.caption).foregroundColor(.white)
+            }.padding(.horizontal, 14)
+            GeometryReader { geometry in
+                let width = max(1, geometry.size.width - 28), duration = max(0.1, vm.audioDuration)
+                VStack(spacing: 2) {
+                    HStack {
+                        Text("0s"); Spacer(); Text(String(format: "%.2fs", duration))
+                    }.font(.caption2).foregroundColor(.white.opacity(0.4))
+                    ForEach(1...4, id: \.self) { track in
+                        HStack(spacing: 2) {
+                            Text("\(track)").font(.caption2).foregroundColor(.white.opacity(0.4)).frame(width: 24)
                             ZStack(alignment: .leading) {
-                                HStack(spacing: 0) {
-                                    VStack(spacing: 2) {
-                                        Text("\(trackNum)")
-                                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                            .foregroundColor(.white.opacity(0.4))
-                                        Image(systemName: "speaker.wave.2.fill")
-                                            .font(.system(size: 8))
-                                            .foregroundColor(.white.opacity(0.2))
-                                    }
-                                    .frame(width: labelWidth, height: trackHeight)
-                                    .background(Color.white.opacity(0.02))
-
-                                    Rectangle()
-                                        .fill(Color.white.opacity(trackNum % 2 == 0 ? 0.02 : 0.01))
-                                        .frame(height: trackHeight)
-                                        .overlay(
-                                            Rectangle().fill(Color.white.opacity(0.04)).frame(height: 0.5),
-                                            alignment: .bottom
-                                        )
+                                Rectangle().fill(Color.white.opacity(0.035))
+                                ForEach(vm.audioClips.filter { $0.track == track }) { clip in
+                                    let x = min(width, max(0, clip.startTime / duration * width))
+                                    let size = min(width - x, max(3, clip.duration / duration * width))
+                                    Button { vm.selectedAudioClip = clip } label: {
+                                        RoundedRectangle(cornerRadius: 3).fill(colors[track - 1].opacity(0.65))
+                                            .overlay(Text(clip.soundName).font(.system(size: 8)).foregroundColor(.white).lineLimit(1))
+                                    }.frame(width: max(1, size)).offset(x: x)
                                 }
-
-                                // Audio clips on this track
-                                ForEach(vm.audioClips.filter { $0.track == trackNum }) { clip in
-                                    let duration = vm.audioDuration > 0 ? vm.audioDuration : 5.0
-                                    let clipX = labelWidth + (clip.startTime / duration) * totalWidth
-                                    let clipW = (clip.duration / duration) * totalWidth
-                                    let trackColor = trackColors[safe: (trackNum - 1)] ?? .red
-
-                                    Button(action: { vm.selectedAudioClip = clip }) {
-                                        ZStack {
-                                            RoundedRectangle(cornerRadius: 4)
-                                                .fill(trackColor.opacity(0.5))
-                                            Text(String(format: "%.1fs", clip.duration))
-                                                .font(.system(size: 7, weight: .bold, design: .monospaced))
-                                                .foregroundColor(.white.opacity(0.7))
-                                        }
-                                        .frame(width: max(clipW, 20), height: trackHeight - 8)
-                                    }
-                                    .offset(x: clipX, y: 4)
-                                }
-                            }
+                            }.frame(height: 22).clipped()
                         }
                     }
-
-                    // Playhead
-                    let duration = vm.audioDuration > 0 ? vm.audioDuration : 5.0
-                    let playheadX = labelWidth + (vm.audioPlayheadTime / duration) * totalWidth
-                    Rectangle()
-                        .fill(Color(hex: "DC2626"))
-                        .frame(width: 2)
-                        .offset(x: playheadX)
-                        .gesture(
-                            DragGesture()
-                                .onChanged { val in
-                                    let t = max(0, min(duration, (val.location.x - labelWidth) / totalWidth * duration))
-                                    vm.audioPlayheadTime = t
-                                }
-                        )
                 }
-            }
-            .frame(height: 180)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .padding(.horizontal, 14)
-
-            // Selected clip info bar
-            if let clip = vm.selectedAudioClip {
-                let trackColor = trackColors[safe: (clip.track - 1)] ?? .red
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(trackColor)
-                        .frame(width: 10, height: 10)
-
-                    Text(clip.soundName)
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 8))
-                        .foregroundColor(.white.opacity(0.4))
-
-                    Slider(value: Binding(
-                        get: { clip.volume },
-                        set: { newVal in
-                            if let idx = vm.audioClips.firstIndex(where: { $0.id == clip.id }) {
-                                vm.audioClips[idx].volume = newVal
-                                vm.selectedAudioClip = vm.audioClips[idx]
-                            }
-                        }
-                    ), in: 0...1)
-                    .accentColor(Color(hex: "DC2626"))
-                    .frame(width: 60)
-
-                    Text("\(Int(clip.volume * 100))%")
-                        .font(.system(size: 8, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-
-                    Spacer()
-
-                    Button(action: {
-                        vm.deleteAudioClip(clip.id)
-                    }) {
-                        Text("Delete")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(hex: "DC2626"))
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 6)
-            }
-
-            Spacer().frame(height: 10)
+            }.frame(height: 116).padding(.horizontal, 14)
+            Text("Clip placement, trimming, snapping and mixed playback are unfinished.")
+                .font(.caption2).foregroundColor(.white.opacity(0.5)).padding(.horizontal, 14)
+            AudioProjectClips(vm: vm, audio: audio)
+            Spacer().frame(height: 4)
         }
-        .background(Color(hex: "1a1a24"))
-        .cornerRadius(16, corners: [.topLeft, .topRight])
-    }
-
-    func formatTime(_ t: Double) -> String {
-        let mins = Int(t) / 60
-        let secs = Int(t) % 60
-        let frac = Int((t - Double(Int(t))) * 100)
-        return String(format: "%02d:%02d.%02d", mins, secs, frac)
+        }
+        .frame(maxWidth: 680, maxHeight: .infinity)
+        .background(Color(hex: "1a1a24")).cornerRadius(16, corners: [.topLeft, .topRight])
+        .onDisappear { audio.close() }
+        .onChange(of: vm.document.id) { _, _ in audio.close() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { audio.close() } }
     }
 }
 
-// Safe subscript for Color array
 extension Array where Element == Color {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
-    }
+    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

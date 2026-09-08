@@ -30,6 +30,8 @@ struct StudioDocument: Codable, Equatable {
         return value
     }
 
+    var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
+
     func validate() throws {
         guard schemaVersion == 1 else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
@@ -67,7 +69,15 @@ struct StudioDocument: Codable, Equatable {
             }
         }
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
+        guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
+            if clip.assetID != nil {
+                guard !clip.id.isEmpty, clip.id.count <= 120, !clip.soundName.isEmpty, clip.soundName.count <= 120,
+                      (1...4).contains(clip.track), clip.duration > 0, clip.duration <= 300,
+                      clip.startTime <= 1000, (clip.startTime + clip.duration).isFinite else {
+                    throw StudioDocumentError.invalid("An imported audio clip has invalid identity, track or timing.")
+                }
+            }
             guard clip.startTime.isFinite, clip.duration.isFinite, clip.volume.isFinite,
                   clip.startTime >= 0, clip.duration >= 0, (0...1).contains(clip.volume), clip.track >= 0 else {
                 throw StudioDocumentError.invalid("An audio clip has invalid timing.")
@@ -120,6 +130,10 @@ struct StudioDocumentEditor {
     var canUndo: Bool { !undoDocuments.isEmpty }
     var canRedo: Bool { !redoDocuments.isEmpty }
     var canPaste: Bool { clipboard != nil }
+    /// Asset lifetime follows the actual full-document history, never a mirror.
+    var referencedAudioAssetIDsIncludingHistory: Set<UUID> {
+        (undoDocuments + redoDocuments).reduce(into: document.referencedAudioAssetIDs) { $0.formUnion($1.referencedAudioAssetIDs) }
+    }
 
     init(document: StudioDocument) throws { try document.validate(); self.document = document }
 
