@@ -107,7 +107,8 @@
 		04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */; };
 		7E34DF01A5F1E9C233CD945F /* StudioBrush.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */; };
 		6AC1BB20EC1C813B2E328E30 /* StudioBrushRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */; };
-		/* End PBXBuildFile section */
+				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */; };
+/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
 		6A54E5C3DF03204AD4261323 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 0AEB550C38C3C1411E9E6734 /* Project object */; proxyType = 1; remoteGlobalIDString = 95F69DAADC24CD2B6E75776A; remoteInfo = StickDeathInfinity; };
@@ -220,7 +221,8 @@
 		8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioAudioPreviewSession.swift; sourceTree = SOURCE_ROOT; };
 		8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioBrush.swift; sourceTree = SOURCE_ROOT; };
 		1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioBrushRenderer.swift; sourceTree = SOURCE_ROOT; };
-		/* End PBXFileReference section */
+				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioImageImportService.swift; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
 		9D7130BE9AD5A408DC6FDF12 /* Frameworks */ = {
@@ -343,6 +345,7 @@
 				1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */,
 				5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */,
 				8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */,
+				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */,
 				54AE165BB4C0408388138753 /* StudioExportService.swift */,
 				B0E4783C6B928344EBD69AB2 /* Auth */,
 				E17A356E63009412D6C19673 /* Challenge */,
@@ -749,6 +752,7 @@
 				CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */,
 				3F59A945D2FE64768DFAFDFC /* StudioAudioImportService.swift in Sources */,
 				04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */,
+				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */,
 				74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */,
 				427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */,
 				019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */,

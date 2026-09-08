@@ -193,6 +193,15 @@ jobs:
             Tests/StudioAudioIntegration/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
           "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
+      - name: Verify real photo decoding, orientation and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            Tests/StudioImageImport/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-import-tests"
+          "$RUNNER_TEMP/sdi-studio-image-import-tests"
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |
