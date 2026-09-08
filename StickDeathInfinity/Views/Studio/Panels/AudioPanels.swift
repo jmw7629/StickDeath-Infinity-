@@ -300,7 +300,7 @@ struct AudioTimelinePanel: View {
                         .background(Circle().fill(Color.white.opacity(0.06)))
                 }
 
-                Button(action: { vm.isPlaying.toggle() }) {
+                Button(action: { vm.togglePlayback() }) {
                     Image(systemName: vm.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 14))
                         .foregroundColor(.white)

@@ -48,8 +48,8 @@ struct StudioToolStrip: View {
                 VStack(spacing: 3) {
                     ForEach(0..<3) { _ in
                         HStack(spacing: 3) {
-                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
-                            Circle().fill(Color.white.opacity(0.25)).frame(width: 3, height: 3)
+                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
+                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
                         }
                     }
                 }
@@ -92,18 +92,18 @@ struct StudioToolStrip: View {
                             Text(def.label)
                                 .font(.system(size: 7, weight: isSelected ? .bold : .regular, design: .monospaced))
                         }
-                        .foregroundColor(isSelected ? .white : .white.opacity(0.5))
+                        .foregroundColor(isSelected ? .white : .black.opacity(0.75))
                         .frame(width: 52, height: 52)
                         .background(
                             RoundedRectangle(cornerRadius: 10)
                                 .fill(
                                     isSelected
                                         ? LinearGradient(
-                                            colors: [Color(hex: def.topColor), Color(hex: def.bottomColor)],
+                                            colors: [Color.red, Color(red: 0.72, green: 0.05, blue: 0.08)],
                                             startPoint: .top, endPoint: .bottom
                                           )
                                         : LinearGradient(
-                                            colors: [Color(hex: "1E1E2A"), Color(hex: "1E1E2A")],
+                                            colors: [Color.white, Color.white],
                                             startPoint: .top, endPoint: .bottom
                                           )
                                 )
@@ -119,7 +119,10 @@ struct StudioToolStrip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
-        .background(Color(hex: "12121A").opacity(0.95))
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
     }
     
     func hasSettings(_ tool: DrawingTool) -> Bool {

@@ -41,6 +41,31 @@ targets:
       Sign in with Apple: {}
       In-App Purchase: {}
 
+
+  StickDeathInfinityUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: Tests/NativeUI
+    dependencies:
+      - target: StickDeathInfinity
+    settings:
+      base:
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: true
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.uitests
+        TEST_TARGET_NAME: StickDeathInfinity
+
+schemes:
+  StickDeathInfinity:
+    build:
+      targets:
+        StickDeathInfinity: all
+        StickDeathInfinityUITests: [test]
+    test:
+      targets:
+        - StickDeathInfinityUITests
+
 packages:
   supabase-swift:
     url: https://github.com/supabase-community/supabase-swift.git

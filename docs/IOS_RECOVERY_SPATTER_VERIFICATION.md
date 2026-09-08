@@ -4,6 +4,12 @@ This is work on the existing StickDeath Infinity iOS app, not STICKDEATH_BYTE.
 Studio, media, community, messaging, calls and publishing remain in scope; historical demo values are not live product evidence.
 Base for this repair: `a14ea263df85591f9e5a98e5285215a3152e36c3` on PR #111.
 
+## Current verified native compiler milestone — 2026-09-08
+
+Commit `e505892d3c70aeb6b5983f0cf32bca8108a0bb4f` passed all three jobs in [run 34257440327](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34257440327). The actual native job `102166707236` used Xcode 16.4 and reported `BUILD SUCCEEDED` and `XCODE_IOS_BUILD=PASS`. Source security, 29 production Spatter/configuration tests, and three complete production model tests passed. Earlier failures below are historical evidence. This proves application compilation; simulator interaction, signing and TestFlight were not part of that run.
+
+The next slice adds offline Studio document persistence, preserved historical assets, a single editable layer/frame model and actual renderer tests. Its checked-in UI test target must pass a new exact-head CI run before native save/reopen or visual verification is reported. The workflow records portrait/landscape screenshots, stroke/undo/redo and save/quit/reopen pixels against the actual app on an existing isolated CI simulator. Build configuration is inspected before launch to require empty backend endpoints and public keys. The recording is decoded and the test exit status is preserved. These are pending gates, not results.
+
 ## Codex ownership checkpoint — 2026-09-08
 
 The owner transferred this project to Codex in issue #110. This continues PR #111 from `fe191ee79d93f625ec3c36540d72f87f69f7de92`; it is not a new recovery branch.
@@ -55,8 +61,8 @@ The checked-in Xcode target includes the exact new backend source. Swift languag
 ## Still blocking full app readiness
 
 - A new exact-head workflow runs the focused tests/security gate and a separate unsigned native simulator-target build. Its actual result must be inspected; workflow existence is not PASS.
-- Local full Xcode build is externally blocked by the installed SDK/runtime mismatch; the latest exact-head CI native result is FAIL as recorded above. Linux tests are not an iOS build or simulator run.
-- Remaining native source blockers must be resolved using each new exact-head compiler log; public configuration and source membership have received the focused corrections above.
+- Local full Xcode build is blocked by the installed SDK/runtime mismatch. Exact-head CI compilation passed at `e505892` as recorded above; the offline Studio continuation still requires its own native build and user journeys. Linux tests are not an iOS build or simulator run.
+- Any new native failures must be resolved using the actual exact-head compiler or test log; the earlier source-membership and compiler blockers are fixed at `e505892`.
 - Live backend/auth/provider end-to-end behavior is NOT RUN.
 - Device/visual interaction verification is NOT RUN.
 - No native release, public upload or merge has occurred. The isolated private web review companion is deployed; production backend readiness is not verified.

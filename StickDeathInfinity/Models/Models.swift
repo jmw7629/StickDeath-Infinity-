@@ -57,7 +57,7 @@ struct StudioProject: Codable, Identifiable {
 }
 
 // MARK: - Drawing Types
-struct DrawnElement: Codable, Identifiable {
+struct DrawnElement: Codable, Identifiable, Equatable {
     let id: String
     var tool: DrawingTool
     var points: [StrokePoint]
@@ -68,7 +68,7 @@ struct DrawnElement: Codable, Identifiable {
     var layerID: String?
 }
 
-struct StrokePoint: Codable {
+struct StrokePoint: Codable, Equatable {
     var x: CGFloat
     var y: CGFloat
     var pressure: CGFloat?
@@ -83,9 +83,13 @@ enum DrawingTool: String, Codable, CaseIterable {
     case smudge, sharpen, move, hand, zoom
 }
 
-struct AnimationFrame: Codable, Identifiable {
+struct AnimationFrame: Codable, Identifiable, Equatable {
     let id: String
     var elements: [DrawnElement]
+    // An immutable original frame record (pixels and/or opaque layer metadata)
+    // is retained separately from editable strokes.
+    var rasterAssetID: String? = nil
+    var rasterLayerID: String? = nil
 }
 
 // Lock mode enum for type safety
@@ -93,7 +97,7 @@ enum LayerLockMode: String, Codable, CaseIterable {
     case free, full, position, alpha
 }
 
-struct CanvasLayer: Codable, Identifiable {
+struct CanvasLayer: Codable, Identifiable, Equatable {
     let id: String
     var name: String
     var visible: Bool
@@ -104,41 +108,40 @@ struct CanvasLayer: Codable, Identifiable {
     var glowEnabled: Bool = false
     var glowColor: String?
     var colorLabel: String?
-}
 
-// StudioLayer — used by LayerPanel (wraps CanvasLayer with typed lock mode)
-struct StudioLayer: Identifiable {
-    let id: UUID
-    var name: String
-    var visible: Bool
-    var opacity: Double
-    var lockMode: LayerLockMode
-    var blendMode: String
-    var labelColor: Color
-    
-    init(from canvas: CanvasLayer) {
-        self.id = UUID(uuidString: canvas.id) ?? UUID()
-        self.name = canvas.name
-        self.visible = canvas.visible
-        self.opacity = canvas.opacity
-        self.lockMode = LayerLockMode(rawValue: canvas.lockMode) ?? .free
-        self.blendMode = canvas.blendMode
-        self.labelColor = Color.red // default
+    enum CodingKeys: String, CodingKey {
+        case id, name, visible, locked, opacity, lockMode, blendMode
+        case glowEnabled, glowColor, colorLabel
     }
-    
-    init(id: UUID = UUID(), name: String, visible: Bool = true, opacity: Double = 1.0, lockMode: LayerLockMode = .free, blendMode: String = "Normal", labelColor: Color = .red) {
-        self.id = id
-        self.name = name
-        self.visible = visible
-        self.opacity = opacity
-        self.lockMode = lockMode
-        self.blendMode = blendMode
-        self.labelColor = labelColor
+
+    init(id: String, name: String, visible: Bool = true, locked: Bool = false, opacity: Double = 1,
+         lockMode: String = "free", blendMode: String = "normal", glowEnabled: Bool = false,
+         glowColor: String? = nil, colorLabel: String? = nil) {
+        self.id = id; self.name = name; self.visible = visible; self.locked = locked
+        self.opacity = opacity; self.lockMode = locked ? "full" : lockMode
+        self.blendMode = blendMode; self.glowEnabled = glowEnabled
+        self.glowColor = glowColor; self.colorLabel = colorLabel
     }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        visible = try c.decodeIfPresent(Bool.self, forKey: .visible) ?? true
+        locked = try c.decodeIfPresent(Bool.self, forKey: .locked) ?? false
+        opacity = try c.decodeIfPresent(Double.self, forKey: .opacity) ?? 1
+        lockMode = locked ? "full" : (try c.decodeIfPresent(String.self, forKey: .lockMode) ?? "free")
+        blendMode = try c.decodeIfPresent(String.self, forKey: .blendMode) ?? "normal"
+        glowEnabled = try c.decodeIfPresent(Bool.self, forKey: .glowEnabled) ?? false
+        glowColor = try c.decodeIfPresent(String.self, forKey: .glowColor)
+        colorLabel = try c.decodeIfPresent(String.self, forKey: .colorLabel)
+    }
+
+    var isFullyLocked: Bool { locked || lockMode == "full" }
 }
 
 // MARK: - Audio Clip
-struct AudioClip: Identifiable {
+struct AudioClip: Codable, Identifiable, Equatable {
     let id: String
     var soundName: String
     var track: Int

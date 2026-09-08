@@ -1,23 +1,41 @@
 // ═══════════════════════════════════════════════════════════════════
-// StudioView — Full Animation Studio (matches video frame-by-frame)
+// StudioView — Native Studio shell and offline project editor
 // Header → Tool Strip → Canvas → Frame Timeline → Bottom Toolbar
-// All 17 tools, all panels, all buttons functional
+// Advanced tools, media and connected services remain under implementation.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
 struct StudioView: View {
-    @StateObject private var vm = StudioViewModel()
+    @StateObject private var vm = StudioViewModel.shared
     @Environment(\.dismiss) var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
+        Group {
+            if vm.isEditing { editorBody }
+            else { StudioProjectLibrary(vm: vm) }
+        }
+        .task { await vm.loadProjects() }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { vm.stopPlayback(); Task { await vm.flush() } }
+        }
+        .onDisappear { vm.stopPlayback(); Task { await vm.flush() } }
+    }
+
+    private var editorBody: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
             VStack(spacing: 0) {
                 // Header (hidden in HIDE mode)
                 if vm.showToolbar {
-                    StudioHeaderBar(vm: vm, onDismiss: { dismiss() })
+                    StudioHeaderBar(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
+                }
+                if let message = vm.message {
+                    Text(message).font(.caption).foregroundColor(.white).padding(8)
+                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
+                        .accessibilityIdentifier("studio.status")
                 }
                 
                 // Tool strip (floats in center during HIDE mode)
@@ -147,24 +165,26 @@ struct StudioBottomBar: View {
             BottomBarButton(icon: "arrow.uturn.backward", label: "UNDO", enabled: vm.canUndo) {
                 vm.undo()
             }
+            .accessibilityIdentifier("studio.undo")
             
             // Redo
             BottomBarButton(icon: "arrow.uturn.forward", label: "REDO", enabled: vm.canRedo) {
                 vm.redo()
             }
+            .accessibilityIdentifier("studio.redo")
             
             // Copy
             BottomBarButton(icon: "doc.on.doc", label: "COPY") {
-                vm.duplicateFrame()
+                vm.copyFrame()
             }
             
             // Paste
-            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE") {
-                // Paste duplicated frame after current
+            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
+                vm.pasteFrame()
             }
             
             // Delete
-            BottomBarButton(icon: "trash", label: "DEL") {
+            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected) {
                 vm.deleteSelected()
             }
             
@@ -245,19 +265,7 @@ struct FramesViewerPanel: View {
                                             .frame(height: 80)
                                         
                                         // Render frame elements
-                                        Canvas { context, size in
-                                            let scaleX = size.width / CGFloat(vm.canvasWidth)
-                                            let scaleY = size.height / CGFloat(vm.canvasHeight)
-                                            for el in vm.frames[i].elements {
-                                                guard el.points.count >= 2 else { continue }
-                                                var path = Path()
-                                                path.move(to: CGPoint(x: el.points[0].x * scaleX, y: el.points[0].y * scaleY))
-                                                for p in el.points.dropFirst() {
-                                                    path.addLine(to: CGPoint(x: p.x * scaleX, y: p.y * scaleY))
-                                                }
-                                                context.stroke(path, with: .color(Color(hex: el.color)), lineWidth: max(1, el.width * scaleX))
-                                            }
-                                        }
+                                        StudioFrameThumbnail(vm: vm, frame: vm.frames[i])
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }

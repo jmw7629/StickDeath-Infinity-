@@ -20,6 +20,7 @@
                ReferencedContainer = "container:StickDeathInfinity.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
+         <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="8B10E3BC3E99ACBCF2291ABC" BuildableName="StickDeathInfinityUITests.xctest" BlueprintName="StickDeathInfinityUITests" ReferencedContainer="container:StickDeathInfinity.xcodeproj"/></BuildActionEntry>
       </BuildActionEntries>
    </BuildAction>
    <TestAction
@@ -28,6 +29,7 @@
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
       shouldUseLaunchSchemeArgsEnv = "YES"
       shouldAutocreateTestPlan = "YES">
+      <Testables><TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="8B10E3BC3E99ACBCF2291ABC" BuildableName="StickDeathInfinityUITests.xctest" BlueprintName="StickDeathInfinityUITests" ReferencedContainer="container:StickDeathInfinity.xcodeproj"/></TestableReference></Testables>
    </TestAction>
    <LaunchAction
       buildConfiguration = "Debug"
