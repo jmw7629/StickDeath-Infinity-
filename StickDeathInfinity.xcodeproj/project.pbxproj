@@ -103,6 +103,7 @@
 		C3A050C18E554630851AAE5F /* SpecialElite-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */; };
 		83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = 9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */; };
 		FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */; };
+		3F59A945D2FE64768DFAFDFC /* StudioAudioImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -212,6 +213,7 @@
 		3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = StickDeathInfinity/Resources/Fonts/SpecialElite-Regular.ttf; sourceTree = SOURCE_ROOT; };
 		9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-Apache-2.0.txt; sourceTree = SOURCE_ROOT; };
 		838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-NOTICE.txt; sourceTree = SOURCE_ROOT; };
+		5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioAudioImportService.swift; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -331,6 +333,7 @@
 		444FE51936F2829A8267B473 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */,
 				54AE165BB4C0408388138753 /* StudioExportService.swift */,
 				B0E4783C6B928344EBD69AB2 /* Auth */,
 				E17A356E63009412D6C19673 /* Challenge */,
@@ -733,6 +736,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */,
+				3F59A945D2FE64768DFAFDFC /* StudioAudioImportService.swift in Sources */,
 				74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */,
 				427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */,
 				019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */,
