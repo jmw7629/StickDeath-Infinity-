@@ -15,6 +15,7 @@ struct StudioProjectLibrary: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Studio").font(.specialElite(28)).foregroundColor(.white)
+                            .accessibilityIdentifier("studio.library")
                         Text("YOUR ANIMATIONS · ON THIS DEVICE")
                             .font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundColor(.gray)
                     }
@@ -54,7 +55,6 @@ struct StudioProjectLibrary: View {
                 }.refreshable { await vm.loadProjects() }
             }.padding(16)
         }
-        .accessibilityIdentifier("studio.library")
         .sheet(isPresented: $creating) {
             NavigationStack {
                 Form {
