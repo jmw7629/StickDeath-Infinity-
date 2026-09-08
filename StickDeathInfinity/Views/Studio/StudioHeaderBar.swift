@@ -79,6 +79,8 @@ struct StudioHeaderBar: View {
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.6))
             }
+            .accessibilityLabel("Studio menu")
+            .accessibilityIdentifier("studio.menu.open")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

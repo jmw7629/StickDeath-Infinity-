@@ -4,6 +4,10 @@ Codex continues issue #110 and PR #111 under Joseph Willis's 2026-09-08 ownershi
 
 ## Latest completed native run
 
+Exact source `bd5649b2b2e9423d9e23a86ae12fd45f7c7a542f`, first attempt of [run 34277435359](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34277435359): the actual native app build passed at 21:00:38 UTC, as did all **142 production checks** (the prior 115 plus 14 audio decoder and 13 Spatter conversation cases). Source security passed separately. Simulator boot exceeded the bounded 120-second `simctl bootstatus` wait **before any UI test or recording started**. Artifact `10076729539` preserves the three preflight/build files; SHA-256 `c74726f2cdf211131859bbfa5604aa319f59609d7cac10cc23868af3cdae6aa4`. One retry of the failed native job was requested at the same source. The retry is pending; this is not a passing native regression run or merge gate.
+
+## Earlier simulator evidence
+
 Exact source `b3ca09f22001879f502aa4a8794b51e796c075ae`, [run 34271791257](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34271791257):
 
 - **App build passed:** actual Xcode 16.4 native job `102214893246` reported `BUILD SUCCEEDED` at 20:07:59 UTC on 2026-09-08.
@@ -13,15 +17,15 @@ Exact source `b3ca09f22001879f502aa4a8794b51e796c075ae`, [run 34271791257](https
 
 Earlier source `7a21be7cf486295924741119e95a970fffb6fdfb`, [run 34268560396](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34268560396), passed the app build and 103 production checks. Its real simulator drawing/undo/redo/manual-save/library/terminate/relaunch/reopen journey passed the reopened raster comparison (at most four changed pixels). Its landscape test failed; the b3 run above verifies that particular repair. Neither run establishes complete visual parity or physical-device/TestFlight readiness.
 
-## Reviewed continuation awaiting exact-head CI
+## Implemented continuation and remaining verification
 
 The subsequent committed continuation adds local Spatter guidance and separate conversation state for Studio and Messages, explicit cloud choice/disclosure, immutable submitted prompts, cancellation and stale-project/account protection. It preserves embedded knowledge/personality and routes cloud advice through the existing authenticated backend client. Thirteen actual production coordinator cases and the 29 transport/configuration cases passed independent review. **Chat remains advice-only:** it does not generate editable documents, execute commands, export or publish.
 
 The new native audio importer decodes actual selected file bytes through Apple AVFoundation, produces measured waveform peaks, enforces encoded/decoded limits, preserves originals and cleans only owned temporary files. Fourteen production decoder/storage tests and an additional compressed-audio limit probe passed independent review. This foundation alone does not prove Files-picker interaction, clip preview, timeline synchronization, trimming, mixing or audio export. MP3 and raw ADTS-AAC routes lack codec-specific runtime fixtures.
 
-The complete 87-source app candidate passed an iOS 17 device-SDK typecheck with unchanged inputs. The checked-in project retains every previous app source and its separate UI target. This local typecheck is not a replacement for the next Xcode CI build or simulator run.
+The 87-source app at `bd5649b` passed the actual CI native build above. Subsequent source `49d20c3b9e2a90a3835f15d91472c31c28d83987` adds actual Files import, project-managed immutable audio bytes, stable clip asset IDs, measured waveforms, AVAudioPlayer preview/stop/gain and reversible attachment/deletion through the canonical document. Missing references and save-capacity failures preserve dirty work and show real errors. Fourteen new integration tests and 13 Spatter regressions passed independent review, as did an unchanged-input 88-source iOS device-SDK typecheck. Actual simulator Files selection and physical-device audibility remain unverified; multi-track playback, trim/snap and mixed audio export remain unfinished. Historical catalog labels explicitly show unavailable audio.
 
-The native harness now permits four bounded 180-second journeys plus startup within a 900-second suite deadline; the macOS job remains capped at 35 minutes. Only child processes owned by the harness receive bounded SIGINT/TERM/KILL cleanup, allowing it a chance to finalize its result. Timeout/failure codes remain red, and missing required result evidence cannot turn a successful test process green. Independent process/reporting checks passed; actual native finalization still requires the next run. The export-specific capture correction is separately reviewed before inclusion.
+The next native test candidate adds real Files-picker cancellation and Studio Spatter local/unconfigured-cloud journeys. Their assertions preserve unchanged document history and canvas pixels; they do not inject an importer URL or replacement responder. Six bounded 180-second journeys plus startup fit a 1,260-second suite deadline; the macOS job remains capped at 35 minutes. Only child processes owned by the harness receive bounded SIGINT/TERM/KILL cleanup. Timeout/failure codes remain red, and missing required result evidence cannot turn a successful test process green. These added UI journeys have not run on a simulator yet.
 
 ## Production contracts and evidence boundaries
 

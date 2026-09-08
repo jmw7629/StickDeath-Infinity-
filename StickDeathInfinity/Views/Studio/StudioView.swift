@@ -192,6 +192,7 @@ struct StudioBottomBar: View {
             BottomBarButton(icon: "music.note", label: "AUDIO") {
                 vm.activePanel = vm.activePanel == .audioTimeline ? .none : .audioTimeline
             }
+            .accessibilityIdentifier("studio.audio.open")
             
             // Undo
             BottomBarButton(icon: "arrow.uturn.backward", label: "UNDO", enabled: vm.canUndo) {
@@ -581,6 +582,7 @@ struct StudioMenuSheet: View {
                         vm.activePanel = .spatterAI
                     }
                 }
+                .accessibilityIdentifier("studio.spatter.open")
                 
                 Spacer()
             }
@@ -819,6 +821,7 @@ struct SpatterAISheet: View {
                     }
                     Spacer()
                     Button("Done") { dismiss() }.foregroundColor(.red)
+                        .accessibilityIdentifier("spatter.studio.close")
                 }
                 .padding(16)
 
@@ -1076,6 +1079,8 @@ struct PanelHeader: View {
                     .font(.system(size: 20))
                     .foregroundColor(.white.opacity(0.4))
             }
+            .accessibilityLabel("Close \(title)")
+            .accessibilityIdentifier("studio.panel.close.\(title)")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)

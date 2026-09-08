@@ -184,6 +184,96 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testAudioFilesPickerCancellationPreservesBlankProject() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        let before = try pixels(canvas.screenshot().image)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
+        let open = app.buttons["studio.audio.open"]
+        XCTAssertTrue(open.isHittable); open.tap()
+        let importAudio = app.buttons["studio.audio.import"]
+        XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
+        XCTAssertTrue(app.staticTexts["Animation only"].exists)
+        capture(app, name: "audio-empty-real-timeline")
+        importAudio.tap()
+
+        // This is the real system document picker. No injected app URL or
+        // hidden importer call can satisfy the navigation and cancel checks.
+        let cancel = app.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        capture(app, name: "audio-native-files-picker")
+        captureHierarchy(app, name: "audio-native-files-picker-hierarchy")
+        let providerNavigation = app.navigationBars.matching(NSPredicate(
+            format: "identifier == %@ OR identifier == %@ OR identifier == %@",
+            "Browse", "Recents", "On My iPhone")).firstMatch
+        XCTAssertTrue(providerNavigation.exists, "Inspect the real Files provider hierarchy before changing this assertion")
+        XCTAssertTrue(cancel.isHittable); cancel.tap()
+        XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
+        XCTAssertFalse(app.staticTexts["studio.audio.imported"].exists, "Picker cancellation invented an imported clip")
+        XCTAssertFalse(app.buttons["studio.audio.cancel"].exists, "Picker cancellation left an import running")
+        XCTAssertTrue(app.staticTexts["No imported clips. Historical audio records are preserved in the project."].exists)
+        capture(app, name: "audio-files-cancelled-no-clips")
+        let close = app.buttons["studio.panel.close.Audio Timeline"]
+        XCTAssertTrue(close.isHittable); close.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 5)); XCTAssertTrue(canvas.isHittable)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Cancelling Files mutated the document history")
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
+                                "Cancelling the actual audio picker changed the canvas")
+    }
+
+    @MainActor
+    func testStudioSpatterLocalGuidanceAndUnconfiguredCloud() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        let before = try pixels(canvas.screenshot().image)
+        let menu = app.buttons["studio.menu.open"]
+        XCTAssertTrue(menu.isHittable); menu.tap()
+        let open = app.buttons["studio.spatter.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8)); XCTAssertTrue(open.isHittable); open.tap()
+        let status = app.staticTexts["spatter.studio.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 8)); XCTAssertEqual(status.label, "Local guide")
+        let cloud = app.switches["spatter.studio.cloud"]
+        XCTAssertTrue(cloud.exists); XCTAssertEqual(cloud.value as? String, "0")
+        let input = app.textFields["spatter.studio.input"]
+        XCTAssertTrue(input.isHittable); input.tap(); input.typeText("onion skin")
+        app.buttons["spatter.studio.send"].tap()
+        let snapshot = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@",
+            "Project snapshot: \(projectName), 1 frames at 12 FPS.")).firstMatch
+        XCTAssertTrue(snapshot.waitForExistence(timeout: 8), "Local response lost the real submitted project context")
+        XCTAssertTrue(snapshot.label.localizedCaseInsensitiveContains("onion"), "Local brain lookup ignored the submitted topic")
+        XCTAssertTrue(app.staticTexts["LOCAL GUIDE"].exists)
+        XCTAssertFalse(app.staticTexts["CLOUD ADVICE"].exists)
+        capture(app, name: "spatter-real-local-guidance")
+
+        // The verified built-app preflight has empty backend configuration.
+        // Choosing cloud must produce an explicit unavailable state, never a
+        // fabricated online reply or a test-only replacement responder.
+        XCTAssertTrue(cloud.isHittable); cloud.tap()
+        XCTAssertEqual(cloud.value as? String, "1")
+        input.tap(); input.typeText("layers")
+        app.buttons["spatter.studio.send"].tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Cloud not configured · local guide"),
+                                  evaluatedWith: status).waitUntilFulfilled(timeout: 10))
+        let notice = app.staticTexts["spatter.studio.notice"]
+        XCTAssertEqual(notice.label, "Spatter cloud is not configured. Local animation guidance remains available.")
+        XCTAssertFalse(app.staticTexts["CLOUD ADVICE"].exists)
+        capture(app, name: "spatter-unconfigured-cloud-local-fallback")
+        captureHierarchy(app, name: "spatter-unconfigured-hierarchy")
+        let close = app.buttons["spatter.studio.close"]
+        XCTAssertTrue(close.isHittable); close.tap()
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8)); XCTAssertTrue(canvas.isHittable)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Advice-only chat unexpectedly edited the document")
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
+                                "Advice-only chat changed the actual canvas")
+    }
+
+    @MainActor
     private func openExportPanel(_ app: XCUIApplication) throws {
         let open = app.buttons["studio.export.open"]
         XCTAssertTrue(open.waitForExistence(timeout: 5)); XCTAssertTrue(open.isHittable)
