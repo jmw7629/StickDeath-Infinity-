@@ -332,23 +332,12 @@ struct SpatterInboxRow: View {
                         .cornerRadius(8)
                 }
 
-                Text("Content reviews & AI assistant")
+                Text("Local guidance & cloud advice")
                     .font(.specialElite(11))
                     .foregroundColor(.sdTextSecondary)
             }
 
             Spacer()
-
-            // Unread badge
-            Circle()
-                .fill(Color.sdRed)
-                .frame(width: 22, height: 22)
-                .overlay(
-                    Text("3")
-                        .font(.specialElite(11))
-                        .fontWeight(.bold)
-                        .foregroundColor(.white)
-                )
 
             Text("›")
                 .font(.system(size: 12))

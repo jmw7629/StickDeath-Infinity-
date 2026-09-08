@@ -7,7 +7,8 @@
 import SwiftUI
 
 struct SpatterChatView: View {
-    @EnvironmentObject var spatterVM: SpatterAIViewModel
+    @StateObject private var spatterVM = SpatterAIViewModel()
+    @EnvironmentObject private var authVM: AuthViewModel
     @State private var input = ""
     @State private var isAnimatingOrb = false
 
@@ -33,6 +34,7 @@ struct SpatterChatView: View {
                             .font(.specialElite(18))
                             .foregroundColor(.sdTextPrimary)
                         Text(spatterVM.statusText)
+                            .accessibilityIdentifier("spatter.messages.status")
                             .font(.system(size: 11))
                             .foregroundColor(.sdTextMuted)
                     }
@@ -41,6 +43,8 @@ struct SpatterChatView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .background(Color.sdSurface)
+
+                adviceControls
 
                 // Messages
                 ScrollViewReader { proxy in
@@ -77,7 +81,8 @@ struct SpatterChatView: View {
 
                 // Input
                 HStack(spacing: 12) {
-                    TextField("Ask Spatter anything...", text: $input)
+                    TextField("Ask Spatter for advice...", text: $input)
+                        .accessibilityIdentifier("spatter.messages.input")
                         .font(.system(size: 14))
                         .foregroundColor(.sdTextPrimary)
                         .padding(.horizontal, 14)
@@ -86,23 +91,47 @@ struct SpatterChatView: View {
                         .cornerRadius(20)
 
                     Button {
-                        guard !input.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-                        Task {
-                            await spatterVM.sendMessage(input)
-                        }
-                        input = ""
+                        guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                        let submitted = input
+                        if spatterVM.submit(submitted, context: .messages) { input = "" }
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.system(size: 32))
                             .foregroundColor(input.isEmpty ? .sdTextMuted : .sdRed)
                     }
-                    .disabled(input.isEmpty || spatterVM.isThinking)
+                    .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking)
+                    .accessibilityIdentifier("spatter.messages.send")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .background(Color.sdSurface)
             }
         }
+        .onDisappear { spatterVM.endSession() }
+        .onChange(of: authVM.userId) { _ in spatterVM.endSession(); input = "" }
+    }
+
+    private var adviceControls: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.sdTextMuted)
+            Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
+                .disabled(spatterVM.isThinking)
+                .accessibilityIdentifier("spatter.messages.cloud")
+            if spatterVM.useCloud {
+                Text("Sends your message and earlier cloud messages from this chat to the configured authenticated backend. No Studio project is shared.")
+                    .font(.caption2).foregroundColor(.sdTextMuted)
+            }
+            if let notice = spatterVM.notice {
+                Text(notice).font(.caption).foregroundColor(.sdTextSecondary)
+                    .accessibilityIdentifier("spatter.messages.notice")
+            }
+            if spatterVM.isThinking {
+                Button("Cancel request") { spatterVM.cancel() }
+                    .accessibilityIdentifier("spatter.messages.cancel")
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(Color.sdSurface)
     }
 
     private func quickAction(_ text: String) -> some View {
@@ -136,6 +165,10 @@ private struct ChatBubble: View {
             if message.role == .user { Spacer(minLength: 60) }
 
             VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 4) {
+                if let origin = message.origin {
+                    Text(origin == .local ? "LOCAL GUIDE" : "CLOUD ADVICE")
+                        .font(.caption2).foregroundColor(.sdTextMuted)
+                }
                 Text(message.content)
                     .font(.system(size: 14))
                     .foregroundColor(message.role == .user ? .white : .sdTextPrimary)
@@ -155,18 +188,5 @@ private struct ChatBubble: View {
 
             if message.role == .assistant { Spacer(minLength: 60) }
         }
-    }
-}
-
-// MARK: - Spatter Message Model
-struct SpatterMessage: Identifiable {
-    let id: String
-    let role: SpatterRole
-    let content: String
-    let timestamp: Date
-    var mood: String?
-
-    enum SpatterRole {
-        case user, assistant
     }
 }

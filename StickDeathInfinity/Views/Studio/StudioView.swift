@@ -799,86 +799,101 @@ struct AIVoiceMakerSheet: View {
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    @StateObject private var spatterVM = SpatterAIViewModel()
+    @EnvironmentObject private var authVM: AuthViewModel
     @State private var prompt = ""
-    @State private var messages: [(role: String, text: String)] = [
-        ("assistant", "Hey! I'm Spatter AI 🎨 I can help you animate, suggest techniques, generate effects, and answer any animation questions. What do you want to create?")
-    ]
+    @State private var contextError: String?
     @Environment(\.dismiss) var dismiss
-    
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
             VStack(spacing: 0) {
-                // Header
                 HStack {
-                    Text("🎨 Spatter AI")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("🎨 Spatter AI")
+                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .foregroundColor(.red)
+                        Text(spatterVM.statusText).font(.caption).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("spatter.studio.status")
+                    }
                     Spacer()
-                    Button("Done") { dismiss() }
-                        .foregroundColor(.red)
+                    Button("Done") { dismiss() }.foregroundColor(.red)
                 }
                 .padding(16)
-                
-                // Messages
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
+                        .disabled(spatterVM.isThinking)
+                        .accessibilityIdentifier("spatter.studio.cloud")
+                    if spatterVM.useCloud {
+                        Text("Sends your message, this sheet's earlier cloud messages and a limited project/tool/layer/frame/audio summary to the configured authenticated backend. Drawings, audio files and file paths are not sent.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                    }
+                    if let notice = contextError ?? spatterVM.notice {
+                        Text(notice).font(.caption).foregroundColor(.white.opacity(0.8))
+                            .accessibilityIdentifier("spatter.studio.notice")
+                    }
+                    if spatterVM.isThinking {
+                        Button("Cancel request") { spatterVM.cancel() }
+                            .accessibilityIdentifier("spatter.studio.cancel")
+                    }
+                }
+                .padding(.horizontal, 16).padding(.bottom, 8)
+
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(messages.indices, id: \.self) { i in
-                            let msg = messages[i]
+                        ForEach(spatterVM.messages) { message in
                             HStack {
-                                if msg.role == "user" { Spacer() }
-                                Text(msg.text)
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.white)
-                                    .padding(12)
-                                    .background(msg.role == "user" ? Color.red : Color(hex: "1A1A24"))
-                                    .cornerRadius(12)
-                                    .frame(maxWidth: 280, alignment: msg.role == "user" ? .trailing : .leading)
-                                if msg.role == "assistant" { Spacer() }
+                                if message.role == .user { Spacer() }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    if let origin = message.origin {
+                                        Text(origin == .local ? "LOCAL GUIDE" : "CLOUD ADVICE")
+                                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                                    }
+                                    Text(message.content).font(.system(size: 13)).foregroundColor(.white)
+                                }
+                                .padding(12)
+                                .background(message.role == .user ? Color.red : Color(hex: "1A1A24"))
+                                .cornerRadius(12)
+                                .frame(maxWidth: 280, alignment: message.role == .user ? .trailing : .leading)
+                                if message.role == .assistant { Spacer() }
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(.horizontal, 16)
                 }
-                
-                // Input
+
                 HStack(spacing: 8) {
-                    TextField("Ask Spatter anything...", text: $prompt)
-                        .font(.system(size: 14))
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(Color(hex: "1A1A24"))
-                        .cornerRadius(12)
-                    
+                    TextField("Ask Spatter for advice...", text: $prompt)
+                        .font(.system(size: 14)).foregroundColor(.white)
+                        .padding(12).background(Color(hex: "1A1A24")).cornerRadius(12)
+                        .accessibilityIdentifier("spatter.studio.input")
                     Button(action: sendMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 28))
-                            .foregroundColor(.red)
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 28)).foregroundColor(.red)
                     }
+                    .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || spatterVM.isThinking)
+                    .accessibilityIdentifier("spatter.studio.send")
                 }
                 .padding(16)
             }
         }
+        .onDisappear { spatterVM.endSession() }
+        .onChange(of: authVM.userId) { _ in spatterVM.endSession(); prompt = ""; contextError = nil }
     }
-    
-    func sendMessage() {
-        guard !prompt.isEmpty else { return }
-        messages.append(("user", prompt))
-        let userPrompt = prompt
-        prompt = ""
-        
-        // First show brain knowledge immediately
-        let quickResponse = SpatterBrainLoader.shared.getResponse(for: userPrompt)
-        messages.append(("assistant", quickResponse))
-        
-        // Then call async AI engine for a deeper response
-        Task {
-            let aiResponse = await SpatterAIEngine.shared.chat(userMessage: userPrompt)
-            if !aiResponse.isEmpty && !aiResponse.contains("error") {
-                messages.append(("assistant", aiResponse))
-            }
+
+    private func sendMessage() {
+        guard let context = SpatterContext.studio(vm.commandScreenContext), let snapshot = context.studio else {
+            contextError = "This Studio project is no longer open. Your draft has been kept."
+            return
         }
+        contextError = nil
+        let submitted = prompt
+        if spatterVM.submit(submitted, context: context, stillCurrent: { [weak vm] in
+            guard let vm else { return false }
+            return vm.isEditing && vm.document.id == snapshot.projectID && vm.document.revision == snapshot.revision
+        }) { prompt = "" }
     }
 }
 
