@@ -42,7 +42,7 @@ struct StudioTimeline: View {
                     HStack(spacing: 4) {
                         ForEach(vm.frames.indices, id: \.self) { i in
                             Button(action: { vm.currentFrameIndex = i }) {
-                                ZStack {
+                                ZStack(alignment: .bottomTrailing) {
                                     // Mini canvas render
                                     RoundedRectangle(cornerRadius: 4)
                                         .fill(Color.white)
@@ -56,9 +56,9 @@ struct StudioTimeline: View {
                                     Text("\(i + 1)")
                                         .font(.system(size: 7, weight: .bold, design: .monospaced))
                                         .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.4))
-                                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
                                         .padding(2)
                                 }
+                                .frame(width: 36, height: 36)
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 4)
                                         .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1),
@@ -106,6 +106,10 @@ struct StudioTimeline: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.white.opacity(0.4))
         }
+        // A timeline is a bounded control row, not a second flexible canvas.
+        // The thumbnail label must never expand the horizontal scroll view
+        // vertically when the editor receives a portrait or landscape proposal.
+        .frame(height: 36)
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(hex: "0A0A10"))

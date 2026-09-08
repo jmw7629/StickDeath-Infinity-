@@ -27,64 +27,7 @@ struct StudioView: View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
-            VStack(spacing: 0) {
-                // Header (hidden in HIDE mode)
-                if vm.showToolbar {
-                    StudioHeaderBar(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
-                }
-                if let message = vm.message {
-                    Text(message).font(.caption).foregroundColor(.white).padding(8)
-                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
-                        .accessibilityIdentifier("studio.status")
-                }
-                
-                // Tool strip (floats in center during HIDE mode)
-                if vm.showToolbar {
-                    StudioToolStrip(vm: vm)
-                }
-                
-                ZStack {
-                    StudioCanvasView(vm: vm)
-                    
-                    // Floating tool strip in HIDE mode (centered vertically)
-                    if !vm.showToolbar {
-                        VStack {
-                            Spacer()
-                            StudioToolStrip(vm: vm)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(Color(hex: "12121A").opacity(0.9))
-                                        .shadow(color: .black.opacity(0.4), radius: 8)
-                                )
-                                .padding(.horizontal, 8)
-                            Spacer()
-                        }
-                    }
-                    
-                    // Floating tool settings
-                    if vm.activePanel == .toolSettings {
-                        FloatingToolSettingsPanel(vm: vm)
-                            .transition(.opacity)
-                    }
-                    
-                    // Zoom controls (right side)
-                    VStack(spacing: 8) {
-                        Spacer()
-                        ZoomButton(label: "+") { vm.zoomIn() }
-                        ZoomButton(label: "−") { vm.zoomOut() }
-                        ZoomButton(label: "FIT") { vm.zoomFit() }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                    .padding(.trailing, 8)
-                    .padding(.bottom, 8)
-                }
-                
-                // Timeline + Bottom bar (hidden in HIDE mode)
-                if vm.showToolbar {
-                    StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm)
-                }
-            }
+            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
             
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
@@ -130,6 +73,95 @@ struct StudioView: View {
     }
     var showRotoscopeBinding: Binding<Bool> {
         Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 { vm.activePanel = .none } })
+    }
+}
+
+// The rail moves to the left only when vertical space is scarce. Portrait and
+// regular-height iPad layouts retain the horizontal floating rail.
+struct StudioEditorWorkspace: View {
+    @ObservedObject var vm: StudioViewModel
+    var onDismiss: () -> Void
+
+    var body: some View {
+        GeometryReader { geometry in
+            let sideRail = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            VStack(spacing: 0) {
+                if vm.showToolbar {
+                    StudioHeaderBar(vm: vm, onDismiss: onDismiss)
+                }
+                if let message = vm.message {
+                    Text(message).font(.caption).foregroundColor(.white).padding(8)
+                        .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
+                        .accessibilityIdentifier("studio.status")
+                }
+                if vm.showToolbar && !sideRail {
+                    StudioToolStrip(vm: vm)
+                }
+                HStack(spacing: 0) {
+                    if vm.showToolbar && sideRail {
+                        StudioToolStrip(vm: vm, axis: .vertical)
+                    }
+                    canvasStage
+                }
+                if vm.showToolbar {
+                    StudioTimeline(vm: vm)
+                    StudioBottomBar(vm: vm)
+                }
+            }
+        }
+    }
+
+    private var canvasStage: some View {
+        ZStack {
+            StudioCanvasView(vm: vm)
+
+            // Floating tool strip in HIDE mode (centered vertically)
+            if !vm.showToolbar {
+                VStack {
+                    Spacer()
+                    StudioToolStrip(vm: vm)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12)
+                                .fill(Color(hex: "12121A").opacity(0.9))
+                                .shadow(color: .black.opacity(0.4), radius: 8)
+                        )
+                        .padding(.horizontal, 8)
+                    Spacer()
+                }
+
+            }
+
+            // Floating tool settings
+            if vm.activePanel == .toolSettings {
+                FloatingToolSettingsPanel(vm: vm)
+                    .transition(.opacity)
+            }
+
+            // Zoom controls (right side)
+            VStack(spacing: 8) {
+                Spacer()
+                ZoomButton(label: "+") { vm.zoomIn() }
+                ZoomButton(label: "−") { vm.zoomOut() }
+                ZoomButton(label: "FIT") { vm.zoomFit() }
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 8)
+            .padding(.bottom, 8)
+        }
+        .overlay(alignment: .topLeading) {
+            if !vm.showToolbar {
+                Button(action: { vm.showToolbar = true }) {
+                    Text("SHOW TOOLS")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                        .padding(10)
+                        .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+                }
+                .accessibilityLabel("Show Studio tools")
+                .accessibilityIdentifier("studio.show-tools")
+                .padding(8)
+            }
+        }
     }
 }
 
