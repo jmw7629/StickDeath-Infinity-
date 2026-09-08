@@ -79,6 +79,7 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -93,6 +94,7 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -109,6 +111,7 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -132,6 +135,21 @@ jobs:
             Tests/StudioCommands/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-command-tests"
           "$RUNNER_TEMP/sdi-studio-command-tests"
+      - name: Verify Studio command edits persist through the actual view model
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            Tests/StudioCommandIntegration/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-command-integration-tests"
+          "$RUNNER_TEMP/sdi-studio-command-integration-tests"
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |

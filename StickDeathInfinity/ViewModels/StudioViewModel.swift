@@ -80,6 +80,142 @@ final class StudioViewModel: ObservableObject {
     var audioDuration: Double { Double(frames.count) / Double(fps) }
     var strokeColorHex: String { Self.hex(strokeColor) }
 
+    /// Snapshot of this Studio route, not a claim about another foreground tab.
+    /// This snapshot contains no request bodies, audio bytes, provider credentials
+    /// or file paths. A future Spatter caller remains responsible for app-level
+    /// visibility, authenticated transport and authorized project-context sharing.
+    struct CommandScreenContext {
+        enum Route: String { case library, editor }
+        struct RetainedAudio {
+            let id: UUID
+            let name: String
+            let format: String
+            let startTime: Double
+            let duration: Double
+            let timingKnown: Bool
+            let hasAudioData: Bool
+        }
+        let route: Route
+        let activePanel: StudioPanelType
+        let selectedTool: DrawingTool?
+        let document: StudioCommandContext?
+        let selectedElementIDs: Set<String>
+        let selectedAudioClipID: String?
+        let displayedFrameID: String?
+        let isPlaying: Bool
+        let audioPlayheadTime: Double?
+        let retainedAudio: [RetainedAudio]
+        let canApplyCommands: Bool
+        let isDirty: Bool
+        let isSaving: Bool
+        let canUndo: Bool
+        let canRedo: Bool
+    }
+
+    var commandScreenContext: CommandScreenContext {
+        guard isEditing else {
+            return .init(route: .library, activePanel: .none, selectedTool: nil, document: nil,
+                selectedElementIDs: [], selectedAudioClipID: nil, displayedFrameID: nil,
+                isPlaying: false, audioPlayheadTime: nil, retainedAudio: [], canApplyCommands: false,
+                isDirty: false, isSaving: false, canUndo: false, canRedo: false)
+        }
+        return .init(route: .editor, activePanel: activePanel, selectedTool: selectedTool,
+            document: StudioCommandContext(document: document), selectedElementIDs: selectedElementIDs,
+            selectedAudioClipID: selectedAudioClip.flatMap { selected in
+                document.audioClips.contains(where: { $0.id == selected.id }) ? selected.id : nil
+            }, displayedFrameID: currentFrame.id,
+            isPlaying: isPlaying, audioPlayheadTime: audioPlayheadTime,
+            retainedAudio: retainedAudioTracks.map {
+                .init(id: $0.id, name: $0.name, format: $0.format, startTime: $0.startTime, duration: $0.duration,
+                      timingKnown: $0.legacySourceFilename == nil, hasAudioData: $0.audioData != nil)
+            }, canApplyCommands: !isSaving, isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo)
+    }
+
+    /// The returned receipt describes an in-memory edit, never a successful save,
+    /// provider response, export or publication. The ordinary debounce/flush path
+    /// persists the same canonical editor and retains dirty work on storage error.
+    /// Local project ownership is established by the caller opening this editor;
+    /// this method does not authorize a remote caller or parse natural language.
+    @discardableResult
+    func applyStudioCommands(_ request: StudioCommandRequest,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        try checkCancellation()
+        try requireOpenCommandEditor()
+        try validateCommandWorkBudget(request)
+        let receipt = try StudioCommandExecutor.execute(request, editor: &editor, checkCancellation: checkCancellation)
+        if receipt.outcome != .unchanged {
+            stopPlayback()
+            scheduleSave()
+        }
+        return receipt
+    }
+
+    /// Untrusted wire input must use the bounded strict decoder before it reaches
+    /// the identical typed execution path. No cloud request is made here.
+    @discardableResult
+    func applyStudioCommands(_ data: Data,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
+        try checkCancellation()
+        try requireOpenCommandEditor()
+        return try applyStudioCommands(StudioCommandExecutor.decode(data), checkCancellation: checkCancellation)
+    }
+
+    private func requireOpenCommandEditor() throws {
+        guard isEditing else { throw StudioDocumentError.unavailable("Open or create a project before applying Studio commands.") }
+        guard !isSaving else { throw StudioDocumentError.unavailable("Wait for the current save before applying Studio commands.") }
+    }
+
+    /// The current executor validates the whole document after each staged edit.
+    /// Bound that repeated work before entering its synchronous MainActor path;
+    /// the wire's independent point/stroke limits alone do not bound this cost.
+    /// This is a conservative operation budget, not a wall-clock guarantee.
+    private func validateCommandWorkBudget(_ request: StudioCommandRequest) throws {
+        guard request.schemaVersion == 1 else { throw StudioCommandError.unsupportedCommand }
+        guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
+        guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
+        guard case .apply(let commands) = request.action else { return }
+        guard !commands.isEmpty, commands.count <= StudioCommandExecutor.maximumCommands else { throw StudioCommandError.limitExceeded }
+        let maximumWork = 2_000_000
+        var units = 0, edits = 0, strokes = 0, hasDuplication = false
+        func exceeded() -> StudioDocumentError {
+            .unavailable("This command batch is too large for interactive editing in this project. Try a smaller batch; very complex projects may currently be unavailable for command edits. Nothing changed.")
+        }
+        func addUnits(_ count: Int, weight: Int = 1) throws {
+            guard count <= (maximumWork - units) / weight else { throw exceeded() }
+            units += count * weight
+        }
+        try addUnits(document.frames.count, weight: 8)
+        try addUnits(document.layers.count, weight: 8)
+        try addUnits(document.audioClips.count, weight: 32)
+        for frame in document.frames {
+            try addUnits(frame.elements.count, weight: 32)
+            for element in frame.elements { try addUnits(element.points.count) }
+        }
+        for command in commands {
+            switch command {
+            case .draw(let drawing):
+                guard drawing.strokes.count <= StudioCommandExecutor.maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }
+                strokes += drawing.strokes.count; edits += drawing.strokes.count
+                try addUnits(drawing.strokes.count, weight: 32)
+                for stroke in drawing.strokes { try addUnits(stroke.points.count) }
+            case .duplicateFrame, .duplicateLayer:
+                // Aliases may duplicate content created earlier in this batch.
+                // Reserve the executor's full cumulative generated-data budget
+                // rather than undercounting a reference we have not staged yet.
+                hasDuplication = true; edits += 2
+            case .addLayer: edits += 2; try addUnits(1, weight: 8)
+            case .addFrame: edits += 2; try addUnits(1, weight: 8)
+            default: edits += 1
+            }
+        }
+        if hasDuplication {
+            try addUnits(StudioCommandExecutor.maximumGeneratedPoints)
+            try addUnits(StudioCommandExecutor.maximumGeneratedElements, weight: 32)
+        }
+        // Includes initial/final validation, comparison and final history commit.
+        guard units <= maximumWork / (edits + 6) else { throw exceeded() }
+    }
+
     private static func hex(_ color: Color) -> String {
         #if canImport(UIKit)
         let value = UIColor(color)
