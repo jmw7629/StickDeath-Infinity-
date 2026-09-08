@@ -100,6 +100,9 @@
 		427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */; };
 		74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54AE165BB4C0408388138753 /* StudioExportService.swift */; };
 		CABECC98F5424855AEA769E9 /* StudioCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */; };
+		C3A050C18E554630851AAE5F /* SpecialElite-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */; };
+		83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = 9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */; };
+		FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -206,6 +209,9 @@
 		0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift; sourceTree = SOURCE_ROOT; };
 		54AE165BB4C0408388138753 /* StudioExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioExportService.swift; sourceTree = SOURCE_ROOT; };
 		BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioCommands.swift; sourceTree = SOURCE_ROOT; };
+		3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = StickDeathInfinity/Resources/Fonts/SpecialElite-Regular.ttf; sourceTree = SOURCE_ROOT; };
+		9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-Apache-2.0.txt; sourceTree = SOURCE_ROOT; };
+		838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-NOTICE.txt; sourceTree = SOURCE_ROOT; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -314,6 +320,9 @@
 		D1E3A02257F7E90995EB245D /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+				838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */,
+				9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */,
+				3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */,
 				DF8A49DA661223CB2CEF4177 /* SpatterBrain */,
 			);
 			path = Resources;
@@ -705,6 +714,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */,
+				83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */,
+				C3A050C18E554630851AAE5F /* SpecialElite-Regular.ttf in Resources */,
 				9234D0E29EF9CA0453C221E6 /* spatter_brain_100.json in Resources */,
 				D1B101D322C26862C36EACE5 /* spatter_brain_1000_index.json in Resources */,
 				E1EBF30959AF698AD53EDE22 /* spatter_core_20.json in Resources */,
