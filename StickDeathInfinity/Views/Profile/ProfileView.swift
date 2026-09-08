@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct ProfileView: View {
-    @EnvironmentObject var authManager: AuthManager
+    @EnvironmentObject var authVM: AuthViewModel
     @State private var selectedTab = "projects"
     @State private var bio = "Creator & Animator 💀 Building the future of stick figure animation."
     @State private var isEditing = false
@@ -39,16 +39,16 @@ struct ProfileView: View {
                                     .font(.system(size: 40))
                             }
                             
-                            Text(authManager.currentUser?.handle ?? "J_Willy_Style")
+                            Text(authVM.displayName ?? "Guest")
                                 .font(.system(size: 16, weight: .bold, design: .monospaced))
                                 .foregroundColor(.white)
                             
-                            Text(authManager.currentUser?.email ?? "joseph@willisnmb.com")
+                            Text(authVM.user?.email ?? "")
                                 .font(.system(size: 11))
                                 .foregroundColor(.white.opacity(0.4))
                             
                             // Role badge
-                            if authManager.currentUser?.role == "superuser" {
+                            if authVM.isSuperAdmin {
                                 HStack(spacing: 4) {
                                     Image(systemName: "shield.fill")
                                     Text("SUPERUSER")
@@ -299,5 +299,6 @@ struct ProfileSettingsView: View {
 struct ProfileView_Previews: PreviewProvider {
     static var previews: some View {
         ProfileView()
+            .environmentObject(AuthViewModel())
     }
 }

@@ -314,6 +314,29 @@ struct ChatMessage: Codable, Identifiable {
     var voiceDuration: Int?
     var threadCount: Int?
 
+    init(
+        id: Int, roomID: Int, senderID: String, senderUsername: String? = nil,
+        content: String, createdAt: String? = nil, mediaURL: String? = nil,
+        type: MessageType? = nil, reactions: [String: ReactionData] = [:],
+        replyTo: ReplyRef? = nil, readStatus: MessageReadStatus? = nil,
+        edited: Bool? = nil, voiceDuration: Int? = nil, threadCount: Int? = nil
+    ) {
+        self.id = id
+        self.roomID = roomID
+        self.senderID = senderID
+        self.senderUsername = senderUsername
+        self.content = content
+        self.createdAt = createdAt
+        self.mediaURL = mediaURL
+        self.type = type
+        self.reactions = reactions
+        self.replyTo = replyTo
+        self.readStatus = readStatus
+        self.edited = edited
+        self.voiceDuration = voiceDuration
+        self.threadCount = threadCount
+    }
+
     var timeString: String {
         // Parse ISO date or return time
         guard let created = createdAt else { return "" }

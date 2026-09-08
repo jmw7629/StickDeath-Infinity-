@@ -12,14 +12,16 @@ import SwiftUI
 
 struct CreatePostView: View {
     let onBack: () -> Void
-    let onPublish: (String, [String], Bool) -> Void
+    let onPublish: @MainActor (String, [String], Bool) async throws -> Void
 
     @State private var content = ""
     @State private var tagInput = ""
     @State private var tags: [String] = []
     @State private var attachAnimation = false
+    @State private var isPublishing = false
+    @State private var publishError: String?
 
-    private var canPublish: Bool { !content.trimmingCharacters(in: .whitespaces).isEmpty }
+    private var canPublish: Bool { !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && content.count <= 500 && !isPublishing }
 
     var body: some View {
         ZStack {
@@ -33,6 +35,7 @@ struct CreatePostView: View {
                             .font(.specialElite(14))
                             .foregroundColor(.sdTextSecondary)
                     }
+                    .disabled(isPublishing)
                     Spacer()
                     Text("New Post")
                         .font(.specialElite(16))
@@ -41,10 +44,22 @@ struct CreatePostView: View {
                     Spacer()
                     Button {
                         if canPublish {
-                            onPublish(content.trimmingCharacters(in: .whitespaces), tags, attachAnimation)
+                            let submittedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                            let submittedTags = tags
+                            let submittedAttachment = attachAnimation
+                            isPublishing = true
+                            Task { @MainActor in
+                                defer { isPublishing = false }
+                                do {
+                                    try await onPublish(submittedContent, submittedTags, submittedAttachment)
+                                    publishError = nil
+                                } catch {
+                                    publishError = "The post could not be confirmed. Your draft is still here. Check the feed before retrying."
+                                }
+                            }
                         }
                     } label: {
-                        Text("Post")
+                        Text(isPublishing ? "Posting…" : "Post")
                             .font(.specialElite(13))
                             .fontWeight(.bold)
                             .foregroundColor(canPublish ? .white : .sdTextMuted)
@@ -65,6 +80,7 @@ struct CreatePostView: View {
 
                 ScrollView {
                     VStack(spacing: 0) {
+                        if let publishError { Text(publishError).font(.caption).foregroundColor(.sdRed).padding() }
                         // Text area
                         ZStack(alignment: .topLeading) {
                             if content.isEmpty {
@@ -101,7 +117,7 @@ struct CreatePostView: View {
                         .padding(.top, -8)
 
                         // Animation attachment
-                        Button { attachAnimation.toggle() } label: {
+                        Button { publishError = "Animation attachments need a rendered Studio file and a verified upload path. Nothing has been attached." } label: {
                             VStack(spacing: 8) {
                                 if attachAnimation {
                                     Text("🎬").font(.system(size: 32))
@@ -189,9 +205,11 @@ struct CreatePostView: View {
                         }
                         .padding(16)
                     }
+                    .disabled(isPublishing)
                 }
             }
         }
+        .interactiveDismissDisabled(isPublishing)
         .onChange(of: content) { _ in
             if content.count > 500 {
                 content = String(content.prefix(500))
@@ -200,6 +218,7 @@ struct CreatePostView: View {
     }
 
     private func addTag() {
+        guard !isPublishing else { return }
         let tag = tagInput.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "#", with: "")
         if !tag.isEmpty && !tags.contains(tag) && tags.count < 5 {
             tags.append(tag)
@@ -208,6 +227,7 @@ struct CreatePostView: View {
     }
 
     private func removeTag(_ tag: String) {
+        guard !isPublishing else { return }
         tags.removeAll { $0 == tag }
     }
 }

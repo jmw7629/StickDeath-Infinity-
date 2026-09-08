@@ -47,12 +47,7 @@ struct MainTabView: View {
 
             // Tutorial overlay
             if showTutorial {
-                AppTutorialView(
-                    onComplete: { showTutorial = false },
-                    onSwitchTab: { tab in
-                        if let t = AppTab(rawValue: tab) { activeTab = t }
-                    }
-                )
+                AppTutorialView(isPresented: $showTutorial)
             }
         }
     }

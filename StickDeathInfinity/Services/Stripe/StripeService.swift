@@ -251,8 +251,14 @@ final class StripeService: ObservableObject {
         }
     }
 
-    var maxProjects: Int { currentTier.maxProjects }
-    var maxAIQueries: Int { currentTier.maxAIQueries }
+    // Quotas must come from the approved, verified entitlement policy. No
+    // historical screenshot count or invented unlimited allowance is a default.
+    var maxProjects: Int {
+        get throws { throw PaymentError.limitsUnavailable }
+    }
+    var maxAIQueries: Int {
+        get throws { throw PaymentError.limitsUnavailable }
+    }
 
     enum Feature {
         case basicStudio, noWatermark, export1080p, export4K
@@ -320,7 +326,7 @@ final class StripeService: ObservableObject {
     // ═══════════════════════════════════════════════════════════════
 
     /// Verify a StoreKit transaction
-    private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
+    nonisolated private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {
         switch result {
         case .unverified(_, let error):
             throw PaymentError.verificationFailed(error.localizedDescription)
@@ -377,6 +383,7 @@ final class StripeService: ObservableObject {
         case pending
         case unknown
         case verificationFailed(String)
+        case limitsUnavailable
 
         var errorDescription: String? {
             switch self {
@@ -387,6 +394,7 @@ final class StripeService: ObservableObject {
             case .pending:                return "Purchase pending approval"
             case .unknown:                return "Unknown error"
             case .verificationFailed(let msg): return "Verification failed: \(msg)"
+            case .limitsUnavailable:      return "Subscription limits are unavailable until the entitlement policy is configured and verified."
             }
         }
     }

@@ -193,7 +193,7 @@ struct ContactsView: View {
                                                 Button {
                                                     withAnimation { selectedContact = contact }
                                                 } label: {
-                                                    ContactRow(contact: contact)
+                                                    AddressBookContactRow(contact: contact)
                                                 }
                                             }
                                         }
@@ -237,7 +237,7 @@ struct ContactsView: View {
 }
 
 // MARK: - Contact Row
-private struct ContactRow: View {
+private struct AddressBookContactRow: View {
     let contact: SDContact
 
     var body: some View {

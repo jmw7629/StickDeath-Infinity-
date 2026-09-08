@@ -192,6 +192,15 @@ struct WatchPartyView: View {
                 .padding(12)
             }
 
+            if let error = vm.chatError {
+                Text(error)
+                    .font(.system(size: 12))
+                    .foregroundColor(.sdTextSecondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .accessibilityIdentifier("watch-party-chat-error")
+            }
+
             // Input
             HStack(spacing: 8) {
                 TextField("Say something...", text: $vm.chatInput)
@@ -228,24 +237,16 @@ final class WatchPartyViewModel: ObservableObject {
     @Published var participants: [String] = ["You"]
     @Published var chatMessages: [ChatMessage] = []
     @Published var chatInput = ""
+    @Published private(set) var chatError: String?
 
     func togglePlay() { isPlaying.toggle() }
     func seekForward() { /* +10s */ }
     func seekBackward() { /* -10s */ }
 
     func sendChat() {
-        guard !chatInput.isEmpty else { return }
-        let msg = ChatMessage(
-            id: Int.random(in: 1...999999),
-            roomID: 0,
-            senderID: AuthService.shared.userId ?? "",
-            senderUsername: AuthService.shared.displayName,
-            content: chatInput,
-            createdAt: nil,
-            mediaURL: nil,
-            messageType: nil
-        )
-        chatMessages.append(msg)
-        chatInput = ""
+        guard !chatInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // No authenticated room transport is wired here yet. Preserve the draft
+        // and do not present a locally fabricated message as a successful send.
+        chatError = "Watch-party chat is unavailable until this room is connected. Your message has not been sent."
     }
 }

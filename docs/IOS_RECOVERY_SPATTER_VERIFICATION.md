@@ -1,7 +1,7 @@
 # Native iOS recovery: Spatter client verification
 
 This is work on the existing StickDeath Infinity iOS app, not STICKDEATH_BYTE.
-No Studio, media, community, messaging, calls, publishing, or business data was removed.
+Studio, media, community, messaging, calls and publishing remain in scope; historical demo values are not live product evidence.
 Base for this repair: `a14ea263df85591f9e5a98e5285215a3152e36c3` on PR #111.
 
 ## Codex ownership checkpoint — 2026-09-08
@@ -15,6 +15,15 @@ The owner transferred this project to Codex in issue #110. This continues PR #11
 - Focused production tests: 29/29 PASS on the local Mac (the original 22 Spatter tests plus seven configuration/rank cases). Source-security and integration-reference checks, plist syntax and diff checks PASS.
 - Native application build has NOT passed. Local Xcode 26.3 completed dependency compilation but asset compilation failed because its iOS 26.2 SDK has no matching simulator runtime. Separate source compiler and exact-head macOS CI evidence remain required. No simulator app interaction, signing or TestFlight pass is claimed.
 - Offline persistence, canonical layers/history, real media/audio/export, Spatter editor commands and authenticated backend journeys remain incomplete and separately tracked. A private web companion is a review surface only.
+
+## Compiler continuation checkpoint — 2026-09-08
+
+- Commit `84e579a9864e123b2cc685a05ca5c6f848354510` passed source-security and 29 production transport/config tests in run `34255291902`; native job `102159426052` failed. The actual compiler output exposed duplicate ChallengeItem/ContactRow definitions and missing FeedPost/AuthManager contracts after the omitted screens became target members.
+- The continuation uses canonical Challenge, Post, Comment and AuthViewModel types and existing services; supplies the missing SwiftUI FlowLayout; repairs the actual tutorial binding, StoreKit actor isolation, and canonical ChatMessage construction. The target now contains 81 unique existing Swift source paths.
+- UI mutations preserve in-flight drafts, report failures, distinguish confirmed comment insertion from a failed refresh, and treat an unavailable like query as unknown. Unconnected watch-party sending preserves the draft and reports that it was not sent. No live backend messages, posts, StoreKit charges or publication were tested.
+- Three durable model tests compile the complete production models on macOS and cover construction, full wire roundtrip and historical sparse/null decoding. All three pass locally and are included in the native CI job. The 29 configuration/transport tests still pass.
+- Independent cross-review of disjoint native changes caught and corrected draft-loss and fractional-date issues. Native application compilation remains pending on this continuation; parser/type checks and Foundation tests do not replace it.
+- The original React Studio review companion is privately deployed and independently exercised over HTTPS with phone-size Chromium and WebKit. Drawing, frame clipboard, undo/redo, save/reopen and actual PNG decoding pass. It is not an iOS build and does not establish native visual parity.
 
 ## Historical executed evidence
 
@@ -46,8 +55,8 @@ The checked-in Xcode target includes the exact new backend source. Swift languag
 ## Still blocking full app readiness
 
 - A new exact-head workflow runs the focused tests/security gate and a separate unsigned native simulator-target build. Its actual result must be inspected; workflow existence is not PASS.
-- `XCODE_IOS_BUILD=NOT RUN` at the local verification stage. Linux source tests are not an iOS build or simulator run.
-- Other pre-existing AppConfig contracts (Supabase, LiveKit and subscription configuration) and incomplete Xcode source membership remain to be resolved against native compiler evidence.
+- Local full Xcode build is externally blocked by the installed SDK/runtime mismatch; the latest exact-head CI native result is FAIL as recorded above. Linux tests are not an iOS build or simulator run.
+- Remaining native source blockers must be resolved using each new exact-head compiler log; public configuration and source membership have received the focused corrections above.
 - Live backend/auth/provider end-to-end behavior is NOT RUN.
 - Device/visual interaction verification is NOT RUN.
-- No production deployment, public upload, merge or release has occurred.
+- No native release, public upload or merge has occurred. The isolated private web review companion is deployed; production backend readiness is not verified.

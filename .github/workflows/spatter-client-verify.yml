@@ -49,6 +49,17 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify complete production model encoding and historical decoding
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            Tests/NativeModels/main.swift \
+            -o "$RUNNER_TEMP/sdi-native-model-tests"
+          "$RUNNER_TEMP/sdi-native-model-tests"
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |

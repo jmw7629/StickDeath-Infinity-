@@ -93,6 +93,7 @@
 		A75686966A9E0A0E9AC1ED36 /* StudioHeaderBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99C468D56A8D5305DAB4726C /* StudioHeaderBar.swift */; };
 		07C5AC651D80360C34DEBE73 /* StudioToolStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9CBE341E9CF08FEABD9C119 /* StudioToolStrip.swift */; };
 		BD9FBB848F6A4C3B9EB8DD80 /* DeviceStorageManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4052A250129426490D4E219 /* DeviceStorageManager.swift */; };
+		B8D6D4525549C7A6A17368D6 /* FlowLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47F7B78C2295D86889EC9D5A /* FlowLayout.swift */; };
 		/* End PBXBuildFile section */
 
 		/* Begin PBXFileReference section */
@@ -183,6 +184,7 @@
 		99C468D56A8D5305DAB4726C /* StudioHeaderBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/StudioHeaderBar.swift"; sourceTree = SOURCE_ROOT; };
 		B9CBE341E9CF08FEABD9C119 /* StudioToolStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/StudioToolStrip.swift"; sourceTree = SOURCE_ROOT; };
 		A4052A250129426490D4E219 /* DeviceStorageManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Storage/DeviceStorageManager.swift; sourceTree = SOURCE_ROOT; };
+		47F7B78C2295D86889EC9D5A /* FlowLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowLayout.swift; sourceTree = "<group>"; };
 		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -454,6 +456,7 @@
 			isa = PBXGroup;
 			children = (
 				9B35F4D7D01D94EC83EA7B2E /* AppTutorialView.swift */,
+				47F7B78C2295D86889EC9D5A /* FlowLayout.swift */,
 				91235BAD0C48D8A6456E6915 /* PricingTickerView.swift */,
 				DD5F32EAFB90D17BB47B9EFC /* SDTextField.swift */,
 			);
@@ -669,6 +672,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				BD9FBB848F6A4C3B9EB8DD80 /* DeviceStorageManager.swift in Sources */,
+				B8D6D4525549C7A6A17368D6 /* FlowLayout.swift in Sources */,
 				6D3F591B404BDCD5F2216548 /* SpatterBrainLoader.swift in Sources */,
 				8330063EC77BDD2C502C77F5 /* AdminDashboardView.swift in Sources */,
 				6260DA8DF449BE20C32FB9BE /* ChallengeDetailView.swift in Sources */,

@@ -34,7 +34,7 @@ final class SocialService {
 
     // MARK: - Likes
     func likePost(postID: Int) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
         try await supabase.from("likes").insert([
             "user_id": AnyJSON.string(userId),
             "post_id": .integer(postID),
@@ -45,7 +45,7 @@ final class SocialService {
     }
 
     func unlikePost(postID: Int) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
         try await supabase.from("likes")
             .delete()
             .eq("user_id", value: userId)
@@ -53,22 +53,20 @@ final class SocialService {
             .execute()
     }
 
-    func isPostLiked(postID: Int) async -> Bool {
-        guard let userId = AuthService.shared.userId else { return false }
-        do {
-            let result: [LikeRecord] = try await supabase.from("likes")
-                .select()
-                .eq("user_id", value: userId)
-                .eq("post_id", value: postID)
-                .execute()
-                .value
-            return !result.isEmpty
-        } catch { return false }
+    func isPostLiked(postID: Int) async throws -> Bool {
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
+        let result: [LikeRecord] = try await supabase.from("likes")
+            .select()
+            .eq("user_id", value: userId)
+            .eq("post_id", value: postID)
+            .execute()
+            .value
+        return !result.isEmpty
     }
 
     // MARK: - Comments
     func addComment(postID: Int, content: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
         try await supabase.from("comments").insert([
             "post_id": AnyJSON.integer(postID),
             "user_id": .string(userId),
@@ -87,7 +85,7 @@ final class SocialService {
 
     // MARK: - Follows
     func followUser(targetID: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
         try await supabase.from("follows").insert([
             "follower_id": AnyJSON.string(userId),
             "following_id": .string(targetID),
@@ -95,7 +93,7 @@ final class SocialService {
     }
 
     func unfollowUser(targetID: String) async throws {
-        guard let userId = AuthService.shared.userId else { return }
+        guard let userId = AuthService.shared.userId else { throw ServiceError.notAuthenticated }
         try await supabase.from("follows")
             .delete()
             .eq("follower_id", value: userId)
