@@ -159,10 +159,37 @@ final class StudioSmokeUITests: XCTestCase {
         let dismiss = nativeShare.buttons["header.closeButton"]
         XCTAssertTrue(dismiss.isHittable, "The recorded native share dismissal control is not reachable")
         dismiss.tap()
+        // The completion callback can update our status before UIKit finishes
+        // dismissing. Require the actual native presentation to disappear.
+        let shareDismissed = expectation(for: NSPredicate(format: "exists == false"),
+                                         evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8)
+        if !shareDismissed {
+            capture(app, name: "png-share-dismissal-failed")
+            captureHierarchy(app, name: "png-share-dismissal-failed-hierarchy")
+        }
+        XCTAssertTrue(shareDismissed, "The native share sheet did not finish dismissing")
         let status = app.staticTexts["studio.export.status"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. Your export is still available."),
                                   evaluatedWith: status).waitUntilFulfilled(timeout: 8))
         let retainedPreview = try exportControl("studio.export.preview", app: app)
+        var previousPreviewFrame = CGRect.null
+        var stableSince = Date()
+        let previewSettled = NSPredicate { _, _ in
+            let frame = retainedPreview.frame
+            guard !frame.isEmpty, app.frame.contains(frame), retainedPreview.isHittable else {
+                previousPreviewFrame = .null; stableSince = Date(); return false
+            }
+            if frame != previousPreviewFrame {
+                previousPreviewFrame = frame; stableSince = Date(); return false
+            }
+            return Date().timeIntervalSince(stableSince) >= 1
+        }
+        let settled = expectation(for: previewSettled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        if !settled {
+            capture(app, name: "png-retained-preview-unsettled")
+            captureHierarchy(app, name: "png-retained-preview-unsettled-hierarchy")
+        }
+        XCTAssertTrue(settled, "Retained PNG preview did not settle visibly after native sharing")
         let retainedPixels = try exportPreviewPixels(retainedPreview, app: app, name: "retained-after-share")
         XCTAssertGreaterThan(exportInkMask(retainedPixels).count, 12, "Cancelling sharing lost the exported stroke")
         XCTAssertEqual(unmatchedExportInk(drawnPixels, retainedPixels), 0,
@@ -225,14 +252,17 @@ final class StudioSmokeUITests: XCTestCase {
 
         // This is the real system document picker. No injected app URL or
         // hidden importer call can satisfy the navigation and cancel checks.
-        let cancel = app.buttons["Cancel"].firstMatch
+        // The recorded iOS 26 Files bar has a stable system identifier; its
+        // visible page title is a child, not the navigation-bar identifier.
+        let providerNavigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        let cancel = providerNavigation.buttons["Cancel"]
         XCTAssertTrue(cancel.waitForExistence(timeout: 10))
         capture(app, name: "audio-native-files-picker")
         captureHierarchy(app, name: "audio-native-files-picker-hierarchy")
-        let providerNavigation = app.navigationBars.matching(NSPredicate(
-            format: "identifier == %@ OR identifier == %@ OR identifier == %@",
-            "Browse", "Recents", "On My iPhone")).firstMatch
         XCTAssertTrue(providerNavigation.exists, "Inspect the real Files provider hierarchy before changing this assertion")
+        XCTAssertTrue(providerNavigation.staticTexts["Recents"].exists, "The actual Files Recents page is missing")
+        XCTAssertTrue(app.collectionViews["File View"].exists, "The real Files provider collection is missing")
+        XCTAssertTrue(app.tabBars["DOC.browsingModeTabBar"].buttons["Browse"].exists)
         XCTAssertTrue(cancel.isHittable); cancel.tap()
         XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
         XCTAssertFalse(app.staticTexts["studio.audio.imported"].exists, "Picker cancellation invented an imported clip")
@@ -277,8 +307,18 @@ final class StudioSmokeUITests: XCTestCase {
         // The verified built-app preflight has empty backend configuration.
         // Choosing cloud must produce an explicit unavailable state, never a
         // fabricated online reply or a test-only replacement responder.
-        XCTAssertTrue(cloud.isHittable); cloud.tap()
-        XCTAssertEqual(cloud.value as? String, "1")
+        XCTAssertTrue(cloud.isHittable)
+        // The recorded Switch AX frame includes the label and gap: tap() sent
+        // its center to that gap. Target the visible right-hand switch within
+        // this actual element, never an absolute window coordinate.
+        cloud.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        let cloudSelected = expectation(for: NSPredicate(format: "value == %@", "1"),
+                                        evaluatedWith: cloud).waitUntilFulfilled(timeout: 5)
+        if !cloudSelected {
+            capture(app, name: "spatter-cloud-switch-failed")
+            captureHierarchy(app, name: "spatter-cloud-switch-failed-hierarchy")
+        }
+        XCTAssertTrue(cloudSelected, "Tapping the actual switch thumb did not enable cloud advice")
         input.tap(); input.typeText("layers")
         app.buttons["spatter.studio.send"].tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Cloud not configured · local guide"),
@@ -424,8 +464,15 @@ final class StudioSmokeUITests: XCTestCase {
         if waitForExistence {
             XCTAssertTrue(element.waitForExistence(timeout: 8), "Missing export control: \(identifier)")
         }
-        let panel = app.scrollViews.containing(.button, identifier: "studio.export.format.png").firstMatch
-        XCTAssertTrue(panel.exists, "The export ScrollView is missing")
+        // iOS prunes scrolled-offscreen format buttons from AX after sharing.
+        // Locate the unique actual ancestor of the requested export control.
+        let panels = app.scrollViews.containing(.any, identifier: identifier)
+        let panelCount = panels.count
+        if panelCount != 1 {
+            captureHierarchy(app, name: "export-control-ancestor-failed-" + identifier)
+        }
+        XCTAssertEqual(panelCount, 1, "The requested export control has no unique ScrollView ancestor")
+        let panel = panels.firstMatch
         // Each AX query can take a second on CI. Return as soon as the actual
         // element is fully visible; never re-evaluate a satisfied loop filter.
         for attempt in 0...8 {
