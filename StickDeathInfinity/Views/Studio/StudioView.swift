@@ -10,6 +10,8 @@ struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
     @Environment(\.dismiss) var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var authVM: AuthViewModel
+    @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
     var body: some View {
         Group {
@@ -47,8 +49,21 @@ struct StudioView: View {
         .sheet(isPresented: showAIVoiceBinding) {
             AIVoiceMakerSheet(vm: vm)
         }
-        .sheet(isPresented: showSpatterBinding) {
-            SpatterAISheet(vm: vm)
+        .sheet(isPresented: showSpatterBinding, onDismiss: {
+            guard let request = spatterExportRequest else { return }
+            spatterExportRequest = nil
+            guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
+                  authVM.userId == request.accountID, vm.document.id == request.projectID,
+                  vm.document.revision == request.revision else {
+                vm.message = "The project changed before export opened. Open Export for the current project."
+                return
+            }
+            vm.activePanel = .export
+        }) {
+            SpatterAISheet(vm: vm, onExport: {
+                spatterExportRequest = (vm.document.id, vm.document.revision, authVM.userId)
+                vm.activePanel = .none
+            })
         }
         .sheet(isPresented: showMagicCutBinding) {
             MagicCutSheet(vm: vm)
@@ -801,6 +816,8 @@ struct AIVoiceMakerSheet: View {
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    let onExport: () -> Void
+    @State private var showLocalRecipe = false
     @StateObject private var spatterVM = SpatterAIViewModel()
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var prompt = ""
@@ -810,6 +827,9 @@ struct SpatterAISheet: View {
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
+            if showLocalRecipe {
+                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onExport: onExport)
+            } else {
             VStack(spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
@@ -827,6 +847,10 @@ struct SpatterAISheet: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
+                    Button("Create local motion…") { showLocalRecipe = true }
+                        .font(.caption).foregroundColor(.red)
+                        .disabled(spatterVM.isThinking)
+                        .accessibilityIdentifier("spatter.studio.local-motion")
                     Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.cloud")
@@ -880,6 +904,7 @@ struct SpatterAISheet: View {
                     .accessibilityIdentifier("spatter.studio.send")
                 }
                 .padding(16)
+            }
             }
         }
         .onDisappear { spatterVM.endSession() }

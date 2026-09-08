@@ -261,6 +261,43 @@ jobs:
             Tests/SpatterConversation/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-conversation-tests"
           "$RUNNER_TEMP/sdi-spatter-conversation-tests"
+      - name: Verify explicit local motion recipes through production Studio commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            Tests/SpatterMotionRecipe/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-motion-tests"
+          "$RUNNER_TEMP/sdi-spatter-motion-tests"
+      - name: Verify cancellable Studio edits and factual persistence state
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            Tests/SpatterStudioEditSession/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
+          "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |
