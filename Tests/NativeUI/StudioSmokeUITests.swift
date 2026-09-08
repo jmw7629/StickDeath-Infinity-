@@ -87,6 +87,152 @@ final class StudioSmokeUITests: XCTestCase {
         capture(reopenedApp, name: "persisted-stroke-reopened")
     }
 
+    /// A screenshot comparison of the actual decoded export preview proves the
+    /// user-visible PNG changes with the document. It does not read app-sandbox
+    /// bytes from the UI runner or claim an external destination received them.
+    @MainActor
+    func testPNGExportPreviewAndNativeShareCancellation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+
+        try openExportPanel(app)
+        try exportControl("studio.export.format.png", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let blankPreview = try waitForPNGPreview(app)
+        let blankPixels = try pixels(blankPreview.screenshot().image)
+        capture(app, name: "png-export-blank-preview")
+        try closeExportPanel(app)
+
+        // Draw on the actual canvas and create a second export from the changed
+        // document. The preview is loaded from the returned PNG URL by the app.
+        XCTAssertTrue(canvas.isHittable)
+        let start = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4))
+        let end = canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6))
+        start.press(forDuration: 0.05, thenDragTo: end)
+        let undo = app.buttons["studio.undo"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        try openExportPanel(app)
+        try exportControl("studio.export.start", app: app).tap()
+        let drawnPreview = try waitForPNGPreview(app)
+        let drawnPixels = try pixels(drawnPreview.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blankPixels, drawnPixels), 12,
+                             "Drawing did not change the preview decoded from the actual exported PNG")
+        XCTAssertTrue(app.staticTexts["frame_000000.png"].exists)
+        capture(app, name: "png-export-drawn-preview")
+        let share = try exportControl("studio.export.share", app: app)
+        XCTAssertTrue(share.isEnabled); share.tap()
+
+        // Save to Files is a native share action, not a button in our panel.
+        // Assert its presentation but do not invoke a destination or upload.
+        let saveToFiles = app.buttons.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        let sheetPresented = saveToFiles.waitForExistence(timeout: 10)
+        capture(app, name: "png-native-share-sheet")
+        captureHierarchy(app, name: "png-native-share-sheet-hierarchy")
+        XCTAssertTrue(sheetPresented, "The native share sheet did not expose its file action")
+        let closeCandidates = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Close", "Cancel"))
+        let dismiss = try XCTUnwrap(closeCandidates.allElementsBoundByIndex.first(where: { $0.isHittable }),
+                                   "Native share sheet has no accessible dismissal control; inspect its recorded hierarchy")
+        dismiss.tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. Your export is still available."),
+                                  evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        let retainedPreview = try exportControl("studio.export.preview", app: app)
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawnPixels, pixels(retainedPreview.screenshot().image)), 4,
+                                 "Cancelling the share sheet lost or changed the export preview")
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled,
+                      "Cancelled sharing must leave real files available for retry")
+        capture(app, name: "png-share-cancelled-files-retained")
+    }
+
+    @MainActor
+    func testSpritesheetSizeErrorThenPNGExportRecovery() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let addFrame = app.buttons["studio.add-frame"]
+        XCTAssertTrue(addFrame.waitForExistence(timeout: 8)); XCTAssertTrue(addFrame.isHittable)
+        // Seven default portrait frames form a 3x3 sheet (18,662,400 pixels),
+        // above the declared 16,777,216 limit. The PNG sequence stays in bounds.
+        for _ in 0..<6 { addFrame.tap() }
+        try openExportPanel(app)
+        XCTAssertTrue(app.staticTexts["Original canvas · 1080 × 1920"].exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 frames")).firstMatch.exists)
+        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "exceeds the current safe"),
+                                  evaluatedWith: status).waitUntilFulfilled(timeout: 10))
+        XCTAssertFalse(app.descendants(matching: .any)["studio.export.preview"].firstMatch.exists)
+        XCTAssertFalse(app.buttons["studio.export.share"].exists,
+                       "An export size error must not expose a fake ready file or share action")
+        capture(app, name: "spritesheet-real-size-error")
+        captureHierarchy(app, name: "spritesheet-size-error-hierarchy")
+
+        try exportControl("studio.export.format.png", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        _ = try waitForPNGPreview(app)
+        XCTAssertTrue(app.staticTexts["7 PNG files + timing manifest"].exists)
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
+        capture(app, name: "png-export-after-size-error")
+    }
+
+    @MainActor
+    private func openExportPanel(_ app: XCUIApplication) throws {
+        let open = app.buttons["studio.export.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); XCTAssertTrue(open.isHittable)
+        open.tap()
+        XCTAssertTrue(app.buttons["studio.export.format.png"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    private func closeExportPanel(_ app: XCUIApplication) throws {
+        let toggle = app.buttons["studio.export.open"]
+        XCTAssertTrue(toggle.isHittable); toggle.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                                  evaluatedWith: app.buttons["studio.export.start"]).waitUntilFulfilled(timeout: 5))
+    }
+
+    @MainActor
+    private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true) throws -> XCUIElement {
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        XCTAssertTrue(element.waitForExistence(timeout: 8), "Missing export control: \(identifier)")
+        let panel = app.scrollViews.containing(.button, identifier: "studio.export.format.png").firstMatch
+        func isFullyVisible() -> Bool {
+            element.isHittable && panel.exists && panel.frame.insetBy(dx: 0, dy: 2).contains(element.frame)
+        }
+        for _ in 0..<8 where !isFullyVisible() {
+            XCTAssertTrue(panel.exists, "The export ScrollView is missing")
+            let upward = element.frame.isEmpty ? scrollUp : element.frame.maxY > panel.frame.maxY - 2
+            // Small drags within the actual ScrollView avoid overshooting a
+            // partially visible preview; no guessed window coordinates.
+            let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.7 : 0.3))
+            let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
+            start.press(forDuration: 0.1, thenDragTo: end)
+        }
+        XCTAssertTrue(isFullyVisible(), "Export control is not fully reachable: \(identifier)")
+        return element
+    }
+
+    @MainActor
+    private func waitForPNGPreview(_ app: XCUIApplication) throws -> XCUIElement {
+        let preview = app.descendants(matching: .any)["studio.export.preview"].firstMatch
+        XCTAssertTrue(preview.waitForExistence(timeout: 30), "No preview decoded from the actual PNG output appeared")
+        let visible = try exportControl("studio.export.preview", app: app)
+        XCTAssertGreaterThan(visible.frame.width, 20); XCTAssertGreaterThan(visible.frame.height, 20)
+        XCTAssertTrue(app.staticTexts["studio.export.status"].label.contains("Export ready"))
+        return visible
+    }
+
+    @MainActor
+    private func captureHierarchy(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = name; attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
     @MainActor
     private func launchGuestStudio() throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment

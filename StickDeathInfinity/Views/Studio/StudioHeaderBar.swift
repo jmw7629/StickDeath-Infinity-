@@ -68,6 +68,8 @@ struct StudioHeaderBar: View {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
             }
+            .accessibilityLabel("Export")
+            .accessibilityIdentifier("studio.export.open")
             
             // Menu (⋯)
             Button(action: {

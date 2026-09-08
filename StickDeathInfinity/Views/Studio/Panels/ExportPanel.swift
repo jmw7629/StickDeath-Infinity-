@@ -1,5 +1,7 @@
 import SwiftUI
 import UIKit
+import ImageIO
+import UniformTypeIdentifiers
 
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
@@ -81,19 +83,29 @@ struct ExportPanel: View {
                     }
                     if let output = session.output {
                         VStack(alignment: .leading, spacing: 10) {
-                            sectionLabel("READY ON THIS DEVICE")
+                            sectionLabel(session.previewImage == nil ? "EXPORT FILES UNAVAILABLE" : "READY ON THIS DEVICE")
                             Text("\(output.imageURLs.count) PNG \(output.imageURLs.count == 1 ? "file" : "files") + timing manifest")
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
                             Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.6))
+                            if let preview = session.previewImage {
+                                Image(decorative: preview, scale: 1)
+                                    .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 180)
+                                    .accessibilityElement(children: .ignore)
+                                    .accessibilityLabel("Exported PNG preview")
+                                    .accessibilityIdentifier("studio.export.preview")
+                                Text(output.imageURLs.first?.lastPathComponent ?? "")
+                                    .font(.system(size: 9, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.6))
+                            }
                             Button(action: shareExport) {
                                 Label("Share files / Save to Files", systemImage: "square.and.arrow.up")
                                     .font(.system(size: 12, weight: .bold, design: .monospaced))
                                     .frame(maxWidth: .infinity).padding(12)
                                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                             }
-                            .disabled(session.isSharing || session.isRunning)
+                            .disabled(session.isSharing || session.isRunning || session.previewImage == nil)
                             .accessibilityIdentifier("studio.export.share")
                             Text("Choose a destination in the iOS share sheet. Files stay available until you close this panel or create another export.")
                                 .font(.system(size: 10, design: .monospaced))
@@ -186,6 +198,7 @@ final class StudioExportSession: ObservableObject {
     @Published private(set) var completedFrames = 0
     @Published private(set) var totalFrames = 0
     @Published private(set) var output: StudioExportService.Output?
+    @Published private(set) var previewImage: CGImage?
     @Published private(set) var errorMessage: String?
     @Published private(set) var notice: String?
     private var task: Task<Void, Never>?
@@ -205,6 +218,7 @@ final class StudioExportSession: ObservableObject {
                         completedFrames = completed; totalFrames = total
                     })
                 output = result
+                try loadPreview(result)
                 notice = "Export ready. Files were created on this device."
             } catch is CancellationError {
                 notice = "Export cancelled."
@@ -226,9 +240,12 @@ final class StudioExportSession: ObservableObject {
         guard !isRunning, !isSharing, !isClosed, let output else { return nil }
         let urls = output.imageURLs + [output.manifestURL]
         guard urls.allSatisfy({ FileManager.default.fileExists(atPath: $0.path) }) else {
+            previewImage = nil
             errorMessage = "An export file is no longer available. Create the export again."
             return nil
         }
+        do { try loadPreview(output) }
+        catch { errorMessage = error.localizedDescription; return nil }
         errorMessage = nil; notice = nil; isSharing = true
         return urls
     }
@@ -247,13 +264,52 @@ final class StudioExportSession: ObservableObject {
         if !isSharing { _ = removeOutput() }
     }
 
+    // Decode a bounded thumbnail from the returned PNG file, never from the
+    // canvas or editor. The source's compressed bytes and image dimensions are
+    // checked before thumbnail decoding; full-size bitmaps are not retained.
+    private func loadPreview(_ output: StudioExportService.Output) throws {
+        previewImage = nil
+        guard let url = output.imageURLs.first, url.isFileURL,
+              let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              let byteCount = values.fileSize, byteCount > 0,
+              byteCount <= StudioExportService.maximumOutputBytes,
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetType(source) as String? == UTType.png.identifier,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width == output.manifest.imageWidth, height == output.manifest.imageHeight,
+              width > 0, height > 0, width <= 8192, height <= 8192,
+              width * height <= StudioExportService.maximumSheetPixels,
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: 640,
+                kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary),
+              image.width <= 640, image.height <= 640,
+              CGImageSourceGetStatus(source) == .statusComplete,
+              CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else {
+            throw PreviewError.unavailable
+        }
+        previewImage = image
+    }
+
+    private enum PreviewError: LocalizedError {
+        case unavailable
+        var errorDescription: String? {
+            "The exported PNG is missing or cannot be previewed. Create the export again before sharing."
+        }
+    }
+
     private func removeOutput() -> Bool {
         guard let output else { return true }
         do {
             if FileManager.default.fileExists(atPath: output.directory.path) {
                 try FileManager.default.removeItem(at: output.directory)
             }
-            self.output = nil
+            self.output = nil; previewImage = nil
             return true
         } catch {
             errorMessage = "The previous export could not be removed. Its files were kept; try again before exporting another copy."
