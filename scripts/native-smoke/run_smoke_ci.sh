@@ -55,11 +55,23 @@ python3 "$sdi_script_dir/run_recorded_test.py" \
   -destination "platform=iOS Simulator,id=$SDI_SMOKE_SIMULATOR_UDID" \
   -resultBundlePath "$sdi_results" -parallel-testing-enabled NO \
   -maximum-concurrent-test-simulator-destinations 1 -test-timeouts-enabled YES \
-  -default-test-execution-time-allowance 120 -maximum-test-execution-time-allowance 180
+  -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180
 sdi_test_status=$?
 set -e
+sdi_evidence_status=0
 if [[ -d "$sdi_results" ]]; then
-  xcrun xcresulttool export attachments --path "$sdi_results" --output-path "$sdi_run/attachments"
-  xcrun xcresulttool get test-results summary --path "$sdi_results" > "$sdi_run/test-summary.json"
+  if ! xcrun xcresulttool export attachments --path "$sdi_results" --output-path "$sdi_run/attachments" \
+      > "$sdi_run/attachment-export.log" 2>&1; then
+    sdi_evidence_status=3
+  fi
+  if ! xcrun xcresulttool get test-results summary --path "$sdi_results" \
+      > "$sdi_run/test-summary.json" 2> "$sdi_run/summary-export.log"; then
+    sdi_evidence_status=3
+  fi
+else
+  sdi_evidence_status=3
 fi
-exit "$sdi_test_status"
+# Preserve the real test failure code even when its incomplete result cannot be
+# exported. A successful test with missing required evidence also remains red.
+if [[ "$sdi_test_status" != 0 ]]; then exit "$sdi_test_status"; fi
+exit "$sdi_evidence_status"

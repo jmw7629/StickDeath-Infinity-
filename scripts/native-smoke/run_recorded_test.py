@@ -10,6 +10,22 @@ import sys
 import time
 
 
+def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
+    """Finalize only a child retained by this invocation; never use a saved PID."""
+    if process.poll() is not None:
+        return process.wait()
+    process.send_signal(signal.SIGINT)
+    try:
+        return process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        process.terminate()
+        try:
+            return process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return process.wait(timeout=10)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--udid", required=True)
@@ -44,6 +60,10 @@ def main() -> int:
     recording_error = None
     recording_exit = None
     test_exit = 125
+    test_process_exit = None
+    # Four UI journeys, each capped at 180s, plus simulator/test-runner startup.
+    # The workflow's separate 35-minute deadline still bounds build and testing.
+    test_timeout_seconds = 900
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)
@@ -52,15 +72,22 @@ def main() -> int:
         recorder = subprocess.Popen(
             ["xcrun", "simctl", "io", args.udid, "recordVideo", "--codec=h264", str(video)],
             stdout=record_log, stderr=subprocess.STDOUT)
+        test_process = None
         try:
             time.sleep(1)
             if recorder.poll() is not None:
                 recording_error = "Recorder exited before UI tests started"
             try:
-                test_exit = subprocess.run(command, stdout=test_log, stderr=subprocess.STDOUT, timeout=480).returncode
+                test_process = subprocess.Popen(command, stdout=test_log, stderr=subprocess.STDOUT)
+                test_exit = test_process.wait(timeout=test_timeout_seconds)
             except subprocess.TimeoutExpired:
                 test_exit = 124
         finally:
+            # SIGINT gives xcodebuild a bounded chance to finalize xcresult.
+            # subprocess.run(timeout=...) killed it immediately, leaving the
+            # observed b3ca09f result bundle unreadable after the suite deadline.
+            if test_process is not None:
+                test_process_exit = stop_owned_process(test_process)
             # This handle refers only to the child started immediately above.
             # Popen retains/waits its child; no remembered or externally supplied PID.
             if recorder.poll() is None:
@@ -86,7 +113,8 @@ def main() -> int:
         recording_error = recording_error or "Recording is absent, unreadable or has no valid video frames/duration"
     report = {"simulatorUDID": args.udid, "simulatorName": selected[0]["name"],
               "uiTestExitCode": test_exit, "recordingExitCode": recording_exit,
-              "recordingError": recording_error}
+              "recordingError": recording_error, "uiProcessExitCode": test_process_exit,
+              "uiSuiteTimeoutSeconds": test_timeout_seconds}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     if test_exit != 0:
