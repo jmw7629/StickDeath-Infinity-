@@ -67,6 +67,25 @@ final class StudioMovieExportService {
     /// Captured before publication, then carried across the same-parent rename.
     /// All deletion is descriptor-relative, no-follow, and nonrecursive. MainActor
     /// serializes API callers; no awaits or caller callbacks occur in cleanup.
+    /// Carries identities captured from our original open descriptors across
+    /// the encoding-to-returned-output boundary. Matching bytes alone cannot
+    /// transfer cleanup ownership to a replacement inode.
+    fileprivate struct CreatedIdentity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        let kind: mode_t
+        let links: nlink_t
+        init(_ value: stat) {
+            device = value.st_dev; inode = value.st_ino
+            kind = value.st_mode & mode_t(S_IFMT); links = value.st_nlink
+        }
+    }
+    fileprivate struct PublicationIdentity {
+        let parent: CreatedIdentity
+        let directory: CreatedIdentity
+        let files: [String: CreatedIdentity]
+    }
+
     @MainActor fileprivate final class OutputOwnership {
         private struct Identity: Equatable {
             let device: dev_t
@@ -91,7 +110,8 @@ final class StudioMovieExportService {
         private var currentURL: URL { parentURL.appendingPathComponent(name, isDirectory: true) }
 
         init(parent: URL, staging: URL, movieDigest: SHA256.Digest,
-             movieBytes: Int, manifestData: Data) throws {
+             movieBytes: Int, manifestData: Data, original: PublicationIdentity) throws {
+            guard Set(original.files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw ExportError.unsafeDestination }
             parentURL = parent; name = staging.lastPathComponent
             var parentInfo = stat()
             guard lstat(parent.path, &parentInfo) == 0, Self.directory(parentInfo) else { throw ExportError.unsafeDestination }
@@ -99,12 +119,13 @@ final class StudioMovieExportService {
             guard openedParent >= 0 else { throw ExportError.unsafeDestination }
             var parentOpenedInfo = stat()
             guard fstat(openedParent, &parentOpenedInfo) == 0, Self.directory(parentOpenedInfo),
-                  Identity(parentInfo) == Identity(parentOpenedInfo) else {
+                  Identity(parentInfo) == Identity(parentOpenedInfo), CreatedIdentity(parentOpenedInfo) == original.parent else {
                 _ = Darwin.close(openedParent); throw ExportError.unsafeDestination
             }
             let openedDirectory = openat(openedParent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
             var directoryInfo = stat()
-            guard openedDirectory >= 0, fstat(openedDirectory, &directoryInfo) == 0, Self.directory(directoryInfo) else {
+            guard openedDirectory >= 0, fstat(openedDirectory, &directoryInfo) == 0, Self.directory(directoryInfo),
+                  CreatedIdentity(directoryInfo) == original.directory else {
                 if openedDirectory >= 0 { _ = Darwin.close(openedDirectory) }
                 _ = Darwin.close(openedParent); throw ExportError.unsafeDestination
             }
@@ -119,7 +140,8 @@ final class StudioMovieExportService {
                     let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
                     guard fd >= 0 else { throw ExportError.unsafeDestination }
                     var info = stat()
-                    guard fstat(fd, &info) == 0, Self.regular(info), info.st_nlink == 1, info.st_size == size else {
+                    guard fstat(fd, &info) == 0, Self.regular(info), info.st_nlink == 1, info.st_size == size,
+                          CreatedIdentity(info) == original.files[filename] else {
                         _ = Darwin.close(fd); throw ExportError.unsafeDestination
                     }
                     files[filename] = FileRecord(fd: fd, identity: Identity(info), bytes: size, digest: digest)
@@ -374,6 +396,28 @@ final class StudioMovieExportService {
                 if files[name] == nil { return true }
             }
         }
+        /// Validate paths against the descriptors retained at writer start and
+        /// exclusive manifest creation, then carry those same identities into
+        /// the final owner's reopened descriptors. No callback or suspension
+        /// occurs during this transfer, and the constructor rechecks identity.
+        func publicationIdentity() throws -> PublicationIdentity {
+            try confirmDirectories()
+            guard Set(files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw ExportError.cleanupFailed(stagingURL) }
+            var parent = stat(), directory = stat()
+            guard fstat(parentFD, &parent) == 0, Identity(parent) == parentIdentity,
+                  fstat(directoryFD, &directory) == 0, Identity(directory) == directoryIdentity else { throw ExportError.cleanupFailed(stagingURL) }
+            var captured: [String: CreatedIdentity] = [:]
+            for (name, record) in files {
+                guard try presentAndOwned(name, record: record) else { throw ExportError.cleanupFailed(stagingURL) }
+                var info = stat()
+                guard fstat(record.fd, &info) == 0, Identity(info) == record.identity,
+                      info.st_mode & S_IFMT == S_IFREG, info.st_nlink == 1 else { throw ExportError.cleanupFailed(stagingURL) }
+                captured[name] = CreatedIdentity(info)
+            }
+            try confirmDirectories()
+            return PublicationIdentity(parent: CreatedIdentity(parent), directory: CreatedIdentity(directory), files: captured)
+        }
+
         /// The caller releases AVAssetWriter first. Its opaque files may settle
         /// asynchronously. The wait ignores caller cancellation so owned cleanup
         /// still runs; a persistent unknown entry preserves the complete set.
@@ -580,11 +624,13 @@ final class StudioMovieExportService {
             // Bind the verification to these exact bytes even if a caller's
             // progress callback or another app task changed its cache contents.
             guard try fingerprint(movie, started: started) == verifiedBytes else { throw ExportError.verificationFailed }
-            // Capture file descriptors and verified bytes before publication.
-            // Do not infer returned-file ownership by reopening its future URL.
+            // Byte verification is insufficient if a caller replaced a file
+            // with an identical clone. The final owner must inherit the actual
+            // encoder/manifest descriptor identities before it may clean them.
+            let originalIdentity = try encodingOwnership!.publicationIdentity()
             capturingOutputOwnership = true
             let ownership = try OutputOwnership(parent: parent, staging: staging,
-                movieDigest: verifiedBytes, movieBytes: bytes, manifestData: manifestData)
+                movieDigest: verifiedBytes, movieBytes: bytes, manifestData: manifestData, original: originalIdentity)
             outputOwnership = ownership
             try ownership.publish(to: destination)
             try checkpoint(started)

@@ -708,8 +708,132 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let result = try await decode(foreign!.deletingLastPathComponent().appendingPathComponent("animation.mp4"))
             try require(result.frames.count == 3, "Manifest collision deleted or damaged the verified movie")
         }
+        await test("publishing byte-identical movie clone is preserved and cannot become returned ownership") {
+            let folder = try parent(root, "publishing-identical-movie"), moved = root.appendingPathComponent("publishing-movie-original.mp4")
+            var replacement: URL?, originalBytes: Data?, originalInode: UInt64?, foreignInode: UInt64?
+            try await rejected({
+                _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                    if progress.phase == .publishing {
+                        let staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!
+                        let file = staging.appendingPathComponent("animation.mp4")
+                        originalBytes = try Data(contentsOf: file); originalInode = try inode(file)
+                        try fm.moveItem(at: file, to: moved); try originalBytes!.write(to: file, options: .withoutOverwriting)
+                        replacement = file; foreignInode = try inode(file)
+                    }
+                }
+            }, matching: { if case Service.ExportError.cleanupFailed = $0 { return true }; return false })
+            try require(originalInode != foreignInode && inode(replacement!) == foreignInode && inode(moved) == originalInode, "Replacement fixture did not retain distinct original and foreign inodes")
+            try require(Data(contentsOf: replacement!) == originalBytes! && Data(contentsOf: moved) == originalBytes!, "Byte-identical foreign movie or original was deleted or changed")
+            try require(fm.fileExists(atPath: replacement!.deletingLastPathComponent().appendingPathComponent("manifest.json").path), "Ownership refusal deleted the other output")
+            let original = try await decode(moved), foreign = try await decode(replacement!)
+            try require(original.frames.count == 3 && foreign.frames.count == 3, "Real movie copies failed decode")
+        }
+        await test("publishing byte-identical manifest clone is preserved and cannot become returned ownership") {
+            let folder = try parent(root, "publishing-identical-manifest"), moved = root.appendingPathComponent("publishing-manifest-original.json")
+            var replacement: URL?, originalBytes: Data?, originalInode: UInt64?, foreignInode: UInt64?
+            try await rejected({
+                _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                    if progress.phase == .publishing {
+                        let staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!, file = staging.appendingPathComponent("manifest.json")
+                        originalBytes = try Data(contentsOf: file); originalInode = try inode(file)
+                        try fm.moveItem(at: file, to: moved); try originalBytes!.write(to: file, options: .withoutOverwriting)
+                        replacement = file; foreignInode = try inode(file)
+                    }
+                }
+            }, matching: { if case Service.ExportError.cleanupFailed = $0 { return true }; return false })
+            try require(originalInode != foreignInode && inode(replacement!) == foreignInode && inode(moved) == originalInode, "Manifest replacement identities changed")
+            try require(Data(contentsOf: replacement!) == originalBytes! && Data(contentsOf: moved) == originalBytes!, "Foreign manifest or original was lost")
+            let decoded = try await decode(replacement!.deletingLastPathComponent().appendingPathComponent("animation.mp4"))
+            try require(decoded.frames.count == 3, "Manifest refusal removed the verified movie")
+        }
+        await test("both identical output clones preserve whole set at transfer") {
+            let folder = try parent(root, "publishing-identical-pair"), originals = try parent(root, "publishing-original-pair")
+            var staging: URL?, records: [String: (Data, UInt64)] = [:]
+            try await rejected({
+                _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                    if progress.phase == .publishing {
+                        staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!
+                        for name in ["animation.mp4", "manifest.json"] {
+                            let file = staging!.appendingPathComponent(name), bytes = try Data(contentsOf: file), id = try inode(file)
+                            records[name] = (bytes, id); try fm.moveItem(at: file, to: originals.appendingPathComponent(name)); try bytes.write(to: file, options: .withoutOverwriting)
+                        }
+                    }
+                }
+            }, matching: { if case Service.ExportError.cleanupFailed = $0 { return true }; return false })
+            for (name, record) in records {
+                try require(Data(contentsOf: staging!.appendingPathComponent(name)) == record.0 && Data(contentsOf: originals.appendingPathComponent(name)) == record.0, "Pair cleanup deleted original or foreign bytes")
+                try require(inode(staging!.appendingPathComponent(name)) != record.1 && inode(originals.appendingPathComponent(name)) == record.1, "Pair inode adoption")
+            }
+            try require(records.count == 2, "Both actual outputs reached transfer")
+        }
+        await test("identical completed movie replaced before verifier fingerprint is not adopted later") {
+            let folder = try parent(root, "verifying-identical-movie"), moved = root.appendingPathComponent("verifying-original.mp4")
+            var foreign: URL?, bytes: Data?
+            try await rejected({
+                _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                    if progress.phase == .verifying {
+                        let staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!, file = staging.appendingPathComponent("animation.mp4")
+                        bytes = try Data(contentsOf: file); try fm.moveItem(at: file, to: moved); try bytes!.write(to: file, options: .withoutOverwriting); foreign = file
+                    }
+                }
+            }, matching: { if case Service.ExportError.cleanupFailed = $0 { return true }; return false })
+            try require(Data(contentsOf: foreign!) == bytes! && Data(contentsOf: moved) == bytes!, "Verifier fingerprint adopted a pre-verification clone")
+            let decoded = try await decode(foreign!); try require(decoded.frames.count == 3, "Completed clone was damaged")
+        }
+        await test("hardlink at transfer fails closed without unlinking either owner link") {
+            let folder = try parent(root, "publishing-hardlink"), alias = root.appendingPathComponent("other-owner-hardlink.mp4")
+            var original: URL?, bytes: Data?
+            try await rejected({
+                _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                    if progress.phase == .publishing {
+                        original = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!.appendingPathComponent("animation.mp4")
+                        bytes = try Data(contentsOf: original!); try fm.linkItem(at: original!, to: alias)
+                    }
+                }
+            })
+            try require(inode(original!) == inode(alias) && Data(contentsOf: original!) == bytes! && Data(contentsOf: alias) == bytes!, "Transfer removed an added hardlink")
+            try require(fm.fileExists(atPath: original!.deletingLastPathComponent().appendingPathComponent("manifest.json").path), "Hardlink refusal deleted the manifest")
+        }
+        await test("clone plus callback failure preserves replacement and original in both explicit files") {
+            for name in ["animation.mp4", "manifest.json"] {
+                let folder = try parent(root, "publishing-clone-then-error-" + name)
+                var foreign: URL?, bytes: Data?
+                let moved = root.appendingPathComponent("error-original-" + name)
+                try await rejected({
+                    _ = try await Service().export(snapshot: snapshot(document()), outputParent: folder, background: .white) { progress in
+                        if progress.phase == .publishing {
+                            let staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!
+                            foreign = staging.appendingPathComponent(name); bytes = try Data(contentsOf: foreign!)
+                            try fm.moveItem(at: foreign!, to: moved); try bytes!.write(to: foreign!, options: .withoutOverwriting)
+                            throw Failure(message: "Original caller failure after clone")
+                        }
+                    }
+                }, matching: { if case Service.ExportError.cleanupFailed = $0 { return true }; return false })
+                try require(Data(contentsOf: foreign!) == bytes! && Data(contentsOf: moved) == bytes!, "Caller failure deleted clone or original")
+            }
+        }
+        await test("unmodified inode survives final transfer despite legitimate metadata-only change") {
+            let folder = try parent(root, "publication-same-inode"), doc = try document()
+            var movieInode: UInt64?, manifestInode: UInt64?
+            let output = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white) { progress in
+                if progress.phase == .publishing {
+                    let staging = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!
+                    let movie = staging.appendingPathComponent("animation.mp4"), manifest = staging.appendingPathComponent("manifest.json")
+                    movieInode = try inode(movie); manifestInode = try inode(manifest)
+                    try fm.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)], ofItemAtPath: movie.path)
+                }
+            }
+            try require(inode(output.movieURL) == movieInode && inode(output.manifestURL) == manifestInode, "Successful transfer changed an inode")
+            let result = try await decode(output.movieURL); try require(result.frames.count == 3, "Metadata-only change damaged media")
+            _ = try output.checkedURLs(); try output.cleanup(); try require(contents(folder).isEmpty, "Original owned output could not clean")
+        }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed != 0 { exit(1) }
+    }
+    static func inode(_ url: URL) throws -> UInt64 {
+        let attributes = try fm.attributesOfItem(atPath: url.path)
+        guard let value = attributes[.systemFileNumber] as? NSNumber else { throw Failure(message: "Actual inode unavailable") }
+        return value.uint64Value
     }
     static func tryAudioRejection(_ input: Service.Snapshot, folder: URL) async throws {
         try await rejected({ _ = try await Service().export(snapshot: input, outputParent: folder, background: .white) }, matching: { if case Service.ExportError.audioUnsupported = $0 { return true }; return false })
