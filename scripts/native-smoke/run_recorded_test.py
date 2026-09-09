@@ -61,9 +61,9 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Seven UI journeys, each capped at 180s, plus simulator/test-runner startup.
+    # Eight UI journeys, each capped at 180s, plus simulator/test-runner startup.
     # The workflow's separate 40-minute deadline still bounds build and testing.
-    test_timeout_seconds = 1470
+    test_timeout_seconds = 1680
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)

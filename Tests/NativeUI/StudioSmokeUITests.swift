@@ -441,6 +441,103 @@ final class StudioSmokeUITests: XCTestCase {
         capture(reopenedApp, name: "brush-stipple-persisted-reopened")
     }
 
+    /// A different complete instruction from the example must create real
+    /// editable content and a decoded exported file through ordinary controls.
+    @MainActor
+    func testSpatterLocalMotionEditsExportsAndReopens() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        let before = try pixels(canvas.screenshot().image)
+        app.buttons["studio.menu.open"].tap()
+        let open = app.buttons["studio.spatter.open"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8)); open.tap()
+        let motion = app.buttons["spatter.studio.local-motion"]
+        XCTAssertTrue(motion.waitForExistence(timeout: 8)); XCTAssertTrue(motion.isHittable); motion.tap()
+        let instruction = "Append 5 frames of a blue outlined circle moving from (30%, 40%) to (70%, 60%), radius 6%, line width 12 px."
+        let input = try localMotionControl("spatter.motion.input", app: app)
+        input.tap(); input.typeText(instruction)
+        let keyboardDone = app.buttons["spatter.motion.keyboard.done"]
+        XCTAssertTrue(keyboardDone.waitForExistence(timeout: 5)); XCTAssertTrue(keyboardDone.isHittable); keyboardDone.tap()
+        try localMotionControl("spatter.motion.apply", app: app).tap()
+        let receipt = try localMotionControl("spatter.motion.result", app: app)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
+            "Added 5 editable frames at 12 FPS (0.417 seconds) in one undoable local edit."),
+            evaluatedWith: receipt).waitUntilFulfilled(timeout: 8))
+        let retainedInput = try localMotionControl("spatter.motion.input", app: app, scrollUp: false)
+        XCTAssertEqual(retainedInput.value as? String, instruction, "Executing a recipe discarded the user's exact draft")
+        try localMotionControl("spatter.motion.save", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"),
+            evaluatedWith: app.staticTexts["spatter.motion.save-state"]).waitUntilFulfilled(timeout: 8))
+        capture(app, name: "spatter-five-frame-local-receipt")
+        try localMotionControl("spatter.motion.export", app: app).tap()
+        XCTAssertTrue(app.buttons["studio.export.format.png"].waitForExistence(timeout: 8),
+                      "Spatter did not open the real native export controls")
+        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let preview = try waitForPNGPreview(app)
+        let exported = try pixels(preview.screenshot().image)
+        var blue = 0
+        for index in stride(from: 0, to: exported.bytes.count, by: 4) {
+            if exported.bytes[index + 2] > 130 && exported.bytes[index] < 100 && exported.bytes[index + 1] < 100 { blue += 1 }
+        }
+        XCTAssertGreaterThan(blue, 12, "The PNG decoded from the spritesheet contains no requested blue motion")
+        capture(app, name: "spatter-motion-real-spritesheet-preview")
+        try closeExportPanel(app)
+        XCTAssertTrue(canvas.isHittable)
+        let edited = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(before, edited), 12, "Spatter's receipt did not create visible editable content")
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        XCTAssertTrue(undo.isEnabled); undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
+                                 "One Undo did not reverse the complete recipe")
+        XCTAssertFalse(undo.isEnabled, "Recipe creation unexpectedly required multiple Undo operations")
+        redo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]
+        save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopenedApp = try launchGuestStudio()
+        defer { reopenedApp.terminate() }
+        let savedProject = reopenedApp.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(savedProject.waitForExistence(timeout: 8)); savedProject.tap()
+        let reopenedCanvas = reopenedApp.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8))
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(reopenedCanvas.screenshot().image)), 4,
+                                 "Relaunch lost the actual Spatter-created document")
+        capture(reopenedApp, name: "spatter-motion-persisted-reopened")
+    }
+
+    @MainActor
+    private func localMotionControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true) throws -> XCUIElement {
+        let scroll = app.scrollViews["spatter.motion.scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 8), "The actual local recipe ScrollView is missing")
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        for attempt in 0...8 {
+            let exists = element.exists
+            let frame = exists ? element.frame : CGRect.null
+            let viewport = scroll.frame.insetBy(dx: 0, dy: 2)
+            if exists && !frame.isEmpty && viewport.contains(frame) && element.isHittable {
+                return element
+            }
+            guard attempt < 8 else { break }
+            let upward = frame.isEmpty || frame.isNull ? scrollUp : frame.maxY > viewport.maxY
+            let from = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: upward ? 0.75 : 0.35))
+            let to = scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: upward ? 0.4 : 0.7))
+            from.press(forDuration: 0.1, thenDragTo: to)
+        }
+        captureHierarchy(app, name: "local-motion-control-unreachable-" + identifier)
+        XCTFail("Local motion control is unreachable after eight bounded scrolls: \(identifier)")
+        throw NSError(domain: "NativeSpatterMotionSmoke", code: 1)
+    }
+
     @MainActor
     private func openExportPanel(_ app: XCUIApplication) throws {
         let open = app.buttons["studio.export.open"]
