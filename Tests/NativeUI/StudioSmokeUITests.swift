@@ -575,22 +575,35 @@ final class StudioSmokeUITests: XCTestCase {
         var selected = false
         var capturedReadyGrid = false
         repeat {
-            // Re-query actual thumbnails after the Loading controller changes.
-            // iOS 26 exposes Photos as Image nodes in a ScrollView, without a
-            // CollectionView. Readiness must follow the selectable thumbnails.
-            let candidates = app.images.matching(NSPredicate(format: "label CONTAINS[c] %@", "Photo")).allElementsBoundByIndex
-                + app.collectionViews.cells.allElementsBoundByIndex
-            if candidates.contains(where: { $0.isHittable }) {
-                if !capturedReadyGrid {
-                    capture(app, name: "image-photos-grid-ready")
-                    captureHierarchy(app, name: "image-photos-grid-ready-hierarchy")
-                    capturedReadyGrid = true
-                }
+            // This system picker exposes custom thumbnail Images whose
+            // isHittable is false despite visible pixels. Resolve only the
+            // observed Photos viewport and verify the actual thumbnail before
+            // deriving a tap from its current frame; never use fixed positions.
+            let photos = app.navigationBars["Photos"].firstMatch
+            let viewport = app.scrollViews["photosView_content_scroll_view"].firstMatch
+            if photos.exists, viewport.exists {
+                let visibleBounds = viewport.frame.intersection(app.frame)
+                let candidates = viewport.images.matching(identifier: "PXGGridLayout-Info").allElementsBoundByIndex
                 for candidate in candidates.prefix(12) {
                     guard Date() < readyDeadline else { break }
-                    guard candidate.isHittable, candidate.frame.width > 24, candidate.frame.height > 24 else { continue }
+                    guard candidate.exists else { continue }
+                    let frame = candidate.frame
+                    guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }),
+                          frame.width > 24, frame.height > 24, visibleBounds.contains(frame) else { continue }
+                    if !capturedReadyGrid {
+                        capture(app, name: "image-photos-grid-ready")
+                        captureHierarchy(app, name: "image-photos-grid-ready-hierarchy")
+                        capturedReadyGrid = true
+                    }
                     let colors = imageFixtureColors(try pixels(candidate.screenshot().image))
-                    if colors.allSatisfy({ $0 > 8 }) { candidate.tap(); selected = true; break }
+                    if colors.allSatisfy({ $0 > 8 }) {
+                        guard Date() < readyDeadline, photos.exists, viewport.exists, candidate.exists,
+                              candidate.frame == frame,
+                              viewport.frame.intersection(app.frame).contains(frame) else { continue }
+                        candidate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                        selected = true
+                        break
+                    }
                 }
             }
             if !selected { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
