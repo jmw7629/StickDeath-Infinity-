@@ -73,21 +73,23 @@ struct StudioView: View {
         }
     }
     
+    // A late dismissal belongs only to its own sheet; it must not close a
+    // destination panel opened while the sheet dismissal animation finishes.
     // Sheet bindings
     var showMenuBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .menu }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .menu }, set: { if !$0 && vm.activePanel == .menu { vm.activePanel = .none } })
     }
     var showAIVoiceBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .aiVoice }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .aiVoice }, set: { if !$0 && vm.activePanel == .aiVoice { vm.activePanel = .none } })
     }
     var showSpatterBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .spatterAI }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .spatterAI }, set: { if !$0 && vm.activePanel == .spatterAI { vm.activePanel = .none } })
     }
     var showMagicCutBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 && vm.activePanel == .magicCut { vm.activePanel = .none } })
     }
     var showRotoscopeBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 && vm.activePanel == .rotoscope { vm.activePanel = .none } })
     }
 }
 
@@ -435,46 +437,7 @@ struct BackgroundLibraryPanel: View {
 // MARK: - Add Image Panel
 struct AddImagePanel: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var showImagePicker = false
-    
-    var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                PanelHeader(title: "Add Picture", icon: "photo.fill") {
-                    vm.activePanel = .none
-                }
-                
-                VStack(spacing: 16) {
-                    Spacer()
-                    
-                    // Camera
-                    AddImageOption(icon: "camera.fill", title: "Take Photo", subtitle: "Use camera to capture") {
-                        showImagePicker = true
-                    }
-                    
-                    // Photo Library
-                    AddImageOption(icon: "photo.on.rectangle.angled", title: "Photo Library", subtitle: "Choose from your photos") {
-                        showImagePicker = true
-                    }
-                    
-                    // Files
-                    AddImageOption(icon: "folder.fill", title: "Files", subtitle: "Import from Files app") {
-                        showImagePicker = true
-                    }
-                    
-                    // Clipboard
-                    AddImageOption(icon: "doc.on.clipboard.fill", title: "Paste from Clipboard", subtitle: "Paste copied image") {
-                        // Paste from clipboard
-                    }
-                    
-                    Spacer()
-                }
-                .padding(24)
-            }
-        }
-    }
+    var body: some View { StudioImageImportPanel(vm: vm) }
 }
 
 struct AddImageOption: View {

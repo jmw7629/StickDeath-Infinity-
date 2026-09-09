@@ -22,6 +22,57 @@ private actor EncodingObservation {
     func mark() { reached = true }
 }
 
+private enum InjectedCleanupFailure: Error { case stop }
+private actor ScratchInterference {
+    enum Mode { case replaceDirectory, replaceWithSymlink, replaceFile, foreignEntry, replaceParent }
+    let mode: Mode
+    let parent: URL
+    let moved: URL
+    let target: URL
+    private(set) var affected: URL?
+    private var applied = false
+    init(mode: Mode, parent: URL, root: URL) {
+        self.mode = mode; self.parent = parent
+        moved = root.appendingPathComponent("moved-owned")
+        target = root.appendingPathComponent("foreign-target")
+    }
+    func apply(throwAfter: Bool = false) throws {
+        guard !applied else { return }
+        applied = true
+        let fm = FileManager.default
+        guard let directory = try fm.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)
+            .first(where: { $0.lastPathComponent.hasPrefix(".sdi-image-import-") }) else {
+            throw Failure(message: "Production staging directory was not created")
+        }
+        affected = directory
+        let sentinel = Data("foreign bytes must survive".utf8)
+        switch mode {
+        case .replaceDirectory:
+            try fm.moveItem(at: directory, to: moved)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            try sentinel.write(to: directory.appendingPathComponent("foreign.txt"), options: .withoutOverwriting)
+        case .replaceWithSymlink:
+            try fm.moveItem(at: directory, to: moved)
+            try fm.createDirectory(at: target, withIntermediateDirectories: false)
+            try sentinel.write(to: target.appendingPathComponent("source.image"), options: .withoutOverwriting)
+            try fm.createSymbolicLink(at: directory, withDestinationURL: target)
+        case .replaceFile:
+            try fm.moveItem(at: directory.appendingPathComponent("source.image"), to: moved)
+            try sentinel.write(to: directory.appendingPathComponent("source.image"), options: .withoutOverwriting)
+        case .foreignEntry:
+            try sentinel.write(to: directory.appendingPathComponent("foreign.txt"), options: .withoutOverwriting)
+            let nested = directory.appendingPathComponent("foreign-folder")
+            try fm.createDirectory(at: nested, withIntermediateDirectories: false)
+            try sentinel.write(to: nested.appendingPathComponent("nested.txt"), options: .withoutOverwriting)
+        case .replaceParent:
+            try fm.moveItem(at: parent, to: moved)
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            try sentinel.write(to: directory.appendingPathComponent("source.image"), options: .withoutOverwriting)
+        }
+        if throwAfter { throw InjectedCleanupFailure.stop }
+    }
+}
+
 /// Generated pixel patterns are test fixtures, not recovered artwork. Every
 /// import runs the complete production service and Apple ImageIO/CoreGraphics.
 @main struct StudioImageImportTests {
@@ -301,6 +352,94 @@ private actor EncodingObservation {
                 }
             }
             try require(try Data(contentsOf:source)==png,"Cancellation changed selected file")
+        }
+        try await test("replaced staging directories survive normal failure and cancellation at real copy/encoding callbacks") {
+            for (index, phase) in [StudioImageImportService.Progress.Phase.reading, .encoding].enumerated() {
+                let folder = root.appendingPathComponent("replaced-directory-\(index)")
+                let ownScratch = folder.appendingPathComponent("scratch")
+                try fm.createDirectory(at: ownScratch, withIntermediateDirectories: true)
+                defer { try? fm.removeItem(at: folder) }
+                let mutation = ScratchInterference(mode: .replaceDirectory, parent: ownScratch, root: folder)
+                do {
+                    _ = try await service.importImage(from: source, scratchParent: ownScratch) { progress in
+                        if progress.phase == phase {
+                            try await mutation.apply(throwAfter: index == 0)
+                            if index == 1 { throw CancellationError() }
+                        }
+                    }
+                    throw Failure(message: "Replaced staging returned an image receipt")
+                } catch StudioImageImportService.ImportError.cleanupFailed { }
+                let affected = await mutation.affected!
+                try require(try Data(contentsOf: affected.appendingPathComponent("foreign.txt")) == Data("foreign bytes must survive".utf8), "Foreign replacement was deleted or changed")
+                try require(try Data(contentsOf: mutation.moved.appendingPathComponent("source.image")) == png, "Renamed owned original was deleted or changed")
+                try require(try Data(contentsOf: source) == png, "Selected original changed")
+            }
+        }
+        try await test("a symlink replacing staging cannot redirect cleanup to its target") {
+            let folder = root.appendingPathComponent("replaced-symlink"), ownScratch = folder.appendingPathComponent("scratch")
+            try fm.createDirectory(at: ownScratch, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: folder) }
+            let mutation = ScratchInterference(mode: .replaceWithSymlink, parent: ownScratch, root: folder)
+            do {
+                _ = try await service.importImage(from: source, scratchParent: ownScratch) { progress in
+                    if progress.phase == .reading { try await mutation.apply() }
+                }
+                throw Failure(message: "Replaced staging symlink returned an image")
+            } catch StudioImageImportService.ImportError.cleanupFailed { }
+            let affected = await mutation.affected!
+            try require(try fm.destinationOfSymbolicLink(atPath: affected.path) == mutation.target.path, "Replacement symlink was removed")
+            try require(try Data(contentsOf: mutation.target.appendingPathComponent("source.image")) == Data("foreign bytes must survive".utf8), "Cleanup followed a symlink")
+            try require(try Data(contentsOf: mutation.moved.appendingPathComponent("source.image")) == png, "Renamed staging bytes lost")
+        }
+        try await test("replaced source.image identity preserves both foreign file and moved owned bytes") {
+            let folder = root.appendingPathComponent("replaced-file"), ownScratch = folder.appendingPathComponent("scratch")
+            try fm.createDirectory(at: ownScratch, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: folder) }
+            let mutation = ScratchInterference(mode: .replaceFile, parent: ownScratch, root: folder)
+            do {
+                _ = try await service.importImage(from: source, scratchParent: ownScratch) { progress in
+                    if progress.phase == .reading { try await mutation.apply() }
+                }
+                throw Failure(message: "Replaced owned file returned an image")
+            } catch StudioImageImportService.ImportError.cleanupFailed { }
+            let affected = await mutation.affected!
+            try require(try Data(contentsOf: affected.appendingPathComponent("source.image")) == Data("foreign bytes must survive".utf8), "Foreign source.image was removed")
+            try require(try Data(contentsOf: mutation.moved) == png, "Moved actual copy was removed")
+        }
+        try await test("unrecognized files and nested directories in owned staging survive cleanup failure") {
+            let folder = root.appendingPathComponent("foreign-entry"), ownScratch = folder.appendingPathComponent("scratch")
+            try fm.createDirectory(at: ownScratch, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: folder) }
+            let mutation = ScratchInterference(mode: .foreignEntry, parent: ownScratch, root: folder)
+            do {
+                _ = try await service.importImage(from: source, scratchParent: ownScratch) { progress in
+                    if progress.phase == .encoding { try await mutation.apply() }
+                }
+                throw Failure(message: "Incomplete cleanup returned an image receipt")
+            } catch StudioImageImportService.ImportError.cleanupFailed { }
+            let affected = await mutation.affected!
+            for path in ["foreign.txt", "foreign-folder/nested.txt"] {
+                try require(try Data(contentsOf: affected.appendingPathComponent(path)) == Data("foreign bytes must survive".utf8), "Unknown staging content was removed")
+            }
+            try require(!fm.fileExists(atPath: affected.appendingPathComponent("source.image").path), "Owned copy was not cleaned before empty-directory failure")
+            let retry = try await service.importImage(from: source, scratchParent: ownScratch)
+            try require(retry.originalData == png, "Cleanup failure kept the global decode lease")
+        }
+        try await test("renamed scratch parent cannot redirect owned-file deletion to a replacement tree") {
+            let folder = root.appendingPathComponent("replaced-parent"), ownScratch = folder.appendingPathComponent("scratch")
+            try fm.createDirectory(at: ownScratch, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: folder) }
+            let mutation = ScratchInterference(mode: .replaceParent, parent: ownScratch, root: folder)
+            do {
+                _ = try await service.importImage(from: source, scratchParent: ownScratch) { progress in
+                    if progress.phase == .decoding { try await mutation.apply() }
+                }
+                throw Failure(message: "Replaced scratch parent returned an image")
+            } catch StudioImageImportService.ImportError.cleanupFailed { }
+            let affected = await mutation.affected!
+            try require(try Data(contentsOf: affected.appendingPathComponent("source.image")) == Data("foreign bytes must survive".utf8), "Deletion followed the replacement parent URL")
+            try require(try fm.contentsOfDirectory(atPath: mutation.moved.path).isEmpty, "Descriptor-scoped original copy was not safely cleaned")
+            try require(try Data(contentsOf: source) == png, "Original input was changed")
         }
         print("STUDIO_IMAGE_IMPORT_TESTS=PASS \(passed) actual ImageIO production cases")
     }

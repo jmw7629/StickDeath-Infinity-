@@ -200,7 +200,17 @@ final class StudioViewModel: ObservableObject {
         try checkCancellation()
         try requireOpenCommandEditor()
         try validateCommandWorkBudget(request)
-        let receipt = try StudioCommandExecutor.execute(request, editor: &editor, checkCancellation: checkCancellation)
+        var candidate = editor
+        let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
+        try preflightRasterDocument(candidate.document)
+        try checkCancellation()
+        // A caller's synchronous cancellation probe may also change the live
+        // editor. Recheck its ownership and revision before publishing the
+        // staged copy, so that intervening edit or input can never be replaced.
+        try requireOpenCommandEditor()
+        guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
+        guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
+        editor = candidate
         if receipt.outcome != .unchanged {
             stopPlayback()
             pruneManagedAudio()
@@ -327,10 +337,27 @@ final class StudioViewModel: ObservableObject {
                     guard stored.frames.indices.contains(index) else { throw StudioDocumentError.invalid("An original frame record is missing. The project was not replaced.") }
                     rasters[assetID] = stored.frames[index]
                 }
-                for frame in decoded.frames where frame.rasterAssetID != nil {
-                    guard rasters[frame.rasterAssetID!] != nil else { throw StudioDocumentError.invalid("An imported image reference is missing.") }
+                try validateManagedImageCapacity(rasters)
+                guard Set(archive.rasterFrameIndices.keys) == decoded.referencedRasterAssetIDs else {
+                    throw StudioDocumentError.invalid("The image archive has unaccounted references. Its original bytes were preserved.")
+                }
+                for (index, frame) in decoded.frames.enumerated() {
+                    if let id = frame.rasterAssetID {
+                        guard let record = rasters[id], stored.frames[index] == record else {
+                            throw StudioDocumentError.invalid("An imported image reference is missing or its frame records disagree.")
+                        }
+                        try validateManagedRaster(frame: frame, record: record)
+                    } else {
+                        guard stored.frames[index].imageData == nil, stored.frames[index].layerData == nil,
+                              stored.frames[index].sourceImage == nil else {
+                            throw StudioDocumentError.invalid("An unreferenced original image record cannot be discarded.")
+                        }
+                    }
                 }
             } else {
+                guard stored.frames.allSatisfy({ $0.sourceImage == nil }) else {
+                    throw StudioDocumentError.invalid("This imported image project is missing its editable placement archive. Its original bytes were preserved; recovery is required before editing.")
+                }
                 // Missing legacy images have unknown content. Do not compact their
                 // positions, invent replacement images, or rewrite their duration.
                 let sourceIndices = stored.frames.enumerated().map { $0.element.legacyFrameIndex ?? $0.offset }
@@ -356,6 +383,7 @@ final class StudioViewModel: ObservableObject {
                 decoded.activeFrameID = decoded.frames[0].id
                 try decoded.validate()
             }
+            try validateManagedImageCapacity(rasters)
             let nextEditor = try StudioDocumentEditor(document: decoded)
             let importedIDs = decoded.referencedAudioAssetIDs
             // Only records explicitly referenced by the new clip schema become
@@ -379,18 +407,7 @@ final class StudioViewModel: ObservableObject {
         defer { isSaving = false }
         do {
             let snapshot = document
-            var indices: [String: Int] = [:]
-            let storedFrames: [StoredAnimationFrame] = try snapshot.frames.enumerated().map { index, frame in
-                guard let asset = frame.rasterAssetID else { return StoredAnimationFrame(imageData: nil, layerData: nil) }
-                guard let original = retainedRasterFrames[asset] else { throw StudioDocumentError.invalid("An original image is unavailable; no save was made.") }
-                indices[asset] = index; return original
-            }
-            let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
-                canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
-                layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: nil)
-            let payload = try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded()
-            try storage.saveAnimation(AnimationProject(id: snapshot.id, metadata: metadata, frames: storedFrames,
-                audioTracks: try audioTracksForSave(snapshot), editableDocumentData: payload))
+            try storage.saveAnimation(storageProject(snapshot, rasters: retainedRasterFrames))
             savedRevision = snapshot.revision; lastSaveTime = Date(); message = nil
             await loadProjects()
             // A save may persist prior committed work during a long stroke, but
@@ -431,7 +448,12 @@ final class StudioViewModel: ObservableObject {
     }
     private func command(_ operation: (inout StudioDocumentEditor) throws -> Void) {
         guard allowDocumentEditDuringInput() else { return }
-        do { try operation(&editor); pruneManagedAudio(); scheduleSave() } catch { message = error.localizedDescription }
+        do {
+            var candidate = editor
+            try operation(&candidate)
+            try preflightRasterDocument(candidate.document)
+            editor = candidate; pruneManagedAudio(); scheduleSave()
+        } catch { message = error.localizedDescription }
     }
     private func allowDocumentEditDuringInput() -> Bool {
         guard activeStrokeID == nil else { message = "Finish the current touch stroke before changing the document."; return false }
@@ -440,7 +462,7 @@ final class StudioViewModel: ObservableObject {
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
     func addFrame() { stopPlayback(); command { try $0.addFrame() } }
     func duplicateFrame() { stopPlayback(); command { try $0.duplicateFrame() } }
-    func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame() } }
+    func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func deleteFrame(_ id: String) { stopPlayback(); command { try $0.deleteFrame(id) } }
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
@@ -458,7 +480,10 @@ final class StudioViewModel: ObservableObject {
         }
         let target = frameID ?? document.activeFrameID
         do {
-            try editor.commit(element, frameID: target)
+            var candidate = editor
+            try candidate.commit(element, frameID: target)
+            try preflightRasterDocument(candidate.document)
+            editor = candidate
             if pendingBrushStroke?.element.id == element.id { pendingBrushStroke = nil }
             pruneManagedAudio(); scheduleSave()
             return true
@@ -577,6 +602,10 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("Imported audio and its undo history are limited to 32 MB. Remove unused clips and allow their undo history to expire, or use smaller audio files.")
         }
         next[track.id] = track
+        if !candidate.document.referencedRasterAssetIDs.isEmpty {
+            let tracks = retainedAudioTracks + next.values.filter { candidate.document.referencedAudioAssetIDs.contains($0.id) }
+            try storage.preflightAnimation(storageProject(candidate.document, rasters: retainedRasterFrames, audioTracks: tracks))
+        }
         try checkCancellation()
         // Publish the bytes and the single undoable document edit together.
         managedAudioTracks = next; editor = candidate; selectedAudioClip = clip
@@ -597,6 +626,7 @@ final class StudioViewModel: ObservableObject {
     private func pruneManagedAudio() {
         let needed = editor.referencedAudioAssetIDsIncludingHistory
         managedAudioTracks = managedAudioTracks.filter { needed.contains($0.key) }
+        pruneManagedImages()
     }
     func setAudioClipVolume(_ id: String, volume: Double) {
         guard selectedCurrentAudioClip?.id == id else { return }
@@ -610,9 +640,112 @@ final class StudioViewModel: ObservableObject {
         guard selectedCurrentAudioClip?.id == id else { return }
         change { $0.audioClips.removeAll { $0.id == id } }; selectedAudioClip = nil
     }
+    /// The picker/decoder owner must retain its result until this atomic handoff
+    /// succeeds. No image is attached on rejection, and no save success is implied.
+    @discardableResult
+    func attachImportedImage(_ imported: StudioImageImportService.ImportedImage,
+                             expectedProjectID: UUID, expectedRevision: Int, frameID: String, layerID: String,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
+        try checkCancellation()
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, document.activeLayerID == layerID,
+              let index = document.frames.firstIndex(where: { $0.id == frameID }) else {
+            throw StudioDocumentError.unavailable("The project, frame, layer, save or drawing state changed. Import again in the current editor.")
+        }
+        guard document.frames[index].rasterAssetID == nil else {
+            throw StudioDocumentError.unavailable("This frame already contains an imported image or original record. Add a new blank frame; nothing was replaced.")
+        }
+        guard let layer = document.layers.first(where: { $0.id == layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
+        let assetID = "image-" + imported.id.uuidString
+        guard retainedRasterFrames[assetID] == nil else { throw StudioDocumentError.invalid("This image identity is already owned by the project.") }
+        let source = StoredImageSource(id: imported.id, name: imported.name, container: imported.container.rawValue,
+            originalData: imported.originalData, originalWidth: imported.originalWidth, originalHeight: imported.originalHeight,
+            originalOrientation: imported.originalOrientation, normalizedWidth: imported.width, normalizedHeight: imported.height)
+        try StudioRasterImage.validate(source: source, normalized: imported.normalizedPNG)
+        let record = StoredAnimationFrame(imageData: imported.normalizedPNG, layerData: nil, sourceImage: source)
+        let imageLayer = CanvasLayer(id: UUID().uuidString, name: String(("Image: " + imported.name).prefix(120)))
+        let placement = StudioRasterPlacement.aspectFit(imageWidth: imported.width, imageHeight: imported.height,
+            canvasWidth: document.width, canvasHeight: document.height)
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 3)
+            value.layers.append(imageLayer) // Behind drawings; active drawing layer stays selected.
+            value.frames[index].rasterAssetID = assetID
+            value.frames[index].rasterLayerID = imageLayer.id
+            value.frames[index].rasterPlacement = placement
+        }
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard
+        var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
+        next[assetID] = record
+        try validateManagedImageCapacity(next)
+        try storage.preflightAnimation(storageProject(candidate.document, rasters: next))
+        try checkCancellation()
+        // No suspension occurs between the state guard, exact storage preflight
+        // and publication of one history transaction plus its immutable bytes.
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, document.activeLayerID == layerID else {
+            throw StudioDocumentError.unavailable("The editor changed before the image could be attached. No image was added.")
+        }
+        retainedRasterFrames = next; editor = candidate
+        scheduleSave()
+        return assetID
+    }
+    func originalImageSource(_ assetID: String) -> StoredImageSource? { retainedRasterFrames[assetID]?.sourceImage }
+    var managedImageByteCount: Int {
+        retainedRasterFrames.values.filter { $0.sourceImage != nil }.reduce(0) { $0 + ($1.imageData?.count ?? 0) + ($1.sourceImage?.originalData.count ?? 0) }
+    }
+    private func validateManagedImageCapacity(_ records: [String: StoredAnimationFrame]) throws {
+        var bytes = 0, pixels = 0
+        for record in records.values {
+            guard let source = record.sourceImage else { continue }
+            try source.validate()
+            bytes += source.originalData.count + (record.imageData?.count ?? 0)
+            pixels += source.normalizedWidth * source.normalizedHeight
+            guard bytes <= StudioRasterImage.maximumManagedHistoryBytes,
+                  pixels <= StudioRasterImage.maximumManagedHistoryPixels else { throw StudioRasterImage.Failure.limit }
+        }
+    }
+    private func validateManagedRaster(frame: AnimationFrame, record: StoredAnimationFrame) throws {
+        if let source = record.sourceImage {
+            guard frame.rasterPlacement != nil, frame.rasterAssetID == "image-" + source.id.uuidString,
+                  let normalized = record.imageData else { throw StudioRasterImage.Failure.missing }
+            try StudioRasterImage.validate(source: source, normalized: normalized)
+        } else if frame.rasterPlacement != nil { throw StudioRasterImage.Failure.missing }
+    }
+    private func storageProject(_ snapshot: StudioDocument, rasters: [String: StoredAnimationFrame],
+                                audioTracks: [AudioTrack]? = nil) throws -> AnimationProject {
+        var indices: [String: Int] = [:]
+        let frames = try snapshot.frames.enumerated().map { index, frame -> StoredAnimationFrame in
+            guard let asset = frame.rasterAssetID else { return StoredAnimationFrame(imageData: nil, layerData: nil) }
+            guard let record = rasters[asset] else { throw StudioRasterImage.Failure.missing }
+            // Full codec validation occurs on import/open; these immutable
+            // records are identity checked during each subsequent save/preflight.
+            if frame.rasterPlacement != nil {
+                guard let source = record.sourceImage, record.imageData?.isEmpty == false,
+                      asset == "image-" + source.id.uuidString else { throw StudioRasterImage.Failure.missing }
+            }
+            indices[asset] = index; return record
+        }
+        let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
+            canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
+            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: nil)
+        return AnimationProject(id: snapshot.id, metadata: metadata, frames: frames,
+            audioTracks: try audioTracks ?? audioTracksForSave(snapshot),
+            editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded())
+    }
+    private func preflightRasterDocument(_ candidate: StudioDocument) throws {
+        guard !candidate.referencedRasterAssetIDs.isEmpty else { return }
+        try storage.preflightAnimation(storageProject(candidate, rasters: retainedRasterFrames))
+    }
+    private func pruneManagedImages() {
+        let needed = editor.referencedRasterAssetIDsIncludingHistoryAndClipboard
+        retainedRasterFrames = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
+    }
     func rasterData(_ assetID: String?) -> Data? { assetID.flatMap { retainedRasterFrames[$0]?.imageData } }
-    func undo() { guard allowDocumentEditDuringInput() else { return }; stopPlayback(); editor.undo(); pruneManagedAudio(); scheduleSave() }
-    func redo() { guard allowDocumentEditDuringInput() else { return }; stopPlayback(); editor.redo(); pruneManagedAudio(); scheduleSave() }
+    func undo() { stopPlayback(); command { $0.undo() } }
+    func redo() { stopPlayback(); command { $0.redo() } }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private func startPlayback() {
         guard allowDocumentEditDuringInput() else { return }

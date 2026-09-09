@@ -516,6 +516,201 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testImagePhotosAndFilesCancellationPreserveProject() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        let before = try pixels(canvas.screenshot().image)
+        try openImagePanel(app)
+        app.buttons["studio.image.photos"].tap()
+        let cancelPhotos = app.navigationBars.buttons["Cancel"].firstMatch
+        XCTAssertTrue(cancelPhotos.waitForExistence(timeout: 10))
+        capture(app, name: "image-native-photos-cancel-picker")
+        captureHierarchy(app, name: "image-native-photos-cancel-hierarchy")
+        try waitForHittable(cancelPhotos, app: app, name: "image-photos-cancel-ready"); cancelPhotos.tap()
+        let files = app.buttons["studio.image.files"]
+        XCTAssertTrue(files.waitForExistence(timeout: 8)); XCTAssertTrue(files.isEnabled)
+        files.tap()
+        let filesNavigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        let cancelFiles = filesNavigation.buttons["Cancel"]
+        XCTAssertTrue(cancelFiles.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.collectionViews["File View"].exists)
+        capture(app, name: "image-native-files-picker")
+        captureHierarchy(app, name: "image-native-files-picker-hierarchy")
+        XCTAssertTrue(cancelFiles.isHittable); cancelFiles.tap()
+        let result = app.staticTexts["studio.image.result"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
+            "Image import cancelled. No image was added by this pending selection."),
+            evaluatedWith: result).waitUntilFulfilled(timeout: 8))
+        XCTAssertFalse(app.buttons["studio.image.apply"].exists)
+        // A fresh Photos presentation must still work after Files cancellation.
+        let photos = app.buttons["studio.image.photos"]
+        XCTAssertTrue(photos.isEnabled); photos.tap()
+        try waitForHittable(cancelPhotos, app: app, name: "image-photos-second-cancel-ready"); cancelPhotos.tap()
+        try closeImagePanel(app)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+        capture(app, name: "image-pickers-cancelled-unchanged-canvas")
+    }
+
+    @MainActor
+    func testPhotoImportUndoPersistenceAndRealPNGExport() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        let before = try pixels(canvas.screenshot().image)
+        try openImagePanel(app)
+        app.buttons["studio.image.photos"].tap()
+        XCTAssertTrue(app.buttons["Cancel"].firstMatch.waitForExistence(timeout: 10))
+        capture(app, name: "image-native-photos-fixture-picker")
+        captureHierarchy(app, name: "image-native-photos-fixture-hierarchy")
+        // CI adds an original generated four-color PNG to the system Photos
+        // library. Locate its actual visible thumbnail by decoded pixels;
+        // neither an app launch flag nor a hidden importer can satisfy this.
+        let readyDeadline = Date().addingTimeInterval(30)
+        var selected = false
+        var capturedReadyGrid = false
+        repeat {
+            // This system picker exposes custom thumbnail Images whose
+            // isHittable is false despite visible pixels. Resolve only the
+            // observed Photos viewport and verify the actual thumbnail before
+            // deriving a tap from its current frame; never use fixed positions.
+            let photos = app.navigationBars["Photos"].firstMatch
+            let viewport = app.scrollViews["photosView_content_scroll_view"].firstMatch
+            if photos.exists, viewport.exists {
+                let visibleBounds = viewport.frame.intersection(app.frame)
+                let candidates = viewport.images.matching(identifier: "PXGGridLayout-Info").allElementsBoundByIndex
+                for candidate in candidates.prefix(12) {
+                    guard Date() < readyDeadline else { break }
+                    guard candidate.exists else { continue }
+                    let frame = candidate.frame
+                    guard [frame.minX, frame.minY, frame.width, frame.height].allSatisfy({ $0.isFinite }),
+                          frame.width > 24, frame.height > 24, visibleBounds.contains(frame) else { continue }
+                    if !capturedReadyGrid {
+                        capture(app, name: "image-photos-grid-ready")
+                        captureHierarchy(app, name: "image-photos-grid-ready-hierarchy")
+                        capturedReadyGrid = true
+                    }
+                    let colors = imageFixtureColors(try pixels(candidate.screenshot().image))
+                    if colors.allSatisfy({ $0 > 8 }) {
+                        guard Date() < readyDeadline, photos.exists, viewport.exists, candidate.exists,
+                              candidate.frame == frame,
+                              viewport.frame.intersection(app.frame).contains(frame) else { continue }
+                        candidate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                        selected = true
+                        break
+                    }
+                }
+            }
+            if !selected { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        } while !selected && Date() < readyDeadline
+        if !selected {
+            capture(app, name: "image-photos-grid-timeout")
+            captureHierarchy(app, name: "image-photos-grid-timeout-hierarchy")
+        }
+        XCTAssertTrue(selected, "The generated fixture was not visible in the actual Photos grid; inspect the captured hierarchy")
+        let preview = try imageControl("studio.image.preview", app: app)
+        XCTAssertTrue(imageFixtureColors(try pixels(preview.screenshot().image)).allSatisfy({ $0 > 20 }),
+                      "Decoded preview does not contain the selected still-image pixels")
+        XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("96 × 64 pixels"))
+        capture(app, name: "image-decoded-photos-preview")
+        try imageControl("studio.image.apply", app: app).tap()
+        let receipt = try imageControl("studio.image.result", app: app)
+        XCTAssertTrue(receipt.label.hasPrefix("Added "))
+        XCTAssertTrue(receipt.label.hasSuffix("on a new image layer in one undoable edit."))
+        XCTAssertTrue(["Unsaved", "Saving…", "Saved"].contains(app.staticTexts["studio.image.save-state"].label),
+                      "Attachment must report the actual current autosave state")
+        capture(app, name: "image-attached-save-receipt")
+        try closeImagePanel(app)
+        let edited = try pixels(canvas.screenshot().image)
+        XCTAssertTrue(imageFixtureColors(edited).allSatisfy({ $0 > 20 }))
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        XCTAssertTrue(undo.isEnabled); undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+        XCTAssertFalse(undo.isEnabled, "Image attachment required more than one Undo")
+        redo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        try openExportPanel(app)
+        try exportControl("studio.export.format.png", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let exported = try pixels(waitForPNGPreview(app).screenshot().image)
+        XCTAssertTrue(imageFixtureColors(exported).allSatisfy({ $0 > 20 }), "Actual exported PNG lost the imported still")
+        capture(app, name: "image-real-png-export-preview")
+        try closeExportPanel(app)
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8))
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(reopenedCanvas.screenshot().image)), 4,
+                                 "Saved imported image failed actual terminate/relaunch/reopen")
+        capture(reopened, name: "image-photos-persisted-reopened")
+    }
+
+    private func imageFixtureColors(_ raster: Raster) -> [Int] {
+        var counts = [Int](repeating: 0, count: 4)
+        for i in stride(from: 0, to: raster.bytes.count, by: 4) {
+            let r = raster.bytes[i], g = raster.bytes[i + 1], b = raster.bytes[i + 2]
+            if r > 180 && g < 90 && b < 90 { counts[0] += 1 }
+            if b > 180 && r < 90 && g < 90 { counts[1] += 1 }
+            if g > 180 && r < 90 && b < 90 { counts[2] += 1 }
+            if r > 180 && g > 180 && b < 90 { counts[3] += 1 }
+        }
+        return counts
+    }
+
+    @MainActor private func waitForHittable(_ element: XCUIElement, app: XCUIApplication, name: String) throws {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND hittable == true"), object: element)
+        let result = XCTWaiter.wait(for: [ready], timeout: 30)
+        if result != .completed {
+            capture(app, name: name + "-timeout")
+            captureHierarchy(app, name: name + "-timeout-hierarchy")
+        }
+        XCTAssertEqual(result, .completed, "System Photos cancellation control did not become hittable")
+        guard result == .completed else { throw NSError(domain: "NativePhotosReadiness", code: 1) }
+    }
+
+    @MainActor private func openImagePanel(_ app: XCUIApplication) throws {
+        let menu = app.buttons["studio.menu.open"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5)); XCTAssertTrue(menu.isHittable); menu.tap()
+        try waitForButton("Add Picture", in: app).tap()
+        XCTAssertTrue(app.buttons["studio.image.photos"].waitForExistence(timeout: 8))
+    }
+
+    @MainActor private func closeImagePanel(_ app: XCUIApplication) throws {
+        let close = app.buttons["studio.panel.close.Add Picture"]
+        XCTAssertTrue(close.waitForExistence(timeout: 5)); XCTAssertTrue(close.isHittable); close.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+            evaluatedWith: close).waitUntilFulfilled(timeout: 5))
+    }
+
+    @MainActor private func imageControl(_ identifier: String, app: XCUIApplication) throws -> XCUIElement {
+        let scroll = app.scrollViews["studio.image.scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 8))
+        let element = app.descendants(matching: .any)[identifier].firstMatch
+        for attempt in 0...6 {
+            if element.exists && scroll.frame.insetBy(dx: 0, dy: 2).contains(element.frame) && element.isHittable { return element }
+            guard attempt < 6 else { break }
+            scroll.swipeUp()
+        }
+        captureHierarchy(app, name: "image-control-unreachable-" + identifier)
+        XCTFail("Image import control was not reachable: \(identifier)")
+        throw NSError(domain: "NativeImageSmoke", code: 1)
+    }
+
+    @MainActor
     private func localMotionControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true) throws -> XCUIElement {
         let scroll = app.scrollViews["spatter.motion.scroll"]
         XCTAssertTrue(scroll.waitForExistence(timeout: 8), "The actual local recipe ScrollView is missing")

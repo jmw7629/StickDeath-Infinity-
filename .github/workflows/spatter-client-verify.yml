@@ -41,6 +41,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: python3 scripts/verify_spatter_client.py
+      - name: Verify simulator fixture orchestration guards (mocked subprocesses)
+        run: python3 Tests/NativeSmokeHarness/test_image_seed.py
   native-ios-build:
     runs-on: macos-15
     timeout-minutes: 40
@@ -90,6 +92,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             Tests/StudioDocument/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-document-tests"
           "$RUNNER_TEMP/sdi-studio-document-tests"
@@ -118,6 +122,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
             Tests/StudioBrushIntegration/main.swift \
@@ -142,6 +148,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             Tests/StudioRenderer/main.swift \
@@ -161,6 +169,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
@@ -196,6 +206,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             Tests/StudioCommandIntegration/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-command-integration-tests"
           "$RUNNER_TEMP/sdi-studio-command-integration-tests"
@@ -228,6 +240,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
             Tests/StudioAudioIntegration/main.swift \
@@ -242,6 +256,72 @@ jobs:
             Tests/StudioImageImport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-import-tests"
           "$RUNNER_TEMP/sdi-studio-image-import-tests"
+      - name: Verify provider image file lifetime and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            Tests/StudioImageProviderFile/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-provider-tests"
+          "$RUNNER_TEMP/sdi-studio-image-provider-tests"
+      - name: Verify actual Photos provider callbacks and late cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
+            Tests/StudioImagePickerTransfer/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-picker-tests"
+          "$RUNNER_TEMP/sdi-studio-image-picker-tests"
+      - name: Verify image placement, originals, history and real PNG export
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            Tests/StudioImageIntegration/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-integration-tests"
+          "$RUNNER_TEMP/sdi-studio-image-integration-tests"
+      - name: Verify image preview, picker context, cancellation and actual persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
+            StickDeathInfinity/Services/StudioImageImportSession.swift \
+            Tests/StudioImageImportSession/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-session-tests"
+          "$RUNNER_TEMP/sdi-studio-image-session-tests"
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |
@@ -256,6 +336,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
             Tests/SpatterConversation/main.swift \
@@ -275,6 +357,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             Tests/SpatterMotionRecipe/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-motion-tests"
@@ -293,6 +377,8 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
             Tests/SpatterStudioEditSession/main.swift \

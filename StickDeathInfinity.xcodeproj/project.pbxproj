@@ -112,6 +112,11 @@
 		9625F0E7F0F535C0CCBC456D /* SpatterMotionRecipe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */; };
 		E78451B6A27000224D3946FD /* SpatterStudioEditSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9DC412B6FFD10B8F66C1987 /* SpatterStudioEditSession.swift */; };
 		C78931511F16777575D84DF0 /* SpatterMotionRecipePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */; };
+		788E9845D52D63843CBDC6A3 /* StudioRasterImage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32C31B16D9B360A025087287 /* StudioRasterImage.swift */; };
+		A4703D7BC211E5AC7804F671 /* StudioImageProviderFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19CF44006565BB004EBAAEFD /* StudioImageProviderFile.swift */; };
+		4B8D0D3E03ECEA15AA7C330D /* StudioImagePickerTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */; };
+		C438D20BEA967F9AC0A5CD21 /* StudioImageImportSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */; };
+		6DE1A5E4F362A5DAC0E5CB70 /* StudioImageImportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -230,6 +235,11 @@
 		4D55B9BB2295236FE2D381EE /* SpatterMotionRecipe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/SpatterMotionRecipe.swift; sourceTree = SOURCE_ROOT; };
 		A9DC412B6FFD10B8F66C1987 /* SpatterStudioEditSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift; sourceTree = SOURCE_ROOT; };
 		D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift; sourceTree = SOURCE_ROOT; };
+		32C31B16D9B360A025087287 /* StudioRasterImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioRasterImage.swift"; sourceTree = SOURCE_ROOT; };
+		19CF44006565BB004EBAAEFD /* StudioImageProviderFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImageProviderFile.swift"; sourceTree = SOURCE_ROOT; };
+		C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImagePickerTransfer.swift"; sourceTree = SOURCE_ROOT; };
+		41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImageImportSession.swift"; sourceTree = SOURCE_ROOT; };
+		59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -356,6 +366,10 @@
 				5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */,
 				8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */,
 				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */,
+				41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */,
+				C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */,
+				19CF44006565BB004EBAAEFD /* StudioImageProviderFile.swift */,
+				32C31B16D9B360A025087287 /* StudioRasterImage.swift */,
 				54AE165BB4C0408388138753 /* StudioExportService.swift */,
 				B0E4783C6B928344EBD69AB2 /* Auth */,
 				E17A356E63009412D6C19673 /* Challenge */,
@@ -614,6 +628,7 @@
 			isa = PBXGroup;
 			children = (
 				D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */,
+				59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */,
 				0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */,
 				986F538B15F4B5FBAB96124E /* StudioFrameRenderer.swift */,
 				AC4B1E7BB9F5A8A1684A75AD /* Timeline */,
@@ -768,6 +783,11 @@
 				3F59A945D2FE64768DFAFDFC /* StudioAudioImportService.swift in Sources */,
 				04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */,
 				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */,
+				6DE1A5E4F362A5DAC0E5CB70 /* StudioImageImportPanel.swift in Sources */,
+				C438D20BEA967F9AC0A5CD21 /* StudioImageImportSession.swift in Sources */,
+				4B8D0D3E03ECEA15AA7C330D /* StudioImagePickerTransfer.swift in Sources */,
+				A4703D7BC211E5AC7804F671 /* StudioImageProviderFile.swift in Sources */,
+				788E9845D52D63843CBDC6A3 /* StudioRasterImage.swift in Sources */,
 				74D7F5F827E54FFAA49D2646 /* StudioExportService.swift in Sources */,
 				427ABE40D8C9BD2A37DB3429 /* StudioProjectLibrary.swift in Sources */,
 				019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */,

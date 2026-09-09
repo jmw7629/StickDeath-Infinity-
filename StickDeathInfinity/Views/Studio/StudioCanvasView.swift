@@ -3,6 +3,7 @@ import SwiftUI
 struct StudioCanvasView: View {
     @ObservedObject var vm: StudioViewModel
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
     @State private var panOrigin: CGSize?
@@ -15,6 +16,13 @@ struct StudioCanvasView: View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
             let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: vm.currentFrame) }
+            let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
+            let currentRaster = Result { try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers,
+                data: vm.rasterData(vm.currentFrame.rasterAssetID), maximumDimension: rasterSize) }
+            let onionRaster = vm.showOnionSkin ? vm.previousFrame.map { frame in Result {
+                try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
+                    data: vm.rasterData(frame.rasterAssetID), maximumDimension: rasterSize)
+            } } : nil
             let onionPrepared = vm.showOnionSkin ? vm.previousFrame.map { frame in Result { try StudioFrameRenderer.prepare(frame: frame) } } : nil
             ZStack {
                 Color.clear
@@ -24,25 +32,28 @@ struct StudioCanvasView: View {
                         if vm.showOnionSkin, let previous = vm.previousFrame {
                             var onion = context
                             onion.opacity = 0.2
-                            if case .success(let brushes)? = onionPrepared {
+                            if case .success(let brushes)? = onionPrepared, case .success(let image)? = onionRaster {
                                 if let error = StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
                                     canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes) {
+                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes, preparedRaster: image) {
                                     StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                                 }
                             } else if case .failure(let error)? = onionPrepared {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            } else if case .failure(let error)? = onionRaster {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             }
                         }
-                        switch currentPrepared {
-                        case .success(let brushes):
+                        switch (currentPrepared, currentRaster) {
+                        case (.success(let brushes), .success(let image)):
                             if let error = StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
                                 canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
                                 rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
-                                preparedBrushes: brushes) {
+                                preparedBrushes: brushes, preparedRaster: image) {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             }
-                        case .failure(let error): StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                        case (.failure(let error), _), (_, .failure(let error)):
+                            StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                         }
                         for element in vm.currentFrame.elements where vm.selectedElementIDs.contains(element.id) {
                             guard let first = element.points.first else { continue }

@@ -5,19 +5,22 @@ struct StudioFrameThumbnail: View {
     let frame: AnimationFrame
     var body: some View {
         let prepared = Result { try StudioFrameRenderer.prepare(frame: frame) }
+        let raster = Result { try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
+            data: vm.rasterData(frame.rasterAssetID), maximumDimension: 128) }
         Canvas { context, size in
             let scale = min(size.width / CGFloat(vm.canvasWidth), size.height / CGFloat(vm.canvasHeight))
             let fitted = CGSize(width: CGFloat(vm.canvasWidth) * scale, height: CGFloat(vm.canvasHeight) * scale)
             context.translateBy(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2)
             context.fill(Path(CGRect(origin: .zero, size: fitted)), with: .color(.white))
-            switch prepared {
-            case .success(let brushes):
+            switch (prepared, raster) {
+            case (.success(let brushes), .success(let image)):
                 if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: vm.layers,
                     canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
-                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes) {
+                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes, preparedRaster: image) {
                     StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
                 }
-            case .failure(let error): StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
+            case (.failure(let error), _), (_, .failure(let error)):
+                StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
             }
         }
     }
@@ -45,13 +48,32 @@ struct StudioFrameRenderer {
         }
         return PreparedBrushes(elements: elements, strokes: strokes)
     }
+    static func prepareRaster(frame: AnimationFrame, layers: [CanvasLayer], data: Data?,
+                              maximumDimension: Int = 8192) throws -> StudioRasterImage.Prepared? {
+        guard let asset = frame.rasterAssetID,
+              layers.contains(where: { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 }) else { return nil }
+        guard let data else {
+            // Historical opaque LayerData records have no pixel image, and stay
+            // preserved. Version-3 managed stills must always have actual pixels.
+            if frame.rasterPlacement != nil { throw StudioRasterImage.Failure.missing }
+            return nil
+        }
+        return try StudioRasterImage.prepare(assetID: asset, data: data, managed: frame.rasterPlacement != nil,
+            maximumDimension: maximumDimension)
+    }
     @discardableResult
     static func draw(context: inout GraphicsContext, frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
                      size: CGSize, rasterData: Data? = nil, liveElement: DrawnElement? = nil,
-                     preparedBrushes: PreparedBrushes? = nil) -> Error? {
+                     preparedBrushes: PreparedBrushes? = nil, preparedRaster: StudioRasterImage.Prepared? = nil) -> Error? {
         let prepared: PreparedBrushes
+        let image: StudioRasterImage.Prepared?
         do {
             prepared = try preparedBrushes ?? prepare(frame: frame, liveElement: liveElement)
+            image = try preparedRaster ?? prepareRaster(frame: frame, layers: layers, data: rasterData)
+            if let image {
+                guard image.assetID == frame.rasterAssetID, image.encoded == rasterData,
+                      image.managed == (frame.rasterPlacement != nil) else { throw StudioRasterImage.Failure.invalid }
+            }
             guard prepared.elements == (frame.elements + (liveElement.map { [$0] } ?? [])).filter({ $0.brush != nil }) else {
                 throw StudioDocumentError.invalid("Prepared brushes do not match this frame. No frame was rendered.")
             }
@@ -63,8 +85,15 @@ struct StudioFrameRenderer {
             composite.blendMode = blend(layer.blendMode)
             if layer.glowEnabled { composite.addFilter(.shadow(color: Color(hex: layer.glowColor ?? "#FF0000"), radius: 5)) }
             composite.drawLayer { local in
-                if frame.rasterLayerID == layer.id, let data = rasterData, let image = UIImage(data: data) {
-                    local.draw(Image(uiImage: image), in: CGRect(origin: .zero, size: size))
+                if frame.rasterLayerID == layer.id, let image {
+                    let rect: CGRect
+                    if let placement = frame.rasterPlacement {
+                        rect = CGRect(x: placement.x / canvasSize.width * size.width,
+                            y: placement.y / canvasSize.height * size.height,
+                            width: placement.width / canvasSize.width * size.width,
+                            height: placement.height / canvasSize.height * size.height)
+                    } else { rect = CGRect(origin: .zero, size: size) }
+                    local.draw(Image(decorative: image.image, scale: 1), in: rect)
                 }
                 for element in frame.elements where element.layerID == layer.id {
                     var elementContext = local

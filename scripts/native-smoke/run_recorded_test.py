@@ -9,6 +9,8 @@ import subprocess
 import sys
 import time
 
+from seed_image_fixture import seed_verified_fixture
+
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
     """Finalize only a child retained by this invocation; never use a saved PID."""
@@ -53,6 +55,10 @@ def main() -> int:
     if selected[0]["state"] != "Booted":
         subprocess.run(["xcrun", "simctl", "boot", args.udid], check=True, timeout=60)
     subprocess.run(["xcrun", "simctl", "bootstatus", args.udid, "-b"], check=True, timeout=120)
+    # Identity was validated above and the explicit target's native bootstatus
+    # just succeeded. Re-enumerating every simulator here can stall CoreSimulator.
+    # Keep the actual addmedia success and its own timeout as the seeding gate.
+    seed_verified_fixture(args.udid, output)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -61,7 +67,7 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Eight UI journeys, each capped at 180s, plus simulator/test-runner startup.
+    # Ten UI journeys, each capped at 180s, share this bounded suite deadline.
     # The workflow's separate 40-minute deadline still bounds build and testing.
     test_timeout_seconds = 1680
     def interrupted(_signal: int, _frame: object) -> None:

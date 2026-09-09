@@ -159,6 +159,25 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     // is retained separately from editable strokes.
     var rasterAssetID: String? = nil
     var rasterLayerID: String? = nil
+    /// Version 3 managed still placement. Nil keeps historical full-canvas stretch.
+    var rasterPlacement: StudioRasterPlacement? = nil
+}
+
+struct StudioRasterPlacement: Codable, Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    static func aspectFit(imageWidth: Int, imageHeight: Int, canvasWidth: Int, canvasHeight: Int) -> Self {
+        let scale = min(Double(canvasWidth) / Double(imageWidth), Double(canvasHeight) / Double(imageHeight))
+        // Division followed by multiplication can exceed the fitted edge by
+        // one ULP (for example 147 pixels fitted to 160). Keep a valid image
+        // centered inside the canvas rather than producing a negative origin.
+        let width = min(Double(canvasWidth), Double(imageWidth) * scale)
+        let height = min(Double(canvasHeight), Double(imageHeight) * scale)
+        return .init(x: (Double(canvasWidth) - width) / 2, y: (Double(canvasHeight) - height) / 2, width: width, height: height)
+    }
 }
 
 // Lock mode enum for type safety

@@ -118,6 +118,20 @@ class DeviceStorageManager {
     // Serializes all instances in this process, including read/list against a
     // commit. Callers still own edit-generation ordering and save acknowledgments.
     private static let operationLock = NSRecursiveLock()
+    private struct EncodedFrameEntry {
+        let frame: StoredAnimationFrame
+        let data: Data
+        let cost: Int
+        var used: UInt64
+    }
+    static let maximumSnapshotFrameCacheBytes = 96 * 1024 * 1024
+    private static var encodedFrames: [UUID: EncodedFrameEntry] = [:]
+    private static var encodedFrameBytes = 0
+    private static var encodingClock: UInt64 = 0
+    static var snapshotEncodingCacheFootprint: (entries: Int, bytes: Int) {
+        operationLock.lock(); defer { operationLock.unlock() }
+        return (encodedFrames.count, encodedFrameBytes)
+    }
 
     private struct Revision: Codable {
         let version: Int
@@ -135,9 +149,7 @@ class DeviceStorageManager {
     func saveAnimation(_ project: AnimationProject) throws {
         Self.operationLock.lock()
         defer { Self.operationLock.unlock() }
-        try validate(project, exactFrameCount: true)
-        let data = try JSONEncoder().encode(Revision(version: 1, project: project))
-        guard data.count <= Self.maximumSnapshotBytes else { throw AnimationStorageError.limitExceeded }
+        let data = try validatedSnapshotData(project)
         try checkedDirectory(animationsDir, create: true)
         let projectDir = animationsDir.appendingPathComponent(project.id.uuidString, isDirectory: true)
         if itemExists(projectDir) {
@@ -342,6 +354,59 @@ class DeviceStorageManager {
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
+    /// Uses exactly the same validator and encoding as save, without any disk mutation.
+    func preflightAnimation(_ project: AnimationProject) throws {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        _ = try validatedSnapshotData(project)
+    }
+    private func validatedSnapshotData(_ project: AnimationProject) throws -> Data {
+        try validate(project, exactFrameCount: true)
+        // Encode the real Revision and real StoredAnimationFrame values. Only
+        // immutable managed-frame fragments are reused; no mirror size model or
+        // hand-written metadata serializer can disagree with an actual save.
+        // The normal JSONDecoder still reads precisely the existing v1 format.
+        var structure = project; structure.frames = []
+        let scalar = try JSONEncoder().encode(Revision(version: 1, project: structure))
+        let marker = Data("\"frames\":[]".utf8)
+        guard let range = scalar.range(of: marker), scalar.range(of: marker, in: range.upperBound..<scalar.endIndex) == nil else {
+            throw AnimationStorageError.invalidDocument
+        }
+        var encoded: [Data] = [], total = scalar.count
+        for (index, frame) in project.frames.enumerated() {
+            let value = try encodedFrame(frame)
+            let additional = value.count + (index > 0 ? 1 : 0)
+            guard additional <= Self.maximumSnapshotBytes - total else { throw AnimationStorageError.limitExceeded }
+            total += additional; encoded.append(value)
+        }
+        guard total <= Self.maximumSnapshotBytes else { throw AnimationStorageError.limitExceeded }
+        let valueStart = scalar.index(range.upperBound, offsetBy: -2)
+        var data = Data(); data.reserveCapacity(total)
+        data.append(scalar[..<valueStart]); data.append(91)
+        for (index, value) in encoded.enumerated() { if index > 0 { data.append(44) }; data.append(value) }
+        data.append(93); data.append(scalar[range.upperBound...])
+        guard data.count == total else { throw AnimationStorageError.invalidDocument }
+        return data
+    }
+    private func encodedFrame(_ frame: StoredAnimationFrame) throws -> Data {
+        guard let id = frame.sourceImage?.id else { return try JSONEncoder().encode(frame) }
+        Self.encodingClock &+= 1
+        if var hit = Self.encodedFrames[id], hit.frame == frame {
+            hit.used = Self.encodingClock; Self.encodedFrames[id] = hit; return hit.data
+        }
+        let data = try JSONEncoder().encode(frame)
+        let textBytes = (frame.layerData ?? []).reduce(0) { $0 + $1.name.utf8.count + $1.blendMode.utf8.count + 512 }
+        let cost = data.count + (frame.imageData?.count ?? 0) + (frame.sourceImage?.originalData.count ?? 0) + textBytes + 16_384
+        if let old = Self.encodedFrames.removeValue(forKey: id) { Self.encodedFrameBytes -= old.cost }
+        guard cost <= Self.maximumSnapshotFrameCacheBytes else { return data }
+        while !Self.encodedFrames.isEmpty && (Self.encodedFrameBytes + cost > Self.maximumSnapshotFrameCacheBytes || Self.encodedFrames.count >= 32) {
+            guard let key = Self.encodedFrames.min(by: { $0.value.used < $1.value.used })?.key,
+                  let removed = Self.encodedFrames.removeValue(forKey: key) else { break }
+            Self.encodedFrameBytes -= removed.cost
+        }
+        Self.encodedFrames[id] = EncodedFrameEntry(frame: frame, data: data, cost: cost, used: Self.encodingClock)
+        Self.encodedFrameBytes += cost
+        return data
+    }
     private func validate(_ project: AnimationProject, exactFrameCount: Bool) throws {
         let metadata = project.metadata
         guard metadata.id == project.id else { throw AnimationStorageError.identityMismatch }
@@ -363,9 +428,17 @@ class DeviceStorageManager {
         try text(metadata.title)
         try asset(metadata.thumbnailData)
         try asset(project.editableDocumentData)
+        var imageSources: [UUID: (source: StoredImageSource, normalized: Data)] = [:]
         for frame in project.frames {
             try account(64)
             try asset(frame.imageData)
+            if let source = frame.sourceImage {
+                try source.validate()
+                guard let normalized = frame.imageData, !normalized.isEmpty else { throw AnimationStorageError.invalidDocument }
+                if let previous = imageSources[source.id], previous.source != source || previous.normalized != normalized { throw AnimationStorageError.identityMismatch }
+                imageSources[source.id] = (source, normalized)
+                try account(128); try text(source.name); try text(source.container); try asset(source.originalData)
+            }
             guard frame.legacyFrameIndex.map({ (0...1_000_000).contains($0) }) ?? true else { throw AnimationStorageError.invalidDocument }
             let layers = frame.layerData ?? []
             guard layers.count <= 1024, Set(layers.map(\.id)).count == layers.count else { throw AnimationStorageError.invalidDocument }
@@ -433,14 +506,40 @@ struct AnimationMetadata: Codable {
     var thumbnailData: Data?
 }
 
-struct StoredAnimationFrame: Codable {
+struct StoredAnimationFrame: Codable, Equatable {
     var imageData: Data?
     var layerData: [LayerData]?
     /// Original numeric position when reading a legacy directory with gaps.
     var legacyFrameIndex: Int? = nil
+    /// Nil for all historical records. Original bytes never replace normalized pixels.
+    var sourceImage: StoredImageSource? = nil
 }
 
-struct LayerData: Codable {
+struct StoredImageSource: Codable, Equatable {
+    let id: UUID
+    let name: String
+    let container: String
+    let originalData: Data
+    let originalWidth: Int
+    let originalHeight: Int
+    let originalOrientation: Int
+    let normalizedWidth: Int
+    let normalizedHeight: Int
+
+    func validate() throws {
+        guard !name.isEmpty, name.count <= 120, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              ["jpeg", "png", "heif"].contains(container), !originalData.isEmpty, originalData.count <= 16 * 1024 * 1024,
+              (1...8192).contains(originalWidth), (1...8192).contains(originalHeight),
+              originalWidth * originalHeight <= 16_777_216, (1...8).contains(originalOrientation),
+              (1...8192).contains(normalizedWidth), (1...8192).contains(normalizedHeight),
+              normalizedWidth * normalizedHeight <= 16_777_216 else { throw AnimationStorageError.invalidDocument }
+        let rotated = (5...8).contains(originalOrientation)
+        guard normalizedWidth == (rotated ? originalHeight : originalWidth),
+              normalizedHeight == (rotated ? originalWidth : originalHeight) else { throw AnimationStorageError.invalidDocument }
+    }
+}
+
+struct LayerData: Codable, Equatable {
     let id: UUID
     var name: String
     var opacity: Double

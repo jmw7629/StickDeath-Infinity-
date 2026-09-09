@@ -156,11 +156,12 @@ final class StudioExportService {
                         background: Background, raster: Data?) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
+        let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers, data: raster)
         var drawingError: Error?
         let content = Canvas { context, actual in
             if background == .white { context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white)) }
             drawingError = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes)
+                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedRaster: image)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
