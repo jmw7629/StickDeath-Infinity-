@@ -42,7 +42,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.sha }}
         run: python3 scripts/verify_spatter_client.py
       - name: Verify simulator fixture orchestration guards (mocked subprocesses)
-        run: python3 Tests/NativeSmokeHarness/test_image_seed.py
+        run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
   native-ios-build:
     runs-on: macos-15
     timeout-minutes: 50
