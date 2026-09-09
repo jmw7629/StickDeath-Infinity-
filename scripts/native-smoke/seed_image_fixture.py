@@ -8,6 +8,7 @@ import pathlib
 import struct
 import subprocess
 import zlib
+import uuid
 
 
 def make_png() -> bytes:
@@ -43,12 +44,28 @@ def main() -> None:
                 for d in devices if d["udid"] == args.udid and d.get("isAvailable") and d["state"] == "Booted"]
     if len(selected) != 1:
         raise ValueError("Use the explicit available booted iOS test simulator")
+    seed_verified_fixture(args.udid, output)
+
+
+def seed_verified_fixture(udid: str, output: pathlib.Path) -> None:
+    """Seed only after the caller verifies the explicit available, booted iOS target.
+
+    The recorder performs native bootstatus immediately before this call; the
+    standalone entry point verifies fresh available/Booted inventory above.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        raise ValueError("Image fixture seeding is limited to the approved ephemeral CI runner")
+    if str(uuid.UUID(udid)).lower() != udid.lower():
+        raise ValueError("Use the complete explicit simulator UUID")
+    output = output.resolve()
+    if not output.is_dir() or not output.is_relative_to(pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()):
+        raise ValueError("Use an existing isolated runner-temp evidence directory")
     data = make_png()
     fixture = output / "SDI-generated-image-fixture.png"
     with fixture.open("xb") as handle:
         handle.write(data)
-    subprocess.run(["xcrun", "simctl", "addmedia", args.udid, str(fixture)], check=True, timeout=60)
-    report = {"simulatorUDID": args.udid, "file": fixture.name, "bytes": len(data),
+    subprocess.run(["xcrun", "simctl", "addmedia", udid, str(fixture)], check=True, timeout=60)
+    report = {"simulatorUDID": udid, "file": fixture.name, "bytes": len(data),
               "sha256": hashlib.sha256(data).hexdigest(), "width": 96, "height": 64,
               "source": "Original generated four-color UI fixture; no third-party corpus",
               "route": "System Photos library; the app must select through PHPicker"}
