@@ -71,35 +71,32 @@ actor StudioImageImportService {
         let scoped = sourceURL.startAccessingSecurityScopedResource()
         defer { if scoped { sourceURL.stopAccessingSecurityScopedResource() } }
         guard safeFileURL(scratchParent) else { throw ImportError.temporaryStorage }
-        let values = try scratchParent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        guard values.isDirectory == true, values.isSymbolicLink != true else { throw ImportError.temporaryStorage }
-        let directory = scratchParent.resolvingSymlinksInPath().standardizedFileURL
-            .appendingPathComponent(".sdi-image-import-\(UUID().uuidString)", isDirectory: true)
-        guard Darwin.mkdir(directory.path, 0o700) == 0 else { throw ImportError.temporaryStorage }
+        let scratch = try StudioImageImportScratch.create(in: scratchParent)
         do {
-            let copy = directory.appendingPathComponent("source.image")
-            let original = try await copySource(sourceURL, to: copy, progress: progress)
+            let original = try await copySource(sourceURL, scratch: scratch, progress: progress)
             try await progress(.init(phase: .validating, completed: 0, total: 1))
             try Task.checkCancellation()
+            try scratch.verify()
             let description = try inspect(original)
             try await progress(.init(phase: .decoding, completed: 0, total: 1))
             try Task.checkCancellation()
+            try scratch.verify()
             let image = try decode(original, description: description)
             try await progress(.init(phase: .encoding, completed: 0, total: 1))
             try Task.checkCancellation()
+            try scratch.verify()
             let png = try normalizedPNG(image)
             try Task.checkCancellation()
             let result = ImportedImage(id: UUID(), name: title, container: description.container,
                 originalData: original, originalWidth: description.width, originalHeight: description.height,
                 originalOrientation: description.orientation, width: image.width, height: image.height, normalizedPNG: png)
-            try FileManager.default.removeItem(at: directory)
+            try scratch.cleanup()
             return result
         } catch {
-            if FileManager.default.fileExists(atPath: directory.path) {
-                do { try FileManager.default.removeItem(at: directory) }
-                catch { throw ImportError.cleanupFailed(directory: directory) }
-            }
-            throw error
+            let operationError = error
+            do { try scratch.cleanup() }
+            catch { throw ImportError.cleanupFailed(directory: scratch.directoryURL) }
+            throw operationError
         }
     }
 
@@ -108,7 +105,7 @@ actor StudioImageImportService {
             && url.fragment == nil && !url.path.utf8.contains(0)
     }
 
-    private func copySource(_ source: URL, to destination: URL,
+    private func copySource(_ source: URL, scratch: StudioImageImportScratch,
                             progress: @Sendable (Progress) async throws -> Void) async throws -> Data {
         let inputFD = Darwin.open(source.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_NOCTTY)
         guard inputFD >= 0 else { throw ImportError.unsafeSource }
@@ -117,8 +114,7 @@ actor StudioImageImportService {
         guard fstat(inputFD, &before) == 0, before.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) else { throw ImportError.unsafeSource }
         guard before.st_size > 0 else { throw ImportError.invalidImage }
         guard before.st_size <= Self.maximumEncodedBytes else { throw ImportError.limitExceeded }
-        let outputFD = Darwin.open(destination.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
-        guard outputFD >= 0 else { throw ImportError.temporaryStorage }
+        let outputFD = try scratch.createSourceFile()
         defer { _ = Darwin.close(outputFD) }
         let input = FileHandle(fileDescriptor: inputFD, closeOnDealloc: false)
         let output = FileHandle(fileDescriptor: outputFD, closeOnDealloc: false)
@@ -129,6 +125,7 @@ actor StudioImageImportService {
             guard chunk.count <= Self.maximumEncodedBytes - data.count else { throw ImportError.limitExceeded }
             try output.write(contentsOf: chunk); data.append(chunk)
             try await progress(.init(phase: .reading, completed: Int64(data.count), total: before.st_size))
+            try scratch.verify()
             await Task.yield()
         }
         var after = stat()
@@ -331,6 +328,117 @@ actor StudioImageImportService {
             }
         }
     }
+}
+
+/// Scoped to one actor operation. File descriptors bind cleanup to the directory
+/// we created, even across asynchronous progress callbacks. Unknown entries and
+/// replaced paths are never recursively removed; failure leaves them for review.
+private final class StudioImageImportScratch {
+    private struct Identity: Equatable {
+        let device: dev_t
+        let inode: ino_t
+        init(_ value: stat) { device = value.st_dev; inode = value.st_ino }
+    }
+    let directoryURL: URL
+    private let parentURL: URL
+    private let directoryName: String
+    private let parentIdentity: Identity
+    private let directoryIdentity: Identity
+    private let parentFD: Int32
+    private let directoryFD: Int32
+    private var sourceIdentity: Identity?
+    private var cleaned = false
+    private static let filename = "source.image"
+
+    static func create(in parentURL: URL) throws -> StudioImageImportScratch {
+        var parent = stat()
+        guard lstat(parentURL.path, &parent) == 0, isDirectory(parent) else {
+            throw StudioImageImportService.ImportError.temporaryStorage
+        }
+        let canonical = parentURL.resolvingSymlinksInPath().standardizedFileURL
+        let parentFD = Darwin.open(canonical.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parentFD >= 0 else { throw StudioImageImportService.ImportError.temporaryStorage }
+        var openedParent = stat()
+        guard fstat(parentFD, &openedParent) == 0, Identity(parent) == Identity(openedParent) else {
+            _ = Darwin.close(parentFD); throw StudioImageImportService.ImportError.temporaryStorage
+        }
+        let name = ".sdi-image-import-" + UUID().uuidString
+        let directoryURL = canonical.appendingPathComponent(name, isDirectory: true)
+        guard mkdirat(parentFD, name, 0o700) == 0 else {
+            _ = Darwin.close(parentFD); throw StudioImageImportService.ImportError.temporaryStorage
+        }
+        let directoryFD = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        var directory = stat()
+        guard directoryFD >= 0, fstat(directoryFD, &directory) == 0, isDirectory(directory) else {
+            if directoryFD >= 0 { _ = Darwin.close(directoryFD) }
+            _ = Darwin.close(parentFD)
+            // Without an opened identity we cannot safely remove the new entry.
+            throw StudioImageImportService.ImportError.cleanupFailed(directory: directoryURL)
+        }
+        return StudioImageImportScratch(parentURL: canonical, directoryName: name,
+            parentFD: parentFD, directoryFD: directoryFD,
+            parentIdentity: Identity(openedParent), directoryIdentity: Identity(directory))
+    }
+
+    private init(parentURL: URL, directoryName: String, parentFD: Int32, directoryFD: Int32,
+                 parentIdentity: Identity, directoryIdentity: Identity) {
+        self.parentURL = parentURL; self.directoryName = directoryName
+        self.parentFD = parentFD; self.directoryFD = directoryFD
+        self.parentIdentity = parentIdentity; self.directoryIdentity = directoryIdentity
+        directoryURL = parentURL.appendingPathComponent(directoryName, isDirectory: true)
+    }
+
+    func createSourceFile() throws -> Int32 {
+        try verify()
+        guard sourceIdentity == nil else { throw StudioImageImportService.ImportError.temporaryStorage }
+        let fd = openat(directoryFD, Self.filename, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw StudioImageImportService.ImportError.temporaryStorage }
+        var file = stat()
+        guard fstat(fd, &file) == 0, Self.isRegular(file) else {
+            _ = Darwin.close(fd); throw StudioImageImportService.ImportError.temporaryStorage
+        }
+        sourceIdentity = Identity(file)
+        return fd
+    }
+
+    func verify() throws {
+        var parent = stat()
+        guard !cleaned, lstat(parentURL.path, &parent) == 0, Self.isDirectory(parent),
+              Identity(parent) == parentIdentity else { throw failure }
+        try verifyDirectory()
+        if let expected = sourceIdentity {
+            var file = stat()
+            guard fstatat(directoryFD, Self.filename, &file, AT_SYMLINK_NOFOLLOW) == 0,
+                  Self.isRegular(file), Identity(file) == expected else { throw failure }
+        }
+    }
+
+    /// Remove only the captured regular file and then an empty captured directory.
+    /// Cleanup uses the opened parent: a renamed parent does not redirect deletion
+    /// into a replacement at its former URL. A renamed/replaced child fails closed.
+    func cleanup() throws {
+        guard !cleaned else { return }
+        try verifyDirectory()
+        var file = stat()
+        if fstatat(directoryFD, Self.filename, &file, AT_SYMLINK_NOFOLLOW) == 0 {
+            guard let expected = sourceIdentity, Self.isRegular(file), Identity(file) == expected else { throw failure }
+            guard unlinkat(directoryFD, Self.filename, 0) == 0 else { throw failure }
+        } else if errno != ENOENT { throw failure }
+        // AT_REMOVEDIR cannot remove another entry or recursively erase contents.
+        guard unlinkat(parentFD, directoryName, AT_REMOVEDIR) == 0 else { throw failure }
+        cleaned = true
+    }
+
+    private func verifyDirectory() throws {
+        var entry = stat(), opened = stat()
+        guard fstatat(parentFD, directoryName, &entry, AT_SYMLINK_NOFOLLOW) == 0,
+              fstat(directoryFD, &opened) == 0, Self.isDirectory(entry),
+              Identity(entry) == directoryIdentity, Identity(opened) == directoryIdentity else { throw failure }
+    }
+    private var failure: StudioImageImportService.ImportError { .cleanupFailed(directory: directoryURL) }
+    private static func isDirectory(_ value: stat) -> Bool { value.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) }
+    private static func isRegular(_ value: stat) -> Bool { value.st_mode & mode_t(S_IFMT) == mode_t(S_IFREG) }
+    deinit { _ = Darwin.close(directoryFD); _ = Darwin.close(parentFD) }
 }
 
 private final class StudioImagePNGBuffer {
