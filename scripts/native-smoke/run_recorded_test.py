@@ -54,7 +54,7 @@ def main() -> int:
         subprocess.run(["xcrun", "simctl", "boot", args.udid], check=True, timeout=60)
     subprocess.run(["xcrun", "simctl", "bootstatus", args.udid, "-b"], check=True, timeout=120)
     subprocess.run([sys.executable, str(pathlib.Path(__file__).with_name("seed_image_fixture.py")),
-                    "--udid", args.udid, "--output", str(output)], check=True, timeout=100)
+                    "--udid", args.udid, "--output", str(output)], check=True, timeout=180)
 
     video = output / "simulator.mp4"
     if video.exists():

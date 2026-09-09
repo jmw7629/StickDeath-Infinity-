@@ -35,8 +35,10 @@ def main() -> None:
     output = args.output.resolve()
     if not output.is_dir() or not output.is_relative_to(pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()):
         raise ValueError("Use an existing isolated runner-temp evidence directory")
+    # CoreSimulator can still be busy immediately after bootstatus succeeds.
+    # Keep fresh identity/state verification, with a bounded cold-start budget.
     inventory = json.loads(subprocess.check_output(
-        ["xcrun", "simctl", "list", "devices", "available", "--json"], timeout=30))
+        ["xcrun", "simctl", "list", "devices", "available", "--json"], timeout=90))
     selected = [d for runtime, devices in inventory["devices"].items() if ".iOS-" in runtime
                 for d in devices if d["udid"] == args.udid and d.get("isAvailable") and d["state"] == "Booted"]
     if len(selected) != 1:
