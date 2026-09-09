@@ -117,6 +117,12 @@
 		4B8D0D3E03ECEA15AA7C330D /* StudioImagePickerTransfer.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */; };
 		C438D20BEA967F9AC0A5CD21 /* StudioImageImportSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */; };
 		6DE1A5E4F362A5DAC0E5CB70 /* StudioImageImportPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */; };
+		EFEF6E796B5DFF4C46109916 /* StudioMoviePanelState.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC56D002C9264982024B1D27 /* StudioMoviePanelState.swift */; };
+		7EECDDF61FDD3E4D5E1D9BD7 /* StudioMovieShareLifetime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CD75375F360482C280D01D0 /* StudioMovieShareLifetime.swift */; };
+		7547810B20ED6084318801C4 /* StudioMovieExportControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF837852CCCC0B12013AB345 /* StudioMovieExportControls.swift */; };
+		CC79AB22EF0BD85E30CEBFB8 /* StudioMovieSharePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBEC91E231BE62C478B4EFF8 /* StudioMovieSharePresenter.swift */; };
+		986DC521401B32C785C16672 /* StudioMovieExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */; };
+		163D432AA7F5EFEACF21172B /* StudioMovieExportSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -240,6 +246,12 @@
 		C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImagePickerTransfer.swift"; sourceTree = SOURCE_ROOT; };
 		41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImageImportSession.swift"; sourceTree = SOURCE_ROOT; };
 		59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift"; sourceTree = SOURCE_ROOT; };
+		CC56D002C9264982024B1D27 /* StudioMoviePanelState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMoviePanelState.swift"; sourceTree = SOURCE_ROOT; };
+		6CD75375F360482C280D01D0 /* StudioMovieShareLifetime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMovieShareLifetime.swift"; sourceTree = SOURCE_ROOT; };
+		FF837852CCCC0B12013AB345 /* StudioMovieExportControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioMovieExportControls.swift"; sourceTree = SOURCE_ROOT; };
+		CBEC91E231BE62C478B4EFF8 /* StudioMovieSharePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioMovieSharePresenter.swift"; sourceTree = SOURCE_ROOT; };
+		7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMovieExportService.swift"; sourceTree = SOURCE_ROOT; };
+		5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMovieExportSession.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -367,6 +379,10 @@
 				8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */,
 				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */,
 				41DEDE259D86961F7E5F4708 /* StudioImageImportSession.swift */,
+				5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */,
+				7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */,
+				6CD75375F360482C280D01D0 /* StudioMovieShareLifetime.swift */,
+				CC56D002C9264982024B1D27 /* StudioMoviePanelState.swift */,
 				C0AF9165A741E7F7A9357155 /* StudioImagePickerTransfer.swift */,
 				19CF44006565BB004EBAAEFD /* StudioImageProviderFile.swift */,
 				32C31B16D9B360A025087287 /* StudioRasterImage.swift */,
@@ -629,6 +645,8 @@
 			children = (
 				D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */,
 				59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */,
+				CBEC91E231BE62C478B4EFF8 /* StudioMovieSharePresenter.swift */,
+				FF837852CCCC0B12013AB345 /* StudioMovieExportControls.swift */,
 				0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */,
 				986F538B15F4B5FBAB96124E /* StudioFrameRenderer.swift */,
 				AC4B1E7BB9F5A8A1684A75AD /* Timeline */,
@@ -785,6 +803,12 @@
 				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */,
 				6DE1A5E4F362A5DAC0E5CB70 /* StudioImageImportPanel.swift in Sources */,
 				C438D20BEA967F9AC0A5CD21 /* StudioImageImportSession.swift in Sources */,
+				163D432AA7F5EFEACF21172B /* StudioMovieExportSession.swift in Sources */,
+				986DC521401B32C785C16672 /* StudioMovieExportService.swift in Sources */,
+				CC79AB22EF0BD85E30CEBFB8 /* StudioMovieSharePresenter.swift in Sources */,
+				7547810B20ED6084318801C4 /* StudioMovieExportControls.swift in Sources */,
+				7EECDDF61FDD3E4D5E1D9BD7 /* StudioMovieShareLifetime.swift in Sources */,
+				EFEF6E796B5DFF4C46109916 /* StudioMoviePanelState.swift in Sources */,
 				4B8D0D3E03ECEA15AA7C330D /* StudioImagePickerTransfer.swift in Sources */,
 				A4703D7BC211E5AC7804F671 /* StudioImageProviderFile.swift in Sources */,
 				788E9845D52D63843CBDC6A3 /* StudioRasterImage.swift in Sources */,
