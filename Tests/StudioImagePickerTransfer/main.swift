@@ -12,6 +12,14 @@ private final class Observation: @unchecked Sendable {
     private var calls = 0
     func record() { lock.lock(); calls += 1; lock.unlock() }
     var count: Int { lock.lock(); defer { lock.unlock() }; return calls }
+    func waitForCall(_ message: String) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while count == 0 {
+            try require(clock.now < deadline, message)
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
 }
 
 @main struct StudioImagePickerTransferTests {
@@ -107,11 +115,11 @@ private final class Observation: @unchecked Sendable {
                 let began = Date()
                 try await reject({ try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch, timeoutSeconds: 0.1) }, matching: { if case StudioImagePickerTransfer.Failure.timedOut = $0 { return true }; return false })
                 try require(Date().timeIntervalSince(began) < 2, "Provider deadline did not bound waiting")
-                try await Task.sleep(nanoseconds: 50_000_000)
+                try await cancelled.waitForCall("Actual NSProgress cancellation callback did not arrive")
                 try require(cancelled.count == 1, "Actual NSProgress cancellation not forwarded")
             }
             try await test("cancel during provider wait rejects once and ignores a late callback") { folder, scratch in
-                let source = folder.appendingPathComponent("late.png"); try image().write(to: source)
+                let source = folder.appendingPathComponent("late.png"), bytes = try image(); try bytes.write(to: source)
                 let p = NSItemProvider(), started = Observation(), callback = Observation()
                 p.registerFileRepresentation(forTypeIdentifier: "public.png", fileOptions: [], visibility: .ownProcess) { done in
                     started.record()
@@ -119,23 +127,27 @@ private final class Observation: @unchecked Sendable {
                     return Progress(totalUnitCount: 1)
                 }
                 let task = Task { try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch) }
-                for _ in 0..<100 where started.count == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+                try await started.waitForCall("Actual provider did not start before cancellation")
                 try require(started.count == 1, "Actual provider did not start")
                 task.cancel()
                 try await reject({ try await task.value }, matching: { $0 is CancellationError })
-                try await Task.sleep(nanoseconds: 300_000_000)
-                try require(callback.count == 1 && fm.fileExists(atPath: source.path), "Late provider callback or original file lost")
+                try await callback.waitForCall("Late provider completion did not finish after cancellation")
+                try require(callback.count == 1, "Late provider completion ran more than once")
+                try require(fm.fileExists(atPath: source.path), "Late provider callback deleted original file")
+                try require(try Data(contentsOf: source) == bytes, "Late provider callback changed original bytes")
             }
             try await test("late completion after deadline cannot create retained scratch") { folder, scratch in
-                let source = folder.appendingPathComponent("late.png"); try image().write(to: source)
-                let p = NSItemProvider()
+                let source = folder.appendingPathComponent("late.png"), bytes = try image(); try bytes.write(to: source)
+                let p = NSItemProvider(), callback = Observation()
                 p.registerFileRepresentation(forTypeIdentifier: "public.png", fileOptions: [], visibility: .ownProcess) { done in
-                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { done(source, false, nil) }
+                    DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) { done(source, false, nil); callback.record() }
                     return Progress(totalUnitCount: 1)
                 }
                 try await reject { try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch, timeoutSeconds: 0.05) }
-                try await Task.sleep(nanoseconds: 250_000_000)
+                try await callback.waitForCall("Late provider completion did not finish after deadline")
+                try require(callback.count == 1, "Late deadline completion ran more than once")
                 try require(fm.fileExists(atPath: source.path), "Late callback deleted source")
+                try require(try Data(contentsOf: source) == bytes, "Late deadline callback changed original bytes")
             }
             try await test("zero byte and oversized actual provider files reject") { folder, scratch in
                 for size in [0, StudioImageProviderFile.maximumEncodedBytes + 1] {
