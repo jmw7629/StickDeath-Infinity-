@@ -73,21 +73,23 @@ struct StudioView: View {
         }
     }
     
+    // A late dismissal belongs only to its own sheet; it must not close a
+    // destination panel opened while the sheet dismissal animation finishes.
     // Sheet bindings
     var showMenuBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .menu }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .menu }, set: { if !$0 && vm.activePanel == .menu { vm.activePanel = .none } })
     }
     var showAIVoiceBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .aiVoice }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .aiVoice }, set: { if !$0 && vm.activePanel == .aiVoice { vm.activePanel = .none } })
     }
     var showSpatterBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .spatterAI }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .spatterAI }, set: { if !$0 && vm.activePanel == .spatterAI { vm.activePanel = .none } })
     }
     var showMagicCutBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 && vm.activePanel == .magicCut { vm.activePanel = .none } })
     }
     var showRotoscopeBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 { vm.activePanel = .none } })
+        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 && vm.activePanel == .rotoscope { vm.activePanel = .none } })
     }
 }
 
