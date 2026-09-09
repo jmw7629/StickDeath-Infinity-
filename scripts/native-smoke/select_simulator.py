@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create one isolated CI phone from an available installed template; never reset."""
+"""Create one CI phone on the selected SDK's installed runtime; never reset."""
 import argparse
 import json
 import os
@@ -117,6 +117,15 @@ def inventory(data):
     return value, devices, set(ids)
 
 
+def version_tuple(value):
+    if not isinstance(value, str) or len(value) > 16 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', value):
+        raise ValueError('Expected a complete numeric simulator SDK/runtime version')
+    parts = list(map(int, value.split('.')))
+    while len(parts) > 1 and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
 def create_fresh():
     root, run = context()
     marker = Marker(root, run)
@@ -126,6 +135,10 @@ def create_fresh():
         if not re.fullmatch(r'[0-9a-f]{40}', sha):
             raise ValueError('Exact source commit required')
         marker.value['sourceCommit'] = sha
+        sdk_version = command(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'],
+                              'simulator-sdk', marker, deadline, seconds=5, cap=128).decode('ascii').strip()
+        selected_sdk = version_tuple(sdk_version)
+        marker.value['simulatorSDKVersion'] = sdk_version
         raw = command(['xcrun', 'simctl', 'list', '--json'], 'initial-inventory', marker, deadline)
         initial, devices, old_ids = inventory(raw)
         types = [d for d in initial['devicetypes'] if d.get('identifier') == TYPE and d.get('name') == 'iPhone 16 Pro']
@@ -135,13 +148,19 @@ def create_fresh():
         for runtime in initial['runtimes']:
             rid = runtime.get('identifier', '')
             version = runtime.get('version', '')
-            if not rid.startswith('com.apple.CoreSimulator.SimRuntime.iOS-') or runtime.get('isAvailable') is not True or len(version) > 16 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', version):
+            if not rid.startswith('com.apple.CoreSimulator.SimRuntime.iOS-') or runtime.get('isAvailable') is not True:
+                continue
+            try:
+                runtime_version = version_tuple(version)
+            except ValueError:
+                continue
+            if runtime_version != selected_sdk:
                 continue
             for actual_runtime, device in devices:
                 if actual_runtime == rid and device.get('isAvailable') is True and device.get('name') == 'iPhone 16 Pro' and device.get('deviceTypeIdentifier') == TYPE:
                     choices.append((tuple(map(int, version.split('.'))), rid, device))
         if not choices:
-            raise ValueError('No available installed iPhone16Pro template; no download')
+            raise ValueError('No available installed iPhone16Pro runtime matching the selected simulator SDK; no fallback or download')
         _, rid, template = sorted(choices, key=lambda c: (c[0], c[1], c[2]['udid']))[-1]
         name = 'SDI-' + run['runID'] + '-' + run['runAttempt']
         if any(d.get('name') == name for _, d in devices):
@@ -161,7 +180,8 @@ def create_fresh():
         if len(matches) != 1 or new_ids - old_ids != {new_id}:
             raise ValueError('Expected exactly one newly-created device')
         actual_runtime, actual = matches[0]
-        available_runtime = [r for r in fresh['runtimes'] if r.get('identifier') == rid and r.get('isAvailable') is True]
+        available_runtime = [r for r in fresh['runtimes'] if r.get('identifier') == rid
+                             and r.get('isAvailable') is True and version_tuple(r.get('version')) == selected_sdk]
         if len(available_runtime) != 1 or actual_runtime != rid or actual.get('name') != name or actual.get('deviceTypeIdentifier') != TYPE or actual.get('isAvailable') is not True or actual.get('state') != 'Shutdown':
             raise ValueError('Fresh device identity does not match its verified template')
         marker.value['state'] = 'verified'; marker.write()

@@ -61,6 +61,8 @@ class FreshSimulator(unittest.TestCase):
         self.calls.append((argv, deadline, kw))
         if argv == ['git', 'rev-parse', '--verify', 'HEAD']:
             return self.result((SHA + '\n').encode())
+        if argv == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
+            return self.result(b'26.2\n')
         if argv == ['xcrun', 'simctl', 'list', '--json']:
             listed = sum(c[0] == argv for c in self.calls)
             return self.result(json.dumps(self.initial if listed == 1 else self.final).encode())
@@ -87,10 +89,11 @@ class FreshSimulator(unittest.TestCase):
     def test_one_verified_create_receipt_and_artifact_copy(self):
         self.assertEqual(self.run_selector(), self.new_id)
         self.assert_one_create()
-        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(len(self.calls), 5)
         value = self.marker()
         self.assertEqual(value['state'], 'verified')
         self.assertEqual(value['sourceCommit'], SHA)
+        self.assertEqual(value['simulatorSDKVersion'], '26.2')
         self.assertEqual(value['template']['udid'], self.old_id)
         self.assertEqual(value['created'], {'name': self.name, 'runtime': RUNTIME,
                                           'deviceType': select.TYPE, 'udid': self.new_id})
@@ -115,7 +118,7 @@ class FreshSimulator(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'create failed'):
             self.run_selector(command)
         self.assert_one_create()
-        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(self.calls), 4)
         self.assertEqual(self.marker()['state'], 'failed')
         self.assertTrue(self.marker()['createAttempted'])
         self.assertEqual(json.loads((self.root / select.UPLOAD).read_text())['state'], 'failed')
@@ -135,7 +138,7 @@ class FreshSimulator(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         self.run_selector(command)
                     self.assert_one_create()
-                    self.assertEqual(len(self.calls), 3)
+                    self.assertEqual(len(self.calls), 4)
 
     def test_fresh_inventory_must_match_all_identity_fields(self):
         changes = [('name', 'Unrelated'), ('state', 'Booted'), ('isAvailable', False),
@@ -149,7 +152,7 @@ class FreshSimulator(unittest.TestCase):
                     with patch.object(self, 'final', final), self.assertRaises(ValueError):
                         self.run_selector()
                     self.assert_one_create()
-        for variation in ('wrong-runtime', 'runtime-unavailable', 'additional-device'):
+        for variation in ('wrong-runtime', 'runtime-unavailable', 'changed-runtime-version', 'additional-device'):
             with self.subTest(variation=variation), tempfile.TemporaryDirectory() as tmp:
                 with patch.dict(os.environ, {'RUNNER_TEMP': tmp, 'GITHUB_OUTPUT': ''}):
                     self.calls = []
@@ -158,6 +161,8 @@ class FreshSimulator(unittest.TestCase):
                         final['devices'][OLD_RUNTIME].append(final['devices'][RUNTIME].pop())
                     elif variation == 'runtime-unavailable':
                         final['runtimes'][0]['isAvailable'] = False
+                    elif variation == 'changed-runtime-version':
+                        final['runtimes'][0]['version'] = '26.3'
                     else:
                         final['devices'][RUNTIME].append(self.device(str(uuid.uuid4()), 'extra'))
                     with patch.object(self, 'final', final), self.assertRaises(ValueError):
@@ -181,7 +186,7 @@ class FreshSimulator(unittest.TestCase):
                         initial['runtimes'].append('invalid')
                     with patch.object(self, 'initial', initial), self.assertRaises(ValueError):
                         self.run_selector()
-                    self.assertEqual(len(self.calls), 2)
+                    self.assertEqual(len(self.calls), 3)
 
     def test_ci_run_source_and_runner_directory_guards(self):
         for env in ({'GITHUB_ACTIONS': 'false'}, {'GITHUB_RUN_ID': 'invalid'},
@@ -218,7 +223,7 @@ class FreshSimulator(unittest.TestCase):
                         return result if argv[2:3] == ['list'] else good
                     with self.assertRaisesRegex(ValueError, 'initial-inventory failed'):
                         self.run_selector(command)
-                    self.assertEqual(len(self.calls), 2)
+                    self.assertEqual(len(self.calls), 3)
 
     def test_total_deadline_prevents_later_command(self):
         clock = [10.0]
@@ -379,6 +384,72 @@ class FreshSimulator(unittest.TestCase):
         with patch.object(select.os, 'open', side_effect=opened), self.assertRaisesRegex(ValueError, 'Evidence directory changed'):
             select.copy_marker(evidence, self.new_id, SHA)
         self.assertEqual(list(evidence.iterdir()), [evidence / 'foreign'])
+
+    def test_sdk_matching_runtime_is_selected_instead_of_newest_installed(self):
+        final = copy.deepcopy(self.initial)
+        final['devices'][OLD_RUNTIME].append(self.device(self.new_id, self.name))
+        def command(argv, deadline, **kw):
+            if argv == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
+                self.calls.append((argv, deadline, kw))
+                return self.result(b'18.5\n')
+            if argv == ['xcrun', 'simctl', 'create', self.name, select.TYPE, OLD_RUNTIME]:
+                self.calls.append((argv, deadline, kw))
+                return self.result((self.new_id + '\n').encode())
+            return self.command(argv, deadline, **kw)
+        with patch.object(self, 'final', final):
+            self.assertEqual(self.run_selector(command), self.new_id)
+        self.assert_one_create()
+        value = self.marker()
+        self.assertEqual(value['simulatorSDKVersion'], '18.5')
+        self.assertEqual(value['created']['runtime'], OLD_RUNTIME)
+        self.assertEqual(value['template']['udid'], self.other_id)
+        self.assertEqual(len(self.calls), 5)
+        self.assertEqual(self.calls[1][2]['stdout_cap'], 128)
+
+    def test_missing_sdk_match_never_falls_back_to_newer_or_older_runtime(self):
+        for version in ('18.4', '18.5.1', '26.3'):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                self.calls = []
+                def command(argv, deadline, **kw):
+                    result = self.command(argv, deadline, **kw)
+                    return self.result(version.encode()) if argv[1:2] == ['--sdk'] else result
+                with patch.dict(os.environ, {'RUNNER_TEMP': tmp, 'GITHUB_OUTPUT': ''}):
+                    with self.assertRaisesRegex(ValueError, 'matching the selected simulator SDK'):
+                        self.run_selector(command)
+                    self.assertEqual(len(self.calls), 3)
+                    self.assertFalse(json.loads((pathlib.Path(tmp) / select.MARKER).read_text())['createAttempted'])
+
+    def test_sdk_version_requires_complete_numeric_value_and_normalizes_zero_patch(self):
+        for version in ('26.2\nextra', '26.x', '', '26.2-beta', '1' * 17):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                self.calls = []
+                def command(argv, deadline, **kw):
+                    result = self.command(argv, deadline, **kw)
+                    return self.result(version.encode()) if argv[1:2] == ['--sdk'] else result
+                with patch.dict(os.environ, {'RUNNER_TEMP': tmp, 'GITHUB_OUTPUT': ''}):
+                    with self.assertRaisesRegex(ValueError, 'complete numeric'):
+                        self.run_selector(command)
+                    self.assertEqual(len(self.calls), 2)
+        self.calls = []
+        def normalized(argv, deadline, **kw):
+            result = self.command(argv, deadline, **kw)
+            return self.result(b'26.2.0\n') if argv[1:2] == ['--sdk'] else result
+        self.assertEqual(self.run_selector(normalized), self.new_id)
+        self.assert_one_create()
+
+    def test_sdk_lookup_timeout_or_flood_fails_before_inventory_or_create(self):
+        for failure in (self.result(b'26.2', timed_out=True), self.result(b'26.2', stdout_seen=129),
+                        self.result(b'26.2', returncode=1), self.result(b'26.2', capture_incomplete=True)):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                self.calls = []
+                def command(argv, deadline, **kw):
+                    result = self.command(argv, deadline, **kw)
+                    return failure if argv[1:2] == ['--sdk'] else result
+                with patch.dict(os.environ, {'RUNNER_TEMP': tmp, 'GITHUB_OUTPUT': ''}):
+                    with self.assertRaisesRegex(ValueError, 'simulator-sdk failed'):
+                        self.run_selector(command)
+                    self.assertEqual(len(self.calls), 2)
+                    self.assertFalse(json.loads((pathlib.Path(tmp) / select.MARKER).read_text())['createAttempted'])
 
 
 if __name__ == '__main__':
