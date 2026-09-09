@@ -23,6 +23,13 @@ private final class Counter: @unchecked Sendable {
     private let lock = NSLock(); private var calls = 0
     func record() { lock.lock(); calls += 1; lock.unlock() }
     var count: Int { lock.lock(); defer { lock.unlock() }; return calls }
+    func waitForCall(_ message: String) async throws {
+        let clock = ContinuousClock(), deadline = ContinuousClock().now.advanced(by: .seconds(5))
+        while count == 0 {
+            try require(clock.now < deadline, message)
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
 }
 @MainActor private final class ScopeBox {
     var value: StudioImageImportSession.Scope
@@ -263,12 +270,14 @@ private final class Counter: @unchecked Sendable {
             }
             let token = session.beginPicker(in: vm, scope: scope)!
             try require(session.receivePhoto(p, token: token, currentScope: { scope }), "Photo not accepted")
-            for _ in 0..<200 where started.count == 0 { try await Task.sleep(nanoseconds: 1_000_000) }
+            try await started.waitForCall("Actual provider did not start before cancellation")
             try require(started.count == 1, "Actual provider did not start")
             session.cancel(); await session.waitForCompletion()
             try await prepare(session, vm)
-            try await Task.sleep(nanoseconds: 250_000_000)
-            try require(late.count == 1 && session.status == .preview && session.preview?.name == "selected", "Late provider replaced new Files preview")
+            try await late.waitForCall("Cancelled provider completion did not finish")
+            try require(late.count == 1, "Cancelled provider completion ran more than once")
+            try require(session.status == .preview, "Late provider changed the new preview status")
+            try require(session.preview?.name == "selected", "Late provider replaced new Files preview")
         }
         try await test("corrupt image, unsupported provider and remote Files URL have truthful failure without editing") {
             let (vm, _) = try await fixture("bad-input"), before = vm.document
