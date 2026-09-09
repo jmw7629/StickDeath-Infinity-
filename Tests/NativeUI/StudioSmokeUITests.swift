@@ -575,16 +575,17 @@ final class StudioSmokeUITests: XCTestCase {
         var selected = false
         var capturedReadyGrid = false
         repeat {
-            // Re-query after the system picker replaces its Loading controller.
-            // Existence of a Cancel button does not imply the photo grid is ready.
-            if app.collectionViews.allElementsBoundByIndex.contains(where: { $0.isHittable }) {
+            // Re-query actual thumbnails after the Loading controller changes.
+            // iOS 26 exposes Photos as Image nodes in a ScrollView, without a
+            // CollectionView. Readiness must follow the selectable thumbnails.
+            let candidates = app.images.matching(NSPredicate(format: "label CONTAINS[c] %@", "Photo")).allElementsBoundByIndex
+                + app.collectionViews.cells.allElementsBoundByIndex
+            if candidates.contains(where: { $0.isHittable }) {
                 if !capturedReadyGrid {
                     capture(app, name: "image-photos-grid-ready")
                     captureHierarchy(app, name: "image-photos-grid-ready-hierarchy")
                     capturedReadyGrid = true
                 }
-                let candidates = app.images.matching(NSPredicate(format: "label CONTAINS[c] %@", "Photo")).allElementsBoundByIndex
-                    + app.collectionViews.cells.allElementsBoundByIndex
                 for candidate in candidates.prefix(12) {
                     guard Date() < readyDeadline else { break }
                     guard candidate.isHittable, candidate.frame.width > 24, candidate.frame.height > 24 else { continue }
