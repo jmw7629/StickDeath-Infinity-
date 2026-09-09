@@ -525,11 +525,11 @@ final class StudioSmokeUITests: XCTestCase {
         let before = try pixels(canvas.screenshot().image)
         try openImagePanel(app)
         app.buttons["studio.image.photos"].tap()
-        let cancelPhotos = app.buttons["Cancel"].firstMatch
+        let cancelPhotos = app.navigationBars.buttons["Cancel"].firstMatch
         XCTAssertTrue(cancelPhotos.waitForExistence(timeout: 10))
         capture(app, name: "image-native-photos-cancel-picker")
         captureHierarchy(app, name: "image-native-photos-cancel-hierarchy")
-        XCTAssertTrue(cancelPhotos.isHittable); cancelPhotos.tap()
+        try waitForHittable(cancelPhotos, app: app, name: "image-photos-cancel-ready"); cancelPhotos.tap()
         let files = app.buttons["studio.image.files"]
         XCTAssertTrue(files.waitForExistence(timeout: 8)); XCTAssertTrue(files.isEnabled)
         files.tap()
@@ -548,7 +548,7 @@ final class StudioSmokeUITests: XCTestCase {
         // A fresh Photos presentation must still work after Files cancellation.
         let photos = app.buttons["studio.image.photos"]
         XCTAssertTrue(photos.isEnabled); photos.tap()
-        XCTAssertTrue(cancelPhotos.waitForExistence(timeout: 10)); cancelPhotos.tap()
+        try waitForHittable(cancelPhotos, app: app, name: "image-photos-second-cancel-ready"); cancelPhotos.tap()
         try closeImagePanel(app)
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
         XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
@@ -571,13 +571,32 @@ final class StudioSmokeUITests: XCTestCase {
         // CI adds an original generated four-color PNG to the system Photos
         // library. Locate its actual visible thumbnail by decoded pixels;
         // neither an app launch flag nor a hidden importer can satisfy this.
-        let candidates = app.images.matching(NSPredicate(format: "label CONTAINS[c] %@", "Photo")).allElementsBoundByIndex
-            + app.collectionViews.cells.allElementsBoundByIndex
+        let readyDeadline = Date().addingTimeInterval(30)
         var selected = false
-        for candidate in candidates.prefix(12) {
-            guard candidate.isHittable, candidate.frame.width > 24, candidate.frame.height > 24 else { continue }
-            let colors = imageFixtureColors(try pixels(candidate.screenshot().image))
-            if colors.allSatisfy({ $0 > 8 }) { candidate.tap(); selected = true; break }
+        var capturedReadyGrid = false
+        repeat {
+            // Re-query after the system picker replaces its Loading controller.
+            // Existence of a Cancel button does not imply the photo grid is ready.
+            if app.collectionViews.allElementsBoundByIndex.contains(where: { $0.isHittable }) {
+                if !capturedReadyGrid {
+                    capture(app, name: "image-photos-grid-ready")
+                    captureHierarchy(app, name: "image-photos-grid-ready-hierarchy")
+                    capturedReadyGrid = true
+                }
+                let candidates = app.images.matching(NSPredicate(format: "label CONTAINS[c] %@", "Photo")).allElementsBoundByIndex
+                    + app.collectionViews.cells.allElementsBoundByIndex
+                for candidate in candidates.prefix(12) {
+                    guard Date() < readyDeadline else { break }
+                    guard candidate.isHittable, candidate.frame.width > 24, candidate.frame.height > 24 else { continue }
+                    let colors = imageFixtureColors(try pixels(candidate.screenshot().image))
+                    if colors.allSatisfy({ $0 > 8 }) { candidate.tap(); selected = true; break }
+                }
+            }
+            if !selected { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        } while !selected && Date() < readyDeadline
+        if !selected {
+            capture(app, name: "image-photos-grid-timeout")
+            captureHierarchy(app, name: "image-photos-grid-timeout-hierarchy")
         }
         XCTAssertTrue(selected, "The generated fixture was not visible in the actual Photos grid; inspect the captured hierarchy")
         let preview = try imageControl("studio.image.preview", app: app)
@@ -636,6 +655,17 @@ final class StudioSmokeUITests: XCTestCase {
             if r > 180 && g > 180 && b < 90 { counts[3] += 1 }
         }
         return counts
+    }
+
+    @MainActor private func waitForHittable(_ element: XCUIElement, app: XCUIApplication, name: String) throws {
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true AND hittable == true"), object: element)
+        let result = XCTWaiter.wait(for: [ready], timeout: 30)
+        if result != .completed {
+            capture(app, name: name + "-timeout")
+            captureHierarchy(app, name: name + "-timeout-hierarchy")
+        }
+        XCTAssertEqual(result, .completed, "System Photos cancellation control did not become hittable")
+        guard result == .completed else { throw NSError(domain: "NativePhotosReadiness", code: 1) }
     }
 
     @MainActor private func openImagePanel(_ app: XCUIApplication) throws {
