@@ -1,9 +1,9 @@
 #!/bin/bash
 # Runs the checked-in UI test target using existing runner tools,
-# app package checkouts and an explicitly selected available iOS simulator.
+# app package checkouts and one verified fresh CI phone on an installed runtime.
 set -euo pipefail
 : "${RUNNER_TEMP:?Run on the approved ephemeral macOS CI runner}"
-: "${SDI_SMOKE_SIMULATOR_UDID:?Select an available simulator from simctl list}"
+: "${SDI_SMOKE_SIMULATOR_UDID:?Create and verify one fresh CI simulator}"
 [[ "${GITHUB_ACTIONS:-}" == "true" ]] || { echo 'CI runner required'; exit 2; }
 git diff --quiet HEAD -- || { echo 'Commit tracked changes before recording evidence'; exit 2; }
 sdi_commit="$(git rev-parse HEAD)"
@@ -14,17 +14,19 @@ sdi_package_cache="$sdi_derived/SourcePackages"
 sdi_results="$sdi_run/StudioSmoke.xcresult"
 printf '%s\n' "$sdi_run" > "$RUNNER_TEMP/sdi-native-smoke-artifact-path.txt"
 trap 'echo "Native smoke evidence: $sdi_run"' EXIT
+python3 "$sdi_script_dir/select_simulator.py" --copy-marker "$sdi_run" \
+  --expected-udid "$SDI_SMOKE_SIMULATOR_UDID" --source "$sdi_commit"
 [[ -d "$sdi_package_cache/checkouts" ]] || { echo 'Reuse the successful native build package cache; no dependency bootstrap'; exit 2; }
 
-# The runner must already have a compatible installed runtime. No runtime/device
-# creation, package download command, endpoint, user keychain or signing setup.
+# The selector created exactly one fresh device on an already installed runtime.
+# No runtime download, existing-device reset, endpoint, keychain or signing setup.
 xcrun simctl list devices available --json > "$sdi_run/simulator-inventory.json"
 python3 - "$sdi_run/simulator-inventory.json" "$SDI_SMOKE_SIMULATOR_UDID" <<'PY'
 import json,sys
 inventory=json.load(open(sys.argv[1]))
 matches=[d for runtime,devices in inventory['devices'].items() if '.iOS-' in runtime
          for d in devices if d['udid']==sys.argv[2] and d.get('isAvailable')]
-assert len(matches)==1, 'Select one existing available iOS simulator'
+assert len(matches)==1, 'Use the one verified fresh available iOS simulator'
 print('Verified simulator:',matches[0]['name'])
 PY
 xcodebuild build-for-testing \

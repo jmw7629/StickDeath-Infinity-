@@ -827,6 +827,49 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let result = try await decode(output.movieURL); try require(result.frames.count == 3, "Metadata-only change damaged media")
             _ = try output.checkedURLs(); try output.cleanup(); try require(contents(folder).isEmpty, "Original owned output could not clean")
         }
+        await test("valid different-picture same-inode substitution fails at verifying and publishing callbacks") {
+            let controls = try parent(root, "valid-substitution-controls")
+            let red = try document(colors: ["#FF0000"]), blue = try document(colors: ["#0000FF"])
+            let redControl = try await Service().export(snapshot: snapshot(red), outputParent: controls, background: .white)
+            let blueControl = try await Service().export(snapshot: snapshot(blue), outputParent: controls, background: .white)
+            let redDecoded = try await decode(redControl.movieURL), blueDecoded = try await decode(blueControl.movieURL)
+            try pixel(redDecoded.frames[0].pixel(32, 16), [255, 0, 0, 255]); try pixel(blueDecoded.frames[0].pixel(32, 16), [0, 0, 255, 255])
+            try require(redDecoded.frames.count == 1 && blueDecoded.frames.count == 1 && CMTimeCompare(redDecoded.duration, blueDecoded.duration) == 0 && CMTimeCompare(redDecoded.pts[0], blueDecoded.pts[0]) == 0 && CMTimeCompare(redDecoded.durations[0], blueDecoded.durations[0]) == 0, "Actual encoded controls do not share exact valid timing")
+            let blueBytes = try Data(contentsOf: blueControl.movieURL)
+            for phase in [Service.Phase.verifying, .publishing] {
+                let folder = try parent(root, "valid-substitution-\(phase)"); var replaced = false
+                try await rejected({
+                    _ = try await Service().export(snapshot: snapshot(red), outputParent: folder, background: .white) { progress in
+                        if progress.phase == phase {
+                            let file = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!.appendingPathComponent("animation.mp4")
+                            let originalInode = try inode(file)
+                            try require(Data(contentsOf: file) != blueBytes, "Substitution fixture did not change media bytes")
+                            let handle = try FileHandle(forWritingTo: file)
+                            try handle.write(contentsOf: blueBytes); try handle.truncate(atOffset: UInt64(blueBytes.count)); try handle.close()
+                            try require(inode(file) == originalInode && Data(contentsOf: file) == blueBytes, "Fixture must preserve inode while replacing with real valid blue media")
+                            replaced = true
+                        }
+                    }
+                }, matching: { if case Service.ExportError.verificationFailed = $0 { return true }; return false })
+                try require(replaced && contents(folder).isEmpty, "Changed valid media was returned or owned cleanup failed")
+            }
+            _ = try redControl.checkedURLs(); _ = try blueControl.checkedURLs()
+            try redControl.cleanup(); try blueControl.cleanup(); try require(contents(controls).isEmpty, "Generated controls leaked")
+        }
+        await test("unchanged completed media rewrite at verifying callback retains valid export") {
+            let folder = try parent(root, "verification-identical-rewrite"); var sawBoundary = false, originalInode: UInt64?
+            let output = try await Service().export(snapshot: snapshot(document(colors: ["#FF0000"])), outputParent: folder, background: .white) { progress in
+                if progress.phase == .verifying {
+                    let file = try contents(folder).first { $0.lastPathComponent.hasSuffix(".partial") }!.appendingPathComponent("animation.mp4"), bytes = try Data(contentsOf: file)
+                    originalInode = try inode(file)
+                    let handle = try FileHandle(forWritingTo: file); try handle.write(contentsOf: bytes); try handle.close()
+                    sawBoundary = true
+                }
+            }
+            try require(sawBoundary && inode(output.movieURL) == originalInode, "Unchanged actual encoded bytes could not transfer")
+            let decoded = try await decode(output.movieURL); try require(decoded.frames.count == 1, "Unchanged encoded picture lost"); try pixel(decoded.frames[0].pixel(32,16), [255,0,0,255])
+            _ = try output.checkedURLs(); try output.cleanup(); try require(contents(folder).isEmpty, "Unchanged bytes failed owned cleanup")
+        }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed != 0 { exit(1) }
     }

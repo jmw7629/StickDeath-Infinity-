@@ -605,9 +605,12 @@ final class StudioMovieExportService {
             }
             guard writer!.status == .completed else { throw ExportError.writerFailed }
             try checkpoint(started)
+            // Seal the encoder-completed bytes before a caller callback can
+            // replace their contents with different but otherwise valid media.
+            // The post-verification/publication comparison must match this seal.
+            let verifiedBytes = try fingerprint(movie, started: started)
             try progress(Progress(phase: .verifying, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
-            let verifiedBytes = try fingerprint(movie, started: started)
             try await verify(movie, document: document, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
