@@ -34,7 +34,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
-        guard (1...3).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard (1...4).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -81,6 +81,11 @@ struct StudioDocument: Codable, Equatable {
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
+            guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
+                  (clip.sourceOffset + clip.duration).isFinite,
+                  (clip.sourceOffset == 0 && !clip.isMuted) || schemaVersion >= 4 else {
+                throw StudioDocumentError.invalid("An audio clip has invalid source timing or unsupported edit metadata.")
+            }
             if clip.assetID != nil {
                 guard !clip.id.isEmpty, clip.id.count <= 120, !clip.soundName.isEmpty, clip.soundName.count <= 120,
                       (1...4).contains(clip.track), clip.duration > 0, clip.duration <= 300,
@@ -394,7 +399,7 @@ enum StudioBrushGeometryCache {
                 guard elements <= maximumDocumentElements else {
                     throw StudioBrushError.workLimit("This project exceeds 2,048 styled brush elements. Undo or remove selected content before adding more.")
                 }
-                guard (2...3).contains(document.schemaVersion) else {
+                guard (2...4).contains(document.schemaVersion) else {
                     throw StudioBrushError.invalidSettings("Brush documents require version 2. The original project has not changed.")
                 }
                 points += element.points.count

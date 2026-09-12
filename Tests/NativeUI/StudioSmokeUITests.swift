@@ -323,6 +323,73 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testBundledSoundLibraryMixAndOfflineReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let open = app.buttons["studio.audio.open"]
+        XCTAssertTrue(open.isHittable); open.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Shuffle\n")
+        let addID = "studio.audio.catalogue.add.f669c1b635f26e53e0d51f9f7abba2a6a3e499438095f89433ce7400ec74bde4"
+        let count = app.staticTexts["studio.audio.clip-count"]
+        for expected in ["1 clips", "2 clips"] {
+            try audioLibraryButton(addID, app: app).tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", expected), evaluatedWith: count).waitUntilFulfilled(timeout: 10))
+        }
+        capture(app, name: "audio-bundled-library-two-clips")
+        app.buttons["studio.audio.library.close"].tap()
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        // This is the real AVAudioPlayer completion time for the integrity-pinned
+        // 3.063492-second file, not a sleep followed by a fabricated success label.
+        XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
+        let volume = app.sliders["studio.audio.volume"]
+        XCTAssertTrue(volume.isHittable); volume.adjust(toNormalizedSliderPosition: 0.4)
+        XCTAssertTrue(app.buttons["Mute selected clip"].isHittable)
+        app.buttons["Mute selected clip"].tap()
+        XCTAssertTrue(app.buttons["Unmute selected clip"].waitForExistence(timeout: 3))
+        app.buttons["Unmute selected clip"].tap()
+        capture(app, name: "audio-real-mix-selected-clip")
+        app.buttons["studio.audio.close"].tap()
+        let save = app.buttons["studio.save"]
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        XCTAssertTrue(reopened.buttons["studio.audio.open"].waitForExistence(timeout: 5)); reopened.buttons["studio.audio.open"].tap()
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "2 clips", "Cold reopen lost saved library sounds")
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        capture(reopened, name: "audio-offline-cold-reopen")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in reopened.frame.width > reopened.frame.height }, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
+        let compact = reopened.scrollViews["studio.audio.compact.scroll"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5), "Short audio layouts must scroll instead of clipping controls")
+        XCTAssertTrue(reopened.buttons["studio.audio.close"].isHittable)
+        compact.swipeUp(velocity: .slow)
+        XCTAssertTrue(reopened.buttons["+ Add Sound"].isHittable, "Landscape audio footer is inaccessible")
+        capture(reopened, name: "audio-landscape-scroll")
+    }
+
+    @MainActor
+    private func audioLibraryButton(_ identifier: String, app: XCUIApplication) throws -> XCUIElement {
+        let control = app.buttons[identifier], scroll = app.scrollViews["studio.audio.library.scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        for _ in 0..<10 {
+            if control.exists, control.isHittable, control.isEnabled, scroll.frame.contains(control.frame) { return control }
+            scroll.swipeUp(velocity: .slow)
+        }
+        captureHierarchy(app, name: "audio-library-control-unreachable")
+        XCTFail("Actual library control is not reachable: " + identifier)
+        throw NSError(domain: "NativeAudioLibrary", code: 1)
+    }
+
+    @MainActor
     func testAudioFilesPickerCancellationPreservesBlankProject() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -335,9 +402,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
         let open = app.buttons["studio.audio.open"]
         XCTAssertTrue(open.isHittable); open.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let importAudio = app.buttons["studio.audio.import"]
         XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
-        XCTAssertTrue(app.staticTexts["Animation only"].exists)
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "0 clips")
         capture(app, name: "audio-empty-real-timeline")
         importAudio.tap()
 
@@ -358,9 +427,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
         XCTAssertFalse(app.staticTexts["studio.audio.imported"].exists, "Picker cancellation invented an imported clip")
         XCTAssertFalse(app.buttons["studio.audio.cancel"].exists, "Picker cancellation left an import running")
-        XCTAssertTrue(app.staticTexts["No imported clips. Historical audio records are preserved in the project."].exists)
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "0 clips")
         capture(app, name: "audio-files-cancelled-no-clips")
-        let close = app.buttons["studio.panel.close.Audio Timeline"]
+        let close = app.buttons["studio.audio.close"]
         XCTAssertTrue(close.isHittable); close.tap()
         XCTAssertTrue(canvas.waitForExistence(timeout: 5)); XCTAssertTrue(canvas.isHittable)
         try waitForStableCanvas(canvas, expected: originalFrame)

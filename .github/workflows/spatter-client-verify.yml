@@ -256,6 +256,69 @@ jobs:
             Tests/StudioAudioIntegration/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
           "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
+      - name: Verify production StudioAudioTimeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioTimelineSession.swift \
+            Tests/StudioAudioTimeline/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioTimeline-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioTimeline-tests"
+      - name: Verify production StudioAudioMix
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            Tests/StudioAudioMix/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioMix-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioMix-tests"
+      - name: Verify production StudioSoundCatalogue
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioTimelineSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            Tests/StudioSoundCatalogue/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests"
+          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds
       - name: Verify real photo decoding, orientation and cancellation
         shell: bash
         run: |

@@ -7,6 +7,10 @@
 	objects = {
 
 		/* Begin PBXBuildFile section */
+		58E595DEE29F48DC6C574164 /* StudioSounds in Resources */ = {isa = PBXBuildFile; fileRef = ED3882FF92FD75F2AA002547 /* StudioSounds */; };
+		C78F7A10ED9C1C37F9E967F8 /* StudioSoundCatalogue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0969F92AF096667A84958B1A /* StudioSoundCatalogue.swift */; };
+		8B1C8066B49EB1158BD7E095 /* StudioAudioTimelineSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */; };
+		5A46746AFB21DB5DE23B56D7 /* StudioAudioMixService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */; };
 		74828B77A638B05ADA09CE91 /* StudioToolbarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */; };
 		9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */; };
 		C5642734BE308D75EA71656D /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F0641C2912938924BF6012F /* AppConfig.swift */; };
@@ -135,6 +139,10 @@
 		/* End PBXTargetDependency section */
 
 		/* Begin PBXFileReference section */
+		ED3882FF92FD75F2AA002547 /* StudioSounds */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "StickDeathInfinity/Resources/StudioSounds"; sourceTree = SOURCE_ROOT; };
+		0969F92AF096667A84958B1A /* StudioSoundCatalogue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSoundCatalogue.swift"; sourceTree = SOURCE_ROOT; };
+		08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioTimelineSession.swift"; sourceTree = SOURCE_ROOT; };
+		29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioMixService.swift"; sourceTree = SOURCE_ROOT; };
 		F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioToolbarLayout.swift"; sourceTree = SOURCE_ROOT; };
 		2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBackendClient.swift; sourceTree = "<group>"; };
 		C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StickDeathInfinity.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -298,6 +306,10 @@
 				4BDAFE81D26269CA6C85DA47 /* StudioBrushLibraryView.swift */,
 				99C468D56A8D5305DAB4726C /* StudioHeaderBar.swift */,
 				B9CBE341E9CF08FEABD9C119 /* StudioToolStrip.swift */,
+				ED3882FF92FD75F2AA002547 /* StudioSounds */,
+				0969F92AF096667A84958B1A /* StudioSoundCatalogue.swift */,
+				08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */,
+				29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */,
 				801AD5DE5029C5501A10D7D3 /* StickDeathInfinity */,
 				F35AEC2E38F2F9ACFEFB2B5F /* Products */,
 			);
@@ -778,6 +790,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */,
+				58E595DEE29F48DC6C574164 /* StudioSounds in Resources */,
 				83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */,
 				C3A050C18E554630851AAE5F /* SpecialElite-Regular.ttf in Resources */,
 				9234D0E29EF9CA0453C221E6 /* spatter_brain_100.json in Resources */,
@@ -845,6 +858,9 @@
 				56219F44EBDC7EC5A4102518 /* StudioBrushLibraryView.swift in Sources */,
 				A75686966A9E0A0E9AC1ED36 /* StudioHeaderBar.swift in Sources */,
 				07C5AC651D80360C34DEBE73 /* StudioToolStrip.swift in Sources */,
+				C78F7A10ED9C1C37F9E967F8 /* StudioSoundCatalogue.swift in Sources */,
+				8B1C8066B49EB1158BD7E095 /* StudioAudioTimelineSession.swift in Sources */,
+				5A46746AFB21DB5DE23B56D7 /* StudioAudioMixService.swift in Sources */,
 				9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */,
 				C5642734BE308D75EA71656D /* AppConfig.swift in Sources */,
 				D7FC858751F69D65296D596F /* AppFlowView.swift in Sources */,

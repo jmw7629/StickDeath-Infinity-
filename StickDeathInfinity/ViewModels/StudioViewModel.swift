@@ -578,7 +578,8 @@ final class StudioViewModel: ObservableObject {
                              frameID: String, trackNumber: Int,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
-        guard isEditing, !isSaving, document.id == expectedProjectID, document.revision == expectedRevision,
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, let frame = frames.firstIndex(where: { $0.id == frameID }) else {
             throw StudioDocumentError.unavailable("The project or selected frame changed. Import again in the current project.")
         }
@@ -617,7 +618,7 @@ final class StudioViewModel: ObservableObject {
             .sorted { $0.id.uuidString < $1.id.uuidString }
         for clip in snapshot.audioClips where clip.assetID != nil {
             guard let asset = tracks.first(where: { $0.id == clip.assetID }), asset.audioData != nil,
-                  asset.duration > 0, clip.duration <= asset.duration + 0.001 else {
+                  asset.duration > 0, clip.sourceOffset + clip.duration <= asset.duration + 0.001 else {
                 throw StudioDocumentError.invalid("An imported audio asset is missing or has inconsistent timing. No save was made.")
             }
         }
@@ -627,6 +628,75 @@ final class StudioViewModel: ObservableObject {
         let needed = editor.referencedAudioAssetIDsIncludingHistory
         managedAudioTracks = managedAudioTracks.filter { needed.contains($0.key) }
         pruneManagedImages()
+    }
+    /// The same command entry point is usable by Studio UI and validated assistants.
+    /// Source bytes stay immutable; only a selected clip in the captured revision changes.
+    func editSelectedAudioClip(_ id: String, expectedRevision: Int, edit: StudioAudioClipEdit) throws {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.revision == expectedRevision, selectedCurrentAudioClip?.id == id,
+              let index = document.audioClips.firstIndex(where: { $0.id == id }),
+              let assetID = document.audioClips[index].assetID,
+              let asset = audioTrack(forAssetID: assetID), asset.audioData != nil else {
+            throw StudioDocumentError.unavailable("Select a saved audio clip in the current idle project before editing it.")
+        }
+        var clip = document.audioClips[index]
+        switch edit {
+        case .place(let start, let track): clip.startTime = start; clip.track = track
+        case .trim(let offset, let duration): clip.sourceOffset = offset; clip.duration = duration
+        case .volume(let value): clip.volume = value
+        case .mute(let value): clip.isMuted = value
+        }
+        guard clip.sourceOffset.isFinite, clip.duration.isFinite, clip.sourceOffset >= 0,
+              clip.duration >= 1 / 48_000.0, asset.duration.isFinite,
+              clip.sourceOffset + clip.duration <= asset.duration + 1 / 48_000.0 else {
+            throw StudioDocumentError.invalid("The trim must contain real audio within the source file.")
+        }
+        guard clip != document.audioClips[index] else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            value.audioClips[index] = clip
+        }
+        try preflightRasterDocument(candidate.document)
+        _ = try audioTracksForSave(candidate.document)
+        editor = candidate; selectedAudioClip = clip; message = nil; scheduleSave()
+    }
+    func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int) throws {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("Stop playback before muting this track.")
+        }
+        let ids = document.audioClips.filter { $0.track == track }.map(\.id)
+        guard !ids.isEmpty else { return }
+        guard document.audioClips.filter({ ids.contains($0.id) }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.audioClips.contains(where: { ids.contains($0.id) && $0.isMuted != muted }) else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            for index in value.audioClips.indices where ids.contains(value.audioClips[index].id) {
+                value.audioClips[index].isMuted = muted
+            }
+        }
+        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        editor = candidate
+        selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
+        message = nil; scheduleSave()
+    }
+    /// Real audio-player time drives the display frame; no second animation timer.
+    func displayAudioPlaybackTime(_ seconds: Double, playing: Bool) {
+        guard seconds.isFinite, seconds >= 0, seconds <= audioDuration, !frames.isEmpty else { return }
+        playbackTimer?.invalidate(); playbackTimer = nil
+        audioPlayheadTime = seconds
+        let target = min(frames.count - 1, max(0, Int((seconds * Double(fps)).rounded(.down))))
+        if playing {
+            playbackFrameIndex = target; isPlaying = true
+        } else {
+            playbackFrameIndex = nil; isPlaying = false
+            guard isEditing, activeStrokeID == nil, pendingBrushStroke == nil else { return }
+            if editor.selectFrame(frames[target].id) { scheduleSave() }
+        }
     }
     func setAudioClipVolume(_ id: String, volume: Double) {
         guard selectedCurrentAudioClip?.id == id else { return }
