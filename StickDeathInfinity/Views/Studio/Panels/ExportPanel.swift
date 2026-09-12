@@ -130,7 +130,7 @@ struct ExportPanel: View {
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.white.opacity(0.5))
                 }
-                .padding(.horizontal, 16).padding(.bottom, 20)
+                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 20)
             }
             .frame(maxHeight: UIScreen.main.bounds.height * 0.6)
         }

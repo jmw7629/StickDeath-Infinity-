@@ -210,11 +210,13 @@ final class StudioSmokeUITests: XCTestCase {
         // above the declared 16,777,216 limit. The PNG sequence stays in bounds.
         for _ in 0..<6 { addFrame.tap() }
         try openExportPanel(app)
+        // Export initially selects MP4. Select the image format before checking
+        // its PNG/timing description; the movie panel has its own description.
+        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
         // SwiftUI localizes numeric interpolation; the verified en_US UI uses
         // grouping separators while retaining the exact1080×1920 canvas.
         XCTAssertTrue(app.staticTexts["Original canvas · 1,080 × 1,920"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 frames")).firstMatch.exists)
-        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
         try exportControl("studio.export.start", app: app).tap()
         let status = app.staticTexts["studio.export.status"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "exceeds the current safe"),
@@ -580,8 +582,16 @@ final class StudioSmokeUITests: XCTestCase {
             // observed Photos viewport and verify the actual thumbnail before
             // deriving a tap from its current frame; never use fixed positions.
             let photos = app.navigationBars["Photos"].firstMatch
-            let viewport = app.scrollViews["photosView_content_scroll_view"].firstMatch
-            if photos.exists, viewport.exists {
+            // These are the actual system viewport identifiers captured on
+            // iOS 26.2 and 18.5. Require one visible Photos grid, never a generic
+            // application scroll view or an arbitrary image outside the picker.
+            let viewports = app.scrollViews.matching(NSPredicate(format: "identifier IN %@",
+                ["photosView_content_scroll_view", "content_scroll_view"]))
+                .allElementsBoundByIndex.prefix(3).filter {
+                    $0.exists && !$0.frame.intersection(app.frame).isEmpty &&
+                    $0.images.matching(identifier: "PXGGridLayout-Info").count > 0
+                }
+            if photos.exists, viewports.count == 1, let viewport = viewports.first {
                 let visibleBounds = viewport.frame.intersection(app.frame)
                 let candidates = viewport.images.matching(identifier: "PXGGridLayout-Info").allElementsBoundByIndex
                 for candidate in candidates.prefix(12) {
@@ -842,6 +852,9 @@ final class StudioSmokeUITests: XCTestCase {
             let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
             start.press(forDuration: 0.1, thenDragTo: end)
         }
+        captureHierarchy(app, name: "export-control-unreachable-" + identifier)
+        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.frame); hittable: \(element.isHittable)")
+        bounds.name = "export-control-bounds-" + identifier; bounds.lifetime = .keepAlways; add(bounds)
         XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
         throw NSError(domain: "NativeExportSmoke", code: 1)
     }
