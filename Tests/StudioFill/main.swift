@@ -425,8 +425,62 @@ private struct Failure: Error { let message: String }
         print("FILL_HISTORY_RETAINED_UNDOS=\(undos)")
         pass("fill span memory participates in bounded full-document undo history")
     }
+    static func styledBrushShapeFillRoundtrip() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-mixed-tools-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: store)
+        let created = await vm.createProject(name: "Brush shape and fill", width: 128, height: 128, fps: 12)
+        try require(created, "Actual mixed-tool project creation")
+        let brush = DrawnElement(id: UUID().uuidString, tool: .brush,
+            points: [.init(x:16,y:32,timestamp:0), .init(x:112,y:32,timestamp:0.2)],
+            color:"#FF0000", width:8, opacity:1, layerID:vm.activeLayerID,
+            brush:.init(family:.round,seed:71,smoothing:0))
+        try require(vm.commitElement(brush) && vm.document.schemaVersion == 2, "Styled brush begins in its historical schema")
+        for schema in 2...6 {
+            var historical = vm.document; historical.schemaVersion = schema
+            try historical.validate()
+            try require(StudioDocumentArchive.decode(StudioDocumentArchive(document: historical, rasterFrameIndices: [:]).encoded()).document == historical, "Supported schema changed a styled brush on decode")
+        }
+        for schema in [1,7] {
+            var invalid = vm.document; invalid.schemaVersion = schema
+            try rejects { try invalid.validate() }
+        }
+        var invalidBrush = vm.document; invalidBrush.schemaVersion = 6
+        invalidBrush.frames[0].elements[0].brush!.version = 999
+        try rejects { try invalidBrush.validate() }
+        let outline = shape(vm.activeLayerID,fill:nil)
+        try require(vm.commitElement(outline) && vm.document.schemaVersion == 5, "Adding a shape must retain an existing styled brush")
+        let beforeFill = vm.document
+        let fill = try StudioFillService.element(from:capture(vm.document))
+        try require(vm.commitElement(fill) && vm.document.schemaVersion == 6, "Adding a fill must retain styled brush and shape")
+        let filledDocument = vm.document
+        let later = DrawnElement(id:UUID().uuidString,tool:.brush,
+            points:[.init(x:16,y:120,timestamp:0),.init(x:112,y:120,timestamp:0.2)],
+            color:"#00FF00",width:8,opacity:1,layerID:vm.activeLayerID,
+            brush:.init(family:.round,seed:72,smoothing:0))
+        try require(vm.commitElement(later), "Drawing after fill must remain editable")
+        let finalElements = vm.document.frames[0].elements
+        vm.undo();try require(vm.document.frames == filledDocument.frames, "Undo after fill lost existing tools")
+        vm.undo();try require(vm.document.frames == beforeFill.frames && vm.document.schemaVersion == 5, "Undo fill must restore the previous schema and artwork")
+        vm.redo();vm.redo();try require(vm.document.frames[0].elements == finalElements && vm.document.schemaVersion == 6, "Redo lost mixed-tool content")
+        let saved = await vm.save();try require(saved,"Save mixed-tool document")
+        let expected = vm.document
+        let reopened = StudioViewModel(storage:store);await reopened.loadProjects()
+        guard let record = reopened.savedProjects.first(where:{$0.id == expected.id}) else { throw Failure(message:"Mixed project missing from real storage") }
+        let opened = await reopened.openProject(record);try require(opened && reopened.document == expected,"Cold reopen must preserve styled brush, shape and fill")
+        let rendered = try render(reopened.document)
+        try require(channel(rendered,64,32,0) == 255 && channel(rendered,64,64,2) == 255 && channel(rendered,64,120,1) == 255,"Mixed artwork lost red brush, blue fill or green later brush pixels")
+        let output = try await StudioExportService().export(document:reopened.document,format:.pngSequence,outputParent:root,background:.transparent)
+        let bytes = try Data(contentsOf:output.imageURLs[0])
+        guard let source = CGImageSourceCreateWithData(bytes as CFData,nil),let image = CGImageSourceCreateImageAtIndex(source,0,nil) else { throw Failure(message:"Mixed-tool PNG could not reopen") }
+        try require(pixels(image) == rendered,"Actual mixed-tool PNG differs from canonical renderer")
+        pass("styled brushes survive all supported schemas, shape/fill transitions, later drawing, undo/redo, save/cold reopen and actual PNG")
+    }
     static func main() async throws {
         setbuf(stdout, nil)
+        try await styledBrushShapeFillRoundtrip()
         try actualEnclosure(); try samplingModes(); try coverageAndOpacity()
         try historyAndArchive(); try invalidCoverage(); try captureGuards()
         try await storageAndPNG()

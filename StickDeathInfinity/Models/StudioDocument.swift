@@ -2,6 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
+    static let supportedSchemaVersions = 1...6
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -34,7 +35,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
-        guard (1...6).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard Self.supportedSchemaVersions.contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -430,8 +431,8 @@ enum StudioBrushGeometryCache {
                 guard elements <= maximumDocumentElements else {
                     throw StudioBrushError.workLimit("This project exceeds 2,048 styled brush elements. Undo or remove selected content before adding more.")
                 }
-                guard (2...4).contains(document.schemaVersion) else {
-                    throw StudioBrushError.invalidSettings("Brush documents require version 2. The original project has not changed.")
+                guard document.schemaVersion >= 2, StudioDocument.supportedSchemaVersions.contains(document.schemaVersion) else {
+                    throw StudioBrushError.invalidSettings("Styled brushes require a supported project format, version 2 or later. The original project has not changed.")
                 }
                 points += element.points.count
                 guard points <= maximumDocumentPoints else {

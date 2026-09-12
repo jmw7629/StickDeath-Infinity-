@@ -362,7 +362,7 @@ struct ExportFormatCard: View {
                 Text(format.icon).font(.system(size: 24))
                 Text(format.rawValue).font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
-                Text(format == .mp4 ? "Animation-only · H.264" : (isAvailable ? format.subtitle : "Not available yet"))
+                Text(format == .mp4 ? "H.264 · project audio" : (isAvailable ? format.subtitle : "Not available yet"))
                     .font(.system(size: 8, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5)).multilineTextAlignment(.center)
             }

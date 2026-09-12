@@ -939,6 +939,41 @@ final class StudioSmokeUITests: XCTestCase {
         let receipt = try exportControl("studio.export.movie.receipt", app: app)
         XCTAssertTrue(receipt.label.contains("4 frames · 12 fps · revision "))
         XCTAssertTrue(try exportControl("studio.export.movie.media", app: app).label.contains("H.264 + AAC · white · stereo audio"))
+        // Decode the actual first frame, seek into a later blank frame, then
+        // finish playback before handing the same output to native sharing.
+        let picture = try exportControl("studio.export.movie.preview", app: app)
+        let previewStatus = app.staticTexts["studio.export.movie.preview.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Preview ready"),
+            evaluatedWith: previewStatus).waitUntilFulfilled(timeout: 8))
+        let firstPicture = NSPredicate { _, _ in
+            guard let raster = try? self.moviePreviewPixels(picture, app: app) else { return false }
+            return self.exportForegroundMask(raster).count > 12
+        }
+        XCTAssertTrue(expectation(for: firstPicture, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "The actual AVPlayerLayer never displayed the drawn first frame")
+        capture(app, name: "mp4-actual-decoded-first-frame")
+        let seek = try exportControl("studio.export.movie.preview.seek", app: app)
+        seek.adjust(toNormalizedSliderPosition: 0.75)
+        let timing = app.staticTexts["studio.export.movie.preview.time"]
+        let sought = NSPredicate { _, _ in
+            let parts = timing.label.split(separator: "/")
+            guard let first = parts.first, let seconds = Double(first.trimmingCharacters(in: .whitespaces)),
+                  seconds > 0.20 && seconds < 0.30 else { return false }
+            return true
+        }
+        XCTAssertTrue(expectation(for: sought, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "The MP4 decoder did not seek to the requested time")
+        _ = try exportControl("studio.export.movie.preview", app: app)
+        let blankPicture = NSPredicate { _, _ in
+            guard let raster = try? self.moviePreviewPixels(picture, app: app) else { return false }
+            return self.exportForegroundMask(raster).isEmpty
+        }
+        XCTAssertTrue(expectation(for: blankPicture, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "Seeking did not display the actual later blank frame")
+        capture(app, name: "mp4-actual-decoded-seek-frame")
+        try exportControl("studio.export.movie.preview.play", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Playback finished"),
+            evaluatedWith: previewStatus).waitUntilFulfilled(timeout: 8))
         capture(app, name: "mp4-bundled-audio-actual-receipt")
         try exportControl("studio.export.share", app: app).tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
@@ -1155,6 +1190,20 @@ final class StudioSmokeUITests: XCTestCase {
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
         try choosePickerTestColor("#FF0000", app: app)
+        // A real styled brush must remain editable when shapes and fill upgrade
+        // the document format. Draw outside the intended closed rectangle.
+        try pickerRailControl("studio.tool.brush", app: app, forward: false).tap()
+        app.buttons["studio.brush-library"].tap()
+        let round = app.buttons["studio.brush-family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout: 5)); round.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.2)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.86)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.75,dy: 0.86)))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let styledPixels = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(imageFixtureColors(styledPixels)[0], 12, "Actual styled brush must precede the shape and fill")
         try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
         XCTAssertEqual(app.buttons["studio.shape.fill"].value as? String, "None")
         app.buttons["studio.tool-settings.close"].tap()
@@ -1164,6 +1213,7 @@ final class StudioSmokeUITests: XCTestCase {
         let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
         let outlined = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(imageFixtureColors(outlined)[0], imageFixtureColors(styledPixels)[0] + 12, "Adding a shape rejected or removed the existing styled brush")
         try choosePickerTestColor("#0000FF", app: app)
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
         let tolerance = app.sliders["studio.setting.tolerance"]
@@ -1227,10 +1277,31 @@ final class StudioSmokeUITests: XCTestCase {
         for _ in 0..<12 {
             if element.exists, element.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(element.frame) { return element }
             let vertical = rail.value as? String == "Vertical"
-            let ahead = element.exists ? (vertical ? element.frame.midY > scroll.frame.midY : element.frame.midX > scroll.frame.midX) : forward
-            let a = ahead ? 0.8 : 0.2, b = ahead ? 0.2 : 0.8
-            scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : a, dy: vertical ? a : 0.5))
-                .press(forDuration: 0.1, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : b, dy: vertical ? b : 0.5)))
+            let viewport = scroll.frame.insetBy(dx: 1, dy: 1)
+            let length = vertical ? viewport.height : viewport.width
+            // The retained 87c9 native failure had Brush ending at x392 while
+            // the viewport ended at x390. Large flicks alternated past it.
+            // Reveal the clipped edge, then hold before lifting to avoid inertia.
+            var delta = (forward ? 1.0 : -1.0) * length * 0.4
+            if element.exists {
+                let target = element.frame
+                let leading = vertical ? target.minY - viewport.minY : target.minX - viewport.minX
+                let trailing = vertical ? target.maxY - viewport.maxY : target.maxX - viewport.maxX
+                if leading < 0 { delta = leading - 8 }
+                else if trailing > 0 { delta = trailing + 8 }
+                else {
+                    // Full containment alone is insufficient; wait for the
+                    // actual button to become hittable without moving the rail.
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+                    continue
+                }
+            }
+            let distance = min(max(24, abs(delta)), length * 0.4)
+            let end = 0.5 - (delta > 0 ? distance : -distance) / max(1, length)
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.1, thenDragTo: scroll.coordinate(withNormalizedOffset:
+                    CGVector(dx: vertical ? 0.5 : end, dy: vertical ? end : 0.5)),
+                    withVelocity: .slow, thenHoldForDuration: 0.25)
         }
         captureHierarchy(app, name: "picker-rail-unreachable-" + id)
         XCTFail("Actual toolbar control unreachable: " + id)
@@ -1390,6 +1461,13 @@ final class StudioSmokeUITests: XCTestCase {
         bounds.name = "export-control-bounds-" + identifier; bounds.lifetime = .keepAlways; add(bounds)
         XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
         throw NSError(domain: "NativeExportSmoke", code: 1)
+    }
+
+    @MainActor
+    private func moviePreviewPixels(_ preview: XCUIElement, app: XCUIApplication) throws -> Raster {
+        let screenshot = try XCTUnwrap(app.screenshot().image.cgImage)
+        let image = try normalizedExportPreview(screenshot, previewFrame: preview.frame, appFrame: app.frame)
+        return try pixels(UIImage(cgImage: image))
     }
 
     @MainActor

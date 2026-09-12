@@ -27,3 +27,9 @@ Local Apple-framework checks passed for 14 production groups covering enclosed r
 The final candidate's 12 changed native bodies typechecked with all 119 application declarations. All 18 proposed UI journey definitions compiled against the iOS SDK. The new native journey creates an enclosure, fills it blue, verifies actual pixels, undoes/redoes, saves/reopens, and checks a real PNG.
 
 These local checks do not establish execution of the new iOS journey. The next exact source revision still needs the complete macOS CI native app build and all 18 native journeys. Final independent review, physical-device behavior and release signing remain separate gates.
+
+## Mixed brush, shape and fill regression
+
+The brush validator previously admitted only document versions 2–4. Shapes use version 5 and fill uses version 6, so combining those tools rejected otherwise valid edits. Document and brush validation now use the same supported-version range. Version 1 styled brushes, future formats and malformed descriptors still reject.
+
+The production regression reproduces that rejection before the fix, then creates a real styled brush, shape and fill, draws again, checks full-document Undo/Redo, saves and cold-reopens through device storage, and compares the decoded PNG with the actual compositor. All 15 fill groups passed locally; the 10 document, 14 brush integration and 24 device-storage regressions also passed. The native fill journey now draws an actual styled brush before the shape. Its simulator result must be recorded from this exact source; typechecking is not a passing UI result.

@@ -40,6 +40,7 @@ final class StudioMovieExportSession: ObservableObject {
     }
     @Published private(set) var isRunning = false
     @Published private(set) var isSharing = false
+    @Published private(set) var isPreviewing = false
     @Published private(set) var isRecovering = false
     @Published private(set) var audioProgressText: String?
     @Published private(set) var isClosed = false
@@ -60,8 +61,11 @@ final class StudioMovieExportSession: ObservableObject {
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
     private var activeShareID: UUID?
+    private var activePreviewID: UUID?
+    private weak var activePreview: PreviewRequest?
     private var cancellationRequested = false
     private var isStarting = false
+    private var isBeginningConsumer = false
     private var isCleaning = false
     // A pre-return service cleanup failure does not give us a deletion handle.
     // Keep this for read-only recovery checking; never delete by this URL.
@@ -75,7 +79,7 @@ final class StudioMovieExportSession: ObservableObject {
 
     @discardableResult
     func start(from vm: StudioViewModel, background: Service.Background, scope: Scope) -> Bool {
-        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting else { return false }
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isBeginningConsumer else { return false }
         isStarting = true
         defer { isStarting = false }
         guard scope.isStudioVisible, scope.isForeground, vm.isEditing else {
@@ -85,6 +89,7 @@ final class StudioMovieExportSession: ObservableObject {
             errorMessage = "Finish or resolve the current drawing before exporting MP4."; return false
         }
         currentScope = scope
+        invalidatePreview()
         guard cleanupOwnedOutput() else { return false }
         // Cleanup publishes state. Honor a synchronous observer changing scope,
         // closing the panel, or changing input before we capture a new project.
@@ -170,7 +175,7 @@ final class StudioMovieExportSession: ObservableObject {
         currentScope = scope
         guard source != nil else { return }
         if !contextMatches(requireForeground: false) { close() }
-        else if !scope.isForeground { cancel() }
+        else if !scope.isForeground { invalidatePreview(); cancel() }
     }
     func cancel() {
         guard isRunning else { return }
@@ -180,6 +185,7 @@ final class StudioMovieExportSession: ObservableObject {
     }
     func close() {
         isClosed = true
+        invalidatePreview()
         cancel()
         if !isRunning && !isSharing && !isRecovering, cleanupOwnedOutput() {
             notice = "MP4 export closed. Its owned files were removed."
@@ -190,9 +196,15 @@ final class StudioMovieExportSession: ObservableObject {
     /// checked URLs immediately before passing them to UIActivityViewController.
     /// Close/dismiss never deletes files while this request is active.
     func beginSharing(scope: Scope) -> ShareRequest? {
+        guard !isBeginningConsumer else { return nil }
+        isBeginningConsumer = true
+        defer { isBeginningConsumer = false }
         refreshScope(scope)
-        guard !isClosed, !isRunning, !isSharing, !isRecovering, contextMatches(requireForeground: true),
-              let output else { return nil }
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
+              contextMatches(requireForeground: true), let output else { return nil }
+        invalidatePreview()
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isPreviewing,
+              contextMatches(requireForeground: true), self.output?.movieURL == output.movieURL else { return nil }
         do { _ = try output.checkedURLs() }
         catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
         let id = UUID(); activeShareID = id
@@ -235,7 +247,8 @@ final class StudioMovieExportSession: ObservableObject {
         return !requireForeground || currentScope.isForeground
     }
     private func cleanupOwnedOutput(allowRecoveryCompletion: Bool = false) -> Bool {
-        guard !isCleaning, !isRecovering || allowRecoveryCompletion else { return false }
+        guard !isCleaning, !isPreviewing, activePreviewID == nil,
+              !isRecovering || allowRecoveryCompletion else { return false }
         guard mixedRecovery == nil else { needsCleanup = true; return false }
         isCleaning = true
         defer { isCleaning = false }
@@ -268,6 +281,73 @@ final class StudioMovieExportSession: ObservableObject {
             if cleanupOwnedOutput() { notice = "Sharing ended. Export files were removed after the panel closed." }
         }
         isSharing = false
+    }
+
+    /// One local decoder owns a lease. Invalidation synchronously stops that
+    /// consumer before cleanup, sharing, another export or a scope change.
+    func beginPreview(scope: Scope, stopConsumer: @escaping @MainActor () -> Void) -> PreviewRequest? {
+        guard !isBeginningConsumer else { return nil }
+        isBeginningConsumer = true
+        defer { isBeginningConsumer = false }
+        refreshScope(scope)
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
+              !needsCleanup, !isPreviewing, contextMatches(requireForeground: true),
+              let output else { return nil }
+        do { _ = try output.checkedURLs() }
+        catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
+        let id = UUID()
+        let request = PreviewRequest(id: id, owner: self, output: output, stopConsumer: stopConsumer)
+        activePreviewID = id; activePreview = request; isPreviewing = true
+        guard activePreviewID == id, !isClosed, contextMatches(requireForeground: true) else {
+            request.invalidate()
+            // @Published sends synchronously before storing its new value.
+            // A close from that notification may already have released the ID.
+            if activePreviewID == nil { isPreviewing = false }
+            return nil
+        }
+        return request
+    }
+    private func invalidatePreview() { activePreview?.invalidate() }
+    private func finishPreview(id: UUID) {
+        guard activePreviewID == id else { return }
+        activePreviewID = nil; activePreview = nil; isPreviewing = false
+        if isClosed, !isRunning, !isSharing, !isRecovering { _ = cleanupOwnedOutput() }
+    }
+
+    @MainActor final class PreviewRequest {
+        let id: UUID
+        private var owner: StudioMovieExportSession?
+        private let output: Output
+        private var stopConsumer: (@MainActor () -> Void)?
+        private var finished = false
+        private var invalidating = false
+        fileprivate init(id: UUID, owner: StudioMovieExportSession, output: Output,
+                         stopConsumer: @escaping @MainActor () -> Void) {
+            self.id = id; self.owner = owner; self.output = output; self.stopConsumer = stopConsumer
+        }
+        func checkedURL() throws -> URL {
+            guard !finished, owner?.activePreviewID == id else { throw Service.ExportError.outputUnavailable }
+            _ = try output.checkedURLs()
+            return output.movieURL
+        }
+        /// The consumer calls this only after pausing and releasing its item.
+        func finish() {
+            guard !finished else { return }
+            finished = true; stopConsumer = nil
+            owner?.finishPreview(id: id); owner = nil
+        }
+        fileprivate func invalidate() {
+            guard !finished, !invalidating else { return }
+            invalidating = true
+            stopConsumer?()
+            finish()
+        }
+        deinit {
+            if let owner, !finished {
+                let requestID = id
+                Task { @MainActor in owner.finishPreview(id: requestID) }
+            }
+        }
     }
 
     @MainActor final class ShareRequest: Identifiable {

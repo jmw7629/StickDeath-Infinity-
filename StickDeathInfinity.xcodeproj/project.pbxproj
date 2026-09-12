@@ -137,6 +137,7 @@
 		EC9897BB9AFF9D1731388EFE /* StudioFillRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C8064FB141ECE97956BA9C8 /* StudioFillRegion.swift */; };
 		DBCD6D5F922B5F2B4311E5E4 /* StudioFillService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B71351A143CAF9EA730A1936 /* StudioFillService.swift */; };
 		8BA244E6E046D789F067896C /* StudioFillSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */; };
+		82929C796A33BFD2D70F56D7 /* StudioMoviePreviewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -280,6 +281,7 @@
 		6C8064FB141ECE97956BA9C8 /* StudioFillRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioFillRegion.swift"; sourceTree = SOURCE_ROOT; };
 		B71351A143CAF9EA730A1936 /* StudioFillService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioFillService.swift"; sourceTree = SOURCE_ROOT; };
 		6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioFillSession.swift"; sourceTree = SOURCE_ROOT; };
+		9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMoviePreviewState.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -421,6 +423,7 @@
 				6C8064FB141ECE97956BA9C8 /* StudioFillRegion.swift */,
 				B71351A143CAF9EA730A1936 /* StudioFillService.swift */,
 				6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */,
+				9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */,
 				5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */,
 				7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */,
 				6CD75375F360482C280D01D0 /* StudioMovieShareLifetime.swift */,
@@ -855,6 +858,7 @@
 				EC9897BB9AFF9D1731388EFE /* StudioFillRegion.swift in Sources */,
 				DBCD6D5F922B5F2B4311E5E4 /* StudioFillService.swift in Sources */,
 				8BA244E6E046D789F067896C /* StudioFillSession.swift in Sources */,
+				82929C796A33BFD2D70F56D7 /* StudioMoviePreviewState.swift in Sources */,
 				163D432AA7F5EFEACF21172B /* StudioMovieExportSession.swift in Sources */,
 				986DC521401B32C785C16672 /* StudioMovieExportService.swift in Sources */,
 				CC79AB22EF0BD85E30CEBFB8 /* StudioMovieSharePresenter.swift in Sources */,

@@ -101,7 +101,7 @@ struct SpatterMotionRecipePanel: View {
                         }
                         .disabled(!receiptIsCurrent || vm.isSaving)
                         .accessibilityIdentifier("spatter.motion.export")
-                        Text("Export opens Studio's PNG sequence / spritesheet controls. A file is created only when that export finishes. MP4, GIF and mixed audio export are unfinished.")
+                        Text("Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio. A file is created only when export finishes. GIF and direct publishing are unavailable.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                     }
                     if let message = vm.message {

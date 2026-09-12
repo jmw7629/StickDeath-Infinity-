@@ -1,4 +1,6 @@
 import SwiftUI
+import AVFoundation
+import UIKit
 
 /// MP4 reuses the existing Export panel rail and destinations. This section has
 /// an actual file receipt, not a canvas snapshot or simulated movie preview.
@@ -11,6 +13,7 @@ struct StudioMovieExportControls: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
     @StateObject private var presentationScope = StudioMoviePresentationScope()
+    @StateObject private var preview = StudioMoviePreviewState()
     @State private var isVisible = false
     @State private var background: StudioMovieExportService.Background = .white
     @State private var shareAccountID: String?
@@ -91,8 +94,41 @@ struct StudioMovieExportControls: View {
                     Text("\(output.manifest.encodedBytes) encoded bytes · \(output.manifest.codec) · white · \(output.manifest.audioIncluded ? "stereo audio" : "no audio")")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.movie.media")
-                    Text("Video preview unavailable.")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                    if let player = preview.player {
+                        StudioMoviePreviewSurface(player: player)
+                            .frame(height: 180).background(Color.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Rendered MP4 picture")
+                            .accessibilityIdentifier("studio.export.movie.preview")
+                    }
+                    if let error = preview.errorMessage {
+                        Text(error).font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(Color(hex: "#FF8888"))
+                        Button("Retry movie preview") { refreshPreview() }
+                            .accessibilityIdentifier("studio.export.movie.preview.retry")
+                    } else {
+                        HStack(spacing: 8) {
+                            Button { preview.togglePlayback() } label: {
+                                Image(systemName: preview.isPlaying || preview.isWaiting ? "pause.fill" : "play.fill")
+                                    .frame(width: 44, height: 44)
+                            }
+                            .disabled(!preview.isReady)
+                            .accessibilityLabel(preview.isPlaying || preview.isWaiting ? "Pause movie preview" : "Play movie preview")
+                            .accessibilityIdentifier("studio.export.movie.preview.play")
+                            Slider(value: Binding(get: { preview.currentTime }, set: { preview.seek(to: $0) }),
+                                   in: 0...max(preview.duration, 0.001))
+                                .tint(Color(hex: "#DC2626")).disabled(!preview.isReady)
+                                .accessibilityLabel("Movie preview position")
+                                .accessibilityIdentifier("studio.export.movie.preview.seek")
+                            Text(String(format: "%.2f / %.2f s", preview.currentTime, preview.duration))
+                                .font(.system(size: 9, design: .monospaced)).monospacedDigit()
+                                .accessibilityIdentifier("studio.export.movie.preview.time")
+                        }
+                        Text(preview.didFinish ? "Playback finished" : preview.isPlaying ? "Playing rendered MP4" : preview.isWaiting ? "Preparing playback…" : preview.isReady ? "Preview ready" : "Loading rendered MP4…")
+                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.export.movie.preview.status")
+                    }
                     Button {
                         shareAccountID = scope.accountID
                         shareRequest = session.beginSharing(scope: scope)
@@ -130,14 +166,15 @@ struct StudioMovieExportControls: View {
                 .id(request.id)
             }
         }
-        .onAppear { isVisible = true; refreshScope() }
+        .onAppear { isVisible = true; refreshScope(); refreshPreview() }
         .onDisappear {
+            preview.stop()
             // A full-screen native activity may cover this section without
             // removing it. Actual removal invokes the presenter's dismantle,
             // which closes the owner but keeps files until the actual share callback.
             if !session.isSharing { isVisible = false; refreshScope(); session.close() }
         }
-        .onChange(of: scenePhase) { _, _ in refreshScope() }
+        .onChange(of: scenePhase) { _, _ in refreshScope(); refreshPreview() }
         .onChange(of: authVM.userId) {
             refreshScope(); session.close(); shareRequest = nil
         }
@@ -146,7 +183,16 @@ struct StudioMovieExportControls: View {
         .onChange(of: vm.activePanel) { refreshScope() }
         .onChange(of: session.output?.movieURL) { _, output in
             if output != nil { onReady() }
+            refreshPreview()
         }
+        .onChange(of: session.isRunning) { _, _ in refreshPreview() }
+        .onChange(of: session.isSharing) { _, _ in refreshPreview() }
+    }
+    private func refreshPreview() {
+        guard scope.isStudioVisible, scope.isForeground, !session.isClosed,
+              !session.isRunning, !session.isSharing, !session.isRecovering,
+              !session.needsCleanup, session.output != nil else { preview.stop(); return }
+        if preview.player == nil { _ = preview.load(session: session, scope: scope) }
     }
     private var progressText: String {
         if let audio = session.audioProgressText { return audio }
@@ -163,4 +209,20 @@ struct StudioMovieExportControls: View {
 @MainActor
 private final class StudioMoviePresentationScope: ObservableObject {
     var value = StudioMovieExportSession.Scope(isStudioVisible: false, isForeground: false, accountID: nil)
+}
+
+/// The native AVPlayerLayer displays decoded file pixels; controls above drive
+/// the same player. Dismantling releases only this view's layer reference.
+private struct StudioMoviePreviewSurface: UIViewRepresentable {
+    let player: AVPlayer
+    final class Surface: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+    }
+    func makeUIView(context: Context) -> Surface {
+        let view = Surface()
+        if let layer = view.layer as? AVPlayerLayer { layer.videoGravity = .resizeAspect; layer.player = player }
+        return view
+    }
+    func updateUIView(_ view: Surface, context: Context) { (view.layer as? AVPlayerLayer)?.player = player }
+    static func dismantleUIView(_ view: Surface, coordinator: ()) { (view.layer as? AVPlayerLayer)?.player = nil }
 }
