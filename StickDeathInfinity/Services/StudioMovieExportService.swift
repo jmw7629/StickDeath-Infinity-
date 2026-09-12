@@ -37,6 +37,8 @@ final class StudioMovieExportService {
         let audioIncluded: Bool
         let editorGuidesIncluded: Bool
         let encodedBytes: Int
+        /// Present only for an internal video component, never a completed audio export.
+        var visualComponentProof: StudioMuxCapture.Proof? = nil
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -62,6 +64,29 @@ final class StudioMovieExportService {
         /// This deliberately still runs when the enclosing Task is cancelled.
         func cleanup() throws { try ownership.cleanup() }
         func cancel() throws { ownership.cancelled = true; try ownership.cleanup() }
+    }
+
+    /// Internal component handle. Its complete capture (including audio) is
+    /// retained; this type is not the ordinary finished movie export receipt.
+    @MainActor final class VisualComponent {
+        let capture: StudioMuxCapture
+        private let output: Output
+        fileprivate init(capture: StudioMuxCapture, output: Output) {
+            self.capture = capture; self.output = output
+        }
+        func checkedSource() throws -> (URL, Manifest) {
+            _ = try output.checkedURLs()
+            guard output.manifest.visualComponentProof == capture.proof else { throw ExportError.outputUnavailable }
+            return (output.movieURL, output.manifest)
+        }
+        func cleanup() throws { try output.cleanup() }
+    }
+
+    func exportVisualComponent(capture: StudioMuxCapture, outputParent: URL,
+                               progress: (Progress) throws -> Void = { _ in }) async throws -> VisualComponent {
+        let output = try await exportCore(snapshot: capture.snapshot, outputParent: outputParent,
+                                          background: .white, componentProof: capture.proof, progress: progress)
+        return VisualComponent(capture: capture, output: output)
     }
 
     /// Captured before publication, then carried across the same-parent rename.
@@ -491,12 +516,18 @@ final class StudioMovieExportService {
     /// Progress is factual intermediate work, not a save/export success receipt.
     func export(snapshot: Snapshot, outputParent: URL, background: Background,
                 progress: (Progress) throws -> Void = { _ in }) async throws -> Output {
+        try await exportCore(snapshot: snapshot, outputParent: outputParent, background: background,
+                             componentProof: nil, progress: progress)
+    }
+
+    private func exportCore(snapshot: Snapshot, outputParent: URL, background: Background,
+                            componentProof: StudioMuxCapture.Proof?, progress: (Progress) throws -> Void) async throws -> Output {
         try Task.checkCancellation()
         guard !Self.movieInProgress else { throw ExportError.alreadyExporting }
         Self.movieInProgress = true
         defer { Self.movieInProgress = false }
         let started = ProcessInfo.processInfo.systemUptime
-        try validate(snapshot, background: background)
+        try validate(snapshot, background: background, componentProof: componentProof)
         try checkpoint(started)
         let document = snapshot.document
         let fm = FileManager.default
@@ -614,10 +645,11 @@ final class StudioMovieExportService {
             try await verify(movie, document: document, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
-            let manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
+            var manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
                 frameIDs: document.frames.map(\.id), fps: document.fps, width: document.width, height: document.height,
                 durationNumerator: document.frames.count, durationDenominator: document.fps, codec: "H.264",
                 background: .white, audioIncluded: false, editorGuidesIncluded: false, encodedBytes: bytes)
+            manifest.visualComponentProof = componentProof
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
             try encodingOwnership!.writeManifest(manifestData)
@@ -659,7 +691,7 @@ final class StudioMovieExportService {
         }
     }
 
-    private func validate(_ snapshot: Snapshot, background: Background) throws {
+    private func validate(_ snapshot: Snapshot, background: Background, componentProof: StudioMuxCapture.Proof?) throws {
         let hard = Limits()
         guard (1...hard.maximumFrames).contains(limits.maximumFrames),
               (1...hard.maximumFramePixels).contains(limits.maximumFramePixels),
@@ -670,7 +702,11 @@ final class StudioMovieExportService {
               limits.readinessTimeout.isFinite, limits.readinessTimeout > 0, limits.readinessTimeout <= 30,
               limits.operationTimeout.isFinite, limits.operationTimeout > 0, limits.operationTimeout <= 300 else { throw ExportError.limitExceeded }
         guard background == .white else { throw ExportError.transparentUnsupported }
-        guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
+        if let componentProof {
+            guard try StudioMuxCapture.proofFor(snapshot) == componentProof else { throw ExportError.unsupportedContent }
+        } else {
+            guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
+        }
         let document = snapshot.document
         try document.validate()
         guard document.width.isMultiple(of: 2), document.height.isMultiple(of: 2) else { throw ExportError.oddDimensions }

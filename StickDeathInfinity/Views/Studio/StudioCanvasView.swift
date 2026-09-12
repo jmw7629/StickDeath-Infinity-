@@ -7,6 +7,10 @@ struct StudioCanvasView: View {
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
     @State private var panOrigin: CGSize?
+    // A completed gesture still needs its captured context in onEnded.
+    // GestureState resets at touch end, so it cannot own this transaction.
+    @State private var colorInput = StudioColorSampleGesture()
+    @State private var touchID: UUID?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -81,6 +85,10 @@ struct StudioCanvasView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
+            .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
+                scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
+                colorInput.invalidate()
+            }
             .overlay(alignment: .bottom) {
                 if let pending = vm.pendingBrushStroke {
                     VStack(spacing: 6) {
@@ -103,8 +111,16 @@ struct StudioCanvasView: View {
             interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
         }
         .onChange(of: gestureActive) { _, active in
-            if !active { interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.") }
+            guard !active, let endedTouch = touchID else { return }
+            // Let onEnded consume its capture first. A cancelled gesture has
+            // no onEnded callback; clear only that touch on the next turn.
+            Task { @MainActor in
+                await Task.yield()
+                guard !gestureActive, touchID == endedTouch else { return }
+                interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
+            }
         }
+        .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
         }
@@ -119,7 +135,12 @@ struct StudioCanvasView: View {
         DragGesture(minimumDistance: 0)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
+                if touchID == nil { touchID = UUID(); colorInput = StudioColorSampleGesture() }
+                colorInput.update(context: input == nil ? vm.beginColorSample() : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
                 guard vm.pendingBrushStroke == nil else { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
                     vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
@@ -134,13 +155,14 @@ struct StudioCanvasView: View {
                         let id = UUID().uuidString
                         let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
+                        let shape = try vm.shapeDescriptor()
                         guard vm.beginStrokeInput(id: id) else { return }
                         input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                             tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
-                            opacity: styled ? vm.capturedStrokeOpacity : vm.strokeOpacity,
+                            opacity: styled || shape != nil ? vm.capturedStrokeOpacity : vm.strokeOpacity,
                             brush: brush,
                             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
-                            startedAt: value.time)
+                            startedAt: value.time, shape: shape)
                     } catch { vm.message = error.localizedDescription; return }
                 }
                 do { try input?.append(location: value.location, time: value.time) }
@@ -158,6 +180,17 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) {
+                    guard let sample = colorInput.resolve(location: value.location,
+                        context: vm.beginColorSample(),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio or the canvas changed during color sampling. Start a new tap."
+                        return
+                    }
+                    _ = vm.sampleArtworkColor(at: sample.point, captured: sample.context)
+                    return
+                }
                 if panOrigin != nil { return }
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {
@@ -183,14 +216,21 @@ struct StudioCanvasView: View {
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
-    private func clearInput() {
+    private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
         input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
+        if endingTouch {
+            colorInput = StudioColorSampleGesture(); touchID = nil
+        }
     }
     private func interruptInput(_ reason: String) {
         if let input { vm.interruptStrokeInput(input, reason: reason) }
-        clearInput()
+        colorInput.invalidate()
+        // A frame/scene change while the finger is down cancels that whole
+        // touch. Keep its identity until physical end; a later move must not
+        // capture the new frame as though it were a fresh gesture.
+        clearInput(endingTouch: !gestureActive)
     }
 }
 

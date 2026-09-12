@@ -1,8 +1,29 @@
+## Current native result: 1e32cd6
+
+Workflow 34716493547 passed every production stage and the actual iOS app build. On iOS 18.5 / iPhone 16 Pro simulator, 14 of 16 native journeys passed, none skipped. Both real MP4 receipts and native share-sheet cancellation journeys passed. Toolbar docking, the sole popup, shape settings, drawing, images, PNG and local Spatter journeys passed.
+
+The audio library journey checked `isHittable` immediately after project creation; the captured application snapshot had no accessibility children during the sheet transition. Its next revision waits up to eight seconds for the actual audio control. The eyedropper journey passed white/blue sampling, real Hand/Zoom/Fit, subsequent blue drawing and undo/redo, then reached its unchanged 180-second execution allowance before cold reopen/export could finish. It is split into two independent visible-tool journeys, retaining the pixel, persistence and export assertions and the existing suite deadline.
+
+The follow-up also retains a cancelled picker touch until physical completion across frame/scene changes, preventing subsequent movement from capturing a changed frame. The audio gutter receives an explicit accessibility container so its full geometry can be checked. These corrections still require the next exact-head native run. Root review is not independent approval; no merge or full MVP claim.
+
 # Native iOS recovery and Studio verification
 
 Codex owns the Studio continuation under Joseph Willis's 2026-09-08 ownership transfer, recorded in issue #110. Recovery PR #111 and local Spatter editing PR #112 are merged. Native SwiftUI Studio is the product. Media, community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope. Historical demo values are not live product evidence.
 
-## Latest verified and merged native source
+## Current Studio continuation — PR #115
+
+[Run 34713868475](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34713868475) at `5084b9439be42278d3aab8e60136492be2f09426` passed source security, Spatter, every native production suite and the actual iOS app build. Its iPhone 16 Pro / iOS 18.5 simulator suite completed **16 journeys: 12 passed, four failed, zero skipped**. The fresh-simulator setup succeeded. This is a red native UI gate, not an executor timeout, and PR #115 remains draft and unmerged.
+
+The single floating primary toolbar, vertical edge docking, sole dismissible options popup and shape fill/radius/undo/save/reopen/PNG journeys passed. The audio journey reached search, real mixing and cold reopen, then failed to reach the landscape footer. Both movie journeys produced real MP4 receipts (including H.264/AAC for the audio project), but could not scroll the receipts into view, so their native share cancellation checks did not execute. The eyedropper journey failed at its first white-artwork sample because the pending gesture capture was unavailable at touch end. No full app, physical device or TestFlight readiness claim follows from the passing subset.
+
+The complete 530,052,588-byte native artifact was checked for SHA-256 (`35c6f79cc7b97cf2033ffd0622e938b89d9143a0eba7e317d9af336b1d4ccdde`), safe entries and every CRC. Raw job/UI logs, test summary, recording metadata and actual failed/passed-flow attachments are retained privately. Blank backend configuration is verified; OS network traffic is not measured.
+
+The corrective source keeps the existing layout and popup. Audio uses a fixed 44-point gutter, aligned four-track lanes and one vertical workspace scroll. Color sampling captures persistent touch state for completion, invalidates changed context/layout, and cleans up cancelled touches without clearing a later gesture. Completed MP4 export brings the actual receipt/share controls into view. The export helper drags within real scroll padding instead of a segmented control; the same full-visibility and share assertions remain required. New native assertions check audio gutter width and lane alignment. These corrections require their own exact-head native run before being called verified.
+
+[The private review companion](https://stickdeath-infinity-review.joewillisny.chatgpt.site) is v15, web source `b64b5925f68459b1ae03cff435a253fd382d7be8`, with verified HTTPS Chromium/WebKit mobile interactions and no secondary toolbar. Its current native gallery remains explicitly tied to earlier evidence. It is not this native build.
+
+## Historical verified and merged native source
+
 
 [Run 34290714597](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34290714597) passed all three mandatory jobs at exact source `33ee2c2395b477477911b9a0bb8f9ccc37cd2eed`: **236 production checks, the linked native app build and all eight native simulator journeys**, with zero failures or skips. It ran on iPhone 16 Pro / iOS 26.2. The new 105.839-second journey submits a distinct five-frame blue-circle request, checks its editable result and real decoded spritesheet, reverses/redoes the whole edit once, then saves, terminates, relaunches and reopens the same visible content.
 

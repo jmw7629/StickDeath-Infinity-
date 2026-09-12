@@ -26,6 +26,7 @@ struct ExportPanel: View {
                 movie.session.close()
                 vm.activePanel = .none
             })
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(spacing: 16) {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -37,7 +38,9 @@ struct ExportPanel: View {
                         }
                     }
                     if vm.exportFormat == .mp4 {
-                        StudioMovieExportControls(vm: vm, movie: movie)
+                        StudioMovieExportControls(vm: vm, movie: movie, onReady: {
+                            proxy.scrollTo("studio.export.movie.result", anchor: .top)
+                        })
                     } else {
                     if vm.isEditing {
                         let document = vm.document
@@ -126,13 +129,14 @@ struct ExportPanel: View {
                         exportDestination("▶️", "YouTube", "Official channel publishing unavailable")
                         exportDestination("📷", "Instagram", "Direct publishing unavailable")
                     }
-                    Text("No watermark is added. PNG exports do not include sound. MP4 is animation-only on white and rejects projects with audio. GIF and official channel publishing remain unfinished.")
+                    Text("No watermark is added. PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF and official channel publishing remain unfinished.")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.white.opacity(0.5))
                 }
                 .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 20)
             }
             .frame(maxHeight: UIScreen.main.bounds.height * 0.6)
+            }
         }
         .foregroundColor(.white)
         .background(Color(hex: "#1a1a24"))

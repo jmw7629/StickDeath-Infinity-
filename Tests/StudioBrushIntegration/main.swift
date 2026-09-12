@@ -81,7 +81,7 @@ private func rejects(_ operation: () throws -> Void) throws {
             try require(StudioDocumentArchive.decode(archive).document == editor.document, "Brush descriptor archive roundtrip changed data")
             var wrong = editor.document; wrong.schemaVersion = 1
             try rejects { try wrong.validate() }
-            wrong.schemaVersion = 4; try rejects { try wrong.validate() }
+            wrong.schemaVersion = 5; try rejects { try wrong.validate() }
             editor.undo()
             try require(editor.document.schemaVersion == 1 && render(editor.document.frames[0], layers: editor.document.layers) == oldPixels,
                         "Undo failed to restore historical schema/pixels")

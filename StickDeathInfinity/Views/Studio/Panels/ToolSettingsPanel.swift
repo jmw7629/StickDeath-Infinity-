@@ -12,6 +12,8 @@ import SwiftUI
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     @State private var showBrushLibrary = false
+
+    static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -24,9 +26,10 @@ struct FloatingToolSettingsPanel: View {
     
     var body: some View {
         GeometryReader { available in
+        let compact = available.size.height < 180
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: compact ? 4 : 10) {
                     // Header: icon + name + X close
                     HStack {
                         Image(systemName: def.icon)
@@ -40,20 +43,23 @@ struct FloatingToolSettingsPanel: View {
                             Text("✕")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .accessibilityLabel("Close tool settings")
                         .accessibilityIdentifier("studio.tool-settings.close")
                     }
                     
-                    Divider().background(Color.white.opacity(0.08))
+                    if !compact { Divider().background(Color.white.opacity(0.08)) }
                     
                     // Tool-specific content
                     ScrollView {
-                        toolSettingsContent(def)
+                        toolSettingsContent(def, compactHeight: compact)
                     }
-                    .frame(maxHeight: max(70, min(360, available.size.height - 100)))
+                    .frame(maxHeight: max(0, min(360, available.size.height - (compact ? 60 : 132))))
                     
-                    // Shortcut
+                    // The short landscape popup keeps the actual operation controls reachable.
+                    if available.size.height >= 180 {
                     HStack(spacing: 4) {
                         Text("Shortcut:")
                             .font(.system(size: 10, design: .monospaced))
@@ -67,11 +73,12 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(4)
                     }
                     .padding(.top, 4)
+                    }
                 }
-                .padding(12)
+                .padding(compact ? 6 : 12)
             }
         }
-        .frame(width: 260)
+        .frame(width: min(260, available.size.width))
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(hex: "1A1A24").opacity(0.98))
@@ -82,12 +89,13 @@ struct FloatingToolSettingsPanel: View {
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.tool-settings")
         }
     }
     
     @ViewBuilder
-    func toolSettingsContent(_ def: ToolDef) -> some View {
+    func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
@@ -266,18 +274,27 @@ struct FloatingToolSettingsPanel: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
+                Button { vm.shapeFilled.toggle() } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(vm.strokeColor)
+                        .fill(vm.shapeFilled ? vm.strokeColor : Color.clear)
                         .frame(width: 28, height: 28)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    Text("No fill")
+                    Text(vm.shapeFilled ? "Solid fill" : "No fill")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.3))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shape fill")
+                .accessibilityValue(vm.shapeFilled ? "Solid" : "None")
+                .accessibilityIdentifier("studio.shape.fill")
                 
                 if def.tool == .rectangle {
-                    SettingsSlider(label: "Corner Radius", value: .constant(0.0), range: 0...50, unit: "px", accent: .orange)
+                    SettingsSlider(label: "Corner Radius", value: $vm.shapeCornerRadius, range: 0...50, unit: "px", accent: .orange)
                 }
             }
             
@@ -365,11 +382,36 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
             }
             
+        case .hand, .zoom:
+            VStack(alignment: .leading, spacing: 8) {
+                if !compactHeight {
+                Text("Zoom: \(Int((vm.canvasScale * 100).rounded()))%")
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.tool-settings.zoom-value")
+                }
+                HStack(spacing: 8) {
+                    zoomControl("minus", "Zoom out", "zoom-out") { vm.zoomOut() }
+                    zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
+                    zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
+                }
+            }
         default:
             EmptyView()
         }
     }
     
+    private func zoomControl(_ icon: String, _ label: String, _ identifier: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label).font(.specialElite(9))
+            }.frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundColor(.white)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }.accessibilityLabel(label).accessibilityIdentifier("studio.tool-settings." + identifier)
+    }
+
     var opacityBinding: Binding<Double> {
         Binding(
             get: { vm.toolOpacity * 100 },

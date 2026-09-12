@@ -34,7 +34,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
-        guard (1...3).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard (1...5).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -63,6 +63,12 @@ struct StudioDocument: Codable, Equatable {
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             for element in frame.elements {
+                if let shape = element.shape {
+                    guard schemaVersion >= 5, element.brush == nil, element.points.count == 2 else {
+                        throw StudioShapeDescriptor.Failure.invalid
+                    }
+                    try shape.validate(tool: element.tool)
+                }
                 guard !element.id.isEmpty, elementIDs.insert(element.id).inserted,
                       element.layerID.map(layerIDs.contains) == true,
                       element.width.isFinite, (0.1...1024).contains(element.width),
@@ -81,6 +87,11 @@ struct StudioDocument: Codable, Equatable {
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
+            guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
+                  (clip.sourceOffset + clip.duration).isFinite,
+                  (clip.sourceOffset == 0 && !clip.isMuted) || schemaVersion >= 4 else {
+                throw StudioDocumentError.invalid("An audio clip has invalid source timing or unsupported edit metadata.")
+            }
             if clip.assetID != nil {
                 guard !clip.id.isEmpty, clip.id.count <= 120, !clip.soundName.isEmpty, clip.soundName.count <= 120,
                       (1...4).contains(clip.track), clip.duration > 0, clip.duration <= 300,
@@ -188,6 +199,7 @@ struct StudioDocumentEditor {
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The drawing frame is unavailable.") }
             value.frames[index].elements.append(element)
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
+            if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
         }
     }
     mutating func addFrame() throws {
@@ -212,11 +224,12 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush)
+                             brush: element.brush, shape: element.shape)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
+            if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -273,7 +286,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush)
+                                 brush: element.brush, shape: element.shape)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -394,7 +407,7 @@ enum StudioBrushGeometryCache {
                 guard elements <= maximumDocumentElements else {
                     throw StudioBrushError.workLimit("This project exceeds 2,048 styled brush elements. Undo or remove selected content before adding more.")
                 }
-                guard (2...3).contains(document.schemaVersion) else {
+                guard (2...4).contains(document.schemaVersion) else {
                     throw StudioBrushError.invalidSettings("Brush documents require version 2. The original project has not changed.")
                 }
                 points += element.points.count

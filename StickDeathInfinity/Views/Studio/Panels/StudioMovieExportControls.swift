@@ -6,6 +6,7 @@ import SwiftUI
 struct StudioMovieExportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var movie: StudioMoviePanelState
+    var onReady: () -> Void = {}
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
@@ -30,7 +31,7 @@ struct StudioMovieExportControls: View {
             Text("VIDEO QUALITY").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-            Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps. White background only. Projects containing audio are rejected; sound is never silently dropped. Editor grid and onion skin are not included.")
+            Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps. White background only. Saved audio is mixed as stereo AAC. Trim audio within the animation duration; missing sources and overloaded mixes report an error. Editor grid and onion skin are not included.")
                 .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
             Picker("MP4 background", selection: $background) {
                 Text("White").tag(StudioMovieExportService.Background.white)
@@ -87,8 +88,9 @@ struct StudioMovieExportControls: View {
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.movie.receipt")
-                    Text("\(output.manifest.encodedBytes) encoded bytes · H.264 · white · no audio")
+                    Text("\(output.manifest.encodedBytes) encoded bytes · \(output.manifest.codec) · white · \(output.manifest.audioIncluded ? "stereo audio" : "no audio")")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .accessibilityIdentifier("studio.export.movie.media")
                     Text("Video preview unavailable.")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                     Button {
@@ -106,6 +108,7 @@ struct StudioMovieExportControls: View {
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
+                .id("studio.export.movie.result")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -141,8 +144,12 @@ struct StudioMovieExportControls: View {
         .onChange(of: vm.document.id) { refreshScope() }
         .onChange(of: vm.isEditing) { refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }
+        .onChange(of: session.output?.movieURL) { _, output in
+            if output != nil { onReady() }
+        }
     }
     private var progressText: String {
+        if let audio = session.audioProgressText { return audio }
         switch session.phase {
         case .rendering: return "Rendering \(session.completedFrames) of \(session.totalFrames) frames"
         case .finalizing: return "Finalizing the encoded movie…"

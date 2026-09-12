@@ -7,10 +7,98 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testFloatingToolbarDockingAndPopupDismissal() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let stage = app.descendants(matching: .any)["studio.toolbar.stage"].firstMatch
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let grip = app.descendants(matching: .any)["studio.toolbar.grip"].firstMatch
+        XCTAssertTrue(stage.waitForExistence(timeout: 8) && rail.exists && grip.isHittable)
+        let undo = app.buttons["studio.undo"]
+        XCTAssertFalse(undo.isEnabled, "Chrome gestures must not edit the blank document")
+        for (x, side) in [(0.025, "left"), (0.975, "right")] {
+            grip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.35)))
+            let docked = NSPredicate { _, _ in
+                guard rail.value as? String == "Vertical", grip.isHittable,
+                      stage.frame.contains(rail.frame), rail.frame.height > rail.frame.width else { return false }
+                return side == "left" ? rail.frame.minX < stage.frame.minX + 20 : rail.frame.maxX > stage.frame.maxX - 20
+            }
+            XCTAssertTrue(expectation(for: docked, evaluatedWith: nil).waitUntilFulfilled(timeout: 5), "Toolbar did not dock at \(side) stage edge")
+            capture(app, name: "toolbar-docked-" + side)
+        }
+        try selectToolbarTool("hand", app: app)
+        let close = app.buttons["studio.tool-settings.close"]
+        if !close.isHittable { captureHierarchy(app, name: "toolbar-popup-close-unreachable") }
+        XCTAssertTrue(close.isHittable && app.buttons["studio.tool-settings.fit"].isHittable)
+        XCTAssertGreaterThanOrEqual(close.frame.width.rounded(), 44)
+        XCTAssertGreaterThanOrEqual(close.frame.height.rounded(), 44)
+        close.tap()
+        XCTAssertFalse(close.exists, "X did not dismiss tool-specific controls")
+        try selectToolbarTool("hand", app: app)
+        XCTAssertTrue(close.waitForExistence(timeout: 3), "Retapping Hand did not restore its context")
+        try selectToolbarTool("eyedropper", app: app)
+        XCTAssertFalse(close.exists, "An inapplicable tool kept the settings popup")
+        XCTAssertFalse(app.buttons["studio.context.close"].exists, "The removed secondary toolbar returned")
+        grip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "Horizontal"), evaluatedWith: rail).waitUntilFulfilled(timeout: 5))
+        XCTAssertTrue(stage.frame.contains(rail.frame))
+        XCTAssertFalse(undo.isEnabled, "Toolbar movement altered undo history")
+        try selectToolbarTool("hand", app: app)
+        app.buttons["studio.tool-settings.zoom-in"].tap()
+        app.buttons["studio.tool-settings.fit"].tap()
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertGreaterThan(canvas.frame.width, 80)
+        XCTAssertGreaterThan(canvas.frame.height, 80)
+        capture(app, name: "toolbar-floating-popup")
+    }
+
+    @MainActor
+    private func waitForStableCanvas(_ canvas: XCUIElement, expected: CGRect? = nil) throws {
+        var last = CGRect.null
+        var since = Date()
+        let settled = NSPredicate { _, _ in
+            let frame = canvas.frame
+            guard canvas.exists, canvas.isHittable, frame.width > 80, frame.height > 80,
+                  expected == nil || frame == expected else { since = Date(); return false }
+            if last != frame { last = frame; since = Date(); return false }
+            return Date().timeIntervalSince(since) >= 1
+        }
+        XCTAssertTrue(expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "The real canvas did not settle at its expected geometry")
+    }
+
+    @MainActor
+    private func selectToolbarTool(_ name: String, app: XCUIApplication) throws {
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let tool = app.buttons["studio.tool." + name]
+        let scroll = rail.scrollViews.firstMatch
+        XCTAssertTrue(rail.waitForExistence(timeout: 5) && scroll.exists)
+        for _ in 0..<12 {
+            if tool.exists, tool.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(tool.frame) {
+                tool.tap(); return
+            }
+            let vertical = rail.value as? String == "Vertical"
+            let forward = !tool.exists || (vertical ? tool.frame.midY > scroll.frame.midY : tool.frame.midX > scroll.frame.midX)
+            let a = forward ? 0.8 : 0.2, b = forward ? 0.2 : 0.8
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : a, dy: vertical ? a : 0.5))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : b, dy: vertical ? b : 0.5))
+            start.press(forDuration: 0.1, thenDragTo: end)
+        }
+        captureHierarchy(app, name: "toolbar-control-unreachable-" + name)
+        XCTFail("Actual toolbar tool unreachable after twelve bounded scrolls: " + name)
+        throw NSError(domain: "NativeToolbarSmoke", code: 1)
+    }
+
+    @MainActor
     func testGuestStudioPortraitAndLandscape() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         _ = try createProjectIfLibraryIsShown(app)
+        // FIT now belongs to the selected Hand/Zoom tool, as requested.
+        try selectToolbarTool("hand", app: app)
         try waitForButton("FIT", in: app)
         capture(app, name: "studio-portrait")
         XCUIDevice.shared.orientation = .landscapeLeft
@@ -236,19 +324,100 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testBundledSoundLibraryMixAndOfflineReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let open = app.buttons["studio.audio.open"]
+        // Creation dismisses a native sheet. Wait for the real control to become
+        // reachable; the previous failure captured an empty transition snapshot.
+        let audioReady = expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: open)
+        XCTAssertTrue(audioReady.waitUntilFulfilled(timeout: 8), "Studio audio did not become reachable after project creation")
+        open.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Shuffle\n")
+        let addID = "studio.audio.catalogue.add.f669c1b635f26e53e0d51f9f7abba2a6a3e499438095f89433ce7400ec74bde4"
+        let count = app.staticTexts["studio.audio.clip-count"]
+        for expected in ["1 clips", "2 clips"] {
+            try audioLibraryButton(addID, app: app).tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", expected), evaluatedWith: count).waitUntilFulfilled(timeout: 10))
+        }
+        capture(app, name: "audio-bundled-library-two-clips")
+        app.buttons["studio.audio.library.close"].tap()
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        // This is the real AVAudioPlayer completion time for the integrity-pinned
+        // 3.063492-second file, not a sleep followed by a fabricated success label.
+        XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
+        let volume = app.sliders["studio.audio.volume"]
+        XCTAssertTrue(volume.isHittable); volume.adjust(toNormalizedSliderPosition: 0.4)
+        XCTAssertTrue(app.buttons["Mute selected clip"].isHittable)
+        app.buttons["Mute selected clip"].tap()
+        XCTAssertTrue(app.buttons["Unmute selected clip"].waitForExistence(timeout: 3))
+        app.buttons["Unmute selected clip"].tap()
+        capture(app, name: "audio-real-mix-selected-clip")
+        app.buttons["studio.audio.close"].tap()
+        let save = app.buttons["studio.save"]
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        XCTAssertTrue(reopened.buttons["studio.audio.open"].waitForExistence(timeout: 5)); reopened.buttons["studio.audio.open"].tap()
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "2 clips", "Cold reopen lost saved library sounds")
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        let labels = reopened.descendants(matching: .any)["studio.audio.track-labels"].firstMatch
+        let lanes = reopened.scrollViews["studio.audio.lanes"]
+        XCTAssertTrue(labels.exists); XCTAssertTrue(lanes.exists)
+        XCTAssertEqual(labels.frame.width, 44, accuracy: 1, "Track labels stole the timeline width")
+        XCTAssertEqual(labels.frame.minY, lanes.frame.minY, accuracy: 1, "Track labels detached from the lanes")
+        XCTAssertEqual(labels.frame.maxX, lanes.frame.minX, accuracy: 1, "Timeline has an expanding gutter")
+        capture(reopened, name: "audio-offline-cold-reopen")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in reopened.frame.width > reopened.frame.height }, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
+        let compact = reopened.scrollViews["studio.audio.compact.scroll"]
+        XCTAssertTrue(compact.waitForExistence(timeout: 5), "Short audio layouts must scroll instead of clipping controls")
+        XCTAssertTrue(reopened.buttons["studio.audio.close"].isHittable)
+        compact.swipeUp(velocity: .slow)
+        XCTAssertTrue(reopened.buttons["+ Add Sound"].isHittable, "Landscape audio footer is inaccessible")
+        capture(reopened, name: "audio-landscape-scroll")
+    }
+
+    @MainActor
+    private func audioLibraryButton(_ identifier: String, app: XCUIApplication) throws -> XCUIElement {
+        let control = app.buttons[identifier], scroll = app.scrollViews["studio.audio.library.scroll"]
+        XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+        for _ in 0..<10 {
+            if control.exists, control.isHittable, control.isEnabled, scroll.frame.contains(control.frame) { return control }
+            scroll.swipeUp(velocity: .slow)
+        }
+        captureHierarchy(app, name: "audio-library-control-unreachable")
+        XCTFail("Actual library control is not reachable: " + identifier)
+        throw NSError(domain: "NativeAudioLibrary", code: 1)
+    }
+
+    @MainActor
     func testAudioFilesPickerCancellationPreservesBlankProject() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         _ = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        try waitForStableCanvas(canvas)
+        let originalFrame = canvas.frame
         let before = try pixels(canvas.screenshot().image)
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
         let open = app.buttons["studio.audio.open"]
         XCTAssertTrue(open.isHittable); open.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let importAudio = app.buttons["studio.audio.import"]
         XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
-        XCTAssertTrue(app.staticTexts["Animation only"].exists)
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "0 clips")
         capture(app, name: "audio-empty-real-timeline")
         importAudio.tap()
 
@@ -269,11 +438,12 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(importAudio.waitForExistence(timeout: 8)); XCTAssertTrue(importAudio.isEnabled)
         XCTAssertFalse(app.staticTexts["studio.audio.imported"].exists, "Picker cancellation invented an imported clip")
         XCTAssertFalse(app.buttons["studio.audio.cancel"].exists, "Picker cancellation left an import running")
-        XCTAssertTrue(app.staticTexts["No imported clips. Historical audio records are preserved in the project."].exists)
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "0 clips")
         capture(app, name: "audio-files-cancelled-no-clips")
-        let close = app.buttons["studio.panel.close.Audio Timeline"]
+        let close = app.buttons["studio.audio.close"]
         XCTAssertTrue(close.isHittable); close.tap()
         XCTAssertTrue(canvas.waitForExistence(timeout: 5)); XCTAssertTrue(canvas.isHittable)
+        try waitForStableCanvas(canvas, expected: originalFrame)
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Cancelling Files mutated the document history")
         XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
                                 "Cancelling the actual audio picker changed the canvas")
@@ -370,6 +540,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertNotEqual(selectedOpacity, initialOpacity)
         capture(app, name: "brush-round-settings")
         let closeSettings = app.buttons["studio.tool-settings.close"]
+        if !closeSettings.isHittable { captureHierarchy(app, name: "brush-popup-close-unreachable") }
         XCTAssertTrue(closeSettings.isHittable); closeSettings.tap()
         let before = try pixels(canvas.screenshot().image)
         XCTAssertTrue(exportInkMask(before).isEmpty, "The actual starting canvas contains red ink")
@@ -730,6 +901,294 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.isHittable)
     }
 
+    @MainActor
+    func testBundledAudioMP4AndNativeShareCancellation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8) && canvas.isHittable)
+        let before = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["studio.undo"]).waitUntilFulfilled(timeout: 5))
+        XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
+        app.buttons["studio.audio.open"].tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "1 clips"), evaluatedWith: app.staticTexts["studio.audio.clip-count"]).waitUntilFulfilled(timeout: 10))
+        app.buttons["studio.audio.library.close"].tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.00s"))
+        app.sliders["studio.audio.volume"].adjust(toNormalizedSliderPosition: 0.4)
+        app.buttons["studio.audio.close"].tap()
+        // The pinned source is 0.2508125 seconds; four real frames at 12 fps
+        // contain it without modifying the original source or extending export.
+        let addFrame = app.buttons["studio.add-frame"]
+        XCTAssertTrue(addFrame.isHittable)
+        for _ in 0..<3 { addFrame.tap() }
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        try openExportPanel(app)
+        try exportControl("studio.export.format.mp4", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "Project audio is included as stereo AAC."), evaluatedWith: status).waitUntilFulfilled(timeout: 30))
+        let receipt = try exportControl("studio.export.movie.receipt", app: app)
+        XCTAssertTrue(receipt.label.contains("4 frames · 12 fps · revision "))
+        XCTAssertTrue(try exportControl("studio.export.movie.media", app: app).label.contains("H.264 + AAC · white · stereo audio"))
+        capture(app, name: "mp4-bundled-audio-actual-receipt")
+        try exportControl("studio.export.share", app: app).tap()
+        let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
+        let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 10) && files.isHittable)
+        capture(app, name: "mp4-bundled-audio-native-share")
+        let dismiss = nativeShare.buttons["header.closeButton"]
+        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."), evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
+        capture(app, name: "mp4-bundled-audio-retained-after-share-cancel")
+        try closeExportPanel(app)
+        XCTAssertTrue(canvas.isHittable)
+    }
+
+    @MainActor
+    func testEyedropperArtworkAndTransformedCanvas() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app)
+        let canvas = prepared.canvas, original = prepared.original
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        try choosePickerTestColor("#FF0000", app:app)
+        try pickerRailControl("studio.tool.eyedropper", app:app, forward:true).tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.2)).tap()
+        let whiteReceipt = app.staticTexts["Sampled #FFFFFF from visible artwork."]
+        XCTAssertTrue(whiteReceipt.waitForExistence(timeout:8),"Blank artwork did not sample actual white")
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertFalse(redo.isEnabled)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
+            "Sampling wrote pixels to the document")
+
+        // Use the real Hand and zoom controls, then sample the center of the
+        // actual transformed canvas. Its original blue line crosses center.
+        try pickerRailControl("studio.tool.hand", app:app, forward:true).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        let beforePan = canvas.frame
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.75)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.49,dy:0.75)))
+        XCTAssertTrue(expectation(for:NSPredicate { _,_ in canvas.frame.minX > beforePan.minX + 2 },
+            evaluatedWith:nil).waitUntilFulfilled(timeout:5),"Hand did not move the actual canvas")
+        XCTAssertEqual(canvas.frame.width,beforePan.width,accuracy:1,"Hand unexpectedly changed scale")
+        capture(app,name:"picker-hand-translated-canvas")
+        let beforeZoom = canvas.frame
+        try pickerRailControl("studio.tool.hand",app:app,forward:false).tap()
+        XCTAssertTrue(app.buttons["studio.tool-settings.zoom-in"].isHittable)
+        app.buttons["studio.tool-settings.zoom-in"].tap()
+        XCTAssertTrue(expectation(for:NSPredicate { _,_ in canvas.frame.width > beforeZoom.width * 1.1 },
+            evaluatedWith:nil).waitUntilFulfilled(timeout:5),"Zoom did not enlarge the actual canvas")
+        capture(app,name:"picker-zoom-enlarged-canvas")
+        try pickerRailControl("studio.tool.eyedropper", app:app, forward:false).tap()
+        XCTAssertTrue(canvas.isHittable)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+        let blueReceipt = app.staticTexts["Sampled #0000FF from visible artwork."]
+        XCTAssertTrue(blueReceipt.waitForExistence(timeout:8),"Transformed artwork sample did not select blue")
+        capture(app,name:"picker-transformed-blue-sample")
+        try pickerRailControl("studio.tool.hand",app:app,forward:true).tap()
+        app.buttons["studio.tool-settings.fit"].tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
+            "Sampling or transformed canvas navigation changed artwork")
+        capture(app, name: "picker-transform-preserved-artwork")
+    }
+
+    @MainActor
+    func testEyedropperDrawingUndoColdReopenAndPNG() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app)
+        let canvas = prepared.canvas, original = prepared.original
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        try choosePickerTestColor("#FF0000", app:app)
+        try pickerRailControl("studio.tool.eyedropper", app:app, forward:true).tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+        XCTAssertTrue(app.staticTexts["Sampled #0000FF from visible artwork."].waitForExistence(timeout:8))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
+            "Sampling changed the source artwork before drawing")
+        try pickerRailControl("studio.tool.brush", app:app, forward:false).tap()
+        XCTAssertTrue(app.buttons["studio.tool-settings.close"].waitForExistence(timeout:5))
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.2,dy:0.65)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.8,dy:0.65)))
+        let twoStrokes = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(imageFixtureColors(twoStrokes)[1],imageFixtureColors(original)[1]+12,
+            "The actual subsequent stroke did not use sampled blue")
+        XCTAssertEqual(imageFixtureColors(twoStrokes)[0],0,"The old red drawing color was retained")
+        undo.tap()
+        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"), evaluatedWith:redo).waitUntilFulfilled(timeout:5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
+            "Picker added history or Undo failed to remove only the second stroke")
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(twoStrokes,pixels(canvas.screenshot().image)),4)
+        capture(app,name:"picker-blue-strokes-undo-redo")
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch.waitForExistence(timeout:8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout:8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout:8))
+        XCTAssertLessThanOrEqual(try changedPixelCount(twoStrokes,pixels(reopenedCanvas.screenshot().image)),4,
+            "Cold reopen did not restore the actual sampled-color drawing")
+        capture(reopened,name:"picker-persisted-blue-strokes")
+        try openExportPanel(reopened)
+        try exportControl("studio.export.format.png",app:reopened,scrollUp:false).tap()
+        try exportControl("studio.export.start",app:reopened).tap()
+        let preview = try waitForPNGPreview(reopened)
+        let outputPixels = try exportPreviewPixels(preview,app:reopened,name:"picker-blue")
+        XCTAssertGreaterThan(imageFixtureColors(outputPixels)[1],12,"Actual reopened PNG contains no sampled blue")
+        XCTAssertEqual(imageFixtureColors(outputPixels)[0],0,"Actual PNG unexpectedly used the earlier red setting")
+        capture(reopened,name:"picker-real-blue-png-export")
+    }
+
+    // Both bounded journeys create their source stroke through visible tools.
+    // No injected document, shortened assertion or expanded execution allowance.
+    @MainActor private func preparePickerSourceStroke(_ app: XCUIApplication) throws -> (canvas: XCUIElement, original: Raster) {
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout:8))
+        try pickerRailControl("studio.tool.brush", app:app, forward:false).tap()
+        let library = app.buttons["studio.brush-library"]
+        XCTAssertTrue(library.waitForExistence(timeout:5)); library.tap()
+        let round = app.buttons["studio.brush-family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout:5)); round.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition:0.7)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition:1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try choosePickerTestColor("#0000FF", app:app)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.2,dy:0.5)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.8,dy:0.5)))
+        let undo = app.buttons["studio.undo"]
+        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"), evaluatedWith:undo).waitUntilFulfilled(timeout:5))
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(imageFixtureColors(original)[1],12,"The real source stroke must be blue")
+        return (canvas, original)
+    }
+
+    @MainActor
+    func testShapeFillRadiusUndoSaveReopenAndPNG() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        let fill = app.buttons["studio.shape.fill"]
+        XCTAssertTrue(fill.waitForExistence(timeout: 5) && fill.isHittable)
+        XCTAssertEqual(fill.value as? String, "None")
+        fill.tap(); XCTAssertEqual(fill.value as? String, "Solid")
+        let radius = app.sliders["studio.setting.corner-radius"]
+        XCTAssertTrue(radius.isHittable)
+        let originalRadius = radius.value as? String
+        radius.adjust(toNormalizedSliderPosition: 0.7)
+        XCTAssertNotEqual(radius.value as? String, originalRadius)
+        capture(app, name: "shape-fill-and-radius-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        let blank = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.3)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.75,dy: 0.7)))
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        let drawn = try pixels(canvas.screenshot().image)
+        let center = ((drawn.height / 2) * drawn.width + drawn.width / 2) * 4
+        XCTAssertGreaterThan(drawn.bytes[center], 180)
+        XCTAssertLessThan(drawn.bytes[center + 1], 90, "Fill setting did not paint the actual shape interior")
+        XCTAssertLessThan(drawn.bytes[center + 2], 90)
+        XCTAssertGreaterThan(try changedPixelCount(blank, drawn), 500)
+        capture(app, name: "shape-actual-rounded-filled-canvas")
+        undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8))
+        try waitForStableCanvas(reopenedCanvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(reopenedCanvas.screenshot().image)), 4,
+            "Saved shape lost its fill or radius on cold reopen")
+        capture(reopened, name: "shape-filled-cold-reopened")
+        try openExportPanel(reopened)
+        try exportControl("studio.export.format.png", app: reopened, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: reopened).tap()
+        let preview = try waitForPNGPreview(reopened)
+        XCTAssertGreaterThan(imageFixtureColors(try pixels(preview.screenshot().image))[0], 500,
+            "Real exported PNG lost the filled shape")
+        capture(reopened, name: "shape-real-png-export-preview")
+    }
+
+    @MainActor private func pickerRailControl(_ id: String, app: XCUIApplication, forward: Bool) throws -> XCUIElement {
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let element = app.buttons[id], scroll = rail.scrollViews.firstMatch
+        XCTAssertTrue(rail.waitForExistence(timeout: 5) && scroll.exists)
+        for _ in 0..<12 {
+            if element.exists, element.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(element.frame) { return element }
+            let vertical = rail.value as? String == "Vertical"
+            let ahead = element.exists ? (vertical ? element.frame.midY > scroll.frame.midY : element.frame.midX > scroll.frame.midX) : forward
+            let a = ahead ? 0.8 : 0.2, b = ahead ? 0.2 : 0.8
+            scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : a, dy: vertical ? a : 0.5))
+                .press(forDuration: 0.1, thenDragTo: scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : b, dy: vertical ? b : 0.5)))
+        }
+        captureHierarchy(app, name: "picker-rail-unreachable-" + id)
+        XCTFail("Actual toolbar control unreachable: " + id)
+        throw NSError(domain: "NativePickerSmoke", code: 1)
+    }
+
+    @MainActor private func choosePickerTestColor(_ hex:String, app:XCUIApplication) throws {
+        try pickerRailControl("studio.color.open",app:app,forward:false).tap()
+        let preset = app.buttons["studio.color.preset."+hex]
+        XCTAssertTrue(preset.waitForExistence(timeout:5)); XCTAssertTrue(preset.isHittable); preset.tap()
+        XCTAssertEqual(app.staticTexts["studio.color.current"].label,hex)
+        let close = app.buttons["studio.panel.close.Color"]
+        XCTAssertTrue(close.isHittable); close.tap()
+    }
+
+    @MainActor private func settlePickerCanvasAfterSave(_ app:XCUIApplication, canvas:XCUIElement) throws {
+        let save = app.buttons["studio.save"]
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        let samplingMessage = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Sampled #")).firstMatch
+        XCTAssertTrue(expectation(for:NSPredicate(format:"exists == false"), evaluatedWith:samplingMessage).waitUntilFulfilled(timeout:5))
+        var previous = CGRect.null
+        var since = Date()
+        let stable = NSPredicate { _,_ in
+            guard canvas.isHittable, app.frame.contains(canvas.frame), canvas.frame.width > 80 else { return false }
+            if canvas.frame != previous { previous = canvas.frame; since = Date(); return false }
+            return Date().timeIntervalSince(since) >= 1
+        }
+        XCTAssertTrue(expectation(for:stable,evaluatedWith:nil).waitUntilFulfilled(timeout:8),"Canvas geometry did not settle after clearing status")
+    }
+
     private func imageFixtureColors(_ raster: Raster) -> [Int] {
         var counts = [Int](repeating: 0, count: 4)
         for i in stride(from: 0, to: raster.bytes.count, by: 4) {
@@ -847,9 +1306,10 @@ final class StudioSmokeUITests: XCTestCase {
             }
             guard attempt < 8 else { break }
             let upward = elementFrame.isEmpty ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
-            // Small drags use the actual ScrollView, never window coordinates.
-            let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.7 : 0.3))
-            let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
+            // The centre can land on the background segmented control, which
+            // consumes this drag. Use the panel's 16pt content padding instead.
+            let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.7 : 0.3))
+            let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.45 : 0.55))
             start.press(forDuration: 0.1, thenDragTo: end)
         }
         captureHierarchy(app, name: "export-control-unreachable-" + identifier)

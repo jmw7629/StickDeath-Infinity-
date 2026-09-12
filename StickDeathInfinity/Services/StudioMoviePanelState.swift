@@ -17,7 +17,7 @@ final class StudioMoviePanelState: ObservableObject {
         session = StudioMovieExportSession(outputParent: outputParent, limits: limits)
         observeSession()
     }
-    var isBusy: Bool { session.isRunning || session.isSharing }
+    var isBusy: Bool { session.isRunning || session.isSharing || session.isRecovering }
 
     @discardableResult
     func start(from vm: StudioViewModel, background: StudioMovieExportService.Background,

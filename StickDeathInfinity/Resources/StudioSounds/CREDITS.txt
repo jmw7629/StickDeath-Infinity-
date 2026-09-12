@@ -1,0 +1,26 @@
+StickDeath Infinity offline sound starter library
+All sound assets: CC0-1.0. https://creativecommons.org/publicdomain/zero/1.0/
+Each catalogue entry retains its original creator, publisher source URL and original/installed SHA-256.
+M4A files are AAC derivatives produced with Apple afconvert; WAV files retain original bytes.
+
+Kenney — https://kenney.nl/assets/casino-audio
+Kenney — https://kenney.nl/assets/sci-fi-sounds
+Kenney — https://kenney.nl/assets/interface-sounds
+Kenney — https://kenney.nl/assets/impact-sounds
+Kenney — https://kenney.nl/assets/voiceover-pack-fighter
+Kenney — https://kenney.nl/assets/voiceover-pack
+Kenney — https://kenney.nl/assets/rpg-audio
+Kenney — https://kenney.nl/assets/digital-audio
+Kenney — https://kenney.nl/assets/ui-audio
+SubspaceAudio — https://opengameart.org/content/512-sound-effects-8-bit-style
+rubberduck — https://opengameart.org/content/100-cc0-metal-and-wood-sfx
+rubberduck — https://opengameart.org/content/100-cc0-sfx-2
+rubberduck — https://opengameart.org/content/100-cc0-sfx
+rubberduck — https://opengameart.org/content/80-cc0-creature-sfx
+rubberduck — https://opengameart.org/content/80-cc0-rpg-sfx
+rubberduck — https://opengameart.org/content/50-cc0-sci-fi-sfx
+rubberduck — https://opengameart.org/content/40-cc0-water-splash-slime-sfx
+rubberduck — https://opengameart.org/content/80-cc0-creture-sfx-2
+rubberduck — https://opengameart.org/content/30-weird-cc0-sfx
+OwlishMedia — https://opengameart.org/content/202-more-sound-effects
+artisticdude — https://opengameart.org/content/rpg-sound-pack
