@@ -203,6 +203,56 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         try require(reader.status == .completed, "Actual AAC decoding incomplete")
         return values
     }
+    static func verifySavedMixedSamples(url: URL) async throws {
+        let pcm = try await decodeAudio(url); try require(pcm.count == 48_000, "Mixed file timing changed")
+        var error = 0.0, silentPeak: Float = 0
+        for n in 0..<24_000 { for c in 0..<2 {
+            if (8_000..<16_000).contains(n) {
+                let frequency: Double = c == 0 ? 480 : 960
+                let angle: Double = Double(n) * 2.0 * Double.pi * frequency / 48_000.0
+                let expected: Double = sin(angle) * 0.125
+                error += pow(Double(pcm[n*2+c]) - expected, 2)
+            }
+            if n < 3_000 || n > 21_500 { silentPeak = max(silentPeak, abs(pcm[n*2+c])) }
+        } }
+        try require(sqrt(error / 16_000) < 0.008 && silentPeak < 0.0005, "Actual trim/gain/placement changed or export followed later mute")
+    }
+
+    static func verifySavedMixedShare(root: URL) async throws {
+        let folder: URL = try parent(root, "mixed-share")
+        let pair: (StudioViewModel, AudioTrack) = try await audioEditor(folder)
+        let vm: StudioViewModel = pair.0
+        let track: AudioTrack = pair.1
+        let saved = await vm.save(); try require(saved, "Canonical audio save failed")
+        let store = DeviceStorageManager(documentsDirectory: folder.appendingPathComponent("documents"))
+        let project = try store.loadAnimation(id: vm.document.id)!
+        let reopened = StudioViewModel(storage: store)
+        let opened = await reopened.openProject(project.metadata); try require(opened, "Canonical audio reopen failed")
+        try require(reopened.projectAudioTracks.first?.audioData == track.audioData && reopened.document.audioClips == vm.document.audioClips, "Persisted audio changed")
+        let outputParent = try parent(folder, "output")
+        var session: Session? = Session(outputParent: outputParent), phases = Set<String>()
+        let listener = session!.$audioProgressText.compactMap { $0 }.sink { phases.insert($0) }
+        let revision = reopened.document.revision
+        try require(session!.start(from: reopened, background: .white, scope: visible), "Mixed session did not start")
+        let clip = reopened.audioClips[0]; reopened.selectedAudioClip = clip
+        try reopened.editSelectedAudioClip(clip.id, expectedRevision: reopened.document.revision, edit: .mute(true))
+        try await idle(session!); listener.cancel()
+        guard let output = session!.output else { throw Failure(message: session!.errorMessage ?? "No actual mixed output") }
+        try require(output.manifest.audioIncluded && output.manifest.documentRevision == revision && session!.notice?.contains("stereo AAC") == true && phases.count == 3, "Mixed readiness/progress not backed by output")
+        let movie = try await decode(output.movieURL, includesAudio: true)
+        try require(movie.frames.count == 12, "Mixed file lost animation frames")
+        for frame in movie.frames { try pixel(frame.pixel(32,16), [255,0,0,255]) }
+        try await verifySavedMixedSamples(url: output.movieURL)
+        try require(contents(outputParent).count == 1, "Mixed readiness leaked intermediate files")
+        let urls = try output.checkedURLs(), weakSession = WeakBox(session)
+        guard let request = session!.beginSharing(scope: visible) else { throw Failure(message: "Mixed share request unavailable") }
+        session!.close(); session = nil
+        try require(weakSession.value != nil && request.checkedURLs() == urls, "Mixed output removed during sharing")
+        _ = try await decodeAudio(urls[0])
+        request.finish(completed: false, error: nil)
+        try require(weakSession.value == nil && contents(outputParent).isEmpty, "Mixed share lifetime leaked output or session")
+    }
+
     static func main() async throws {
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-movie-session-tests-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: false)
@@ -321,44 +371,7 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             }
         }
         await test("saved trimmed audio reopens exports actual stereo AAC and survives the complete share lifetime") {
-            let folder = try parent(root, "mixed-share"), (vm, track) = try await audioEditor(folder)
-            let saved = await vm.save(); try require(saved, "Canonical audio save failed")
-            let store = DeviceStorageManager(documentsDirectory: folder.appendingPathComponent("documents"))
-            let project = try store.loadAnimation(id: vm.document.id)!
-            let reopened = StudioViewModel(storage: store)
-            let opened = await reopened.openProject(project.metadata); try require(opened, "Canonical audio reopen failed")
-            try require(reopened.projectAudioTracks.first?.audioData == track.audioData && reopened.document.audioClips == vm.document.audioClips, "Persisted audio changed")
-            let outputParent = try parent(folder, "output")
-            var session: Session? = Session(outputParent: outputParent), phases = Set<String>()
-            let listener = session!.$audioProgressText.compactMap { $0 }.sink { phases.insert($0) }
-            let revision = reopened.document.revision
-            try require(session!.start(from: reopened, background: .white, scope: visible), "Mixed session did not start")
-            let clip = reopened.audioClips[0]; reopened.selectedAudioClip = clip
-            try reopened.editSelectedAudioClip(clip.id, expectedRevision: reopened.document.revision, edit: .mute(true))
-            try await idle(session!); listener.cancel()
-            guard let output = session!.output else { throw Failure(message: session!.errorMessage ?? "No actual mixed output") }
-            try require(output.manifest.audioIncluded && output.manifest.documentRevision == revision && session!.notice?.contains("stereo AAC") == true && phases.count == 3, "Mixed readiness/progress not backed by output")
-            let movie = try await decode(output.movieURL, includesAudio: true)
-            try require(movie.frames.count == 12, "Mixed file lost animation frames")
-            for frame in movie.frames { try pixel(frame.pixel(32,16), [255,0,0,255]) }
-            let pcm = try await decodeAudio(output.movieURL); try require(pcm.count == 48_000, "Mixed file timing changed")
-            var error = 0.0, silentPeak: Float = 0
-            for n in 0..<24_000 { for c in 0..<2 {
-                if (8_000..<16_000).contains(n) {
-                    let expected = sin(Double(n) * 2 * .pi * Double(c == 0 ? 480 : 960) / 48_000) * 0.125
-                    error += pow(Double(pcm[n*2+c]) - expected, 2)
-                }
-                if n < 3_000 || n > 21_500 { silentPeak = max(silentPeak, abs(pcm[n*2+c])) }
-            } }
-            try require(sqrt(error / 16_000) < 0.008 && silentPeak < 0.0005, "Actual trim/gain/placement changed or export followed later mute")
-            try require(contents(outputParent).count == 1, "Mixed readiness leaked intermediate files")
-            let urls = try output.checkedURLs(), weakSession = WeakBox(session)
-            guard let request = session!.beginSharing(scope: visible) else { throw Failure(message: "Mixed share request unavailable") }
-            session!.close(); session = nil
-            try require(weakSession.value != nil && request.checkedURLs() == urls, "Mixed output removed during sharing")
-            _ = try await decodeAudio(urls[0])
-            request.finish(completed: false, error: nil)
-            try require(weakSession.value == nil && contents(outputParent).isEmpty, "Mixed share lifetime leaked output or session")
+            try await verifySavedMixedShare(root: root)
         }
         await test("mixed export cancellation or account loss after visual rendering cleans every owned component") {
             for accountLoss in [false, true] {
