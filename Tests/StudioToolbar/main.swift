@@ -84,6 +84,14 @@ import CoreGraphics
                 }
             }
         }
+        test("short landscape leaves room for popup close and 44-point zoom row") {
+            for height in [CGFloat(144),160,180,221] {
+                let b=CGRect(x:0,y:0,width:844,height:height)
+                let p=StudioToolbarLayout().placement(in:b,compactHeight:true)
+                let popup=StudioToolbarLayout.settingsFrame(in:b,toolbar:p)
+                check(popup.height - 60 >= 44 && popup.width >= 200,"short popup clips zoom actions")
+            }
+        }
         test("HIDE recovery area is excluded from toolbar placements") {
             let b=CGRect(x:0,y:44,width:390,height:540);var l=StudioToolbarLayout()
             for dock in [StudioToolbarLayout.Dock.leading,.trailing,.floating] {

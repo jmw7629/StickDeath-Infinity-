@@ -26,9 +26,10 @@ struct FloatingToolSettingsPanel: View {
     
     var body: some View {
         GeometryReader { available in
+        let compact = available.size.height < 180
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: compact ? 4 : 10) {
                     // Header: icon + name + X close
                     HStack {
                         Image(systemName: def.icon)
@@ -49,13 +50,13 @@ struct FloatingToolSettingsPanel: View {
                         .accessibilityIdentifier("studio.tool-settings.close")
                     }
                     
-                    Divider().background(Color.white.opacity(0.08))
+                    if !compact { Divider().background(Color.white.opacity(0.08)) }
                     
                     // Tool-specific content
                     ScrollView {
-                        toolSettingsContent(def)
+                        toolSettingsContent(def, compactHeight: compact)
                     }
-                    .frame(maxHeight: max(0, min(360, available.size.height - (available.size.height >= 180 ? 132 : 100))))
+                    .frame(maxHeight: max(0, min(360, available.size.height - (compact ? 60 : 132))))
                     
                     // The short landscape popup keeps the actual operation controls reachable.
                     if available.size.height >= 180 {
@@ -74,7 +75,7 @@ struct FloatingToolSettingsPanel: View {
                     .padding(.top, 4)
                     }
                 }
-                .padding(12)
+                .padding(compact ? 6 : 12)
             }
         }
         .frame(width: min(260, available.size.width))
@@ -93,7 +94,7 @@ struct FloatingToolSettingsPanel: View {
     }
     
     @ViewBuilder
-    func toolSettingsContent(_ def: ToolDef) -> some View {
+    func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
@@ -373,9 +374,11 @@ struct FloatingToolSettingsPanel: View {
             
         case .hand, .zoom:
             VStack(alignment: .leading, spacing: 8) {
+                if !compactHeight {
                 Text("Zoom: \(Int((vm.canvasScale * 100).rounded()))%")
                     .font(.specialElite(12)).foregroundColor(.white)
                     .accessibilityIdentifier("studio.tool-settings.zoom-value")
+                }
                 HStack(spacing: 8) {
                     zoomControl("minus", "Zoom out", "zoom-out") { vm.zoomOut() }
                     zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
