@@ -93,15 +93,18 @@ struct StudioView: View {
     }
 }
 
-// The rail moves to the left only when vertical space is scarce. Portrait and
-// regular-height iPad layouts retain the horizontal floating rail.
+// Toolbar placement is workspace chrome; drawing, history and media stay in the VM.
 struct StudioEditorWorkspace: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void
+    @State private var toolbar = StudioToolbarLayout()
+    @State private var context = StudioContextVisibility<DrawingTool>()
+    @State private var dragOrigin: CGRect?
+    @GestureState private var dragTranslation: CGSize = .zero
 
     var body: some View {
         GeometryReader { geometry in
-            let sideRail = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            let compact = geometry.size.width > geometry.size.height && geometry.size.height < 500
             VStack(spacing: 0) {
                 if vm.showToolbar {
                     StudioHeaderBar(vm: vm, onDismiss: onDismiss)
@@ -111,72 +114,75 @@ struct StudioEditorWorkspace: View {
                         .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
                         .accessibilityIdentifier("studio.status")
                 }
-                if vm.showToolbar && !sideRail {
-                    StudioToolStrip(vm: vm)
-                }
-                HStack(spacing: 0) {
-                    if vm.showToolbar && sideRail {
-                        StudioToolStrip(vm: vm, axis: .vertical)
-                    }
-                    canvasStage
-                }
+                canvasStage(compactHeight: compact)
                 if vm.showToolbar {
                     StudioTimeline(vm: vm)
                     StudioBottomBar(vm: vm)
                 }
             }
         }
+        .onChange(of: vm.selectedTool) { _, tool in
+            context.select(tool)
+            if vm.activePanel == .toolSettings && !StudioContextDock.hasSettings(tool) { vm.activePanel = .none }
+        }
     }
 
-    private var canvasStage: some View {
-        ZStack {
-            StudioCanvasView(vm: vm)
+    private func canvasStage(compactHeight: Bool) -> some View {
+        GeometryReader { geometry in
+            let top: CGFloat = vm.showToolbar ? 0 : min(44, geometry.size.height)
+            let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
+            let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
+            let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
+            let dockFrame = StudioToolbarLayout.contextFrame(in: bounds, toolbar: placement)
+            ZStack(alignment: .topLeading) {
+                StudioCanvasView(vm: vm)
 
-            // Floating tool strip in HIDE mode (centered vertically)
-            if !vm.showToolbar {
-                VStack {
-                    Spacer()
-                    StudioToolStrip(vm: vm)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(hex: "12121A").opacity(0.9))
-                                .shadow(color: .black.opacity(0.4), radius: 8)
-                        )
-                        .padding(.horizontal, 8)
-                    Spacer()
+                StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
+                    onToolSelected: { context.select($0) },
+                    handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
+                        .updating($dragTranslation) { value, state, _ in state = value.translation }
+                        .onChanged { _ in if dragOrigin == nil { dragOrigin = placement.frame } }
+                        .onEnded { value in
+                            let origin = dragOrigin ?? placement.frame
+                            toolbar.finishDrag(release: value.location,
+                                proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
+                                in: bounds)
+                            dragOrigin = nil
+                        }),
+                    onDock: { dock in toolbar.choose(dock, in: bounds); dragOrigin = nil })
+                    .frame(width: railFrame.width, height: railFrame.height)
+                    .position(x: railFrame.midX, y: railFrame.midY)
+
+                if vm.activePanel == .toolSettings && StudioContextDock.hasSettings(vm.selectedTool) {
+                    FloatingToolSettingsPanel(vm: vm).transition(.opacity)
                 }
 
-            }
-
-            // Floating tool settings
-            if vm.activePanel == .toolSettings {
-                FloatingToolSettingsPanel(vm: vm)
-                    .transition(.opacity)
-            }
-
-            // Zoom controls (right side)
-            VStack(spacing: 8) {
-                Spacer()
-                ZoomButton(label: "+") { vm.zoomIn() }
-                ZoomButton(label: "−") { vm.zoomOut() }
-                ZoomButton(label: "FIT") { vm.zoomFit() }
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 8)
-            .padding(.bottom, 8)
-        }
-        .overlay(alignment: .topLeading) {
-            if !vm.showToolbar {
-                Button(action: { vm.showToolbar = true }) {
-                    Text("SHOW TOOLS")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+                if StudioContextDock.applies(to: vm.selectedTool) && context.isVisible(for: vm.selectedTool) && dockFrame.height >= 44 {
+                    StudioContextDock(vm: vm) {
+                        context.dismiss(vm.selectedTool)
+                        if vm.activePanel == .toolSettings { vm.activePanel = .none }
+                    }
+                    .frame(width: dockFrame.width, height: min(dockFrame.height, 186), alignment: .top)
+                    .position(x: dockFrame.midX, y: dockFrame.minY + min(dockFrame.height, 186) / 2)
                 }
-                .accessibilityLabel("Show Studio tools")
-                .accessibilityIdentifier("studio.show-tools")
-                .padding(8)
+            }
+            .coordinateSpace(name: "studio.toolbar.stage")
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("studio.toolbar.stage")
+            .onChange(of: geometry.size) { _, _ in dragOrigin = nil }
+            .overlay(alignment: .topLeading) {
+                if !vm.showToolbar {
+                    Button(action: { vm.showToolbar = true }) {
+                        Text("SHOW TOOLS")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .accessibilityLabel("Show Studio tools")
+                    .accessibilityIdentifier("studio.show-tools")
+                    .padding(8)
+                }
             }
         }
     }

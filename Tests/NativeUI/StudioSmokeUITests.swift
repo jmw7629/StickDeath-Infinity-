@@ -7,10 +7,81 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testFloatingToolbarDockingAndContextDismissal() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let stage = app.descendants(matching: .any)["studio.toolbar.stage"].firstMatch
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let grip = app.descendants(matching: .any)["studio.toolbar.grip"].firstMatch
+        XCTAssertTrue(stage.waitForExistence(timeout: 8) && rail.exists && grip.isHittable)
+        let undo = app.buttons["studio.undo"]
+        XCTAssertFalse(undo.isEnabled, "Chrome gestures must not edit the blank document")
+        for (x, side) in [(0.025, "left"), (0.975, "right")] {
+            grip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+                .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: x, dy: 0.35)))
+            let docked = NSPredicate { _, _ in
+                guard rail.value as? String == "Vertical", grip.isHittable,
+                      stage.frame.contains(rail.frame), rail.frame.height > rail.frame.width else { return false }
+                return side == "left" ? rail.frame.minX < stage.frame.minX + 20 : rail.frame.maxX > stage.frame.maxX - 20
+            }
+            XCTAssertTrue(expectation(for: docked, evaluatedWith: nil).waitUntilFulfilled(timeout: 5), "Toolbar did not dock at \(side) stage edge")
+            capture(app, name: "toolbar-docked-" + side)
+        }
+        try selectToolbarTool("hand", app: app)
+        let close = app.buttons["studio.context.close"]
+        XCTAssertTrue(close.isHittable && app.buttons["studio.context.fit"].isHittable)
+        XCTAssertGreaterThanOrEqual(close.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(close.frame.height, 44)
+        close.tap()
+        XCTAssertFalse(close.exists, "X did not dismiss tool-specific controls")
+        try selectToolbarTool("hand", app: app)
+        XCTAssertTrue(close.waitForExistence(timeout: 3), "Retapping Hand did not restore its context")
+        try selectToolbarTool("eyedropper", app: app)
+        XCTAssertFalse(close.exists, "An inapplicable tool kept the right dock")
+        grip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+            .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "Horizontal"), evaluatedWith: rail).waitUntilFulfilled(timeout: 5))
+        XCTAssertTrue(stage.frame.contains(rail.frame))
+        XCTAssertFalse(undo.isEnabled, "Toolbar movement altered undo history")
+        try selectToolbarTool("hand", app: app)
+        app.buttons["studio.context.zoom-in"].tap()
+        app.buttons["studio.context.fit"].tap()
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertGreaterThan(canvas.frame.width, 80)
+        XCTAssertGreaterThan(canvas.frame.height, 80)
+        capture(app, name: "toolbar-floating-context")
+    }
+
+    @MainActor
+    private func selectToolbarTool(_ name: String, app: XCUIApplication) throws {
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let tool = app.buttons["studio.tool." + name]
+        let scroll = rail.scrollViews.firstMatch
+        XCTAssertTrue(rail.waitForExistence(timeout: 5) && scroll.exists)
+        for _ in 0..<12 {
+            if tool.exists, tool.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(tool.frame) {
+                tool.tap(); return
+            }
+            let vertical = rail.value as? String == "Vertical"
+            let forward = !tool.exists || (vertical ? tool.frame.midY > scroll.frame.midY : tool.frame.midX > scroll.frame.midX)
+            let a = forward ? 0.8 : 0.2, b = forward ? 0.2 : 0.8
+            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : a, dy: vertical ? a : 0.5))
+            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : b, dy: vertical ? b : 0.5))
+            start.press(forDuration: 0.1, thenDragTo: end)
+        }
+        captureHierarchy(app, name: "toolbar-control-unreachable-" + name)
+        XCTFail("Actual toolbar tool unreachable after twelve bounded scrolls: " + name)
+        throw NSError(domain: "NativeToolbarSmoke", code: 1)
+    }
+
+    @MainActor
     func testGuestStudioPortraitAndLandscape() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         _ = try createProjectIfLibraryIsShown(app)
+        // FIT now belongs to the selected Hand/Zoom tool, as requested.
+        try selectToolbarTool("hand", app: app)
         try waitForButton("FIT", in: app)
         capture(app, name: "studio-portrait")
         XCUIDevice.shared.orientation = .landscapeLeft

@@ -97,6 +97,15 @@ jobs:
             Tests/StudioDocument/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-document-tests"
           "$RUNNER_TEMP/sdi-studio-document-tests"
+      - name: Verify production floating toolbar geometry and contextual dismissal
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/StudioToolbarLayout.swift \
+            Tests/StudioToolbar/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-toolbar-tests"
+          "$RUNNER_TEMP/sdi-studio-toolbar-tests"
       - name: Verify deterministic native brush geometry and actual pixels
         shell: bash
         run: |
