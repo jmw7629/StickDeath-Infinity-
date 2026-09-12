@@ -446,7 +446,7 @@ private struct AudioFilesImportControls: View {
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
                 .font(.caption2).foregroundColor(.white.opacity(0.45))
-            Text("Adds audio at the selected frame. Move and trim clips in the timeline; mixed video export is still unavailable.")
+            Text("Adds audio at the selected frame. Move and trim clips in the timeline, then include them in MP4 export.")
                 .font(.caption2).foregroundColor(.white.opacity(0.6))
             if let projectNotice = vm.message {
                 Text(projectNotice).font(.caption).foregroundColor(.sdRed)

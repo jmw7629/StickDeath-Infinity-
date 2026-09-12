@@ -476,9 +476,66 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             Tests/StudioMovieExport/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioMovieExport-tests"
           "$RUNNER_TEMP/sdi-StudioMovieExport-tests"
+      - name: Verify same-capture H.264 AAC timing pixels and ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            Tests/StudioAudioVideoMux/main.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+      - name: Verify mixed MP4 phases cancellation source trim and final cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            Tests/StudioMixedMovieExport/main.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            -o "$RUNNER_TEMP/sdi-StudioMixedMovieExport-tests"
+          "$RUNNER_TEMP/sdi-StudioMixedMovieExport-tests"
       - name: Verify immutable MP4 sessions stale context and consumer cleanup
         shell: bash
         run: |
@@ -499,7 +556,12 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             Tests/StudioMovieSession/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioMovieSession-tests"
           "$RUNNER_TEMP/sdi-StudioMovieSession-tests"
@@ -523,7 +585,12 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             Tests/StudioMoviePanel/main.swift \
             StickDeathInfinity/Services/StudioMoviePanelState.swift \
             StickDeathInfinity/Services/StudioMovieShareLifetime.swift \

@@ -889,6 +889,60 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.isHittable)
     }
 
+    @MainActor
+    func testBundledAudioMP4AndNativeShareCancellation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8) && canvas.isHittable)
+        let before = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: app.buttons["studio.undo"]).waitUntilFulfilled(timeout: 5))
+        XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
+        app.buttons["studio.audio.open"].tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "1 clips"), evaluatedWith: app.staticTexts["studio.audio.clip-count"]).waitUntilFulfilled(timeout: 10))
+        app.buttons["studio.audio.library.close"].tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.00s"))
+        app.sliders["studio.audio.volume"].adjust(toNormalizedSliderPosition: 0.4)
+        app.buttons["studio.audio.close"].tap()
+        // The pinned source is 0.2508125 seconds; four real frames at 12 fps
+        // contain it without modifying the original source or extending export.
+        let addFrame = app.buttons["studio.add-frame"]
+        XCTAssertTrue(addFrame.isHittable)
+        for _ in 0..<3 { addFrame.tap() }
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        try openExportPanel(app)
+        try exportControl("studio.export.format.mp4", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "Project audio is included as stereo AAC."), evaluatedWith: status).waitUntilFulfilled(timeout: 30))
+        let receipt = try exportControl("studio.export.movie.receipt", app: app)
+        XCTAssertTrue(receipt.label.contains("4 frames · 12 fps · revision "))
+        XCTAssertTrue(try exportControl("studio.export.movie.media", app: app).label.contains("H.264 + AAC · white · stereo audio"))
+        capture(app, name: "mp4-bundled-audio-actual-receipt")
+        try exportControl("studio.export.share", app: app).tap()
+        let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
+        let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        XCTAssertTrue(files.waitForExistence(timeout: 10) && files.isHittable)
+        capture(app, name: "mp4-bundled-audio-native-share")
+        let dismiss = nativeShare.buttons["header.closeButton"]
+        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."), evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
+        capture(app, name: "mp4-bundled-audio-retained-after-share-cancel")
+        try closeExportPanel(app)
+        XCTAssertTrue(canvas.isHittable)
+    }
+
     private func imageFixtureColors(_ raster: Raster) -> [Int] {
         var counts = [Int](repeating: 0, count: 4)
         for i in stride(from: 0, to: raster.bytes.count, by: 4) {
