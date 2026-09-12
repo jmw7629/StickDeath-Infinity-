@@ -141,15 +141,20 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
                 SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "", accent: .yellow)
+                    .disabled(!vm.fillContiguous)
+                    .opacity(vm.fillContiguous ? 1 : 0.4)
                 
                 // Toggle buttons (green themed)
                 VStack(spacing: 4) {
                     FillToggleButton(label: vm.fillContiguous ? "🔗 Contiguous" : "🌐 All Similar",
                                      isOn: $vm.fillContiguous, accent: .green)
+                        .accessibilityIdentifier("studio.fill.contiguous")
                     FillToggleButton(label: vm.fillAntiAlias ? "✓ Anti-Alias" : "✕ No Anti-Alias",
                                      isOn: $vm.fillAntiAlias, accent: .green)
+                        .accessibilityIdentifier("studio.fill.antialias")
                     FillToggleButton(label: vm.fillSampleAll ? "👁 Sample All Layers" : "📄 Current Layer Only",
                                      isOn: $vm.fillSampleAll, accent: .green)
+                        .accessibilityIdentifier("studio.fill.sample-all")
                 }
             }
             

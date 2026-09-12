@@ -1147,6 +1147,79 @@ final class StudioSmokeUITests: XCTestCase {
         capture(reopened, name: "shape-real-png-export-preview")
     }
 
+    @MainActor
+    func testBucketFillPopupUndoSaveReopenAndPNG() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        XCTAssertEqual(app.buttons["studio.shape.fill"].value as? String, "None")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.25)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.75,dy: 0.7)))
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        let outlined = try pixels(canvas.screenshot().image)
+        try choosePickerTestColor("#0000FF", app: app)
+        try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
+        let tolerance = app.sliders["studio.setting.tolerance"]
+        XCTAssertTrue(tolerance.waitForExistence(timeout: 5) && tolerance.isHittable)
+        tolerance.adjust(toNormalizedSliderPosition: 0)
+        let contiguous = app.buttons["studio.fill.contiguous"]
+        XCTAssertTrue(contiguous.isHittable)
+        contiguous.tap()
+        XCTAssertFalse(app.sliders["studio.setting.gap-close"].isEnabled)
+        contiguous.tap()
+        XCTAssertTrue(app.sliders["studio.setting.gap-close"].isEnabled)
+        capture(app, name: "bucket-fill-existing-popup-settings")
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.48)).tap()
+        let deadline = Date().addingTimeInterval(20)
+        var colored = try pixels(canvas.screenshot().image)
+        while Date() < deadline {
+            colored = try pixels(canvas.screenshot().image)
+            let middle = ((colored.height / 2) * colored.width + colored.width / 2) * 4
+            if colored.bytes[middle + 2] > 180 && colored.bytes[middle] < 90 { break }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        // A real successful save dismisses the status banner. Compare the
+        // same settled canvas size across fill, Undo, Redo and cold reopen.
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        colored = try pixels(canvas.screenshot().image)
+        let middle = ((colored.height / 2) * colored.width + colored.width / 2) * 4
+        XCTAssertGreaterThan(colored.bytes[middle + 2], 180)
+        XCTAssertLessThan(colored.bytes[middle], 90, "Native palette did not fill the real enclosed canvas with blue")
+        XCTAssertGreaterThan(try changedPixelCount(outlined, colored), 500)
+        capture(app, name: "bucket-fill-actual-blue-enclosed-region")
+        XCTAssertTrue(undo.isEnabled); undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(outlined, pixels(canvas.screenshot().image)), 4)
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(colored, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8)); try waitForStableCanvas(reopenedCanvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(colored, pixels(reopenedCanvas.screenshot().image)), 4)
+        capture(reopened, name: "bucket-fill-cold-reopened")
+        try openExportPanel(reopened)
+        try exportControl("studio.export.format.png", app: reopened, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: reopened).tap()
+        let preview = try waitForPNGPreview(reopened)
+        XCTAssertGreaterThan(imageFixtureColors(try pixels(preview.screenshot().image))[1], 500)
+        capture(reopened, name: "bucket-fill-real-blue-png-export")
+    }
+
     @MainActor private func pickerRailControl(_ id: String, app: XCUIApplication, forward: Bool) throws -> XCUIElement {
         let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
         let element = app.buttons[id], scroll = rail.scrollViews.firstMatch

@@ -61,7 +61,7 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0):
         calls = self.calls
 
         def inventory(cmd, **kw):
@@ -79,13 +79,14 @@ class Harness(unittest.TestCase):
             def __init__(self, cmd, **kw):
                 calls.append(tuple(cmd))
                 self.returncode = None
+                self.is_test = cmd[:2] == ['xcodebuild', 'test-without-building']
 
             def poll(self):
                 return self.returncode
 
             def wait(self, timeout=None):
-                self.returncode = 0
-                return 0
+                self.returncode = test_exit if self.is_test else 0
+                return self.returncode
 
             def send_signal(self, s):
                 self.returncode = 0
@@ -98,8 +99,10 @@ class Harness(unittest.TestCase):
         argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID]
         def bounded(cmd, *args, **kw):
             calls.append(tuple(cmd))
+            if seed_failure and cmd[:3] == ['xcrun', 'simctl', 'addmedia']:
+                return Result(-9, True, 60)
             return Result(0, False, 0)
-        with patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
+        with patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
 
     def test_integrated_path_checks_identity_boots_then_seeds_once(self):
@@ -123,5 +126,24 @@ class Harness(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.recording(available=False)
         self.assertEqual(len(self.calls), 1)
+    def test_failed_photo_seed_runs_all_ui_but_keeps_mandatory_failure(self):
+        self.assertEqual(self.recording(seed_failure=True), 4)
+        self.assertEqual(sum(c[:3] == ('xcrun', 'simctl', 'addmedia') for c in self.calls), 1)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in value or 'only-testing' in value for value in tests[0]))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['photoFixtureSeeded'])
+        self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
+        self.assertEqual(report['uiTestExitCode'], 0)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], 1680)
+        self.assertFalse((self.out / 'image-fixture.json').exists())
+
+    def test_real_ui_failure_is_retained_alongside_photo_fixture_failure(self):
+        self.assertEqual(self.recording(seed_failure=True, test_exit=65), 65)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertEqual(report['uiTestExitCode'], 65)
+        self.assertFalse(report['photoFixtureSeeded'])
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

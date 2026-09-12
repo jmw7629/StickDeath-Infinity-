@@ -713,7 +713,7 @@ final class StudioMovieExportService {
         let pixels = document.width * document.height
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
-        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
+        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill]
         let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
         func colorValid(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? value.dropFirst() : value[...]
@@ -729,6 +729,7 @@ final class StudioMovieExportService {
             try Task.checkCancellation()
             for element in frame.elements where element.opacity > 0 && element.layerID.map(visibleIDs.contains) == true {
                 guard tools.contains(element.tool), colorValid(element.color) else { throw ExportError.unsupportedContent }
+                guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 if element.tool == .text {
                     guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent }
                 }

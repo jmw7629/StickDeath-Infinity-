@@ -91,11 +91,11 @@ class Diagnostics(unittest.TestCase):
         self.assertTrue(result.capture_incomplete);self.assertTrue(result.reaped)
         self.assertLess(time.monotonic()-started,0.7)
 
-    def test_failed_seeding_stops_recorder_and_ui_process_after_original_boot_gate(self):
+    def test_unexpected_seeding_error_still_stops_recorder_and_ui_after_original_boot_gate(self):
         argv=['rec','--udid',ID,'--output',str(self.out),'--','xcodebuild','test-without-building','-destination','id='+ID]
         inventory={'devices':{'com.apple.CoreSimulator.SimRuntime.iOS-26-2':[{'udid':ID,'name':'fixture','state':'Booted','isAvailable':True}]}}
-        with patch.object(sys,'argv',argv),patch.object(rec.subprocess,'check_output',return_value=json.dumps(inventory).encode()),patch.object(rec.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as boot,patch.object(seed,'run_bounded',return_value=diag.Result(-9,True,60)),patch.object(seed,'collect_failure'),patch.object(rec.subprocess,'Popen') as child:
-            with self.assertRaises(subprocess.TimeoutExpired):rec.main()
+        with patch.object(sys,'argv',argv),patch.object(rec.subprocess,'check_output',return_value=json.dumps(inventory).encode()),patch.object(rec.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as boot,patch.object(seed,'run_bounded',side_effect=OSError('Unexpected seed I/O')),patch.object(seed,'collect_failure'),patch.object(rec.subprocess,'Popen') as child:
+            with self.assertRaises(OSError):rec.main()
             child.assert_not_called()
         self.assertEqual(boot.call_args.args[0],['xcrun','simctl','bootstatus',ID,'-b'])
         self.assertFalse((self.out/'recording-status.json').exists())

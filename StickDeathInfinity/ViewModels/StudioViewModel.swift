@@ -815,7 +815,9 @@ final class StudioViewModel: ObservableObject {
             editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded())
     }
     private func preflightRasterDocument(_ candidate: StudioDocument) throws {
-        guard !candidate.referencedRasterAssetIDs.isEmpty else { return }
+        guard !candidate.referencedRasterAssetIDs.isEmpty || candidate.frames.contains(where: {
+            $0.elements.contains(where: { $0.fillMask != nil })
+        }) else { return }
         try storage.preflightAnimation(storageProject(candidate, rasters: retainedRasterFrames))
     }
     private func pruneManagedImages() {

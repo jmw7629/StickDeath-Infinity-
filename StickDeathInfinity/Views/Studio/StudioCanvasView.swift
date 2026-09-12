@@ -11,6 +11,8 @@ struct StudioCanvasView: View {
     // GestureState resets at touch end, so it cannot own this transaction.
     @State private var colorInput = StudioColorSampleGesture()
     @State private var touchID: UUID?
+    @State private var fillInput = StudioFillGesture()
+    @StateObject private var fillSession = StudioFillSession()
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -87,10 +89,18 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate()
+                colorInput.invalidate(); fillInput.invalidate()
             }
             .overlay(alignment: .bottom) {
-                if let pending = vm.pendingBrushStroke {
+                if fillSession.isFilling {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Filling artwork…").font(.specialElite(12))
+                        Button("Cancel") { fillSession.cancel() }
+                            .accessibilityIdentifier("studio.fill.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.fill.progress")
+                } else if let pending = vm.pendingBrushStroke {
                     VStack(spacing: 6) {
                         Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
                         Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
@@ -108,7 +118,12 @@ struct StudioCanvasView: View {
             }
         }
         .onChange(of: vm.currentFrame.id) { _, _ in
+            fillSession.cancel()
             interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
+        }
+        .onChange(of: StudioFillContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            fillInput.invalidate()
+            if fillSession.isFilling { fillSession.cancel() }
         }
         .onChange(of: gestureActive) { _, active in
             guard !active, let endedTouch = touchID else { return }
@@ -135,11 +150,15 @@ struct StudioCanvasView: View {
         DragGesture(minimumDistance: 0)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
-                if touchID == nil { touchID = UUID(); colorInput = StudioColorSampleGesture() }
+                if touchID == nil { touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture() }
                 colorInput.update(context: input == nil ? vm.beginColorSample() : nil,
                     layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
                     foreground: scenePhase == .active)
+                fillInput.update(context: input == nil ? StudioFillContext.current(vm) : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
                 guard vm.pendingBrushStroke == nil else { return }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) { return }
                 if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
@@ -180,6 +199,17 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) {
+                    guard let fill = fillInput.resolve(location: value.location,
+                        context: StudioFillContext.current(vm),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio changed during fill input. Choose a visible unlocked layer and start a new tap."
+                        return
+                    }
+                    Task { await fillSession.fill(vm, context: fill.context, point: fill.point) }
+                    return
+                }
                 if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) {
                     guard let sample = colorInput.resolve(location: value.location,
                         context: vm.beginColorSample(),
@@ -221,12 +251,14 @@ struct StudioCanvasView: View {
         input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
-            colorInput = StudioColorSampleGesture(); touchID = nil
+            colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
         }
     }
     private func interruptInput(_ reason: String) {
+        fillSession.cancel()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()
+        fillInput.invalidate()
         // A frame/scene change while the finger is down cancels that whole
         // touch. Keep its identity until physical end; a later move must not
         // capture the new frame as though it were a fresh gesture.

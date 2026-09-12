@@ -71,6 +71,45 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var brush: StudioBrushDescriptor? = nil
     /// Absent on historical shapes, which retain their original rendering.
     var shape: StudioShapeDescriptor? = nil
+    /// Canonical bucket-fill coverage in document pixels, independent of guides.
+    var fillMask: StudioFillMask? = nil
+}
+
+struct StudioFillMask: Codable, Equatable, Sendable {
+    static let maximumSpans = 65_536
+    static let maximumDocumentSpans = 262_144
+    var version = 1
+    let width: Int
+    let height: Int
+    var spans: [Span]
+    struct Span: Codable, Equatable, Sendable {
+        let row: Int
+        let start: Int
+        let end: Int
+        let alpha: UInt8
+    }
+    func validate() throws {
+        guard version == 1, (16...4096).contains(width), (16...4096).contains(height),
+              width <= 4_194_304 / height, !spans.isEmpty, spans.count <= Self.maximumSpans else { throw Failure.invalid }
+        var previous: Span?
+        for span in spans {
+            guard (0..<height).contains(span.row), span.start >= 0, span.start < span.end,
+                  span.end <= width, span.alpha > 0 else { throw Failure.invalid }
+            if let previous {
+                guard span.row > previous.row || (span.row == previous.row && span.start >= previous.end) else {
+                    throw Failure.invalid
+                }
+                guard span.row != previous.row || span.start != previous.end || span.alpha != previous.alpha else {
+                    throw Failure.invalid
+                }
+            }
+            previous = span
+        }
+    }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "This fill region is invalid or exceeds the editable limit. Nothing has changed." }
+    }
 }
 
 struct StudioShapeDescriptor: Codable, Equatable {

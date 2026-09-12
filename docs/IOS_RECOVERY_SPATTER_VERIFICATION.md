@@ -106,3 +106,12 @@ Remaining gates include the complete next-head native regression suite; exposed 
 ## Historical compiler recovery
 
 The original `fe191ee` continuation corrected actual compiler-reported configuration and source membership issues in the existing branch. [Run 34257440327](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34257440327) at `e505892d3c70aeb6b5983f0cf32bca8108a0bb4f` was the first verified native build milestone. Earlier Linux-only 22-test reports and later 29-test client reports proved their focused source behavior, not native compilation. The current results above supersede those historical readiness states.
+
+
+## Native Studio fill and preserved simulator setup failures
+
+The last fully completed native UI run on `1e32cd6` passed14 of16 journeys. The next source `95bb7c8` passed every production stage and built the real iOS target on both attempts of run34719221956. Both attempts then failed their single60-second simulator photo fixture import, before any UI journey started. These are failed required checks, not native UI passes. Original logs and both complete evidence archives were preserved privately; no further identical retry was issued.
+
+The current runner still treats fixture import as mandatory, but a known addmedia timeout/nonzero result now allows all UI tests to execute, including the Photos journey. Its final result stays failed even if those tests happen to pass. Identity, boot, offline-config and unexpected I/O failures continue to stop execution. There are no skipped tests, seeding retries, new service processes, or increased UI/operation deadlines. Diagnostics permit a bounded4MiB setup PNG because the observed successful2.9MiB screenshot exceeded the earlier2MiB cap; additional fixed SQLite error categories remain redacted.
+
+The actual bucket-fill implementation and its local rendering/persistence/export evidence are described in STUDIO_FILL_VERIFICATION.md. It uses the existing primary toolbar and sole dismissible options popup. Its18native journeys still require execution against the next exact source. This branch remains draft and needs final independent review before any merge.

@@ -34,7 +34,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
-        guard (1...5).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard (1...6).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -48,6 +48,7 @@ struct StudioDocument: Codable, Equatable {
             }
         }
         var elementIDs = Set<String>(); var pointCount = 0
+        var fillSpanCount = 0
         for frame in frames {
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
@@ -63,6 +64,18 @@ struct StudioDocument: Codable, Equatable {
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             for element in frame.elements {
+                if let mask = element.fillMask {
+                    guard schemaVersion >= 6, element.tool == .fill, element.brush == nil, element.shape == nil,
+                          mask.width == width, mask.height == height, element.points.count == 2 else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    try mask.validate()
+                    try StudioShapeDescriptor(fillColor: element.color).validate(tool: .rectangle)
+                    guard mask.spans.count <= StudioFillMask.maximumDocumentSpans - fillSpanCount else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    fillSpanCount += mask.spans.count
+                }
                 if let shape = element.shape {
                     guard schemaVersion >= 5, element.brush == nil, element.points.count == 2 else {
                         throw StudioShapeDescriptor.Failure.invalid
@@ -200,6 +213,7 @@ struct StudioDocumentEditor {
             value.frames[index].elements.append(element)
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
             if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
+            if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
         }
     }
     mutating func addFrame() throws {
@@ -224,12 +238,13 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
+            if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -286,7 +301,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -310,8 +325,16 @@ struct StudioDocumentEditor {
     }
     private mutating func trimHistory() {
         func cost(_ value: StudioDocument) -> Int {
-            value.frames.reduce(0) { sum, frame in sum + frame.elements.reduce(0) { $0 + 256 + $1.points.count * 40 } }
-                + value.layers.count * 512 + value.audioClips.count * 512
+            var bytes = value.layers.count * 512 + value.audioClips.count * 512
+            for frame in value.frames {
+                for element in frame.elements {
+                    bytes += 256 + element.points.count * 40
+                    if let mask = element.fillMask {
+                        bytes += mask.spans.count * MemoryLayout<StudioFillMask.Span>.stride
+                    }
+                }
+            }
+            return bytes
         }
         var bytes = undoDocuments.reduce(0) { $0 + cost($1) }
         while undoDocuments.count > 50 || (bytes > 32 * 1024 * 1024 && undoDocuments.count > 1) {

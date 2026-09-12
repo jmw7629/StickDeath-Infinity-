@@ -130,6 +130,28 @@ struct StudioFrameRenderer {
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
 
+        if let mask = element.fillMask {
+            try mask.validate()
+            guard element.tool == .fill, element.brush == nil, element.shape == nil,
+                  CGFloat(mask.width) == canvasSize.width, CGFloat(mask.height) == canvasSize.height else {
+                throw StudioFillMask.Failure.invalid
+            }
+            // Coverage is already antialiased by the bounded region operation.
+            // Group equal coverage so adjacent scanlines do not create seams.
+            var paths: [UInt8: Path] = [:]
+            for span in mask.spans {
+                paths[span.alpha, default: Path()].addRect(CGRect(x: span.start, y: span.row,
+                    width: span.end - span.start, height: 1))
+            }
+            context.scaleBy(x: scaleX, y: scaleY)
+            for alpha in paths.keys.sorted() {
+                var coverage = context
+                coverage.opacity = element.opacity * Double(alpha) / 255
+                coverage.fill(paths[alpha]!, with: .color(color), style: FillStyle(antialiased: false))
+            }
+            return
+        }
+
         if let shape = element.shape {
             try shape.validate(tool: element.tool)
             guard element.brush == nil else { throw StudioShapeDescriptor.Failure.invalid }
