@@ -71,6 +71,7 @@ struct StudioCommandStroke: Codable {
     let color: String
     let width: Double
     let opacity: Double
+    var shape: StudioShapeDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
@@ -280,7 +281,10 @@ enum StudioCommandExecutor {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape"])
+                    if let shape = stroke["shape"] {
+                        _ = try object(shape, keys: ["version", "fillColor", "cornerRadius"])
+                    }
                     guard let points = stroke["points"] as? [Any] else { throw StudioCommandError.malformed }
                     guard points.count <= maximumPointsPerStroke, points.count <= maximumInputPoints - inputPoints else { throw StudioCommandError.limitExceeded }
                     inputPoints += points.count
@@ -415,8 +419,12 @@ enum StudioCommandExecutor {
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                           point.timestamp.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw StudioCommandError.invalidGeometry }
                 }
+                if let shape = stroke.shape {
+                    do { try shape.validate(tool: stroke.tool) }
+                    catch { throw StudioCommandError.invalidSettings }
+                }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }

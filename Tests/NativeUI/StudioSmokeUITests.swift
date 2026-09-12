@@ -1048,6 +1048,68 @@ final class StudioSmokeUITests: XCTestCase {
         capture(reopened,name:"picker-real-blue-png-export")
     }
 
+    @MainActor
+    func testShapeFillRadiusUndoSaveReopenAndPNG() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        let fill = app.buttons["studio.shape.fill"]
+        XCTAssertTrue(fill.waitForExistence(timeout: 5) && fill.isHittable)
+        XCTAssertEqual(fill.value as? String, "None")
+        fill.tap(); XCTAssertEqual(fill.value as? String, "Solid")
+        let radius = app.sliders["studio.setting.corner-radius"]
+        XCTAssertTrue(radius.isHittable)
+        let originalRadius = radius.value as? String
+        radius.adjust(toNormalizedSliderPosition: 0.7)
+        XCTAssertNotEqual(radius.value as? String, originalRadius)
+        capture(app, name: "shape-fill-and-radius-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        let blank = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25,dy: 0.3)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.75,dy: 0.7)))
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: undo).waitUntilFulfilled(timeout: 5))
+        let drawn = try pixels(canvas.screenshot().image)
+        let center = ((drawn.height / 2) * drawn.width + drawn.width / 2) * 4
+        XCTAssertGreaterThan(drawn.bytes[center], 180)
+        XCTAssertLessThan(drawn.bytes[center + 1], 90, "Fill setting did not paint the actual shape interior")
+        XCTAssertLessThan(drawn.bytes[center + 2], 90)
+        XCTAssertGreaterThan(try changedPixelCount(blank, drawn), 500)
+        capture(app, name: "shape-actual-rounded-filled-canvas")
+        undo.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8))
+        try waitForStableCanvas(reopenedCanvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(reopenedCanvas.screenshot().image)), 4,
+            "Saved shape lost its fill or radius on cold reopen")
+        capture(reopened, name: "shape-filled-cold-reopened")
+        try openExportPanel(reopened)
+        try exportControl("studio.export.format.png", app: reopened, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: reopened).tap()
+        let preview = try waitForPNGPreview(reopened)
+        XCTAssertGreaterThan(imageFixtureColors(try pixels(preview.screenshot().image))[0], 500,
+            "Real exported PNG lost the filled shape")
+        capture(reopened, name: "shape-real-png-export-preview")
+    }
+
     @MainActor private func pickerRailControl(_ id: String, app: XCUIApplication, forward: Bool) throws -> XCUIElement {
         let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
         let element = app.buttons[id], scroll = rail.scrollViews.firstMatch

@@ -130,6 +130,31 @@ struct StudioFrameRenderer {
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
 
+        if let shape = element.shape {
+            try shape.validate(tool: element.tool)
+            guard element.brush == nil else { throw StudioShapeDescriptor.Failure.invalid }
+            guard element.points.count >= 2 else { return }
+            let first = element.points[0], last = element.points[1]
+            let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
+                width: abs(last.x - first.x), height: abs(last.y - first.y))
+            let path: Path
+            if element.tool == .circle { path = Path(ellipseIn: rect) }
+            else {
+                let radius = min(CGFloat(shape.cornerRadius), min(rect.width, rect.height) / 2)
+                path = Path(roundedRect: rect, cornerRadius: radius)
+            }
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            // Apply element opacity once to the whole shape, including the
+            // overlap between its fill and stroke. Layer opacity stays outside.
+            context.drawLayer { drawing in
+                drawing.opacity = 1
+                if let fill = shape.fillColor { drawing.fill(path, with: .color(Color(hex: fill))) }
+                drawing.stroke(path, with: .color(color), lineWidth: element.width)
+            }
+            return
+        }
+
         if element.brush != nil {
             guard let brush else { throw StudioDocumentError.invalid("A prepared brush is missing.") }
             context.scaleBy(x: scaleX, y: scaleY)

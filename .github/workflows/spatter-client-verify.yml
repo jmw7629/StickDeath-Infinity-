@@ -106,6 +106,32 @@ jobs:
             Tests/StudioToolbar/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-toolbar-tests"
           "$RUNNER_TEMP/sdi-studio-toolbar-tests"
+      - name: Verify actual shape fill radius history and exported pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioShapeSettings/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-shape-settings-tests"
+          "$RUNNER_TEMP/sdi-shape-settings-tests"
       - name: Verify deterministic native brush geometry and actual pixels
         shell: bash
         run: |

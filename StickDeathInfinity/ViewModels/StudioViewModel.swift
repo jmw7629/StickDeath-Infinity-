@@ -79,6 +79,8 @@ final class StudioViewModel: ObservableObject {
     @Published var strokeColor: Color = .red
     @Published var strokeWidth: Double = 3
     @Published var strokeOpacity: Double = 1
+    @Published var shapeFilled = false
+    @Published var shapeCornerRadius: Double = 0
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
     @Published var smoothing: Double = 3
     @Published var pressureSensitivity = false
@@ -109,6 +111,13 @@ final class StudioViewModel: ObservableObject {
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
+    func shapeDescriptor() throws -> StudioShapeDescriptor? {
+        guard [.rectangle, .circle].contains(selectedTool) else { return nil }
+        let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
+            cornerRadius: selectedTool == .rectangle ? shapeCornerRadius : 0)
+        try value.validate(tool: selectedTool)
+        return value
+    }
     var capturedStrokeOpacity: Double {
         #if canImport(UIKit)
         var alpha: CGFloat = 1

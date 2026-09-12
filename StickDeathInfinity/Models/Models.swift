@@ -69,6 +69,30 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Absent on historical drawings: their original rendering stays unchanged.
     /// Width and opacity remain canonical above, never duplicated in this value.
     var brush: StudioBrushDescriptor? = nil
+    /// Absent on historical shapes, which retain their original rendering.
+    var shape: StudioShapeDescriptor? = nil
+}
+
+struct StudioShapeDescriptor: Codable, Equatable {
+    var version = 1
+    var fillColor: String? = nil
+    var cornerRadius: Double = 0
+
+    func validate(tool: DrawingTool) throws {
+        guard version == 1, [.rectangle, .circle].contains(tool),
+              cornerRadius.isFinite, (0...50).contains(cornerRadius),
+              tool == .rectangle || cornerRadius == 0 else { throw Failure.invalid }
+        if let fillColor {
+            let hex = fillColor.hasPrefix("#") ? String(fillColor.dropFirst()) : fillColor
+            guard hex.utf8.count == 6, hex.utf8.allSatisfy({
+                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+            }) else { throw Failure.invalid }
+        }
+    }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "These shape settings are invalid or unsupported. The drawing has not changed." }
+    }
 }
 
 struct StudioBrushDescriptor: Codable, Equatable {
@@ -118,6 +142,7 @@ struct StudioStrokeInput {
     let documentSize: CGSize
     let viewportSize: CGSize
     let startedAt: Date
+    var shape: StudioShapeDescriptor? = nil
     private(set) var points: [StrokePoint] = []
 
     mutating func append(location: CGPoint, time: Date) throws {
@@ -140,7 +165,7 @@ struct StudioStrokeInput {
         let shape = [.line, .rectangle, .circle].contains(tool)
         let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
         return DrawnElement(id: id, tool: tool, points: rendered, color: color,
-            width: width, opacity: opacity, layerID: layerID, brush: brush)
+            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape)
     }
 }
 

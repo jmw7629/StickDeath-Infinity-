@@ -136,7 +136,10 @@ def create_fresh():
             raise ValueError('Exact source commit required')
         marker.value['sourceCommit'] = sha
         sdk_version = command(['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version'],
-                              'simulator-sdk', marker, deadline, seconds=5, cap=128).decode('ascii').strip()
+                              # A cold xcrun lookup exceeded the former five-second
+                              # budget on CI. Keep one bounded read, still inside
+                              # the shared deadline; never retry device creation.
+                              'simulator-sdk', marker, deadline, seconds=30, cap=128).decode('ascii').strip()
         selected_sdk = version_tuple(sdk_version)
         marker.value['simulatorSDKVersion'] = sdk_version
         raw = command(['xcrun', 'simctl', 'list', '--json'], 'initial-inventory', marker, deadline)

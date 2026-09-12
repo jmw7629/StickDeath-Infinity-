@@ -274,18 +274,27 @@ struct FloatingToolSettingsPanel: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
+                Button { vm.shapeFilled.toggle() } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(vm.strokeColor)
+                        .fill(vm.shapeFilled ? vm.strokeColor : Color.clear)
                         .frame(width: 28, height: 28)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    Text("No fill")
+                    Text(vm.shapeFilled ? "Solid fill" : "No fill")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.3))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shape fill")
+                .accessibilityValue(vm.shapeFilled ? "Solid" : "None")
+                .accessibilityIdentifier("studio.shape.fill")
                 
                 if def.tool == .rectangle {
-                    SettingsSlider(label: "Corner Radius", value: .constant(0.0), range: 0...50, unit: "px", accent: .orange)
+                    SettingsSlider(label: "Corner Radius", value: $vm.shapeCornerRadius, range: 0...50, unit: "px", accent: .orange)
                 }
             }
             

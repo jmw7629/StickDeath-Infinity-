@@ -12,7 +12,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[2] / 'scripts/native-smoke'
 sys.path.insert(0, str(ROOT))
 import select_simulator as select
-from seed_diagnostics import Result
+from seed_diagnostics import Result, run_bounded
 
 SHA = 'a' * 40
 RUNTIME = 'com.apple.CoreSimulator.SimRuntime.iOS-26-2'
@@ -126,6 +126,36 @@ class FreshSimulator(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 select.create_fresh()
             command.assert_not_called()
+
+    def test_cold_sdk_lookup_can_finish_after_former_five_second_budget(self):
+        # Real subprocess/pipe/deadline behavior; simulator commands remain
+        # mocked. This would time out under the former five-second allowance.
+        def command(argv, deadline, **kw):
+            result = self.command(argv, deadline, **kw)
+            if argv == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
+                return run_bounded([sys.executable, '-c',
+                                    'import time; time.sleep(6); print("26.2")'],
+                                   deadline, **kw)
+            return result
+        self.assertEqual(self.run_selector(command), self.new_id)
+        self.assert_one_create()
+        step = self.marker()['steps'][1]
+        self.assertFalse(step['timedOut'])
+        self.assertTrue(step['ownedChildReaped'])
+        self.assertGreaterEqual(step['elapsedSeconds'], 6)
+
+    def test_sdk_allowance_remains_inside_overall_deadline(self):
+        clock = [10.0]
+        def command(argv, deadline, **kw):
+            result = self.command(argv, deadline, **kw)
+            if argv[0] == 'git':
+                clock[0] = 95.0
+            elif argv == ['xcrun', '--sdk', 'iphonesimulator', '--show-sdk-version']:
+                self.assertEqual(deadline, 110.0)
+            return result
+        with patch.object(select.time, 'monotonic', side_effect=lambda: clock[0]):
+            self.assertEqual(self.run_selector(command), self.new_id)
+        self.assert_one_create()
 
     def test_returned_old_or_malformed_uuid_rejected(self):
         for response in (self.old_id, 'booted', self.new_id.replace('-', ''), self.new_id + '\nextra'):
