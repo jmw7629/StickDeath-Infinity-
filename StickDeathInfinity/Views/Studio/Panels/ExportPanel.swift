@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
     @StateObject private var session = StudioExportSession()
+    @StateObject private var movie = StudioMoviePanelState()
     @State private var background: StudioExportService.Background = .white
     @State private var shareRequest: StudioExportShareRequest?
 
@@ -22,6 +23,7 @@ struct ExportPanel: View {
             Capsule().fill(Color.white.opacity(0.2)).frame(width: 36, height: 4).padding(.top, 8)
             PanelHeader(title: "Export", icon: "📤", onClose: {
                 session.close()
+                movie.session.close()
                 vm.activePanel = .none
             })
             ScrollView {
@@ -30,10 +32,13 @@ struct ExportPanel: View {
                         ForEach(ExportFormat.allCases, id: \.rawValue) { format in
                             ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
                                 onTap: { vm.exportFormat = format })
-                                .disabled(session.isRunning || session.isSharing)
+                                .disabled(session.isRunning || session.isSharing || movie.isBusy)
                                 .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
                         }
                     }
+                    if vm.exportFormat == .mp4 {
+                        StudioMovieExportControls(vm: vm, movie: movie)
+                    } else {
                     if vm.isEditing {
                         let document = vm.document
                         VStack(alignment: .leading, spacing: 8) {
@@ -113,6 +118,7 @@ struct ExportPanel: View {
                         }
                         .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
                     }
+                    }
                     VStack(alignment: .leading, spacing: 8) {
                         sectionLabel("SHARE TO")
                         exportDestination("📱", "Camera Roll", "Use the iOS share sheet when supported")
@@ -120,11 +126,11 @@ struct ExportPanel: View {
                         exportDestination("▶️", "YouTube", "Official channel publishing unavailable")
                         exportDestination("📷", "Instagram", "Direct publishing unavailable")
                     }
-                    Text("No watermark is added. PNG exports do not include sound. Video, GIF and official channel publishing remain unfinished.")
+                    Text("No watermark is added. PNG exports do not include sound. MP4 is animation-only on white and rejects projects with audio. GIF and official channel publishing remain unfinished.")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.white.opacity(0.5))
                 }
-                .padding(.horizontal, 16).padding(.bottom, 20)
+                .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 20)
             }
             .frame(maxHeight: UIScreen.main.bounds.height * 0.6)
         }
@@ -138,6 +144,9 @@ struct ExportPanel: View {
             }
         }
         .onDisappear {
+            // An active UIKit consumer can temporarily cover this panel. Its
+            // presenter closes the movie owner on actual representable removal.
+            if !movie.session.isSharing { movie.session.close() }
             if vm.activePanel != .export || !vm.isEditing { session.close() }
         }
     }
@@ -341,7 +350,7 @@ struct ExportFormatCard: View {
     let format: ExportFormat
     let isSelected: Bool
     let onTap: () -> Void
-    private var isAvailable: Bool { format == .png || format == .spritesheet }
+    private var isAvailable: Bool { format == .mp4 || format == .png || format == .spritesheet }
 
     var body: some View {
         Button(action: onTap) {
@@ -349,7 +358,7 @@ struct ExportFormatCard: View {
                 Text(format.icon).font(.system(size: 24))
                 Text(format.rawValue).font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
-                Text(isAvailable ? format.subtitle : "Not available yet")
+                Text(format == .mp4 ? "Animation-only · H.264" : (isAvailable ? format.subtitle : "Not available yet"))
                     .font(.system(size: 8, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5)).multilineTextAlignment(.center)
             }

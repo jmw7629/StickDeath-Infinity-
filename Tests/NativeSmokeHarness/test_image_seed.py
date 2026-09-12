@@ -4,6 +4,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[2] / 'scripts/native-smoke'
 sys.path.insert(0, str(ROOT))
 import seed_image_fixture as seed
+from seed_diagnostics import Result
 import run_recorded_test as rec
 ID = '00000000-0000-4000-8000-000000000001'
 
@@ -26,20 +27,20 @@ class Harness(unittest.TestCase):
         return {'devices': {'com.apple.CoreSimulator.SimRuntime.iOS-26-2': [{'udid': ID, 'name': 'fixture', 'state': state, 'isAvailable': available}]}}
 
     def test_direct_seed_preserves_fixture_and_explicit_addmedia(self):
-        with patch.object(seed.subprocess, 'run') as run:
+        with patch.object(seed, 'run_bounded', return_value=Result(0, False, 0)) as run:
             seed.seed_verified_fixture(ID, self.out)
         a = run.call_args
         self.assertEqual(a.args[0][:4], ['xcrun', 'simctl', 'addmedia', ID])
-        self.assertEqual(a.kwargs, {'check': True, 'timeout': 60})
+        self.assertAlmostEqual(a.args[1] - a.kwargs['work_deadline'], 1)
         report = json.loads((self.out / 'image-fixture.json').read_text())
         self.assertEqual(report['sha256'], '1f8b75bc39c94c7f4a27bbd4192bdb3dc3f57766b01991dba7f9a6bd6ac93614')
-        with patch.object(seed.subprocess, 'run') as run:
+        with patch.object(seed, 'run_bounded', return_value=Result(0, False, 0)) as run:
             with self.assertRaises(FileExistsError):
                 seed.seed_verified_fixture(ID, self.out)
             run.assert_not_called()
 
     def test_environment_uuid_and_output_guards(self):
-        with patch.object(seed.subprocess, 'run') as run:
+        with patch.object(seed, 'run_bounded', return_value=Result(0, False, 0)) as run:
             with patch.dict(os.environ, {'GITHUB_ACTIONS': 'false'}):
                 with self.assertRaises(ValueError):
                     seed.seed_verified_fixture(ID, self.out)
@@ -51,12 +52,12 @@ class Harness(unittest.TestCase):
 
     def test_standalone_keeps_fresh_booted_identity_gate(self):
         argv = ['seed', '--udid', ID, '--output', str(self.out)]
-        with patch.object(sys, 'argv', argv), patch.object(seed.subprocess, 'check_output', return_value=json.dumps(self.inventory(state='Shutdown')).encode()) as check, patch.object(seed.subprocess, 'run') as run:
+        with patch.object(sys, 'argv', argv), patch.object(seed.subprocess, 'check_output', return_value=json.dumps(self.inventory(state='Shutdown')).encode()) as check, patch.object(seed, 'run_bounded', return_value=Result(0, False, 0)) as run:
             with self.assertRaises(ValueError):
                 seed.main()
             self.assertEqual(check.call_args.args[0], ['xcrun', 'simctl', 'list', 'devices', 'available', '--json'])
             run.assert_not_called()
-        with patch.object(sys, 'argv', argv), patch.object(seed.subprocess, 'check_output', return_value=json.dumps(self.inventory()).encode()), patch.object(seed.subprocess, 'run') as run:
+        with patch.object(sys, 'argv', argv), patch.object(seed.subprocess, 'check_output', return_value=json.dumps(self.inventory()).encode()), patch.object(seed, 'run_bounded', return_value=Result(0, False, 0)) as run:
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
@@ -95,7 +96,10 @@ class Harness(unittest.TestCase):
             def kill(self):
                 self.returncode = 0
         argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID]
-        with patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
+        def bounded(cmd, *args, **kw):
+            calls.append(tuple(cmd))
+            return Result(0, False, 0)
+        with patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
 
     def test_integrated_path_checks_identity_boots_then_seeds_once(self):

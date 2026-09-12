@@ -210,11 +210,13 @@ final class StudioSmokeUITests: XCTestCase {
         // above the declared 16,777,216 limit. The PNG sequence stays in bounds.
         for _ in 0..<6 { addFrame.tap() }
         try openExportPanel(app)
+        // Export initially selects MP4. Select the image format before checking
+        // its PNG/timing description; the movie panel has its own description.
+        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
         // SwiftUI localizes numeric interpolation; the verified en_US UI uses
         // grouping separators while retaining the exact1080×1920 canvas.
         XCTAssertTrue(app.staticTexts["Original canvas · 1,080 × 1,920"].exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 frames")).firstMatch.exists)
-        try exportControl("studio.export.format.spritesheet", app: app, scrollUp: false).tap()
         try exportControl("studio.export.start", app: app).tap()
         let status = app.staticTexts["studio.export.status"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "exceeds the current safe"),
@@ -580,8 +582,16 @@ final class StudioSmokeUITests: XCTestCase {
             // observed Photos viewport and verify the actual thumbnail before
             // deriving a tap from its current frame; never use fixed positions.
             let photos = app.navigationBars["Photos"].firstMatch
-            let viewport = app.scrollViews["photosView_content_scroll_view"].firstMatch
-            if photos.exists, viewport.exists {
+            // These are the actual system viewport identifiers captured on
+            // iOS 26.2 and 18.5. Require one visible Photos grid, never a generic
+            // application scroll view or an arbitrary image outside the picker.
+            let viewports = app.scrollViews.matching(NSPredicate(format: "identifier IN %@",
+                ["photosView_content_scroll_view", "content_scroll_view"]))
+                .allElementsBoundByIndex.prefix(3).filter {
+                    $0.exists && !$0.frame.intersection(app.frame).isEmpty &&
+                    $0.images.matching(identifier: "PXGGridLayout-Info").count > 0
+                }
+            if photos.exists, viewports.count == 1, let viewport = viewports.first {
                 let visibleBounds = viewport.frame.intersection(app.frame)
                 let candidates = viewport.images.matching(identifier: "PXGGridLayout-Info").allElementsBoundByIndex
                 for candidate in candidates.prefix(12) {
@@ -657,6 +667,67 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(reopenedCanvas.screenshot().image)), 4,
                                  "Saved imported image failed actual terminate/relaunch/reopen")
         capture(reopened, name: "image-photos-persisted-reopened")
+    }
+
+    /// Proposed eleventh native journey. It must execute against the real app;
+    /// compilation alone does not verify encoded files or UIKit presentation.
+    @MainActor
+    func testMP4ExportReceiptAndNativeShareCancellation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8)); XCTAssertTrue(canvas.isHittable)
+        let before = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"),
+            evaluatedWith: app.buttons["studio.undo"]).waitUntilFulfilled(timeout: 5))
+        XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
+        try openExportPanel(app)
+        try exportControl("studio.export.format.mp4", app: app, scrollUp: false).tap()
+        let backgrounds = app.segmentedControls["studio.export.movie.background"]
+        XCTAssertTrue(backgrounds.waitForExistence(timeout: 8))
+        let transparent = backgrounds.buttons["Transparent (unsupported)"]
+        XCTAssertTrue(transparent.isHittable); transparent.tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
+            "H.264 MP4 cannot retain transparency. Explicitly choose the white background to export."),
+            evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        XCTAssertFalse(app.staticTexts["studio.export.movie.filename"].exists)
+        XCTAssertFalse(app.buttons["studio.export.share"].exists)
+        capture(app, name: "mp4-transparency-rejected")
+        _ = try exportControl("studio.export.movie.background", app: app, scrollUp: false)
+        XCTAssertTrue(backgrounds.buttons["White"].isHittable); backgrounds.buttons["White"].tap()
+        try exportControl("studio.export.start", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "MP4 ready on this device from revision "),
+            evaluatedWith: status).waitUntilFulfilled(timeout: 30))
+        let receipt = try exportControl("studio.export.movie.receipt", app: app)
+        XCTAssertTrue(receipt.label.contains("1,080 × 1,920"), "The generated portrait fixture was rescaled")
+        XCTAssertTrue(receipt.label.contains("1 frames · 12 fps · revision "))
+        XCTAssertEqual(app.staticTexts["studio.export.movie.filename"].label, "animation.mp4")
+        XCTAssertFalse(app.descendants(matching: .any)["studio.export.preview"].exists,
+                       "This slice must not show a fake video preview")
+        capture(app, name: "mp4-actual-file-receipt")
+        let share = try exportControl("studio.export.share", app: app)
+        XCTAssertTrue(share.isEnabled); share.tap()
+        let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
+        let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        let presented = saveToFiles.waitForExistence(timeout: 10)
+        capture(app, name: "mp4-native-share-sheet")
+        captureHierarchy(app, name: "mp4-native-share-sheet-hierarchy")
+        XCTAssertTrue(presented); XCTAssertTrue(saveToFiles.isHittable)
+        let dismiss = nativeShare.buttons["header.closeButton"]
+        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."),
+            evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled,
+                      "Cancelling the real share sheet lost the owned MP4")
+        capture(app, name: "mp4-share-cancelled-retained-receipt")
+        try closeExportPanel(app)
+        XCTAssertTrue(canvas.isHittable)
     }
 
     private func imageFixtureColors(_ raster: Raster) -> [Int] {
@@ -781,6 +852,9 @@ final class StudioSmokeUITests: XCTestCase {
             let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
             start.press(forDuration: 0.1, thenDragTo: end)
         }
+        captureHierarchy(app, name: "export-control-unreachable-" + identifier)
+        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.frame); hittable: \(element.isHittable)")
+        bounds.name = "export-control-bounds-" + identifier; bounds.lifetime = .keepAlways; add(bounds)
         XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
         throw NSError(domain: "NativeExportSmoke", code: 1)
     }
