@@ -30,6 +30,7 @@ final class StudioSmokeUITests: XCTestCase {
         }
         try selectToolbarTool("hand", app: app)
         let close = app.buttons["studio.tool-settings.close"]
+        if !close.isHittable { captureHierarchy(app, name: "toolbar-popup-close-unreachable") }
         XCTAssertTrue(close.isHittable && app.buttons["studio.tool-settings.fit"].isHittable)
         XCTAssertGreaterThanOrEqual(close.frame.width.rounded(), 44)
         XCTAssertGreaterThanOrEqual(close.frame.height.rounded(), 44)
@@ -529,6 +530,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertNotEqual(selectedOpacity, initialOpacity)
         capture(app, name: "brush-round-settings")
         let closeSettings = app.buttons["studio.tool-settings.close"]
+        if !closeSettings.isHittable { captureHierarchy(app, name: "brush-popup-close-unreachable") }
         XCTAssertTrue(closeSettings.isHittable); closeSettings.tap()
         let before = try pixels(canvas.screenshot().image)
         XCTAssertTrue(exportInkMask(before).isEmpty, "The actual starting canvas contains red ink")

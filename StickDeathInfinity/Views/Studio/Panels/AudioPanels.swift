@@ -29,13 +29,14 @@ private struct StudioAudioWorkspace: View {
 
     var body: some View {
         GeometryReader { geometry in
-            if geometry.size.height < 520 {
-                ScrollView(.vertical) {
-                    workspace(height: 760).frame(height: 760)
-                }.accessibilityIdentifier("studio.audio.compact.scroll")
-            } else {
-                workspace(height: geometry.size.height)
+            // Keyboard presentation changes the available height. Keep the
+            // same view hierarchy so the active search field retains focus.
+            let height = geometry.size.height < 520 ? 760 : geometry.size.height
+            ScrollView(.vertical) {
+                workspace(height: height).frame(height: height)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("studio.audio.compact.scroll")
         }
         .frame(maxWidth: 900, maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

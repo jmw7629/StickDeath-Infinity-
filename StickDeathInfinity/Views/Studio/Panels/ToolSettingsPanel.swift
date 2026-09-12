@@ -89,6 +89,7 @@ struct FloatingToolSettingsPanel: View {
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("studio.tool-settings")
         }
     }
