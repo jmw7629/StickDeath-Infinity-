@@ -7,6 +7,7 @@ struct StudioCanvasView: View {
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
     @State private var panOrigin: CGSize?
+    @GestureState private var colorInput = StudioColorSampleGesture()
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -118,8 +119,14 @@ struct StudioCanvasView: View {
     private func gesture(size: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .updating($gestureActive) { _, active, _ in active = true }
+            .updating($colorInput) { _, captured, _ in
+                captured.update(context: input == nil ? vm.beginColorSample() : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
+            }
             .onChanged { value in
                 guard vm.pendingBrushStroke == nil else { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
                     vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
@@ -158,6 +165,17 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) {
+                    guard let sample = colorInput.resolve(location: value.location,
+                        context: vm.beginColorSample(),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio or the canvas changed during color sampling. Start a new tap."
+                        return
+                    }
+                    _ = vm.sampleArtworkColor(at: sample.point, captured: sample.context)
+                    return
+                }
                 if panOrigin != nil { return }
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {

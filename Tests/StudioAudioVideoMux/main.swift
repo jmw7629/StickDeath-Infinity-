@@ -266,9 +266,15 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let controlParent = try parent("substitution-controls")
             let normal = try await service.mux(video: movie, audio: audio, outputParent: controlParent)
             let different = try await service.mux(video: otherVideo, audio: otherAudio, outputParent: controlParent)
-            let normalURL = try normal.checkedURLs()[0], differentURL = try different.checkedURLs()[0]
+            let normalURL = try normal.checkedURLs()[0]
+            // Two hardware encodes of identical artwork may have different H.264
+            // payloads. Copy the original compressed video into the quieter AAC
+            // control so this regression isolates audio substitution exclusively.
+            let differentURL = root.appendingPathComponent("audio-only-substitution.mp4")
+            try await audioOnlySubstitutionFixture(videoURL: normalURL,
+                audioURL: different.checkedURLs()[0], outputURL: differentURL)
             let normalDigest = try await compressedVideoDigest(normalURL), differentDigest = try await compressedVideoDigest(differentURL)
-            try require(normalDigest == differentDigest, "substitution controls must retain identical actual H264 pictures")
+            try require(normalDigest == differentDigest, "substitution controls must retain identical actual H264 payloads")
             let normalAsset = AVURLAsset(url: normalURL), differentAsset = AVURLAsset(url: differentURL)
             let nt = try await normalAsset.loadTracks(withMediaType: .audio), dt = try await differentAsset.loadTracks(withMediaType: .audio)
             let n = try await decodeAudio(normalAsset, track: nt[0]), d = try await decodeAudio(differentAsset, track: dt[0])
@@ -378,6 +384,60 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         }
         try inputsIntact(); try movie.cleanup(); try audio.cleanup(); try empty(videoParent); try empty(audioParent)
         print("STUDIO_AUDIO_VIDEO_MUX_TESTS=PASS \(passed)/\(passed)")
+    }
+
+    /// Test-owned control, never an application export path. Both tracks are
+    /// passed through without an encoder; assertions below decode its actual
+    /// AAC and compare every original compressed H.264 sample.
+    static func audioOnlySubstitutionFixture(videoURL: URL, audioURL: URL, outputURL: URL) async throws {
+        let video = AVURLAsset(url: videoURL), audio = AVURLAsset(url: audioURL)
+        let videoTracks = try await video.loadTracks(withMediaType: .video)
+        let audioTracks = try await audio.loadTracks(withMediaType: .audio)
+        try require(videoTracks.count == 1 && audioTracks.count == 1, "one fixture track of each kind")
+        let vt = videoTracks[0], at = audioTracks[0]
+        let vf = try await vt.load(.formatDescriptions), af = try await at.load(.formatDescriptions)
+        try require(vf.count == 1 && af.count == 1, "fixture has actual H264 and AAC formats")
+        let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+        let vi = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: vf[0])
+        let ai = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: af[0])
+        vi.mediaTimeScale = try await vt.load(.naturalTimeScale)
+        vi.transform = try await vt.load(.preferredTransform)
+        writer.movieTimeScale = 48_000
+        try require(writer.canAdd(vi) && writer.canAdd(ai), "fixture writer accepts compressed tracks")
+        writer.add(vi); writer.add(ai)
+        let vr = try AVAssetReader(asset: video), ar = try AVAssetReader(asset: audio)
+        let vo = AVAssetReaderTrackOutput(track: vt, outputSettings: nil)
+        let ao = AVAssetReaderTrackOutput(track: at, outputSettings: nil)
+        try require(vr.canAdd(vo) && ar.canAdd(ao), "fixture readers accept compressed tracks")
+        vr.add(vo); ar.add(ao)
+        defer { if writer.status == .writing { writer.cancelWriting() }; vr.cancelReading(); ar.cancelReading() }
+        try require(writer.startWriting(), "fixture writer starts")
+        writer.startSession(atSourceTime: .zero)
+        try require(vr.startReading() && ar.startReading(), "fixture readers start")
+        let start = ProcessInfo.processInfo.systemUptime
+        func checkpoint() throws {
+            try Task.checkCancellation()
+            try require(ProcessInfo.processInfo.systemUptime - start < 15, "bounded fixture writer")
+        }
+        var videoDone = false, audioDone = false
+        while !videoDone || !audioDone {
+            try checkpoint()
+            if !videoDone && vi.isReadyForMoreMediaData {
+                if let sample = vo.copyNextSampleBuffer() { try require(vi.append(sample), "fixture copies original H264 sample") }
+                else { videoDone = true; vi.markAsFinished() }
+            }
+            if !audioDone && ai.isReadyForMoreMediaData {
+                if let sample = ao.copyNextSampleBuffer() { try require(ai.append(sample), "fixture copies quieter AAC sample") }
+                else { audioDone = true; ai.markAsFinished() }
+            }
+            try require(writer.status == .writing, "fixture remains writable")
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try require(vr.status == .completed && ar.status == .completed, "fixture compressed sources complete")
+        writer.endSession(atSourceTime: try await video.load(.duration))
+        writer.finishWriting {}
+        while writer.status == .writing { try checkpoint(); try await Task.sleep(nanoseconds: 1_000_000) }
+        try require(writer.status == .completed, "fixture MP4 finalizes")
     }
 
     static func compressedVideoDigest(_ url: URL) async throws -> SHA256.Digest {

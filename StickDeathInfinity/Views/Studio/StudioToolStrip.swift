@@ -76,6 +76,9 @@ struct StudioToolStrip: View {
                                 .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                         )
                 }
+                .accessibilityLabel("Drawing color")
+                .accessibilityValue(vm.strokeColorHex.uppercased())
+                .accessibilityIdentifier("studio.color.open")
                 
                 // Tools
                 ForEach(Self.tools.indices, id: \.self) { i in

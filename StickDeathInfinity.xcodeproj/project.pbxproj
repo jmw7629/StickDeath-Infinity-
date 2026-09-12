@@ -132,6 +132,8 @@
 		8C3E1523A260F78A8AE87449 /* StudioMuxOwnership.swift in Sources */ = {isa = PBXBuildFile; fileRef = F129AD9F47A70E2FD27CD75C /* StudioMuxOwnership.swift */; };
 		0169560086778D40229714AC /* StudioAudioVideoMuxService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8429526F40D4B253112C8444 /* StudioAudioVideoMuxService.swift */; };
 		4C93EACBB737A84CC13FA538 /* StudioMixedMovieExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBF6119DAA98184670D7D1C2 /* StudioMixedMovieExportService.swift */; };
+		AB2AFF22C825694355B52C43 /* StudioColorSamplingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 018FD35D9641AEA0FEC70316 /* StudioColorSamplingService.swift */; };
+		96AD0A963AABC5BCB3A0F338 /* StudioColorSamplingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = C49CEA5264338347EF889810 /* StudioColorSamplingSession.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -270,6 +272,8 @@
 		F129AD9F47A70E2FD27CD75C /* StudioMuxOwnership.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMuxOwnership.swift"; sourceTree = SOURCE_ROOT; };
 		8429526F40D4B253112C8444 /* StudioAudioVideoMuxService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioVideoMuxService.swift"; sourceTree = SOURCE_ROOT; };
 		DBF6119DAA98184670D7D1C2 /* StudioMixedMovieExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMixedMovieExportService.swift"; sourceTree = SOURCE_ROOT; };
+		018FD35D9641AEA0FEC70316 /* StudioColorSamplingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioColorSamplingService.swift"; sourceTree = SOURCE_ROOT; };
+		C49CEA5264338347EF889810 /* StudioColorSamplingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioColorSamplingSession.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -406,6 +410,8 @@
 				F129AD9F47A70E2FD27CD75C /* StudioMuxOwnership.swift */,
 				8429526F40D4B253112C8444 /* StudioAudioVideoMuxService.swift */,
 				DBF6119DAA98184670D7D1C2 /* StudioMixedMovieExportService.swift */,
+				018FD35D9641AEA0FEC70316 /* StudioColorSamplingService.swift */,
+				C49CEA5264338347EF889810 /* StudioColorSamplingSession.swift */,
 				5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */,
 				7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */,
 				6CD75375F360482C280D01D0 /* StudioMovieShareLifetime.swift */,
@@ -835,6 +841,8 @@
 				8C3E1523A260F78A8AE87449 /* StudioMuxOwnership.swift in Sources */,
 				0169560086778D40229714AC /* StudioAudioVideoMuxService.swift in Sources */,
 				4C93EACBB737A84CC13FA538 /* StudioMixedMovieExportService.swift in Sources */,
+				AB2AFF22C825694355B52C43 /* StudioColorSamplingService.swift in Sources */,
+				96AD0A963AABC5BCB3A0F338 /* StudioColorSamplingSession.swift in Sources */,
 				163D432AA7F5EFEACF21172B /* StudioMovieExportSession.swift in Sources */,
 				986DC521401B32C785C16672 /* StudioMovieExportService.swift in Sources */,
 				CC79AB22EF0BD85E30CEBFB8 /* StudioMovieSharePresenter.swift in Sources */,

@@ -456,6 +456,30 @@ jobs:
             Tests/SpatterStudioEditSession/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
           "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
+      - name: Verify real artwork color sampling and gesture context
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioColorSampling/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            -o "$RUNNER_TEMP/sdi-color-sampling-tests"
+          "$RUNNER_TEMP/sdi-color-sampling-tests"
       - name: Verify actual MP4 timing pixels cancellation and output ownership
         shell: bash
         run: |

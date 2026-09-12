@@ -30,3 +30,9 @@ Independent approval of the unchanged foundation is retained. The newly authored
 ## Reproduction
 
 The native verification workflow compiles and runs the checked-in production test programs before building the actual iOS target and executing all native UI journeys. It retains exact-source logs, screenshots and recording evidence. No test timeout is expanded or failing test skipped by this change. Fixtures use generated signals and approved bundled sounds; tests never publish or send messages.
+
+## Cross-host audio substitution control
+
+The first macOS CI run of mixed export stopped before the linked build: its two separately encoded H.264 control tracks had different compressed payloads, so the audio-only substitution test could not establish its prerequisite. Twenty mux groups and the prior 46 movie groups passed; remaining stages and native UI did not run. This was not a green native build.
+
+The test now creates its replacement file by passing through the exact original compressed video and the quieter control's actual AAC. It retains strict compressed-video equality, full decoded stereo timing/sample counts, actual quieter-audio power, same-inode replacement and rejection at both verification/publication callbacks. Production origin, encoding and file checks are unchanged. The corrected 24-group suite passes locally with Apple frameworks; measured replacement/normal audio power ratio is 0.2500582. A fresh complete macOS CI/native run remains required.
