@@ -31,6 +31,9 @@ struct StudioColorSampleGesture {
     var startedAsPicker: Bool {
         switch state { case .captured, .cancelled: return true; default: return false }
     }
+    mutating func invalidate() {
+        if startedAsPicker { state = .cancelled }
+    }
     mutating func update(context: StudioColorSampleContext?, layout: Layout, foreground: Bool) {
         switch state {
         case .idle:

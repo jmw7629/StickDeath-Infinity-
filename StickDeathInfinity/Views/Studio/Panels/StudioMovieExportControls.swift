@@ -6,6 +6,7 @@ import SwiftUI
 struct StudioMovieExportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var movie: StudioMoviePanelState
+    var onReady: () -> Void = {}
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject private var shareLifetime = StudioMovieShareLifetime.shared
@@ -107,6 +108,7 @@ struct StudioMovieExportControls: View {
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
+                .id("studio.export.movie.result")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -142,6 +144,9 @@ struct StudioMovieExportControls: View {
         .onChange(of: vm.document.id) { refreshScope() }
         .onChange(of: vm.isEditing) { refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }
+        .onChange(of: session.output?.movieURL) { _, output in
+            if output != nil { onReady() }
+        }
     }
     private var progressText: String {
         if let audio = session.audioProgressText { return audio }

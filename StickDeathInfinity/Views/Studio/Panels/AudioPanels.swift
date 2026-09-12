@@ -31,9 +31,9 @@ private struct StudioAudioWorkspace: View {
         GeometryReader { geometry in
             // Keyboard presentation changes the available height. Keep the
             // same view hierarchy so the active search field retains focus.
-            let height = geometry.size.height < 520 ? 760 : geometry.size.height
             ScrollView(.vertical) {
-                workspace(height: height).frame(height: height)
+                workspace(height: geometry.size.height)
+                    .frame(minHeight: geometry.size.height, alignment: .top)
             }
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("studio.audio.compact.scroll")
@@ -77,7 +77,8 @@ private struct StudioAudioWorkspace: View {
                         .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
                 }
                 timelineGrid
-                    .frame(minHeight: 160, maxHeight: .infinity, alignment: .top)
+                    .frame(height: 306, alignment: .top)
+                Spacer(minLength: 0)
                 if let clip = vm.selectedCurrentAudioClip { clipInspector(clip) }
                 HStack {
                     Text("Drag clips to move · Drag edges to trim").foregroundColor(.white.opacity(0.4))
@@ -260,7 +261,7 @@ private struct StudioAudioWorkspace: View {
             let rowHeight = 70.0
             HStack(alignment: .top, spacing: 0) {
                 VStack(spacing: 0) {
-                    Color.clear.frame(height: 26)
+                    Color.clear.frame(width: 44, height: 26)
                     ForEach(1...4, id: \.self) { track in
                         let clips = vm.audioClips.filter { $0.track == track }
                         let muted = !clips.isEmpty && clips.allSatisfy(\.isMuted)
@@ -277,8 +278,11 @@ private struct StudioAudioWorkspace: View {
                                 .accessibilityLabel(muted ? "Unmute track \(track)" : "Mute track \(track)")
                         }.frame(width: 44, height: rowHeight)
                     }
-                }
-                ScrollView([.horizontal, .vertical]) {
+                }.frame(width: 44, alignment: .top)
+                    .accessibilityIdentifier("studio.audio.track-labels")
+                // All four lanes scroll vertically with the workspace. A
+                // second vertical scroller traps swipes and detaches labels.
+                ScrollView(.horizontal) {
                     VStack(spacing: 0) {
                         ZStack(alignment: .topLeading) {
                             Rectangle().fill(Color.white.opacity(0.02))
@@ -300,14 +304,15 @@ private struct StudioAudioWorkspace: View {
                                 }
                             }.frame(height: rowHeight)
                         }
-                    }.frame(width: width, alignment: .leading)
+                    }.frame(width: width, height: 306, alignment: .topLeading)
                         .overlay(alignment: .topLeading) {
                             Rectangle().fill(Color.sdRed).frame(width: 2)
                                 .overlay(alignment: .top) { Circle().fill(Color.sdRed).frame(width: 12, height: 12) }
                                 .offset(x: vm.audioPlayheadTime * pps).allowsHitTesting(false)
                         }
-                }
-            }
+                }.frame(height: 306, alignment: .top)
+                    .accessibilityIdentifier("studio.audio.lanes")
+            }.frame(width: geometry.size.width, height: 306, alignment: .topLeading)
         }
     }
     private func clipInspector(_ clip: AudioClip) -> some View {

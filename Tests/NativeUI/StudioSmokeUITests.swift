@@ -366,6 +366,12 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(reopened.buttons["studio.audio.open"].waitForExistence(timeout: 5)); reopened.buttons["studio.audio.open"].tap()
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "2 clips", "Cold reopen lost saved library sounds")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        let labels = reopened.descendants(matching: .any)["studio.audio.track-labels"].firstMatch
+        let lanes = reopened.scrollViews["studio.audio.lanes"]
+        XCTAssertTrue(labels.exists); XCTAssertTrue(lanes.exists)
+        XCTAssertEqual(labels.frame.width, 44, accuracy: 1, "Track labels stole the timeline width")
+        XCTAssertEqual(labels.frame.minY, lanes.frame.minY, accuracy: 1, "Track labels detached from the lanes")
+        XCTAssertEqual(labels.frame.maxX, lanes.frame.minX, accuracy: 1, "Timeline has an expanding gutter")
         capture(reopened, name: "audio-offline-cold-reopen")
         XCUIDevice.shared.orientation = .landscapeLeft
         XCTAssertTrue(expectation(for: NSPredicate { _, _ in reopened.frame.width > reopened.frame.height }, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
@@ -1269,9 +1275,10 @@ final class StudioSmokeUITests: XCTestCase {
             }
             guard attempt < 8 else { break }
             let upward = elementFrame.isEmpty ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
-            // Small drags use the actual ScrollView, never window coordinates.
-            let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.7 : 0.3))
-            let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: upward ? 0.45 : 0.55))
+            // The centre can land on the background segmented control, which
+            // consumes this drag. Use the panel's 16pt content padding instead.
+            let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.7 : 0.3))
+            let end = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.45 : 0.55))
             start.press(forDuration: 0.1, thenDragTo: end)
         }
         captureHierarchy(app, name: "export-control-unreachable-" + identifier)

@@ -221,6 +221,11 @@ private struct TestFailure: Error { let message: String }
             try require(gesture.resolve(location:location,context:captured,layout:layout,foreground:true) == nil,
                 "Observed interrupted context became eligible again")
         }
+        var invalidated = stable
+        invalidated.invalidate()
+        invalidated.update(context:captured,layout:layout,foreground:true)
+        try require(invalidated.resolve(location:location,context:captured,layout:layout,foreground:true) == nil,
+            "A context change observed between touch events became eligible again")
         for point in [CGPoint(x:-1,y:1),CGPoint(x:128,y:1),CGPoint(x:1,y:96),CGPoint(x:CGFloat.nan,y:1)] {
             try require(stable.resolve(location:point,context:captured,layout:layout,foreground:true) == nil,
                 "Out of bounds local point accepted")
