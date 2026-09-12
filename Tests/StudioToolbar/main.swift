@@ -57,23 +57,29 @@ import CoreGraphics
             let initial=l.placement(in:large,compactHeight:false).frame
             check(contained(l.draggingFrame(from:initial,translation:.zero,in:small),small),"resize during drag")
         }
-        test("context dismiss affects one tool; explicit same-tool retap reopens") {
-            var c=StudioContextVisibility<String>();check(c.isVisible(for:"brush"),"initial")
-            c.dismiss("brush");check(!c.isVisible(for:"brush") && c.isVisible(for:"hand"),"scoped dismiss")
-            c.select("brush");check(c.isVisible(for:"brush"),"same-tool reopen")
-            c.dismiss("brush");c.select("eraser");check(c.isVisible(for:"eraser"),"new-tool reopen")
+        test("default canvas clears the top rail and both snapped rails") {
+            for size in [CGSize(width:390,height:600),CGSize(width:844,height:221),CGSize(width:1024,height:900)] {
+                let b=CGRect(origin:.zero,size:size)
+                for dock in [StudioToolbarLayout.Dock.automatic,.leading,.trailing] {
+                    var l=StudioToolbarLayout();l.choose(dock,in:b)
+                    let p=l.placement(in:b,compactHeight:size.height<500),c=StudioToolbarLayout.canvasFrame(in:b,toolbar:p)
+                    check(contained(c,b) && !c.intersects(p.frame),"canvas covered by default or snapped chrome")
+                    check(c.width > 80 && c.height > 80,"canvas collapsed")
+                }
+            }
         }
-        test("right dock clears right-snapped rail and floating rails") {
+        test("one settings popup clears the rail and follows its placement") {
             for size in [CGSize(width:320,height:180),CGSize(width:390,height:600),CGSize(width:844,height:221),CGSize(width:1024,height:900)] {
                 let b=CGRect(origin:.zero,size:size)
                 for dock in [StudioToolbarLayout.Dock.leading,.trailing,.floating] {
                     var l=StudioToolbarLayout();l.choose(dock,in:b)
                     for y in [CGFloat(0),0.5,1] {
                         if dock == .floating { l.finishDrag(release:CGPoint(x:b.midX,y:b.height*y),proposedCenter:CGPoint(x:b.midX,y:b.height*y),in:b) }
-                        let p=l.placement(in:b,compactHeight:false),d=StudioToolbarLayout.contextFrame(in:b,toolbar:p)
-                        check(contained(d,b),"context bounds")
+                        let p=l.placement(in:b,compactHeight:false),d=StudioToolbarLayout.settingsFrame(in:b,toolbar:p)
+                        check(contained(d,b),"popup bounds")
                         check(d.height >= 44,"reachable dismissal")
-                        check(!d.intersects(p.frame),"context overlaps rail")
+                        check(!d.intersects(p.frame),"popup overlaps rail")
+                        if !p.vertical && p.frame.minY == b.minY + 8 { check(d.minY > p.frame.maxY,"popup should open below the top rail") }
                     }
                 }
             }

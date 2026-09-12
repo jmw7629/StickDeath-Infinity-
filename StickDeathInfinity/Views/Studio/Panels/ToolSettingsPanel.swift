@@ -12,6 +12,8 @@ import SwiftUI
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     @State private var showBrushLibrary = false
+
+    static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -40,6 +42,8 @@ struct FloatingToolSettingsPanel: View {
                             Text("✕")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .accessibilityLabel("Close tool settings")
                         .accessibilityIdentifier("studio.tool-settings.close")
@@ -51,9 +55,10 @@ struct FloatingToolSettingsPanel: View {
                     ScrollView {
                         toolSettingsContent(def)
                     }
-                    .frame(maxHeight: max(70, min(360, available.size.height - 100)))
+                    .frame(maxHeight: max(0, min(360, available.size.height - (available.size.height >= 180 ? 132 : 100))))
                     
-                    // Shortcut
+                    // The short landscape popup keeps the actual operation controls reachable.
+                    if available.size.height >= 180 {
                     HStack(spacing: 4) {
                         Text("Shortcut:")
                             .font(.system(size: 10, design: .monospaced))
@@ -67,11 +72,12 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(4)
                     }
                     .padding(.top, 4)
+                    }
                 }
                 .padding(12)
             }
         }
-        .frame(width: 260)
+        .frame(width: min(260, available.size.width))
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(hex: "1A1A24").opacity(0.98))
@@ -82,7 +88,7 @@ struct FloatingToolSettingsPanel: View {
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 8)
+        .accessibilityIdentifier("studio.tool-settings")
         }
     }
     
@@ -365,11 +371,34 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
             }
             
+        case .hand, .zoom:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Zoom: \(Int((vm.canvasScale * 100).rounded()))%")
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.tool-settings.zoom-value")
+                HStack(spacing: 8) {
+                    zoomControl("minus", "Zoom out", "zoom-out") { vm.zoomOut() }
+                    zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
+                    zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
+                }
+            }
         default:
             EmptyView()
         }
     }
     
+    private func zoomControl(_ icon: String, _ label: String, _ identifier: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label).font(.specialElite(9))
+            }.frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundColor(.white)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }.accessibilityLabel(label).accessibilityIdentifier("studio.tool-settings." + identifier)
+    }
+
     var opacityBinding: Binding<Double> {
         Binding(
             get: { vm.toolOpacity * 100 },

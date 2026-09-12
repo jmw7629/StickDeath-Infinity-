@@ -98,7 +98,6 @@ struct StudioEditorWorkspace: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void
     @State private var toolbar = StudioToolbarLayout()
-    @State private var context = StudioContextVisibility<DrawingTool>()
     @State private var dragOrigin: CGRect?
     @GestureState private var dragTranslation: CGSize = .zero
 
@@ -122,8 +121,7 @@ struct StudioEditorWorkspace: View {
             }
         }
         .onChange(of: vm.selectedTool) { _, tool in
-            context.select(tool)
-            if vm.activePanel == .toolSettings && !StudioContextDock.hasSettings(tool) { vm.activePanel = .none }
+            if vm.activePanel == .toolSettings && !FloatingToolSettingsPanel.hasSettings(tool) { vm.activePanel = .none }
         }
     }
 
@@ -133,12 +131,14 @@ struct StudioEditorWorkspace: View {
             let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
             let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
             let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
-            let dockFrame = StudioToolbarLayout.contextFrame(in: bounds, toolbar: placement)
+            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement)
+            let canvasFrame = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement)
             ZStack(alignment: .topLeading) {
                 StudioCanvasView(vm: vm)
+                    .frame(width: canvasFrame.width, height: canvasFrame.height)
+                    .position(x: canvasFrame.midX, y: canvasFrame.midY)
 
                 StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
-                    onToolSelected: { context.select($0) },
                     handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
                         .updating($dragTranslation) { value, state, _ in state = value.translation }
                         .onChanged { _ in if dragOrigin == nil { dragOrigin = placement.frame } }
@@ -153,17 +153,11 @@ struct StudioEditorWorkspace: View {
                     .frame(width: railFrame.width, height: railFrame.height)
                     .position(x: railFrame.midX, y: railFrame.midY)
 
-                if vm.activePanel == .toolSettings && StudioContextDock.hasSettings(vm.selectedTool) {
-                    FloatingToolSettingsPanel(vm: vm).transition(.opacity)
-                }
-
-                if StudioContextDock.applies(to: vm.selectedTool) && context.isVisible(for: vm.selectedTool) && dockFrame.height >= 44 {
-                    StudioContextDock(vm: vm) {
-                        context.dismiss(vm.selectedTool)
-                        if vm.activePanel == .toolSettings { vm.activePanel = .none }
-                    }
-                    .frame(width: dockFrame.width, height: min(dockFrame.height, 186), alignment: .top)
-                    .position(x: dockFrame.midX, y: dockFrame.minY + min(dockFrame.height, 186) / 2)
+                if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
+                    FloatingToolSettingsPanel(vm: vm)
+                        .frame(width: popupFrame.width, height: popupFrame.height)
+                        .position(x: popupFrame.midX, y: popupFrame.midY)
+                        .transition(.opacity)
                 }
             }
             .coordinateSpace(name: "studio.toolbar.stage")

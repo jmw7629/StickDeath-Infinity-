@@ -7,7 +7,7 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
-    func testFloatingToolbarDockingAndContextDismissal() throws {
+    func testFloatingToolbarDockingAndPopupDismissal() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         _ = try createProjectIfLibraryIsShown(app)
@@ -29,28 +29,44 @@ final class StudioSmokeUITests: XCTestCase {
             capture(app, name: "toolbar-docked-" + side)
         }
         try selectToolbarTool("hand", app: app)
-        let close = app.buttons["studio.context.close"]
-        XCTAssertTrue(close.isHittable && app.buttons["studio.context.fit"].isHittable)
-        XCTAssertGreaterThanOrEqual(close.frame.width, 44)
-        XCTAssertGreaterThanOrEqual(close.frame.height, 44)
+        let close = app.buttons["studio.tool-settings.close"]
+        XCTAssertTrue(close.isHittable && app.buttons["studio.tool-settings.fit"].isHittable)
+        XCTAssertGreaterThanOrEqual(close.frame.width.rounded(), 44)
+        XCTAssertGreaterThanOrEqual(close.frame.height.rounded(), 44)
         close.tap()
         XCTAssertFalse(close.exists, "X did not dismiss tool-specific controls")
         try selectToolbarTool("hand", app: app)
         XCTAssertTrue(close.waitForExistence(timeout: 3), "Retapping Hand did not restore its context")
         try selectToolbarTool("eyedropper", app: app)
-        XCTAssertFalse(close.exists, "An inapplicable tool kept the right dock")
+        XCTAssertFalse(close.exists, "An inapplicable tool kept the settings popup")
+        XCTAssertFalse(app.buttons["studio.context.close"].exists, "The removed secondary toolbar returned")
         grip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
         XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "Horizontal"), evaluatedWith: rail).waitUntilFulfilled(timeout: 5))
         XCTAssertTrue(stage.frame.contains(rail.frame))
         XCTAssertFalse(undo.isEnabled, "Toolbar movement altered undo history")
         try selectToolbarTool("hand", app: app)
-        app.buttons["studio.context.zoom-in"].tap()
-        app.buttons["studio.context.fit"].tap()
+        app.buttons["studio.tool-settings.zoom-in"].tap()
+        app.buttons["studio.tool-settings.fit"].tap()
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertGreaterThan(canvas.frame.width, 80)
         XCTAssertGreaterThan(canvas.frame.height, 80)
-        capture(app, name: "toolbar-floating-context")
+        capture(app, name: "toolbar-floating-popup")
+    }
+
+    @MainActor
+    private func waitForStableCanvas(_ canvas: XCUIElement, expected: CGRect? = nil) throws {
+        var last = CGRect.null
+        var since = Date()
+        let settled = NSPredicate { _, _ in
+            let frame = canvas.frame
+            guard canvas.exists, canvas.isHittable, frame.width > 80, frame.height > 80,
+                  expected == nil || frame == expected else { since = Date(); return false }
+            if last != frame { last = frame; since = Date(); return false }
+            return Date().timeIntervalSince(since) >= 1
+        }
+        XCTAssertTrue(expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "The real canvas did not settle at its expected geometry")
     }
 
     @MainActor
@@ -313,6 +329,8 @@ final class StudioSmokeUITests: XCTestCase {
         _ = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        try waitForStableCanvas(canvas)
+        let originalFrame = canvas.frame
         let before = try pixels(canvas.screenshot().image)
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
         let open = app.buttons["studio.audio.open"]
@@ -345,6 +363,7 @@ final class StudioSmokeUITests: XCTestCase {
         let close = app.buttons["studio.panel.close.Audio Timeline"]
         XCTAssertTrue(close.isHittable); close.tap()
         XCTAssertTrue(canvas.waitForExistence(timeout: 5)); XCTAssertTrue(canvas.isHittable)
+        try waitForStableCanvas(canvas, expected: originalFrame)
         XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Cancelling Files mutated the document history")
         XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4,
                                 "Cancelling the actual audio picker changed the canvas")

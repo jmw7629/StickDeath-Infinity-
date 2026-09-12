@@ -21,7 +21,6 @@ struct ToolDef {
 struct StudioToolStrip: View {
     @ObservedObject var vm: StudioViewModel
     var axis: Axis = .horizontal
-    var onToolSelected: (DrawingTool) -> Void = { _ in }
     var handleGesture = AnyGesture(DragGesture(minimumDistance: 5))
     var onDock: (StudioToolbarLayout.Dock) -> Void = { _ in }
     
@@ -84,7 +83,6 @@ struct StudioToolStrip: View {
                     let isSelected = vm.selectedTool == def.tool
                     
                     Button(action: {
-                        onToolSelected(def.tool)
                         if isSelected && hasSettings(def.tool) {
                             vm.activePanel = vm.activePanel == .toolSettings ? .none : .toolSettings
                         } else {
@@ -146,6 +144,6 @@ struct StudioToolStrip: View {
     }
 
     func hasSettings(_ tool: DrawingTool) -> Bool {
-        StudioContextDock.hasSettings(tool)
+        FloatingToolSettingsPanel.hasSettings(tool)
     }
 }

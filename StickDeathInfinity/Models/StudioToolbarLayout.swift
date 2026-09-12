@@ -65,21 +65,44 @@ struct StudioToolbarLayout: Equatable {
                       width: size.width, height: size.height)
     }
 
-    /// Keep the contextual dock below a horizontal rail or beside a right rail.
-    /// The context can scroll when the remaining height is short.
-    static func contextFrame(in bounds: CGRect, toolbar: Placement) -> CGRect {
+    /// The sole tool popup opens below a horizontal rail, or beside an edge rail.
+    /// Near the bottom edge it uses the larger space above and scrolls its content.
+    static func settingsFrame(in bounds: CGRect, toolbar: Placement) -> CGRect {
         let inner = usable(bounds)
-        let width = min(56, inner.width)
-        let right = toolbar.vertical && toolbar.dock == .trailing ? toolbar.frame.minX - margin : inner.maxX
-        let x = max(inner.minX, right - width)
-        var top = inner.minY, bottom = inner.maxY
-        if !toolbar.vertical && toolbar.frame.maxX > x {
-            let above = max(0, toolbar.frame.minY - margin - inner.minY)
+        var area = inner
+        if toolbar.vertical {
+            if toolbar.dock == .trailing { area.size.width = max(0, toolbar.frame.minX - margin - inner.minX) }
+            else {
+                area.origin.x = min(inner.maxX, toolbar.frame.maxX + margin)
+                area.size.width = max(0, inner.maxX - area.minX)
+            }
+        } else {
             let below = max(0, inner.maxY - toolbar.frame.maxY - margin)
-            if above > below { bottom = toolbar.frame.minY - margin }
-            else { top = toolbar.frame.maxY + margin }
+            let above = max(0, toolbar.frame.minY - margin - inner.minY)
+            if below >= 132 || below >= above {
+                area.origin.y = min(inner.maxY, toolbar.frame.maxY + margin)
+                area.size.height = below
+            } else { area.size.height = above }
         }
-        return CGRect(x: x, y: min(top, inner.maxY), width: width, height: max(0, bottom - top))
+        let width = min(260, area.width), height = min(492, area.height)
+        return CGRect(x: area.midX - width / 2, y: area.minY, width: width, height: height)
+    }
+
+    /// Preserve the original clear canvas beneath the default top rail and
+    /// beside a snapped rail. Explicitly floating in the middle may cover artwork.
+    static func canvasFrame(in bounds: CGRect, toolbar: Placement) -> CGRect {
+        var area = bounds
+        if toolbar.vertical {
+            if toolbar.dock == .trailing { area.size.width = max(0, toolbar.frame.minX - margin - bounds.minX) }
+            else {
+                area.origin.x = min(bounds.maxX, toolbar.frame.maxX + margin)
+                area.size.width = max(0, bounds.maxX - area.minX)
+            }
+        } else if toolbar.frame.minY <= bounds.minY + margin + 1 {
+            area.origin.y = min(bounds.maxY, toolbar.frame.maxY + margin)
+            area.size.height = max(0, bounds.maxY - area.minY)
+        }
+        return area
     }
 
     private mutating func remember(_ point: CGPoint, in bounds: CGRect) {
@@ -100,12 +123,4 @@ struct StudioToolbarLayout: Equatable {
         CGPoint(x: min(bounds.maxX - size.width / 2, max(bounds.minX + size.width / 2, point.x)),
                 y: min(bounds.maxY - size.height / 2, max(bounds.minY + size.height / 2, point.y)))
     }
-}
-
-/// Dismissal belongs to the selected tool, never to all tools or the document.
-struct StudioContextVisibility<Tool: Equatable> {
-    private(set) var dismissedTool: Tool?
-    mutating func dismiss(_ tool: Tool) { dismissedTool = tool }
-    mutating func select(_ tool: Tool) { dismissedTool = nil }
-    func isVisible(for tool: Tool) -> Bool { dismissedTool != tool }
 }
