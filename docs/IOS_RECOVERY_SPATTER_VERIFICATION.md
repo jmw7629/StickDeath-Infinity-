@@ -1,3 +1,11 @@
+## Current native result: 1e32cd6
+
+Workflow 34716493547 passed every production stage and the actual iOS app build. On iOS 18.5 / iPhone 16 Pro simulator, 14 of 16 native journeys passed, none skipped. Both real MP4 receipts and native share-sheet cancellation journeys passed. Toolbar docking, the sole popup, shape settings, drawing, images, PNG and local Spatter journeys passed.
+
+The audio library journey checked `isHittable` immediately after project creation; the captured application snapshot had no accessibility children during the sheet transition. Its next revision waits up to eight seconds for the actual audio control. The eyedropper journey passed white/blue sampling, real Hand/Zoom/Fit, subsequent blue drawing and undo/redo, then reached its unchanged 180-second execution allowance before cold reopen/export could finish. It is split into two independent visible-tool journeys, retaining the pixel, persistence and export assertions and the existing suite deadline.
+
+The follow-up also retains a cancelled picker touch until physical completion across frame/scene changes, preventing subsequent movement from capturing a changed frame. The audio gutter receives an explicit accessibility container so its full geometry can be checked. These corrections still require the next exact-head native run. Root review is not independent approval; no merge or full MVP claim.
+
 # Native iOS recovery and Studio verification
 
 Codex owns the Studio continuation under Joseph Willis's 2026-09-08 ownership transfer, recorded in issue #110. Recovery PR #111 and local Spatter editing PR #112 are merged. Native SwiftUI Studio is the product. Media, community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope. Historical demo values are not live product evidence.

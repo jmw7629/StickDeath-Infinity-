@@ -329,7 +329,11 @@ final class StudioSmokeUITests: XCTestCase {
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
         let open = app.buttons["studio.audio.open"]
-        XCTAssertTrue(open.isHittable); open.tap()
+        // Creation dismisses a native sheet. Wait for the real control to become
+        // reachable; the previous failure captured an empty transition snapshot.
+        let audioReady = expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: open)
+        XCTAssertTrue(audioReady.waitUntilFulfilled(timeout: 8), "Studio audio did not become reachable after project creation")
+        open.tap()
         let library = app.buttons["studio.audio.library.open"]
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let search = app.textFields["studio.audio.search"]
@@ -952,27 +956,13 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testEyedropperArtworkZoomDrawUndoSaveReopenAndPNG() throws {
+    func testEyedropperArtworkAndTransformedCanvas() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let projectName = try createProjectIfLibraryIsShown(app)
-        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
-        XCTAssertTrue(canvas.waitForExistence(timeout:8))
-        try pickerRailControl("studio.tool.brush", app:app, forward:false).tap()
-        let library = app.buttons["studio.brush-library"]
-        XCTAssertTrue(library.waitForExistence(timeout:5)); library.tap()
-        let round = app.buttons["studio.brush-family.round"]
-        XCTAssertTrue(round.waitForExistence(timeout:5)); round.tap()
-        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition:0.7)
-        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition:1)
-        app.buttons["studio.tool-settings.close"].tap()
-        try choosePickerTestColor("#0000FF", app:app)
-        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.2,dy:0.5)).press(forDuration:0.05,
-            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.8,dy:0.5)))
+        _ = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app)
+        let canvas = prepared.canvas, original = prepared.original
         let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
-        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"), evaluatedWith:undo).waitUntilFulfilled(timeout:5))
-        let original = try pixels(canvas.screenshot().image)
-        XCTAssertGreaterThan(imageFixtureColors(original)[1],12,"The real source stroke must be blue")
         try choosePickerTestColor("#FF0000", app:app)
         try pickerRailControl("studio.tool.eyedropper", app:app, forward:true).tap()
         canvas.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.2)).tap()
@@ -1014,6 +1004,24 @@ final class StudioSmokeUITests: XCTestCase {
         try settlePickerCanvasAfterSave(app,canvas:canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
             "Sampling or transformed canvas navigation changed artwork")
+        capture(app, name: "picker-transform-preserved-artwork")
+    }
+
+    @MainActor
+    func testEyedropperDrawingUndoColdReopenAndPNG() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app)
+        let canvas = prepared.canvas, original = prepared.original
+        let undo = app.buttons["studio.undo"], redo = app.buttons["studio.redo"]
+        try choosePickerTestColor("#FF0000", app:app)
+        try pickerRailControl("studio.tool.eyedropper", app:app, forward:true).tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.5,dy:0.5)).tap()
+        XCTAssertTrue(app.staticTexts["Sampled #0000FF from visible artwork."].waitForExistence(timeout:8))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,
+            "Sampling changed the source artwork before drawing")
         try pickerRailControl("studio.tool.brush", app:app, forward:false).tap()
         XCTAssertTrue(app.buttons["studio.tool-settings.close"].waitForExistence(timeout:5))
         app.buttons["studio.tool-settings.close"].tap()
@@ -1052,6 +1060,29 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(imageFixtureColors(outputPixels)[1],12,"Actual reopened PNG contains no sampled blue")
         XCTAssertEqual(imageFixtureColors(outputPixels)[0],0,"Actual PNG unexpectedly used the earlier red setting")
         capture(reopened,name:"picker-real-blue-png-export")
+    }
+
+    // Both bounded journeys create their source stroke through visible tools.
+    // No injected document, shortened assertion or expanded execution allowance.
+    @MainActor private func preparePickerSourceStroke(_ app: XCUIApplication) throws -> (canvas: XCUIElement, original: Raster) {
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout:8))
+        try pickerRailControl("studio.tool.brush", app:app, forward:false).tap()
+        let library = app.buttons["studio.brush-library"]
+        XCTAssertTrue(library.waitForExistence(timeout:5)); library.tap()
+        let round = app.buttons["studio.brush-family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout:5)); round.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition:0.7)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition:1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try choosePickerTestColor("#0000FF", app:app)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.2,dy:0.5)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.8,dy:0.5)))
+        let undo = app.buttons["studio.undo"]
+        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"), evaluatedWith:undo).waitUntilFulfilled(timeout:5))
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(imageFixtureColors(original)[1],12,"The real source stroke must be blue")
+        return (canvas, original)
     }
 
     @MainActor

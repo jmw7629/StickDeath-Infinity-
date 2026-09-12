@@ -279,6 +279,7 @@ private struct StudioAudioWorkspace: View {
                         }.frame(width: 44, height: rowHeight)
                     }
                 }.frame(width: 44, alignment: .top)
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("studio.audio.track-labels")
                 // All four lanes scroll vertically with the workspace. A
                 // second vertical scroller traps swipes and detaches labels.

@@ -216,15 +216,21 @@ struct StudioCanvasView: View {
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
-    private func clearInput() {
+    private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
         input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
-        colorInput = StudioColorSampleGesture(); touchID = nil
+        if endingTouch {
+            colorInput = StudioColorSampleGesture(); touchID = nil
+        }
     }
     private func interruptInput(_ reason: String) {
         if let input { vm.interruptStrokeInput(input, reason: reason) }
-        clearInput()
+        colorInput.invalidate()
+        // A frame/scene change while the finger is down cancels that whole
+        // touch. Keep its identity until physical end; a later move must not
+        // capture the new frame as though it were a fresh gesture.
+        clearInput(endingTouch: !gestureActive)
     }
 }
 
