@@ -16,6 +16,8 @@ The first Move CI run passed all ten production Move groups, then stopped in the
 
 After the correction, all15 production fill groups passed on the Intel Mac, including mixed brush/shape/fill history and cold reopen, actual PNG and H.264 decoding, coverage/memory limits, in-flight cancellation and stale-context rejection. The complete21-journey native run is still required.
 
+The next run passed Move and fill, then the standalone audio-mix compiler exposed a model dependency on `StudioCommandError`. Document operations now throw document-domain validation errors; the shared model compiles without importing the command decoder. The original failure reproduced against an immutable nine-source copy. The corrected actual audio-mix suite, all ten Move groups and the iOS SDK check pass locally. Native runtime verification remains separate.
+
 ## Pending gates and limits
 
 The added native Move drawing/drag/Undo/Redo/cold-reopen journey has not executed yet. Its existing real screenshot assertions verify the old location clears and the moved image survives history and restart. Physical-device, independent review and release gates remain outstanding.

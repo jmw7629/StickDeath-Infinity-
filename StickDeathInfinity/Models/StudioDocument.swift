@@ -271,13 +271,13 @@ struct StudioDocumentEditor {
     /// One reversible edit; original geometry and fill pixels are never cropped.
     mutating func translateElements(frameID: String, ids: Set<String>, dx: Double, dy: Double,
                                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
-        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioCommandError.missingSelection }
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before moving artwork.") }
         try StudioElementTranslation(x: dx, y: dy).validate()
         try checkCancellation()
         try change { value in
-            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioCommandError.invalidReference }
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame is unavailable. Nothing moved.") }
             let existing = Set(value.frames[frame].elements.map(\.id))
-            guard ids.isSubset(of: existing) else { throw StudioCommandError.invalidReference }
+            guard ids.isSubset(of: existing) else { throw StudioDocumentError.invalid("The selection contains unavailable artwork. Nothing moved.") }
             for index in value.frames[frame].elements.indices where ids.contains(value.frames[frame].elements[index].id) {
                 try checkCancellation()
                 let element = value.frames[frame].elements[index]
