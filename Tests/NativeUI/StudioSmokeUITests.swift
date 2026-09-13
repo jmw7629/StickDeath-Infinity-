@@ -335,7 +335,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
         XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8), "Expanded catalogue never finished loading")
-        XCTAssertEqual(catalogueCount.label, "2127 offline sounds · CC0")
+        XCTAssertEqual(catalogueCount.label, "2,127 offline sounds · CC0")
         let search = app.textFields["studio.audio.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Fan 1 Kenney\n")
         try audioLibraryButton("studio.audio.catalogue.add.7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a", app: app).tap()
