@@ -324,6 +324,48 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testExpandedAACLibrarySoundPlaybackAndOfflineReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let open = app.buttons["studio.audio.open"]
+        let ready = expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: open)
+        XCTAssertTrue(ready.waitUntilFulfilled(timeout: 8)); open.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let catalogueCount = app.staticTexts["studio.audio.catalogue.count"]
+        XCTAssertTrue(catalogueCount.waitForExistence(timeout: 8), "Expanded catalogue never finished loading")
+        XCTAssertEqual(catalogueCount.label, "2127 offline sounds · CC0")
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Card Fan 1 Kenney\n")
+        try audioLibraryButton("studio.audio.catalogue.add.7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a", app: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "1 clips"), evaluatedWith: app.staticTexts["studio.audio.clip-count"]).waitUntilFulfilled(timeout: 10))
+        capture(app, name: "audio-expanded-aac-library")
+        app.buttons["studio.audio.library.close"].tap()
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        // The measured AAC lasts 0.720816 seconds; wait for actual player completion.
+        XCTAssertTrue(app.staticTexts["00:00.72"].waitForExistence(timeout: 8), "New AAC sound never reached its real playback end")
+        app.buttons["studio.audio.close"].tap()
+        let save = app.buttons["studio.save"]
+        XCTAssertTrue(save.isHittable); save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedAudio = reopened.buttons["studio.audio.open"]
+        XCTAssertTrue(reopenedAudio.waitForExistence(timeout: 5)); reopenedAudio.tap()
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        let replay = reopened.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(replay.isHittable && replay.isEnabled); replay.tap()
+        XCTAssertTrue(reopened.staticTexts["00:00.72"].waitForExistence(timeout: 8), "Saved AAC audio did not play after cold reopening")
+        capture(reopened, name: "audio-expanded-aac-cold-reopen")
+    }
+
+    @MainActor
     func testBundledSoundLibraryMixAndOfflineReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

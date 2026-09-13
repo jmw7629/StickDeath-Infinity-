@@ -43,7 +43,19 @@ private struct StudioAudioWorkspace: View {
         .background(background)
         .onAppear {
             showingLibrary = opensLibrary; volume = vm.selectedCurrentAudioClip?.volume ?? 0.8
-            do { catalogue = try StudioSoundCatalogue.bundled() } catch { catalogueError = error.localizedDescription }
+        }
+        .task {
+            guard catalogue == nil else { return }
+            catalogueError = nil
+            do {
+                let loaded = try await StudioSoundCatalogue.loadBundled()
+                try Task.checkCancellation()
+                catalogue = loaded
+            } catch is CancellationError {
+                // The panel disappeared; do not show a stale loading error.
+            } catch {
+                if !Task.isCancelled { catalogueError = error.localizedDescription }
+            }
         }
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback() }
         .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close() }
@@ -191,6 +203,10 @@ private struct StudioAudioWorkspace: View {
                         }
                     } else if let catalogueError {
                         Text(catalogueError).font(.caption2).foregroundColor(.white.opacity(0.6)).padding(16)
+                    } else {
+                        ProgressView("Loading sound library…")
+                            .font(.caption).tint(.sdRed).padding(16)
+                            .accessibilityIdentifier("studio.audio.catalogue.loading")
                     }
                 }.padding(.bottom, 12)
             }

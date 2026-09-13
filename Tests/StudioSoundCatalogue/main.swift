@@ -26,8 +26,23 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
         func test(_ name: String, _ action: () async throws -> Void) async throws {
             try await action(); count += 1; print("PASS " + name)
         }
+        try await test("asynchronous production catalogue load preserves contents and cancellation") {
+            let loaded = try await StudioSoundCatalogue.load(directory: bundle)
+            try require(loaded.sounds == catalogue.sounds && loaded.categories == catalogue.categories,
+                        "background loading changed the actual catalogue")
+            let cancelled = Task { @MainActor in
+                try await StudioSoundCatalogue.load(directory: root.appendingPathComponent("absent-library"))
+            }
+            cancelled.cancel()
+            do {
+                _ = try await cancelled.value
+                throw CatalogueFailure(message: "cancelled library load returned a result")
+            } catch is CancellationError {
+                // Cancellation takes precedence over accessing a missing file.
+            }
+        }
         try await test("all bundled bytes decode with exact Apple measured timing and waveforms") {
-            try require(catalogue.sounds.count == 88 && catalogue.categories.count == 21, "unexpected starter bundle")
+            try require(catalogue.sounds.count == 2127 && catalogue.categories.count == 21, "unexpected expanded bundle")
             for sound in catalogue.sounds {
                 let resource = try catalogue.checkedResource(sound)
                 let decoded = try await StudioAudioImportService.shared.importAudio(from: resource.url, name: sound.title, scratchParent: scratch)
@@ -44,7 +59,7 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
             try require(catalogue.search("zzzz-no-sound", category: nil).isEmpty, "invented search result")
             try require(catalogue.search("", category: item.category).allSatisfy { $0.category == item.category }, "category leaked")
         }
-        let sound = catalogue.sounds.first(where: { $0.duration >= 0.5 })!
+        let sound = catalogue.sounds.first(where: { $0.id == "7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a" })!
         let resource = try catalogue.checkedResource(sound)
         let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("documents"))
         let vm = StudioViewModel(storage: storage)

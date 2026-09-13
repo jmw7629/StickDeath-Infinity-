@@ -59,6 +59,29 @@ struct StudioSoundCatalogue: Sendable {
         guard let directory = bundle.url(forResource: "StudioSounds", withExtension: nil) else { throw CatalogueError.unavailable }
         return try Self(directory: directory)
     }
+    /// Decode and validate the sizeable offline manifest away from the UI actor.
+    /// A disappearing library cancels its own task; no late result is published.
+    static func load(directory: URL) async throws -> Self {
+        try Task.checkCancellation()
+        let loading = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
+            let catalogue = try Self(directory: directory)
+            try Task.checkCancellation()
+            return catalogue
+        }
+        return try await withTaskCancellationHandler {
+            let catalogue = try await loading.value
+            try Task.checkCancellation()
+            return catalogue
+        } onCancel: {
+            loading.cancel()
+        }
+    }
+    static func loadBundled(in bundle: Bundle = .main) async throws -> Self {
+        try Task.checkCancellation()
+        guard let directory = bundle.url(forResource: "StudioSounds", withExtension: nil) else { throw CatalogueError.unavailable }
+        return try await load(directory: directory)
+    }
     var categories: [String] { Array(Set(sounds.map(\.category))).sorted() }
     func search(_ query: String, category: String?) -> [Sound] {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)

@@ -1,4 +1,4 @@
-StickDeath Infinity offline sound starter library
+StickDeath Infinity offline sound library — 2,127 real effects
 All sound assets: CC0-1.0. https://creativecommons.org/publicdomain/zero/1.0/
 Each catalogue entry retains its original creator, publisher source URL and original/installed SHA-256.
 M4A files are AAC derivatives produced with Apple afconvert; WAV files retain original bytes.
