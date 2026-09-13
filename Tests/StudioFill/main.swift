@@ -438,12 +438,12 @@ private struct Failure: Error { let message: String }
             color:"#FF0000", width:8, opacity:1, layerID:vm.activeLayerID,
             brush:.init(family:.round,seed:71,smoothing:0))
         try require(vm.commitElement(brush) && vm.document.schemaVersion == 2, "Styled brush begins in its historical schema")
-        for schema in 2...6 {
+        for schema in 2...StudioDocument.supportedSchemaVersions.upperBound {
             var historical = vm.document; historical.schemaVersion = schema
             try historical.validate()
             try require(StudioDocumentArchive.decode(StudioDocumentArchive(document: historical, rasterFrameIndices: [:]).encoded()).document == historical, "Supported schema changed a styled brush on decode")
         }
-        for schema in [1,7] {
+        for schema in [1, StudioDocument.supportedSchemaVersions.upperBound + 1] {
             var invalid = vm.document; invalid.schemaVersion = schema
             try rejects { try invalid.validate() }
         }
