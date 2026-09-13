@@ -24,6 +24,13 @@ final class StudioMoviePreviewState: ObservableObject {
     private var failureObserver: NSObjectProtocol?
     private var readinessTask: Task<Void, Never>?
     private var seekID: UUID?
+    @Published private(set) var isScrubbing = false
+    var isSeeking: Bool { seekID != nil }
+    @Published private var pendingPosition: Double?
+    /// Slider feedback is immediate while the actual decoder position remains
+    /// separately reported by currentTime. A paused decoder callback must not
+    /// reset the thumb underneath an active finger.
+    var sliderPosition: Double { pendingPosition ?? currentTime }
 
     @discardableResult
     func load(session: StudioMovieExportSession, scope: StudioMovieExportSession.Scope) -> Bool {
@@ -69,7 +76,7 @@ final class StudioMoviePreviewState: ObservableObject {
             }
             timeObserver = playback.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 20), queue: .main) { [weak self] time in
                 Task { @MainActor in
-                    guard let self, self.generation == id, self.seekID == nil,
+                    guard let self, self.generation == id, self.seekID == nil, !self.isScrubbing,
                           let seconds = self.player?.currentTime().seconds, seconds.isFinite else { return }
                     self.currentTime = min(self.duration, max(0, seconds))
                 }
@@ -111,19 +118,41 @@ final class StudioMoviePreviewState: ObservableObject {
     }
 
     func togglePlayback() {
-        guard isReady, let player else { return }
+        guard isReady, !isScrubbing, !isSeeking, let player else { return }
         if isPlaying || isWaiting || player.rate != 0 { player.pause() }
         else if didFinish || currentTime >= duration {
             seek(to: 0, resume: true)
         } else { player.play() }
     }
 
+    func setScrubbing(_ editing: Bool) {
+        guard isReady, let player else { return }
+        if editing {
+            guard !isScrubbing else { return }
+            isScrubbing = true
+            if pendingPosition == nil { pendingPosition = currentTime }
+            player.pause()
+        } else {
+            guard isScrubbing else { return }
+            isScrubbing = false
+            if let position = pendingPosition { seek(to: position) }
+        }
+    }
+
+    func updateSliderPosition(_ seconds: Double) {
+        guard isReady, player != nil, seconds.isFinite else { return }
+        let position = min(duration, max(0, seconds))
+        if isScrubbing { pendingPosition = position }
+        else { seek(to: position) } // accessibility/keyboard updates without a drag
+    }
+
     func seek(to seconds: Double, resume: Bool = false) {
         guard isReady, let player, seconds.isFinite else { return }
         let id = generation, seek = UUID()
         seekID = seek
-        player.pause()
         let target = min(duration, max(0, seconds))
+        pendingPosition = target
+        player.pause()
         player.seek(to: CMTime(seconds: target, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { [weak self, weak player] completed in
             Task { @MainActor in
@@ -134,6 +163,7 @@ final class StudioMoviePreviewState: ObservableObject {
                 }
                 self.currentTime = max(0, min(self.duration, player.currentTime().seconds))
                 self.didFinish = self.currentTime >= self.duration
+                if !self.isScrubbing { self.pendingPosition = nil }
                 if resume { self.didFinish = false; player.play() }
             }
         }
@@ -154,6 +184,7 @@ final class StudioMoviePreviewState: ObservableObject {
         failureObserver = nil
         player?.pause(); player?.replaceCurrentItem(with: nil); player = nil; ownedPlayer = nil
         isReady = false; isPlaying = false; isWaiting = false; didFinish = false; currentTime = 0; duration = 0
+        isScrubbing = false; pendingPosition = nil
         let lease = request; request = nil; lease?.finish()
     }
 

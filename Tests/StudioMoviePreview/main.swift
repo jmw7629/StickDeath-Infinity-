@@ -18,7 +18,7 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         while !condition() && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
         try require(condition(), message)
     }
-    static func fixture(_ root: URL, audio: Bool = false) async throws -> (StudioViewModel, StudioMovieExportSession) {
+    static func fixture(_ root: URL, audio: Bool = false, frameCount: Int = 12, blankLater: Bool = false) async throws -> (StudioViewModel, StudioMovieExportSession) {
         let parent = root.appendingPathComponent(UUID().uuidString)
         try fm.createDirectory(at: parent, withIntermediateDirectories: false)
         let output = parent.appendingPathComponent("output")
@@ -29,22 +29,23 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         try require(vm.commitElement(DrawnElement(id: UUID().uuidString, tool: .brush,
             points: [.init(x: 0, y: 16), .init(x: 64, y: 16)], color: "#FF0000", width: 64,
             opacity: 1, layerID: vm.activeLayerID)), "Actual red stroke failed")
-        for _ in 1..<12 { vm.duplicateFrame() }
+        for _ in 1..<frameCount { if blankLater { vm.addFrame() } else { vm.duplicateFrame() } }
         vm.currentFrameIndex = 0
         if audio {
             let url = parent.appendingPathComponent("original.caf")
             let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
             do {
                 let file = try AVAudioFile(forWriting: url, settings: format.settings)
-                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 36_000)!
-                buffer.frameLength = 36_000
-                for n in 0..<36_000 { for c in 0..<2 {
+                let audioFrames = min(36_000, frameCount * 3_000)
+                let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(audioFrames))!
+                buffer.frameLength = AVAudioFrameCount(audioFrames)
+                for n in 0..<audioFrames { for c in 0..<2 {
                     buffer.floatChannelData![c][n] = Float(sin(Double(n) * 2 * .pi * Double(c == 0 ? 480 : 960) / 48_000)) * 0.25
                 } }
                 try file.write(from: buffer)
             }
             let track = AudioTrack(id: UUID(), name: "Actual stereo", format: "caf",
-                                  audioData: try Data(contentsOf: url), startTime: 0, duration: 0.75)
+                                  audioData: try Data(contentsOf: url), startTime: 0, duration: Double(min(36_000, frameCount * 3_000)) / 48_000)
             _ = try vm.attachImportedAudio(track, expectedProjectID: vm.document.id,
                 expectedRevision: vm.document.revision, frameID: vm.currentFrame.id, trackNumber: 1)
         }
@@ -125,6 +126,65 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         state.togglePlayback()
         try await wait("Mixed file did not actually play") { state.isPlaying && state.currentTime > 0.1 }
     }
+    static func actualShortMovieScrubbing(_ root: URL) async throws {
+        let (vm, session) = try await fixture(root, audio: true, frameCount: 4, blankLater: true)
+        let state = StudioMoviePreviewState()
+        defer { state.stop(); session.close(); withExtendedLifetime(vm) {} }
+        try await ready(state, session)
+        try require(abs(state.duration - 1.0 / 3) < 0.01, "Short mixed fixture timing changed")
+        guard let item = state.player?.currentItem else { throw Failure(message: "Missing real short movie") }
+        let decoded = AVPlayerItemVideoOutput(pixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        item.add(decoded)
+        defer { item.remove(decoded) }
+        state.setScrubbing(true)
+        for position in [0.02, 0.12, 0.20, 0.25] {
+            state.updateSliderPosition(position)
+            try require(state.sliderPosition == position && state.currentTime == 0 && state.isScrubbing,
+                        "Slider did not retain direct finger feedback separately from actual decoder time")
+            try await Task.sleep(nanoseconds: 20_000_000)
+            try require(state.sliderPosition == position && state.player!.currentTime().seconds == 0,
+                        "Paused decoder callback reset the active slider or claimed an unperformed seek")
+        }
+        state.setScrubbing(false)
+        try await wait("Real short movie seek did not complete at the released slider position") {
+            !state.isSeeking && abs(state.currentTime - 0.25) < 0.015 && abs(state.player!.currentTime().seconds - 0.25) < 0.015
+        }
+        try require(abs(state.sliderPosition - state.currentTime) < 0.001, "Slider did not return to actual decoder time")
+        var frame: CVPixelBuffer?
+        try await wait("The short movie did not decode the actual blank frame after seeking") {
+            frame = decoded.copyPixelBuffer(forItemTime: item.currentTime(), itemTimeForDisplay: nil)
+            return frame != nil
+        }
+        let image = frame!
+        CVPixelBufferLockBaseAddress(image, .readOnly)
+        let bytes = CVPixelBufferGetBaseAddress(image)!.assumingMemoryBound(to: UInt8.self)
+        let offset = 16 * CVPixelBufferGetBytesPerRow(image) + 32 * 4
+        let actual = [bytes[offset], bytes[offset + 1], bytes[offset + 2]]
+        CVPixelBufferUnlockBaseAddress(image, .readOnly)
+        try require(actual.allSatisfy { $0 > 240 }, "Actual seek decoded a drawn frame instead of the later blank")
+        state.togglePlayback()
+        try await wait("Short preview did not finish after scrubbing") { state.didFinish }
+    }
+
+    static func rapidAndInterruptedScrubbing(_ root: URL) async throws {
+        let (vm, session) = try await fixture(root, frameCount: 4)
+        let state = StudioMoviePreviewState()
+        defer { state.stop(); session.close(); withExtendedLifetime(vm) {} }
+        try await ready(state, session)
+        // Accessibility-style updates may have no editing-start/end callbacks.
+        for position in [0.22, 0.04, 0.12, 0.25] { state.updateSliderPosition(position) }
+        try await wait("A stale seek replaced the final accessibility position") { !state.isSeeking && abs(state.currentTime - 0.25) < 0.015 }
+        state.updateSliderPosition(.nan); state.updateSliderPosition(.infinity)
+        try require(abs(state.sliderPosition - 0.25) < 0.015, "Nonfinite update changed playback")
+        state.setScrubbing(true); state.updateSliderPosition(0.1)
+        state.stop()
+        state.setScrubbing(false)
+        try await Task.sleep(nanoseconds: 100_000_000)
+        try require(state.player == nil && !state.isSeeking && !state.isScrubbing && state.sliderPosition == 0 && !session.isPreviewing,
+                    "Dismissed scrub restarted or retained the decoder")
+        try require(session.output?.checkedURLs().count == 2, "Stopping a scrub deleted the completed export")
+    }
+
     static func main() async throws {
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-movie-preview-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: false)
@@ -136,6 +196,8 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
         }
         await test("actual player pixels, play, pause, seek, completion and replay") { try await actualPlayback(root) }
         await test("actual mixed H264/AAC file retains audible PCM and plays") { try await actualMixedPlayback(root) }
+        await test("actual short mixed movie keeps finger feedback then seeks and decodes blank frame") { try await actualShortMovieScrubbing(root) }
+        await test("rapid accessibility and interrupted scrubbing preserve last seek and cleanup") { try await rapidAndInterruptedScrubbing(root) }
         await test("one preview lease at a time, stop preserves output for another preview") {
             let (vm, session) = try await fixture(root); defer { session.close(); withExtendedLifetime(vm) {} }
             let first = StudioMoviePreviewState(), second = StudioMoviePreviewState()

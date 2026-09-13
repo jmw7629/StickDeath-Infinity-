@@ -113,11 +113,12 @@ struct StudioMovieExportControls: View {
                                 Image(systemName: preview.isPlaying || preview.isWaiting ? "pause.fill" : "play.fill")
                                     .frame(width: 44, height: 44)
                             }
-                            .disabled(!preview.isReady)
+                            .disabled(!preview.isReady || preview.isScrubbing || preview.isSeeking)
                             .accessibilityLabel(preview.isPlaying || preview.isWaiting ? "Pause movie preview" : "Play movie preview")
                             .accessibilityIdentifier("studio.export.movie.preview.play")
-                            Slider(value: Binding(get: { preview.currentTime }, set: { preview.seek(to: $0) }),
-                                   in: 0...max(preview.duration, 0.001))
+                            Slider(value: Binding(get: { preview.sliderPosition }, set: { preview.updateSliderPosition($0) }),
+                                   in: 0...max(preview.duration, 0.001),
+                                   onEditingChanged: { preview.setScrubbing($0) })
                                 .tint(Color(hex: "#DC2626")).disabled(!preview.isReady)
                                 .accessibilityLabel("Movie preview position")
                                 .accessibilityIdentifier("studio.export.movie.preview.seek")

@@ -961,8 +961,12 @@ final class StudioSmokeUITests: XCTestCase {
                   seconds > 0.20 && seconds < 0.30 else { return false }
             return true
         }
-        XCTAssertTrue(expectation(for: sought, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
-                      "The MP4 decoder did not seek to the requested time")
+        let reachedTime = expectation(for: sought, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        if !reachedTime {
+            capture(app, name: "mp4-seek-position-failure")
+            captureHierarchy(app, name: "mp4-seek-position-failure-hierarchy")
+        }
+        XCTAssertTrue(reachedTime, "The MP4 decoder did not seek to the requested time; actual time: \(timing.label)")
         _ = try exportControl("studio.export.movie.preview", app: app)
         let blankPicture = NSPredicate { _, _ in
             guard let raster = try? self.moviePreviewPixels(picture, app: app) else { return false }
