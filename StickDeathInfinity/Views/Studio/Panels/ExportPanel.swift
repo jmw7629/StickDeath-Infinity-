@@ -7,6 +7,7 @@ struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
     @StateObject private var session = StudioExportSession()
     @StateObject private var movie = StudioMoviePanelState()
+    @StateObject private var gif = StudioGIFPanelState()
     @State private var background: StudioExportService.Background = .white
     @State private var shareRequest: StudioExportShareRequest?
 
@@ -24,6 +25,7 @@ struct ExportPanel: View {
             PanelHeader(title: "Export", icon: "📤", onClose: {
                 session.close()
                 movie.session.close()
+                gif.session.close()
                 vm.activePanel = .none
             })
             ScrollViewReader { proxy in
@@ -33,13 +35,17 @@ struct ExportPanel: View {
                         ForEach(ExportFormat.allCases, id: \.rawValue) { format in
                             ExportFormatCard(format: format, isSelected: vm.exportFormat == format,
                                 onTap: { vm.exportFormat = format })
-                                .disabled(session.isRunning || session.isSharing || movie.isBusy)
+                                .disabled(session.isRunning || session.isSharing || movie.isBusy || gif.isBusy)
                                 .accessibilityIdentifier("studio.export.format.\(format.rawValue.lowercased())")
                         }
                     }
                     if vm.exportFormat == .mp4 {
                         StudioMovieExportControls(vm: vm, movie: movie, onReady: {
                             proxy.scrollTo("studio.export.movie.result", anchor: .top)
+                        })
+                    } else if vm.exportFormat == .gif {
+                        StudioGIFExportControls(vm: vm, gif: gif, onReady: {
+                            proxy.scrollTo("studio.export.gif.result", anchor: .top)
                         })
                     } else {
                     if vm.isEditing {
@@ -129,7 +135,7 @@ struct ExportPanel: View {
                         exportDestination("▶️", "YouTube", "Official channel publishing unavailable")
                         exportDestination("📷", "Instagram", "Direct publishing unavailable")
                     }
-                    Text("No watermark is added. PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF and official channel publishing remain unfinished.")
+                    Text("No watermark is added. PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF uses reduced colors, a white background and no audio. Official channel publishing remains unfinished.")
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.white.opacity(0.5))
                 }
@@ -151,6 +157,7 @@ struct ExportPanel: View {
             // An active UIKit consumer can temporarily cover this panel. Its
             // presenter closes the movie owner on actual representable removal.
             if !movie.session.isSharing { movie.session.close() }
+            if !gif.session.isSharing { gif.session.close() }
             if vm.activePanel != .export || !vm.isEditing { session.close() }
         }
     }
@@ -354,7 +361,7 @@ struct ExportFormatCard: View {
     let format: ExportFormat
     let isSelected: Bool
     let onTap: () -> Void
-    private var isAvailable: Bool { format == .mp4 || format == .png || format == .spritesheet }
+    private var isAvailable: Bool { format == .mp4 || format == .gif || format == .png || format == .spritesheet }
 
     var body: some View {
         Button(action: onTap) {
@@ -362,7 +369,7 @@ struct ExportFormatCard: View {
                 Text(format.icon).font(.system(size: 24))
                 Text(format.rawValue).font(.system(size: 12, weight: .bold, design: .monospaced))
                     .foregroundColor(.white)
-                Text(format == .mp4 ? "H.264 · project audio" : (isAvailable ? format.subtitle : "Not available yet"))
+                Text(format == .mp4 ? "H.264 · project audio" : format == .gif ? "Animated · no audio" : (isAvailable ? format.subtitle : "Not available yet"))
                     .font(.system(size: 8, weight: .medium, design: .monospaced))
                     .foregroundColor(.white.opacity(0.5)).multilineTextAlignment(.center)
             }

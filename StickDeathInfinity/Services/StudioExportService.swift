@@ -152,7 +152,7 @@ final class StudioExportService {
         }
     }
 
-    private func render(_ frame: AnimationFrame, document: StudioDocument,
+    func render(_ frame: AnimationFrame, document: StudioDocument,
                         background: Background, raster: Data?) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
@@ -184,7 +184,7 @@ final class StudioExportService {
         return size
     }
 
-    private func validate(_ document: StudioDocument) throws {
+    func validate(_ document: StudioDocument) throws {
         try document.validate()
         let pixels = document.width * document.height
         guard document.frames.count <= Self.maximumFrames, pixels <= Self.maximumFramePixels,

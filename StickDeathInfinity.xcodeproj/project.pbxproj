@@ -138,6 +138,13 @@
 		DBCD6D5F922B5F2B4311E5E4 /* StudioFillService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B71351A143CAF9EA730A1936 /* StudioFillService.swift */; };
 		8BA244E6E046D789F067896C /* StudioFillSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */; };
 		82929C796A33BFD2D70F56D7 /* StudioMoviePreviewState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */; };
+		EDD785B1589487F8DA134E27 /* StudioGIFEncoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEA49F4747DF4A261E527548 /* StudioGIFEncoder.swift */; };
+		170A18F9EA0390145475D2CE /* StudioGIFExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68D648F790E4D53E4C2EC1F9 /* StudioGIFExportService.swift */; };
+		9C3833D56D8D9FBD54236AFB /* StudioGIFExportSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF9CDC9D55D87CF81E1A06D0 /* StudioGIFExportSession.swift */; };
+		11A5612377971CF44A2DC61E /* StudioGIFPanelState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25E6E0A4C4C50F74A4CBF6B3 /* StudioGIFPanelState.swift */; };
+		A07C46E9DA98324C55309235 /* StudioGIFShareLifetime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F6432E78CB3724E701F3E0F /* StudioGIFShareLifetime.swift */; };
+		28F9D1F2182AF46A98784423 /* StudioGIFExportControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01B1C8A5D2F4771F4E85B850 /* StudioGIFExportControls.swift */; };
+		14DD1764DCAF1F60415FA221 /* StudioGIFSharePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEDBE0F065A44780169EF9B5 /* StudioGIFSharePresenter.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -282,6 +289,13 @@
 		B71351A143CAF9EA730A1936 /* StudioFillService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioFillService.swift"; sourceTree = SOURCE_ROOT; };
 		6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioFillSession.swift"; sourceTree = SOURCE_ROOT; };
 		9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioMoviePreviewState.swift"; sourceTree = SOURCE_ROOT; };
+		BEA49F4747DF4A261E527548 /* StudioGIFEncoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGIFEncoder.swift"; sourceTree = SOURCE_ROOT; };
+		68D648F790E4D53E4C2EC1F9 /* StudioGIFExportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGIFExportService.swift"; sourceTree = SOURCE_ROOT; };
+		AF9CDC9D55D87CF81E1A06D0 /* StudioGIFExportSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGIFExportSession.swift"; sourceTree = SOURCE_ROOT; };
+		25E6E0A4C4C50F74A4CBF6B3 /* StudioGIFPanelState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGIFPanelState.swift"; sourceTree = SOURCE_ROOT; };
+		4F6432E78CB3724E701F3E0F /* StudioGIFShareLifetime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioGIFShareLifetime.swift"; sourceTree = SOURCE_ROOT; };
+		01B1C8A5D2F4771F4E85B850 /* StudioGIFExportControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioGIFExportControls.swift"; sourceTree = SOURCE_ROOT; };
+		BEDBE0F065A44780169EF9B5 /* StudioGIFSharePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioGIFSharePresenter.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -423,6 +437,11 @@
 				6C8064FB141ECE97956BA9C8 /* StudioFillRegion.swift */,
 				B71351A143CAF9EA730A1936 /* StudioFillService.swift */,
 				6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */,
+				BEA49F4747DF4A261E527548 /* StudioGIFEncoder.swift */,
+				68D648F790E4D53E4C2EC1F9 /* StudioGIFExportService.swift */,
+				AF9CDC9D55D87CF81E1A06D0 /* StudioGIFExportSession.swift */,
+				25E6E0A4C4C50F74A4CBF6B3 /* StudioGIFPanelState.swift */,
+				4F6432E78CB3724E701F3E0F /* StudioGIFShareLifetime.swift */,
 				9AA484CA8D9699A3C09E0A72 /* StudioMoviePreviewState.swift */,
 				5534B621046197C211F96FB2 /* StudioMovieExportSession.swift */,
 				7EB4D88B7AE46CEA0FD1D4C4 /* StudioMovieExportService.swift */,
@@ -690,6 +709,8 @@
 			children = (
 				D2E14BAC8AF4FCFE2BC956AF /* SpatterMotionRecipePanel.swift */,
 				59076FC7529E68BDBECFB946 /* StudioImageImportPanel.swift */,
+				01B1C8A5D2F4771F4E85B850 /* StudioGIFExportControls.swift */,
+				BEDBE0F065A44780169EF9B5 /* StudioGIFSharePresenter.swift */,
 				CBEC91E231BE62C478B4EFF8 /* StudioMovieSharePresenter.swift */,
 				FF837852CCCC0B12013AB345 /* StudioMovieExportControls.swift */,
 				0D13194B4E74C72CDA19B530 /* StudioProjectLibrary.swift */,
@@ -858,6 +879,13 @@
 				EC9897BB9AFF9D1731388EFE /* StudioFillRegion.swift in Sources */,
 				DBCD6D5F922B5F2B4311E5E4 /* StudioFillService.swift in Sources */,
 				8BA244E6E046D789F067896C /* StudioFillSession.swift in Sources */,
+				EDD785B1589487F8DA134E27 /* StudioGIFEncoder.swift in Sources */,
+				170A18F9EA0390145475D2CE /* StudioGIFExportService.swift in Sources */,
+				9C3833D56D8D9FBD54236AFB /* StudioGIFExportSession.swift in Sources */,
+				11A5612377971CF44A2DC61E /* StudioGIFPanelState.swift in Sources */,
+				A07C46E9DA98324C55309235 /* StudioGIFShareLifetime.swift in Sources */,
+				28F9D1F2182AF46A98784423 /* StudioGIFExportControls.swift in Sources */,
+				14DD1764DCAF1F60415FA221 /* StudioGIFSharePresenter.swift in Sources */,
 				82929C796A33BFD2D70F56D7 /* StudioMoviePreviewState.swift in Sources */,
 				163D432AA7F5EFEACF21172B /* StudioMovieExportSession.swift in Sources */,
 				986DC521401B32C785C16672 /* StudioMovieExportService.swift in Sources */,

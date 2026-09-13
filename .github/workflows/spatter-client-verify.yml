@@ -47,7 +47,7 @@ jobs:
     runs-on: macos-15
     # Setup/build takes about 23 minutes; the bounded UI suite allows 28 minutes.
     # Leave room for result collection without changing individual test limits.
-    timeout-minutes: 60
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -716,6 +716,97 @@ jobs:
             StickDeathInfinity/Services/StudioMovieShareLifetime.swift \
             -o "$RUNNER_TEMP/sdi-StudioMoviePanel-tests"
           "$RUNNER_TEMP/sdi-StudioMoviePanel-tests"
+      - name: Verify actual animated GIF pixels timing limits and file ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            Tests/StudioGIF/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIF-tests"
+          "$RUNNER_TEMP/sdi-StudioGIF-tests"
+      - name: Verify actual GIF capture cancellation scope and consumer lifetime
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            StickDeathInfinity/Services/StudioGIFExportSession.swift \
+            Tests/StudioGIFSession/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIFSession-tests"
+          "$RUNNER_TEMP/sdi-StudioGIFSession-tests"
+      - name: Verify GIF panel and completion-owned sharing leases
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            StickDeathInfinity/Services/StudioGIFExportSession.swift \
+            StickDeathInfinity/Services/StudioGIFPanelState.swift \
+            StickDeathInfinity/Services/StudioGIFShareLifetime.swift \
+            Tests/StudioGIFPanel/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
+          "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |

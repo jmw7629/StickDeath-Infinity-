@@ -943,6 +943,56 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.isHittable)
     }
 
+    /// Actual animated GIF creation and native consumer cancellation; no public upload.
+    @MainActor
+    func testGIFExportFramesAndNativeShareCancellation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitForExistence(timeout: 8)); XCTAssertTrue(canvas.isHittable)
+        let before = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"),
+            evaluatedWith: app.buttons["studio.undo"]).waitUntilFulfilled(timeout: 5))
+        XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
+        let add = app.buttons["studio.add-frame"]
+        XCTAssertTrue(add.isHittable); add.tap() // second actual frame is blank
+        try openExportPanel(app)
+        try exportControl("studio.export.format.gif", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let status = app.staticTexts["studio.export.status"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "GIF ready on this device from revision "),
+            evaluatedWith: status).waitUntilFulfilled(timeout: 30))
+        let receipt = try exportControl("studio.export.gif.receipt", app: app)
+        XCTAssertTrue(receipt.label.contains("1,080 × 1,920"))
+        XCTAssertTrue(receipt.label.contains("2 frames · 12 fps · revision "))
+        XCTAssertEqual(app.staticTexts["studio.export.gif.filename"].label, "animation.gif")
+        XCTAssertTrue(app.staticTexts["studio.export.gif.media"].label.contains("17 centiseconds · white · no audio"))
+        let preview = try exportControl("studio.export.gif.preview", app: app)
+        let first = try exportPreviewPixels(preview, app: app, name: "gif-actual-first-frame")
+        XCTAssertGreaterThan(exportInkMask(first).count, 12, "GIF first-frame decode lost actual red drawing")
+        capture(app, name: "gif-actual-two-frame-file-receipt")
+        let share = try exportControl("studio.export.share", app: app)
+        XCTAssertTrue(share.isEnabled); share.tap()
+        let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
+        let saveToFiles = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
+        XCTAssertTrue(saveToFiles.waitForExistence(timeout: 10)); XCTAssertTrue(saveToFiles.isHittable)
+        capture(app, name: "gif-native-share-sheet")
+        let dismiss = nativeShare.buttons["header.closeButton"]
+        XCTAssertTrue(dismiss.isHittable); dismiss.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The GIF remains available."),
+            evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(try exportControl("studio.export.share", app: app).isEnabled)
+        let retained = try exportPreviewPixels(try exportControl("studio.export.gif.preview", app: app),
+            app: app, name: "gif-first-frame-after-sharing-cancelled")
+        XCTAssertEqual(unmatchedExportInk(first, retained), 0, "Cancelling sharing changed actual GIF picture")
+        capture(app, name: "gif-share-cancelled-file-retained")
+        try closeExportPanel(app); XCTAssertTrue(canvas.isHittable)
+    }
+
     @MainActor
     func testBundledAudioMP4AndNativeShareCancellation() throws {
         let app = try launchGuestStudio()

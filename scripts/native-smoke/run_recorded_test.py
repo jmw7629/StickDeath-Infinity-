@@ -79,7 +79,7 @@ def main() -> int:
     test_process_exit = None
     # All configured UI journeys retain their individual 180s allowance and
     # this shared bounded suite deadline. A fixture failure never grants more time.
-    test_timeout_seconds = 1680
+    test_timeout_seconds = 1860
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)
