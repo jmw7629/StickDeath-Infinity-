@@ -11,6 +11,7 @@ import SwiftUI
 
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    var alignToBottom = false
     @State private var showBrushLibrary = false
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
@@ -53,10 +54,18 @@ struct FloatingToolSettingsPanel: View {
                     if !compact { Divider().background(Color.white.opacity(0.08)) }
                     
                     // Tool-specific content
-                    ScrollView {
-                        toolSettingsContent(def, compactHeight: compact)
+                    // Short controls use their natural height. Longer libraries
+                    // scroll inside the same bounded popup instead of covering
+                    // empty canvas with an oversized scroll viewport.
+                    ToolSettingsContentLayout(maximumHeight: max(0, min(360, available.size.height - (compact ? 60 : 132)))) {
+                        ViewThatFits(in: .vertical) {
+                            toolSettingsContent(def, compactHeight: compact)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ScrollView {
+                                toolSettingsContent(def, compactHeight: compact)
+                            }
+                        }
                     }
-                    .frame(maxHeight: max(0, min(360, available.size.height - (compact ? 60 : 132))))
                     
                     // The short landscape popup keeps the actual operation controls reachable.
                     if available.size.height >= 180 {
@@ -88,9 +97,9 @@ struct FloatingToolSettingsPanel: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("studio.tool-settings")
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
     }
     
@@ -346,6 +355,8 @@ struct FloatingToolSettingsPanel: View {
                         Button(action: {
                             if action.contains("Delete") { vm.deleteSelected() }
                             else if action.contains("Deselect") { vm.clearElementSelection() }
+                            else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
+                            else if action.contains("Flip V") { _ = vm.reflectSelected(axis: .vertical) }
                             else if action.contains("Fwd") { _ = vm.orderSelected(forward: true) }
                             else if action.contains("Back") { _ = vm.orderSelected(forward: false) }
                             else { vm.message = "This selection action is unfinished. The artwork has not changed." }
@@ -508,4 +519,20 @@ struct FillToggleButton: View {
 struct ToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     var body: some View { FloatingToolSettingsPanel(vm: vm) }
+}
+
+/// Fits short controls to their real content, while proposing a bounded viewport
+/// to ViewThatFits so larger brush libraries choose the scrollable variant.
+private struct ToolSettingsContentLayout: Layout {
+    var maximumHeight: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width,
+                      height: min(maximumHeight, max(0, ideal.height)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                             proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
 }

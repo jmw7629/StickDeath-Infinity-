@@ -133,6 +133,10 @@ struct StudioFrameRenderer {
             try translation.validate()
             context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)
         }
+        if let reflection = element.reflection {
+            try reflection.validate()
+            context.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+        }
 
         if let mask = element.fillMask {
             try mask.validate()

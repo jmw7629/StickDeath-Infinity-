@@ -557,6 +557,22 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    @discardableResult
+    func reflectSelected(axis: StudioReflectionAxis) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before flipping artwork."; return false
+        }
+        let ids = selectedElementIDs
+        guard !ids.isEmpty else { message = "Select drawn artwork before flipping it."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.reflectElements(.init(frame: .id(currentFrame.id),
+                    elementIDs: ids.sorted(), axis: axis))])))
+            editor.selectedElementIDs = ids
+            // The artwork is the success feedback; do not insert a canvas-resizing banner.
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func deleteSelected() { command { try $0.deleteSelected() } }
     enum SelectionMode: String, CaseIterable { case new, add, subtract
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
@@ -577,7 +593,8 @@ final class StudioViewModel: ObservableObject {
             if let element = currentFrame.elements.reversed().first(where: { element in
                 guard element.layerID == layer.id, element.opacity > 0, let rect = element.selectionBounds else { return false }
                 if let mask = element.fillMask {
-                    let x = point.x - (element.translation?.x ?? 0), y = point.y - (element.translation?.y ?? 0)
+                    let x = (point.x - (element.translation?.x ?? 0)) * (element.reflection?.horizontal == true ? -1 : 1)
+                    let y = (point.y - (element.translation?.y ?? 0)) * (element.reflection?.vertical == true ? -1 : 1)
                     return mask.spans.contains { y >= Double($0.row) && y < Double($0.row + 1) && x >= Double($0.start) && x < Double($0.end) }
                 }
                 return rect.insetBy(dx: -6, dy: -6).contains(point)

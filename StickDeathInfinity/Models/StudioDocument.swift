@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...7
+    static let supportedSchemaVersions = 1...8
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -65,6 +65,10 @@ struct StudioDocument: Codable, Equatable {
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             for element in frame.elements {
+                if let reflection = element.reflection {
+                    guard schemaVersion >= 8 else { throw StudioDocumentError.invalid("Reflected artwork requires a newer project version. The original has not changed.") }
+                    try reflection.validate()
+                }
                 if let translation = element.translation {
                     guard schemaVersion >= 7 else { throw StudioDocumentError.invalid("Moved artwork requires a newer project version. The original has not changed.") }
                     try translation.validate()
@@ -220,6 +224,7 @@ struct StudioDocumentEditor {
             if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
             if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
             if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
+            if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
         }
     }
     mutating func addFrame() throws {
@@ -244,7 +249,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -252,6 +257,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
             if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
             if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
+            if elements.contains(where: { $0.reflection != nil }) { value.schemaVersion = max(value.schemaVersion, 8) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -290,6 +296,44 @@ struct StudioDocumentEditor {
                 value.frames[frame].elements[index].translation = moved.x == 0 && moved.y == 0 ? nil : moved
                 value.schemaVersion = max(value.schemaVersion, 7)
             }
+            try checkCancellation()
+        }
+    }
+    /// Reflect the group around its combined document-space bounds. Original
+    /// geometry, IDs, ordering and fill masks remain unchanged.
+    mutating func reflectElements(frameID: String, ids: Set<String>, axis: StudioReflectionAxis,
+                                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before flipping artwork.") }
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Nothing flipped.") }
+            let elements = value.frames[frame].elements
+            guard ids.isSubset(of: Set(elements.map(\.id))) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Nothing flipped.") }
+            var bounds = CGRect.null
+            for element in elements where ids.contains(element.id) {
+                try checkCancellation()
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible, layer.opacity > 0,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+                guard let rect = element.selectionBounds, !rect.isNull,
+                      rect.minX.isFinite, rect.maxX.isFinite, rect.minY.isFinite, rect.maxY.isFinite else {
+                    throw StudioDocumentError.invalid("The selected artwork has invalid reflection bounds.")
+                }
+                bounds = bounds.union(rect)
+            }
+            guard !bounds.isNull else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before flipping artwork.") }
+            for index in elements.indices where ids.contains(elements[index].id) {
+                try checkCancellation()
+                var translation = elements[index].translation ?? .init(x: 0, y: 0)
+                var reflection = elements[index].reflection ?? .init()
+                switch axis {
+                case .horizontal: translation.x = bounds.minX + bounds.maxX - translation.x; reflection.horizontal.toggle()
+                case .vertical: translation.y = bounds.minY + bounds.maxY - translation.y; reflection.vertical.toggle()
+                }
+                try translation.validate()
+                value.frames[frame].elements[index].translation = translation.x == 0 && translation.y == 0 ? nil : translation
+                value.frames[frame].elements[index].reflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            }
+            value.schemaVersion = max(value.schemaVersion, 8)
             try checkCancellation()
         }
     }
@@ -372,7 +416,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -465,7 +509,7 @@ enum StudioBrushGeometryCache {
         _ = try color(element.color)
         // Translation is applied by the shared renderer after geometry creation.
         // Keep the same deterministic geometry in cache throughout a drag.
-        var geometryElement = element; geometryElement.translation = nil
+        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil
         lock.lock()
         if var hit = entries[element.id], hit.element == geometryElement {
             clock &+= 1; hit.used = clock; entries[element.id] = hit

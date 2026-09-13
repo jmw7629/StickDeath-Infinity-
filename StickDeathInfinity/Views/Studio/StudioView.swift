@@ -154,7 +154,8 @@ struct StudioEditorWorkspace: View {
                     .position(x: railFrame.midX, y: railFrame.midY)
 
                 if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
-                    FloatingToolSettingsPanel(vm: vm)
+                    FloatingToolSettingsPanel(vm: vm,
+                        alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
                         .frame(width: popupFrame.width, height: popupFrame.height)
                         .position(x: popupFrame.midX, y: popupFrame.midY)
                         .transition(.opacity)

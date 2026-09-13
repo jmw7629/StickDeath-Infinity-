@@ -76,6 +76,9 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Document-space translation preserves original brush samples and fill coverage.
     /// Optional for historical projects; nonzero translations require schema 7.
     var translation: StudioElementTranslation? = nil
+    /// Reflection keeps original samples and sparse fill coverage editable.
+    /// Absent in historical documents; reflected content requires schema8.
+    var reflection: StudioElementReflection? = nil
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
@@ -88,7 +91,24 @@ struct DrawnElement: Codable, Identifiable, Equatable {
                   let top = points.map(\.y).min(), let bottom = points.map(\.y).max() else { return nil }
             bounds = CGRect(x: left, y: top, width: right - left, height: bottom - top).insetBy(dx: -width / 2, dy: -width / 2)
         }
-        return bounds.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+        var transformed = bounds
+        if reflection?.horizontal == true { transformed.origin.x = -bounds.maxX }
+        if reflection?.vertical == true { transformed.origin.y = -bounds.maxY }
+        return transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+    }
+}
+
+enum StudioReflectionAxis: String, Codable, Sendable { case horizontal, vertical }
+
+struct StudioElementReflection: Codable, Equatable, Sendable {
+    var horizontal = false
+    var vertical = false
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "Empty artwork reflection is invalid. The original has not changed." }
+    }
+    func validate() throws {
+        guard horizontal || vertical else { throw Failure.invalid }
     }
 }
 

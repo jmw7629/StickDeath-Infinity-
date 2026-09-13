@@ -52,6 +52,20 @@ final class StudioSmokeUITests: XCTestCase {
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertGreaterThan(canvas.frame.width, 80)
         XCTAssertGreaterThan(canvas.frame.height, 80)
+        let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+        let fitted = NSPredicate { _, _ in
+            popup.exists && popup.frame.height > 80 && popup.frame.height <= 220
+                && stage.frame.contains(popup.frame) && !popup.frame.intersects(rail.frame)
+        }
+        XCTAssertTrue(expectation(for: fitted, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Short Hand controls should fit the popup without a large empty viewport")
+        if popup.frame.maxY <= rail.frame.minY {
+            XCTAssertLessThanOrEqual(rail.frame.minY - popup.frame.maxY, 14,
+                                     "A popup above the rail must remain adjacent to it")
+        } else {
+            XCTAssertLessThanOrEqual(popup.frame.minY - rail.frame.maxY, 14,
+                                     "A popup below the rail must remain adjacent to it")
+        }
         capture(app, name: "toolbar-floating-popup")
     }
 
@@ -238,6 +252,67 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(reopenedCanvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(reopenedCanvas.screenshot().image)), 4, "Saved stacking did not survive cold reopen")
         capture(reopened, name: "selection-stacking-cold-reopened")
+    }
+
+    @MainActor
+    func testSelectionFlipUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let stableSelectionCanvasFrame = canvas.frame
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.22,dy: 0.35)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.48,dy: 0.60)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image), originalInk = exportInkMask(original)
+        XCTAssertGreaterThan(originalInk.count, 12)
+        try selectToolbarTool("move", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.35,dy: 0.475)).tap()
+        try selectToolbarTool("move", app: app)
+        let flipH = app.buttons["studio.selection.flip-h"]
+        XCTAssertTrue(flipH.waitForExistence(timeout: 5) && flipH.isHittable); flipH.tap()
+        app.buttons["studio.selection.deselect"].tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertEqual(canvas.frame, stableSelectionCanvasFrame, "Selection action resized the canvas")
+        XCTAssertFalse(app.descendants(matching: .any)["studio.status"].firstMatch.exists, "Selection action added a resizing status banner")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let horizontal = try pixels(canvas.screenshot().image), horizontalInk = exportInkMask(horizontal)
+        XCTAssertGreaterThan(horizontalInk.count, 12)
+        XCTAssertLessThan(originalInk.intersection(horizontalInk).count, max(8, originalInk.count/3), "Flip H retained the original slope")
+        XCTAssertGreaterThan(Double(horizontalInk.count)/Double(originalInk.count), 0.75)
+        XCTAssertLessThan(Double(horizontalInk.count)/Double(originalInk.count), 1.25)
+        capture(app, name: "selection-flip-horizontal")
+        app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(horizontal, pixels(canvas.screenshot().image)), 4)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.35,dy: 0.475)).tap()
+        try selectToolbarTool("move", app: app)
+        let flipV = app.buttons["studio.selection.flip-v"]
+        XCTAssertTrue(flipV.isHittable); flipV.tap()
+        app.buttons["studio.selection.deselect"].tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertEqual(canvas.frame, stableSelectionCanvasFrame, "Selection action resized the canvas")
+        XCTAssertFalse(app.descendants(matching: .any)["studio.status"].firstMatch.exists, "Selection action added a resizing status banner")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let vertical = try pixels(canvas.screenshot().image), verticalInk = exportInkMask(vertical)
+        XCTAssertLessThan(horizontalInk.intersection(verticalInk).count, max(8, horizontalInk.count/3), "Flip V retained the horizontal reflection")
+        XCTAssertGreaterThan(originalInk.intersection(verticalInk).count, originalInk.count*7/10, "Two-axis reflection moved the diagonal outside its original bounds")
+        app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(horizontal, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(vertical, pixels(canvas.screenshot().image)), 4)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(reopenedCanvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(vertical, pixels(reopenedCanvas.screenshot().image)), 4, "Reflected pixels did not survive cold reopen")
+        capture(reopened, name: "selection-flip-cold-reopened")
     }
 
     @MainActor
