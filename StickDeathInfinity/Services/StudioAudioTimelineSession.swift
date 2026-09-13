@@ -27,6 +27,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     private var playbackBegan = false
     private var player: AVAudioPlayer?
     private var timer: Timer?
+    private var awaitingCompletionSince: TimeInterval?
     private var stillCurrent: (() -> Bool)?
     private var onTime: ((Double, Bool) -> Void)?
     var actualPlayerIsPlaying: Bool { player?.isPlaying == true }
@@ -109,12 +110,24 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         guard token == generation else { return }
         progress = min(1, max(0, value))
     }
-    private func tick() {
+    func tick(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard let player, stillCurrent?() == true else {
             stop(); return
         }
+        guard player.isPlaying else {
+            // The engine can stop before its completion delegate reaches this
+            // actor. Keep that delegate and the owned mix alive until it reports
+            // success; polling a stopped engine cannot certify the final time.
+            if let since = awaitingCompletionSince, now - since >= 2 {
+                stop()
+                notice = "Audio stopped before playback completion was confirmed. Play again to retry."
+            } else if awaitingCompletionSince == nil {
+                awaitingCompletionSince = now
+            }
+            return
+        }
+        awaitingCompletionSince = nil
         currentTime = min(duration, max(0, player.currentTime))
-        if !player.isPlaying { stop(); return }
         onTime?(currentTime, true)
     }
     func stop() {
@@ -123,6 +136,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
     }
     private func releasePlayerAndOutput() {
         timer?.invalidate(); timer = nil
+        awaitingCompletionSince = nil
         player?.stop(); player?.delegate = nil; player = nil
         isPlaying = false
         let callback = playbackBegan ? onTime : nil

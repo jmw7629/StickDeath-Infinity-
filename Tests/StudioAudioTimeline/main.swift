@@ -137,6 +137,47 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try check(!session.actualPlayerIsPlaying && !session.isPlaying && updates.last?.1 == false, "stop")
             try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "output leaked")
         }
+        try await test("natural completion survives a clock poll before its queued delegate") {
+            let session = StudioAudioTimelineSession(scratchParent: scratch)
+            defer { session.close() }
+            var updates: [(Double, Bool)] = []
+            try check(session.play(document: vm.document, tracks: vm.projectAudioTracks, duration: 1, from: 0.85,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { updates.append(($0, $1)) }), "end-race prepare")
+            for _ in 0..<2000 { if !session.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(session.actualPlayerIsPlaying, session.notice ?? "end-race real player absent")
+            // Hold this actor while the real short WAV finishes, then poll before
+            // the delegate's queued actor task. No simulated playback result.
+            _ = DispatchSemaphore(value: 0).wait(timeout: .now() + 0.5)
+            try check(!session.actualPlayerIsPlaying, "actual short player did not reach its end")
+            session.tick()
+            for _ in 0..<100 { if updates.last?.1 == false { break }; try await Task.sleep(nanoseconds: 2_000_000) }
+            try check(updates.last?.1 == false && abs((updates.last?.0 ?? -1) - 1) < 0.000001,
+                      "clock poll discarded the real completion delegate and exact final time")
+            try check(updates.filter { !$0.1 }.count == 1, "natural completion notified twice")
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "completed mix retained files")
+        }
+        try await test("missing completion remains an explicit failure instead of a fabricated final time") {
+            let session = StudioAudioTimelineSession(scratchParent: scratch)
+            defer { session.close() }
+            var updates: [(Double, Bool)] = []
+            try check(session.play(document: vm.document, tracks: vm.projectAudioTracks, duration: 1, from: 0.85,
+                auditionVolume: 0, stillCurrent: { true }, onTime: { updates.append(($0, $1)) }), "missing-completion prepare")
+            for _ in 0..<2000 { if !session.isPreparing { break }; try await Task.sleep(nanoseconds: 5_000_000) }
+            try check(session.actualPlayerIsPlaying, session.notice ?? "missing-completion real player absent")
+            _ = DispatchSemaphore(value: 0).wait(timeout: .now() + 0.5)
+            try check(!session.actualPlayerIsPlaying, "actual short player still playing")
+            // Controlled monotonic-clock advancement while the real delegate is
+            // still queued. This exercises the bounded failure, not a device call.
+            session.tick(at: 1000)
+            session.tick(at: 1002.001)
+            try check(!session.isPlaying && session.notice?.contains("completion was confirmed") == true,
+                      "unconfirmed completion was not reported")
+            try check(updates.last?.1 == false && (updates.last?.0 ?? 1) < 1,
+                      "unconfirmed stop fabricated an exact end")
+            for _ in 0..<10 { await Task.yield() }
+            try check(updates.filter { !$0.1 }.count == 1, "late delegate notified a released session")
+            try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "failed completion retained files")
+        }
         try await test("cancel and stale context produce no real playback or leaked output") {
             for cancel in [true, false] {
                 let session = StudioAudioTimelineSession(scratchParent: scratch)
