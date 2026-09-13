@@ -293,6 +293,45 @@ struct StudioDocumentEditor {
             try checkCancellation()
         }
     }
+    /// Move each explicitly selected element by one unselected neighbor within
+    /// its own layer. Relative selection order and layer stacking stay intact.
+    mutating func orderElements(frameID: String, ids: Set<String>, forward: Bool,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before changing their order.") }
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let elements = value.frames[frame].elements
+            guard ids.isSubset(of: Set(elements.map(\.id))) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let selected = elements.filter { ids.contains($0.id) }
+            guard selected.allSatisfy({ $0.layerID != nil }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let layerIDs = Set(selected.compactMap(\.layerID))
+            for id in layerIDs {
+                try checkCancellation()
+                guard let layer = value.layers.first(where: { $0.id == id }), layer.visible, layer.opacity > 0,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            }
+            var positions: [String: [Int]] = [:]
+            for index in elements.indices {
+                try checkCancellation()
+                if let layer = elements[index].layerID, layerIDs.contains(layer) { positions[layer, default: []].append(index) }
+            }
+            for layer in value.layers where layerIDs.contains(layer.id) {
+                let indices = positions[layer.id] ?? []
+                guard indices.count > 1 else { continue }
+                let order = forward ? Array((0..<(indices.count - 1)).reversed()) : Array(1..<indices.count)
+                for position in order {
+                    try checkCancellation()
+                    let current = indices[position], neighbor = indices[position + (forward ? 1 : -1)]
+                    if ids.contains(value.frames[frame].elements[current].id),
+                       !ids.contains(value.frames[frame].elements[neighbor].id) {
+                        value.frames[frame].elements.swapAt(current, neighbor)
+                    }
+                }
+            }
+            try checkCancellation()
+        }
+    }
     mutating func deleteSelected() throws {
         let selection = selectedElementIDs
         guard !selection.isEmpty else { return }

@@ -177,6 +177,70 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testSelectionForwardBackUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let stableSelectionCanvasFrame = canvas.frame
+        try pickerRailControl("studio.tool.brush", app: app, forward: false).tap()
+        let library = app.buttons["studio.brush.library"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let round = app.buttons["studio.brush.family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout: 5)); round.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.7)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.22,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.78,dy: 0.5)))
+        try choosePickerTestColor("#0000FF", app: app)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.36)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.7)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image), originalColors = imageFixtureColors(original)
+        XCTAssertGreaterThan(originalColors[0], 20); XCTAssertGreaterThan(originalColors[1], 20)
+        try selectToolbarTool("move", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.5)).tap()
+        try selectToolbarTool("move", app: app)
+        let forward = app.buttons["studio.selection.fwd"]
+        XCTAssertTrue(forward.waitForExistence(timeout: 5) && forward.isHittable); forward.tap()
+        app.buttons["studio.selection.deselect"].tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertEqual(canvas.frame, stableSelectionCanvasFrame, "Selection action resized the canvas")
+        XCTAssertFalse(app.descendants(matching: .any)["studio.status"].firstMatch.exists, "Selection action added a resizing status banner")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let front = try pixels(canvas.screenshot().image), frontColors = imageFixtureColors(front)
+        XCTAssertGreaterThan(frontColors[0], originalColors[0] + 12, "Forward did not expose the actual red crossing")
+        XCTAssertLessThan(frontColors[1], originalColors[1] - 12, "Forward did not occlude the actual blue crossing")
+        capture(app, name: "selection-forward-actual-overlap")
+        app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(front, pixels(canvas.screenshot().image)), 4)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.3,dy: 0.5)).tap()
+        try selectToolbarTool("move", app: app)
+        let back = app.buttons["studio.selection.back"]
+        XCTAssertTrue(back.isHittable); back.tap()
+        app.buttons["studio.selection.deselect"].tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertEqual(canvas.frame, stableSelectionCanvasFrame, "Selection action resized the canvas")
+        XCTAssertFalse(app.descendants(matching: .any)["studio.status"].firstMatch.exists, "Selection action added a resizing status banner")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Back did not restore original overlap")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(reopenedCanvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(reopenedCanvas.screenshot().image)), 4, "Saved stacking did not survive cold reopen")
+        capture(reopened, name: "selection-stacking-cold-reopened")
+    }
+
+    @MainActor
     func testRealCanvasStrokeUndoRedo() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

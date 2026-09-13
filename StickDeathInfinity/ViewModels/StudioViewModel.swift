@@ -540,6 +540,23 @@ final class StudioViewModel: ObservableObject {
             _ = commitElement(element, frameID: pending.frameID)
         } catch { message = error.localizedDescription }
     }
+    @discardableResult
+    func orderSelected(forward: Bool) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before changing artwork order."; return false
+        }
+        let ids = selectedElementIDs
+        guard !ids.isEmpty else { message = "Select drawn artwork before changing its order."; return false }
+        let revision = document.revision
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: revision, action: .apply([.orderElements(.init(frame: .id(currentFrame.id),
+                    elementIDs: ids.sorted(), direction: forward ? .later : .earlier))])))
+            editor.selectedElementIDs = ids
+            // Successful direct manipulation keeps the canvas geometry and existing errors unchanged.
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func deleteSelected() { command { try $0.deleteSelected() } }
     enum SelectionMode: String, CaseIterable { case new, add, subtract
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }

@@ -99,12 +99,13 @@ enum StudioCommand: Codable {
     struct UpdateLayer: Codable { let layer: StudioCommandReference; let settings: StudioCommandLayerSettings }
     struct DeleteElements: Codable { let frame: StudioCommandReference; let elementIDs: [String] }
     struct TranslateElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let dx: Double; let dy: Double }
+    struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
-    case deleteElements(DeleteElements), translateElements(TranslateElements), canvasOptions(CanvasOptions)
+    case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), canvasOptions(CanvasOptions)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
@@ -122,6 +123,7 @@ enum StudioCommand: Codable {
         case "selectLayer": self = .selectLayer(try container.decode(StudioCommandReference.self, forKey: key))
         case "deleteElements": self = .deleteElements(try container.decode(DeleteElements.self, forKey: key))
         case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
+        case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
@@ -142,6 +144,7 @@ enum StudioCommand: Codable {
         case .selectLayer(let value): try container.encode(value, forKey: StudioWireKey("selectLayer"))
         case .deleteElements(let value): try container.encode(value, forKey: StudioWireKey("deleteElements"))
         case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
+        case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
         }
     }
@@ -267,6 +270,7 @@ enum StudioCommandExecutor {
             "moveFrame": ["target", "direction"], "moveLayer": ["target", "direction"],
             "addLayer": ["name", "result"], "updateLayer": ["layer", "settings"],
             "translateElements": ["frame", "elementIDs", "dx", "dy"],
+            "orderElements": ["frame", "elementIDs", "direction"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
         ]
         var inputPoints = 0, strokes = 0
@@ -494,6 +498,12 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.translateElements(frameID: id, ids: Set(value.elementIDs), dx: value.dx, dy: value.dy,
                                          checkCancellation: checkCancellation)
+        case .orderElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
+                                     checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil else { throw StudioCommandError.invalidSettings }
             try editor.change {

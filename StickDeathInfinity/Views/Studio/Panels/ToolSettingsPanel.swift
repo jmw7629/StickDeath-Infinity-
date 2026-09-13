@@ -346,6 +346,8 @@ struct FloatingToolSettingsPanel: View {
                         Button(action: {
                             if action.contains("Delete") { vm.deleteSelected() }
                             else if action.contains("Deselect") { vm.clearElementSelection() }
+                            else if action.contains("Fwd") { _ = vm.orderSelected(forward: true) }
+                            else if action.contains("Back") { _ = vm.orderSelected(forward: false) }
                             else { vm.message = "This selection action is unfinished. The artwork has not changed." }
                         }) {
                             VStack(spacing: 2) {
@@ -360,6 +362,7 @@ struct FloatingToolSettingsPanel: View {
                             .background(Color.white.opacity(0.05))
                             .cornerRadius(8)
                         }
+                        .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
                     }
                 }
             }
