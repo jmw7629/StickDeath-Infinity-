@@ -312,20 +312,20 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 HStack(spacing: 4) {
-                    ForEach(["⬜ New", "➕ Add", "➖ Sub"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
+                    ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
+                        Button(action: { vm.selectionMode = mode }) {
+                            Text(mode.label)
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("New") ? .red : .white.opacity(0.5))
+                                .foregroundColor(vm.selectionMode == mode ? .red : .white.opacity(0.5))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("New") ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
+                                        .fill(vm.selectionMode == mode ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("New") ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(vm.selectionMode == mode ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
                     }
@@ -337,8 +337,12 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Clear"], id: \.self) { action in
-                        Button(action: {}) {
+                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Deselect"], id: \.self) { action in
+                        Button(action: {
+                            if action.contains("Delete") { vm.deleteSelected() }
+                            else if action.contains("Deselect") { vm.clearElementSelection() }
+                            else { vm.message = "This selection action is unfinished. The artwork has not changed." }
+                        }) {
                             VStack(spacing: 2) {
                                 Text(String(action.prefix(2)))
                                     .font(.system(size: 12))

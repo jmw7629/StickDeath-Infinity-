@@ -131,6 +131,50 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testMoveArtworkUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        canvas.coordinate(withNormalizedOffset: CGVector(dx:0.20,dy:0.4)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.45,dy:0.4)))
+        let original = try pixels(canvas.screenshot().image), originalInk = exportInkMask(original)
+        XCTAssertGreaterThan(originalInk.count,12)
+        try selectToolbarTool("move",app:app)
+        let close = app.buttons["studio.tool-settings.close"]
+        XCTAssertTrue(close.waitForExistence(timeout:3));close.tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.30,dy:0.4)).press(forDuration:0.1,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.30,dy:0.6)))
+        // Empty canvas tap clears the transient selection outline without editing.
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.85,dy:0.8)).tap()
+        let moved = try pixels(canvas.screenshot().image), movedInk = exportInkMask(moved)
+        XCTAssertGreaterThan(movedInk.count,12)
+        XCTAssertLessThan(originalInk.intersection(movedInk).count,max(4,originalInk.count/10),"Move retained artwork at its old position")
+        XCTAssertGreaterThan(Double(movedInk.count)/Double(originalInk.count),0.75)
+        XCTAssertLessThan(Double(movedInk.count)/Double(originalInk.count),1.25)
+        capture(app,name:"move-artwork-committed")
+        let undo = identifiedButton("studio.undo",fallback:"UNDO",app:app)
+        let redo = identifiedButton("studio.redo",fallback:"REDO",app:app)
+        undo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,"Move Undo did not restore original artwork")
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(moved,pixels(canvas.screenshot().image)),4,"Move Redo changed artwork")
+        let save=app.buttons["studio.save"];save.tap()
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"),evaluatedWith:save).waitUntilFulfilled(timeout:8))
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened=try launchGuestStudio();defer { reopened.terminate() }
+        let project=reopened.buttons.matching(NSPredicate(format:"label == %@",name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout:8));project.tap()
+        let reopenedCanvas=reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(reopenedCanvas,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(moved,pixels(reopenedCanvas.screenshot().image)),4,"Moved artwork did not survive cold reopen")
+        capture(reopened,name:"move-artwork-cold-reopened")
+    }
+
+    @MainActor
     func testRealCanvasStrokeUndoRedo() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

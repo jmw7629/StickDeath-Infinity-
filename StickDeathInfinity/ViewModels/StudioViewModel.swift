@@ -269,7 +269,7 @@ final class StudioViewModel: ObservableObject {
         try addUnits(document.audioClips.count, weight: 32)
         for frame in document.frames {
             try addUnits(frame.elements.count, weight: 32)
-            for element in frame.elements { try addUnits(element.points.count) }
+            for element in frame.elements { try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0) }
         }
         for command in commands {
             switch command {
@@ -541,19 +541,84 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     func deleteSelected() { command { try $0.deleteSelected() } }
-    func selectElement(at point: CGPoint) {
-        editor.selectedElementIDs.removeAll()
-        for layer in layers where layer.visible && !layer.isFullyLocked {
-            if let element = currentFrame.elements.reversed().first(where: { element in
-                guard element.layerID == layer.id, let first = element.points.first else { return false }
-                let xs = element.points.map(\.x), ys = element.points.map(\.y)
-                let tolerance = max(12, element.width * 2)
-                return point.x >= (xs.min() ?? first.x) - tolerance && point.x <= (xs.max() ?? first.x) + tolerance
-                    && point.y >= (ys.min() ?? first.y) - tolerance && point.y <= (ys.max() ?? first.y) + tolerance
-            }) { editor.selectedElementIDs = [element.id]; break }
-        }
-        message = "Move currently selects an element for deletion. Dragging selections is unfinished."
+    enum SelectionMode: String, CaseIterable { case new, add, subtract
+        var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
     }
+    @Published var selectionMode: SelectionMode = .new
+    struct MoveCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let ids: Set<String>
+        let mode: SelectionMode
+    }
+    @discardableResult
+    func selectElement(at point: CGPoint) -> String? {
+        guard point.x.isFinite, point.y.isFinite, activeStrokeID == nil, !isPlaying else { return nil }
+        var hit: String?
+        for layer in layers where layer.visible && layer.opacity > 0 && !layer.isFullyLocked {
+            if let element = currentFrame.elements.reversed().first(where: { element in
+                guard element.layerID == layer.id, element.opacity > 0, let rect = element.selectionBounds else { return false }
+                if let mask = element.fillMask {
+                    let x = point.x - (element.translation?.x ?? 0), y = point.y - (element.translation?.y ?? 0)
+                    return mask.spans.contains { y >= Double($0.row) && y < Double($0.row + 1) && x >= Double($0.start) && x < Double($0.end) }
+                }
+                return rect.insetBy(dx: -6, dy: -6).contains(point)
+            }) { hit = element.id; break }
+        }
+        switch selectionMode {
+        case .new:
+            if let hit { if !selectedElementIDs.contains(hit) { editor.selectedElementIDs = [hit] } }
+            else { editor.selectedElementIDs.removeAll() }
+        case .add: if let hit { editor.selectedElementIDs.insert(hit) }
+        case .subtract: if let hit { editor.selectedElementIDs.remove(hit) }
+        }
+        return hit
+    }
+    func beginMove(at point: CGPoint) -> MoveCapture? {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
+              activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
+        let hit = selectElement(at: point)
+        guard selectionMode != .subtract else { return nil }
+        guard hit != nil, !selectedElementIDs.isEmpty else {
+            message = currentFrame.rasterAssetID == nil ? "Tap or drag drawn artwork to move it." : "Tap drawn artwork to move it. Moving imported image placement is unfinished."
+            return nil
+        }
+        guard currentFrame.elements.filter({ selectedElementIDs.contains($0.id) }).allSatisfy({ element in
+            layers.contains { $0.id == element.layerID && $0.visible && !$0.isFullyLocked && $0.lockMode == "free" }
+        }) else { message = "This layer's position is locked. Choose Free before moving artwork."; return nil }
+        message = nil
+        return MoveCapture(projectID: document.id, revision: document.revision, frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode)
+    }
+    func moveIsCurrent(_ capture: MoveCapture) -> Bool {
+        isEditing && !isPlaying && selectedTool == .move && activeStrokeID == nil && pendingBrushStroke == nil &&
+        capture.projectID == document.id && capture.revision == document.revision && capture.frameID == currentFrame.id &&
+        capture.ids == selectedElementIDs && capture.mode == selectionMode
+    }
+    /// Preview derives from the captured document and never mutates undo or autosave.
+    func movePreview(_ capture: MoveCapture, delta: CGSize) throws -> AnimationFrame {
+        guard moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
+        try StudioElementTranslation(x: delta.width, y: delta.height).validate()
+        var frame = currentFrame
+        for index in frame.elements.indices where capture.ids.contains(frame.elements[index].id) {
+            let old = frame.elements[index].translation
+            let next = StudioElementTranslation(x: (old?.x ?? 0) + delta.width, y: (old?.y ?? 0) + delta.height)
+            try next.validate(); frame.elements[index].translation = next.x == 0 && next.y == 0 ? nil : next
+        }
+        return frame
+    }
+    @discardableResult
+    func finishMove(_ capture: MoveCapture, delta: CGSize) -> Bool {
+        guard moveIsCurrent(capture) else { message = "Studio changed during the move. The artwork has not moved."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.translateElements(.init(frame: .id(capture.frameID),
+                    elementIDs: capture.ids.sorted(), dx: delta.width, dy: delta.height))])))
+            editor.selectedElementIDs = capture.ids
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    func clearElementSelection() { editor.selectedElementIDs.removeAll() }
     func clearCanvas() { message = "Select elements explicitly before deleting. The canvas has not changed." }
     func selectLayer(_ id: String) {
         guard allowDocumentEditDuringInput() else { return }

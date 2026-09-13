@@ -134,6 +134,32 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             -o "$RUNNER_TEMP/sdi-shape-settings-tests"
           "$RUNNER_TEMP/sdi-shape-settings-tests"
+      - name: Verify real selection translation pixels commands history and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionMove/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-move-tests"
+          "$RUNNER_TEMP/sdi-selection-move-tests"
       - name: Verify bounded fill regions cancellation and real artwork exports
         shell: bash
         run: |

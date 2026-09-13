@@ -73,6 +73,37 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var shape: StudioShapeDescriptor? = nil
     /// Canonical bucket-fill coverage in document pixels, independent of guides.
     var fillMask: StudioFillMask? = nil
+    /// Document-space translation preserves original brush samples and fill coverage.
+    /// Optional for historical projects; nonzero translations require schema 7.
+    var translation: StudioElementTranslation? = nil
+
+    var selectionBounds: CGRect? {
+        let bounds: CGRect
+        if let mask = fillMask {
+            guard let first = mask.spans.first, let last = mask.spans.last,
+                  let left = mask.spans.map(\.start).min(), let right = mask.spans.map(\.end).max() else { return nil }
+            bounds = CGRect(x: left, y: first.row, width: right - left, height: last.row - first.row + 1)
+        } else {
+            guard let left = points.map(\.x).min(), let right = points.map(\.x).max(),
+                  let top = points.map(\.y).min(), let bottom = points.map(\.y).max() else { return nil }
+            bounds = CGRect(x: left, y: top, width: right - left, height: bottom - top).insetBy(dx: -width / 2, dy: -width / 2)
+        }
+        return bounds.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+    }
+}
+
+struct StudioElementTranslation: Codable, Equatable, Sendable {
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "The artwork move exceeds the supported canvas range. Nothing changed." }
+    }
+    var x: Double
+    var y: Double
+    func validate() throws {
+        guard x.isFinite, y.isFinite, abs(x) <= 100_000, abs(y) <= 100_000 else {
+            throw Failure.invalid
+        }
+    }
 }
 
 struct StudioFillMask: Codable, Equatable, Sendable {

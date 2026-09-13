@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...6
+    static let supportedSchemaVersions = 1...7
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -65,6 +65,10 @@ struct StudioDocument: Codable, Equatable {
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             for element in frame.elements {
+                if let translation = element.translation {
+                    guard schemaVersion >= 7 else { throw StudioDocumentError.invalid("Moved artwork requires a newer project version. The original has not changed.") }
+                    try translation.validate()
+                }
                 if let mask = element.fillMask {
                     guard schemaVersion >= 6, element.tool == .fill, element.brush == nil, element.shape == nil,
                           mask.width == width, mask.height == height, element.points.count == 2 else {
@@ -215,6 +219,7 @@ struct StudioDocumentEditor {
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
             if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
             if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
+            if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
         }
     }
     mutating func addFrame() throws {
@@ -239,13 +244,14 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
             if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
+            if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -260,6 +266,31 @@ struct StudioDocumentEditor {
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == id }), value.frames.indices.contains(index + offset) else { return }
             value.frames.swapAt(index, index + offset)
+        }
+    }
+    /// One reversible edit; original geometry and fill pixels are never cropped.
+    mutating func translateElements(frameID: String, ids: Set<String>, dx: Double, dy: Double,
+                                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioCommandError.missingSelection }
+        try StudioElementTranslation(x: dx, y: dy).validate()
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioCommandError.invalidReference }
+            let existing = Set(value.frames[frame].elements.map(\.id))
+            guard ids.isSubset(of: existing) else { throw StudioCommandError.invalidReference }
+            for index in value.frames[frame].elements.indices where ids.contains(value.frames[frame].elements[index].id) {
+                try checkCancellation()
+                let element = value.frames[frame].elements[index]
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+                if dx == 0 && dy == 0 { continue }
+                let moved = StudioElementTranslation(x: (element.translation?.x ?? 0) + dx,
+                                                     y: (element.translation?.y ?? 0) + dy)
+                try moved.validate()
+                value.frames[frame].elements[index].translation = moved.x == 0 && moved.y == 0 ? nil : moved
+                value.schemaVersion = max(value.schemaVersion, 7)
+            }
+            try checkCancellation()
         }
     }
     mutating func deleteSelected() throws {
@@ -302,7 +333,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -393,8 +424,11 @@ enum StudioBrushGeometryCache {
         }
         let settings = try brush.settings(width: element.width, opacity: element.opacity)
         _ = try color(element.color)
+        // Translation is applied by the shared renderer after geometry creation.
+        // Keep the same deterministic geometry in cache throughout a drag.
+        var geometryElement = element; geometryElement.translation = nil
         lock.lock()
-        if var hit = entries[element.id], hit.element == element {
+        if var hit = entries[element.id], hit.element == geometryElement {
             clock &+= 1; hit.used = clock; entries[element.id] = hit
             lock.unlock(); return hit.geometry
         }
@@ -417,7 +451,7 @@ enum StudioBrushGeometryCache {
             bytes -= oldest.value.bytes; entries.removeValue(forKey: oldest.key)
         }
         clock &+= 1
-        entries[element.id] = Entry(element: element, geometry: result, bytes: cost, used: clock)
+        entries[element.id] = Entry(element: geometryElement, geometry: result, bytes: cost, used: clock)
         bytes += cost
         return result
     }

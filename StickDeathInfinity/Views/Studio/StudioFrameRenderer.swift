@@ -129,6 +129,10 @@ struct StudioFrameRenderer {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
+        if let translation = element.translation {
+            try translation.validate()
+            context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)
+        }
 
         if let mask = element.fillMask {
             try mask.validate()
