@@ -45,7 +45,9 @@ jobs:
         run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
   native-ios-build:
     runs-on: macos-15
-    timeout-minutes: 50
+    # Setup/build takes about 23 minutes; the bounded UI suite allows 28 minutes.
+    # Leave room for result collection without changing individual test limits.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -734,22 +736,7 @@ jobs:
           set -euo pipefail
           SDI_SMOKE_SIMULATOR_UDID="$(python3 scripts/native-smoke/select_simulator.py)"
           export SDI_SMOKE_SIMULATOR_UDID
-          set +e
           bash scripts/native-smoke/run_smoke_ci.sh
-          sdi_status=$?
-          set -e
-          python3 - <<'PY'
-          import os, pathlib
-          root = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
-          marker = root / "sdi-native-smoke-artifact-path.txt"
-          if marker.is_file():
-              artifact = pathlib.Path(marker.read_text().strip()).resolve()
-              if not artifact.is_relative_to(root) or not artifact.is_dir() or not artifact.name.startswith("sdi-native-smoke."):
-                  raise SystemExit("Invalid native evidence path")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                  output.write("artifact_path=" + str(artifact) + "\n")
-          PY
-          exit "$sdi_status"
       - name: Preserve owned simulator setup receipt even when creation fails
         if: always() && steps.native-smoke.outputs.simulator_setup_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
