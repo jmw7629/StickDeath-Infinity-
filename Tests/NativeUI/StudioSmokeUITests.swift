@@ -185,9 +185,9 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(canvas)
         let stableSelectionCanvasFrame = canvas.frame
         try pickerRailControl("studio.tool.brush", app: app, forward: false).tap()
-        let library = app.buttons["studio.brush.library"]
+        let library = app.buttons["studio.brush-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
-        let round = app.buttons["studio.brush.family.round"]
+        let round = app.buttons["studio.brush-family.round"]
         XCTAssertTrue(round.waitForExistence(timeout: 5)); round.tap()
         app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.7)
         app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)

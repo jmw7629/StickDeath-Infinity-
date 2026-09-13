@@ -11,3 +11,10 @@ A twenty-second native journey is defined to draw intersecting red/blue strokes,
 Successful Forward/Back actions and at-edge no-ops preserve the existing status and canvas geometry. A new production regression failed against the immutable prior code when its success banner was inserted. Native assertions now check unchanged canvas bounds immediately after both buttons, before save can clear a banner. Updated after-correction verification is recorded in the private check receipts; no native22 result is claimed here.
 
 The final corrected source passes all71 production/regression checks:8 ordering,11 Move,26 audio-mix,10 document journeys and16 command cases. The127-source iOS SDK check and22 UI definitions also pass; all compiled inputs remain unchanged. The last published d0804aa app and all21 native journeys pass together in run34750659511. Its actual1123.986-second UI run leaves736.014 seconds in the unchanged1860-second suite allowance, sufficient for the added single180-second-bounded journey. The new22-journey run remains pending for this source.
+
+
+## First native execution and selector correction
+
+On d706c754f596b9800e96f22b942ad8d032c61e77, the actual Xcode app and every production stage passed. All21 established native journeys passed. The new ordering journey failed at its brush-library lookup before drawing or executing Forward/Back. The original UI hierarchy shows the existing visible `studio.brush-library` control, while the new test asked for `studio.brush.library`; its Round lookup also used a dot instead of the established hyphen.
+
+The correction uses the same two production identifiers as the already passing brush and fill journeys. No application code, expected pixels, history/reopen checks, geometry assertions or timeout limits change. The complete original22-test failed result, raw logs, xcresult and recording are preserved. Ordering runtime and a fully green22-test suite remain pending the corrected exact-source run.
