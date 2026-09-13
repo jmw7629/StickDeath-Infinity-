@@ -2,6 +2,13 @@
 
 Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
+## Current owner directions (2026-09-12)
+
+- Use one implementation agent to preserve tokens. Do not spawn, resume or delegate specialists unless the owner changes that direction. Existing independent foundation reviews keep their original scope; self-review does not become independent approval.
+- Keep the original Studio layout and white floating primary toolbar, including vertical snapping at either canvas edge. Remove the secondary right toolbar. Tool settings use the single existing dismissible options popup; Hand/Zoom/Fit belong there too.
+- Audio follows the owner's supplied library/timeline screenshots and uses actual licensed free sounds, measured waveforms and real rendered output. Retain messenger, video rooms and the other product features with truthful unavailable states until their actual backend and security paths work.
+- Continue safe implementation and verification without another continue prompt. Preserve the current exact-head CI outcome before advancing the workstream; do not merge failed or unreviewed changes.
+
 ## Current ownership (2026-09-08)
 
 - Codex coordinates implementation, bounded specialist work, tests and independent exact-head review.

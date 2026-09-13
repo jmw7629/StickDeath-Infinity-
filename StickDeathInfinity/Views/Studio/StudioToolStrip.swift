@@ -21,6 +21,8 @@ struct ToolDef {
 struct StudioToolStrip: View {
     @ObservedObject var vm: StudioViewModel
     var axis: Axis = .horizontal
+    var handleGesture = AnyGesture(DragGesture(minimumDistance: 5))
+    var onDock: (StudioToolbarLayout.Dock) -> Void = { _ in }
     
     static let tools: [ToolDef] = [
         ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   shortcut: "V", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
@@ -43,19 +45,24 @@ struct StudioToolStrip: View {
     ]
     
     var body: some View {
-        ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: false) {
+        railLayout {
+            // A fixed, independently draggable grip never scrolls out of reach.
+            Image(systemName: "circle.grid.2x3.fill")
+                .font(.system(size: 13))
+                .foregroundColor(.black.opacity(0.35))
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
+                .gesture(handleGesture)
+                .accessibilityElement()
+                .accessibilityLabel("Move Studio toolbar")
+                .accessibilityHint("Drag to either canvas edge to dock vertically.")
+                .accessibilityIdentifier("studio.toolbar.grip")
+                .accessibilityAction(named: Text("Dock tools left")) { onDock(.leading) }
+                .accessibilityAction(named: Text("Dock tools right")) { onDock(.trailing) }
+                .accessibilityAction(named: Text("Float tools horizontally")) { onDock(.floating) }
+
+            ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: false) {
             railLayout {
-                // Drag handle (6 dots in 2×3 grid)
-                VStack(spacing: 3) {
-                    ForEach(0..<3) { _ in
-                        HStack(spacing: 3) {
-                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
-                            Circle().fill(Color.black.opacity(0.25)).frame(width: 3, height: 3)
-                        }
-                    }
-                }
-                .padding(.horizontal, 6)
-                
                 // Color square — tap opens color picker
                 Button(action: {
                     vm.activePanel = vm.activePanel == .colorPicker ? .none : .colorPicker
@@ -69,6 +76,9 @@ struct StudioToolStrip: View {
                                 .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
                         )
                 }
+                .accessibilityLabel("Drawing color")
+                .accessibilityValue(vm.strokeColorHex.uppercased())
+                .accessibilityIdentifier("studio.color.open")
                 
                 // Tools
                 ForEach(Self.tools.indices, id: \.self) { i in
@@ -115,16 +125,21 @@ struct StudioToolStrip: View {
                         )
                         .shadow(color: isSelected ? Color(hex: def.glowColor).opacity(0.3) : .clear, radius: 4)
                     }
+                    .accessibilityLabel(def.label)
+                    .accessibilityIdentifier("studio.tool.\(def.tool.rawValue)")
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 4)
             .padding(.vertical, 6)
         }
-        .frame(width: axis == .vertical ? 68 : nil, height: axis == .horizontal ? 64 : nil)
+        }
+        .padding(4)
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: 18))
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
+        .shadow(color: .black.opacity(0.2), radius: 5, y: 2)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.toolbar")
+        .accessibilityValue(axis == .vertical ? "Vertical" : "Horizontal")
     }
     
     private var railLayout: AnyLayout {
@@ -132,6 +147,6 @@ struct StudioToolStrip: View {
     }
 
     func hasSettings(_ tool: DrawingTool) -> Bool {
-        [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .text, .fill, .line, .rectangle, .circle, .move, .lasso].contains(tool)
+        FloatingToolSettingsPanel.hasSettings(tool)
     }
 }

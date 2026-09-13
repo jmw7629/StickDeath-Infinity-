@@ -58,7 +58,17 @@ def main() -> int:
     # Identity was validated above and the explicit target's native bootstatus
     # just succeeded. Re-enumerating every simulator here can stall CoreSimulator.
     # Keep the actual addmedia success and its own timeout as the seeding gate.
-    seed_verified_fixture(args.udid, output)
+    fixture_error = None
+    try:
+        seed_verified_fixture(args.udid, output)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        # The isolated target/boot/offline-app gates already passed. A Photos
+        # fixture failure must still fail this job, but need not suppress the
+        # unrelated drawing, persistence, toolbar and export UI evidence.
+        # Run every test, including Photos; never skip or retry the failed seed.
+        fixture_error = type(error).__name__
+        print(json.dumps({"photoFixtureSeeded": False, "failureClass": fixture_error,
+                          "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -67,9 +77,9 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Ten UI journeys, each capped at 180s, share this bounded suite deadline.
-    # The workflow's separate 40-minute deadline still bounds build and testing.
-    test_timeout_seconds = 1680
+    # All configured UI journeys retain their individual 180s allowance and
+    # this shared bounded suite deadline. A fixture failure never grants more time.
+    test_timeout_seconds = 1860
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)
@@ -120,12 +130,15 @@ def main() -> int:
     report = {"simulatorUDID": args.udid, "simulatorName": selected[0]["name"],
               "uiTestExitCode": test_exit, "recordingExitCode": recording_exit,
               "recordingError": recording_error, "uiProcessExitCode": test_process_exit,
-              "uiSuiteTimeoutSeconds": test_timeout_seconds}
+              "uiSuiteTimeoutSeconds": test_timeout_seconds,
+              "photoFixtureSeeded": fixture_error is None, "photoFixtureFailureClass": fixture_error}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     if test_exit != 0:
         return test_exit if test_exit > 0 else 1
-    return 3 if recording_error else 0
+    if recording_error:
+        return 3
+    return 4 if fixture_error else 0
 
 
 if __name__ == "__main__":

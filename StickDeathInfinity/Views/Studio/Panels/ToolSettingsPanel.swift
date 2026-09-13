@@ -11,7 +11,10 @@ import SwiftUI
 
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    var alignToBottom = false
     @State private var showBrushLibrary = false
+
+    static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -24,9 +27,10 @@ struct FloatingToolSettingsPanel: View {
     
     var body: some View {
         GeometryReader { available in
+        let compact = available.size.height < 180
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: compact ? 4 : 10) {
                     // Header: icon + name + X close
                     HStack {
                         Image(systemName: def.icon)
@@ -40,20 +44,31 @@ struct FloatingToolSettingsPanel: View {
                             Text("✕")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .accessibilityLabel("Close tool settings")
                         .accessibilityIdentifier("studio.tool-settings.close")
                     }
                     
-                    Divider().background(Color.white.opacity(0.08))
+                    if !compact { Divider().background(Color.white.opacity(0.08)) }
                     
                     // Tool-specific content
-                    ScrollView {
-                        toolSettingsContent(def)
+                    // Short controls use their natural height. Longer libraries
+                    // scroll inside the same bounded popup instead of covering
+                    // empty canvas with an oversized scroll viewport.
+                    ToolSettingsContentLayout(maximumHeight: max(0, min(360, available.size.height - (compact ? 60 : 132)))) {
+                        ViewThatFits(in: .vertical) {
+                            toolSettingsContent(def, compactHeight: compact)
+                                .fixedSize(horizontal: false, vertical: true)
+                            ScrollView {
+                                toolSettingsContent(def, compactHeight: compact)
+                            }
+                        }
                     }
-                    .frame(maxHeight: max(70, min(360, available.size.height - 100)))
                     
-                    // Shortcut
+                    // The short landscape popup keeps the actual operation controls reachable.
+                    if available.size.height >= 180 {
                     HStack(spacing: 4) {
                         Text("Shortcut:")
                             .font(.system(size: 10, design: .monospaced))
@@ -67,11 +82,12 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(4)
                     }
                     .padding(.top, 4)
+                    }
                 }
-                .padding(12)
+                .padding(compact ? 6 : 12)
             }
         }
-        .frame(width: 260)
+        .frame(width: min(260, available.size.width))
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(hex: "1A1A24").opacity(0.98))
@@ -81,13 +97,14 @@ struct FloatingToolSettingsPanel: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.tool-settings")
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
     }
     
     @ViewBuilder
-    func toolSettingsContent(_ def: ToolDef) -> some View {
+    func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
@@ -133,15 +150,20 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
                 SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "", accent: .yellow)
+                    .disabled(!vm.fillContiguous)
+                    .opacity(vm.fillContiguous ? 1 : 0.4)
                 
                 // Toggle buttons (green themed)
                 VStack(spacing: 4) {
                     FillToggleButton(label: vm.fillContiguous ? "🔗 Contiguous" : "🌐 All Similar",
                                      isOn: $vm.fillContiguous, accent: .green)
+                        .accessibilityIdentifier("studio.fill.contiguous")
                     FillToggleButton(label: vm.fillAntiAlias ? "✓ Anti-Alias" : "✕ No Anti-Alias",
                                      isOn: $vm.fillAntiAlias, accent: .green)
+                        .accessibilityIdentifier("studio.fill.antialias")
                     FillToggleButton(label: vm.fillSampleAll ? "👁 Sample All Layers" : "📄 Current Layer Only",
                                      isOn: $vm.fillSampleAll, accent: .green)
+                        .accessibilityIdentifier("studio.fill.sample-all")
                 }
             }
             
@@ -266,44 +288,58 @@ struct FloatingToolSettingsPanel: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
+                Button { vm.shapeFilled.toggle() } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(vm.strokeColor)
+                        .fill(vm.shapeFilled ? vm.strokeColor : Color.clear)
                         .frame(width: 28, height: 28)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    Text("No fill")
+                    Text(vm.shapeFilled ? "Solid fill" : "No fill")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.3))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shape fill")
+                .accessibilityValue(vm.shapeFilled ? "Solid" : "None")
+                .accessibilityIdentifier("studio.shape.fill")
                 
                 if def.tool == .rectangle {
-                    SettingsSlider(label: "Corner Radius", value: .constant(0.0), range: 0...50, unit: "px", accent: .orange)
+                    SettingsSlider(label: "Corner Radius", value: $vm.shapeCornerRadius, range: 0...50, unit: "px", accent: .orange)
                 }
             }
             
         // ── MOVE ──
         case .move:
             VStack(alignment: .leading, spacing: 8) {
+                Text(vm.currentFrame.rasterAssetID == nil
+                     ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
+                     : "Move selects drawn artwork. Moving imported image placement is unfinished.")
+                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                    .accessibilityIdentifier("studio.selection.guidance")
                 Text("SELECTION MODE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
                 HStack(spacing: 4) {
-                    ForEach(["⬜ New", "➕ Add", "➖ Sub"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
+                    ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
+                        Button(action: { vm.selectionMode = mode }) {
+                            Text(mode.label)
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("New") ? .red : .white.opacity(0.5))
+                                .foregroundColor(vm.selectionMode == mode ? .red : .white.opacity(0.5))
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("New") ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
+                                        .fill(vm.selectionMode == mode ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("New") ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(vm.selectionMode == mode ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
                     }
@@ -315,8 +351,16 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Clear"], id: \.self) { action in
-                        Button(action: {}) {
+                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Deselect"], id: \.self) { action in
+                        Button(action: {
+                            if action.contains("Delete") { vm.deleteSelected() }
+                            else if action.contains("Deselect") { vm.clearElementSelection() }
+                            else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
+                            else if action.contains("Flip V") { _ = vm.reflectSelected(axis: .vertical) }
+                            else if action.contains("Fwd") { _ = vm.orderSelected(forward: true) }
+                            else if action.contains("Back") { _ = vm.orderSelected(forward: false) }
+                            else { vm.message = "This selection action is unfinished. The artwork has not changed." }
+                        }) {
                             VStack(spacing: 2) {
                                 Text(String(action.prefix(2)))
                                     .font(.system(size: 12))
@@ -329,6 +373,7 @@ struct FloatingToolSettingsPanel: View {
                             .background(Color.white.opacity(0.05))
                             .cornerRadius(8)
                         }
+                        .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
                     }
                 }
             }
@@ -365,11 +410,36 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
             }
             
+        case .hand, .zoom:
+            VStack(alignment: .leading, spacing: 8) {
+                if !compactHeight {
+                Text("Zoom: \(Int((vm.canvasScale * 100).rounded()))%")
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.tool-settings.zoom-value")
+                }
+                HStack(spacing: 8) {
+                    zoomControl("minus", "Zoom out", "zoom-out") { vm.zoomOut() }
+                    zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
+                    zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
+                }
+            }
         default:
             EmptyView()
         }
     }
     
+    private func zoomControl(_ icon: String, _ label: String, _ identifier: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label).font(.specialElite(9))
+            }.frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundColor(.white)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }.accessibilityLabel(label).accessibilityIdentifier("studio.tool-settings." + identifier)
+    }
+
     var opacityBinding: Binding<Double> {
         Binding(
             get: { vm.toolOpacity * 100 },
@@ -449,4 +519,20 @@ struct FillToggleButton: View {
 struct ToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     var body: some View { FloatingToolSettingsPanel(vm: vm) }
+}
+
+/// Fits short controls to their real content, while proposing a bounded viewport
+/// to ViewThatFits so larger brush libraries choose the scrollable variant.
+private struct ToolSettingsContentLayout: Layout {
+    var maximumHeight: CGFloat
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: proposal.width ?? ideal.width,
+                      height: min(maximumHeight, max(0, ideal.height)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                             proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
 }

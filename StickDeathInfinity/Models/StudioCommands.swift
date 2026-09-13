@@ -71,6 +71,7 @@ struct StudioCommandStroke: Codable {
     let color: String
     let width: Double
     let opacity: Double
+    var shape: StudioShapeDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
@@ -97,12 +98,15 @@ enum StudioCommand: Codable {
     struct AddLayer: Codable { let name: String; let result: String }
     struct UpdateLayer: Codable { let layer: StudioCommandReference; let settings: StudioCommandLayerSettings }
     struct DeleteElements: Codable { let frame: StudioCommandReference; let elementIDs: [String] }
+    struct TranslateElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let dx: Double; let dy: Double }
+    struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
+    struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
-    case deleteElements(DeleteElements), canvasOptions(CanvasOptions)
+    case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
@@ -119,6 +123,9 @@ enum StudioCommand: Codable {
         case "moveLayer": self = .moveLayer(try container.decode(Move.self, forKey: key))
         case "selectLayer": self = .selectLayer(try container.decode(StudioCommandReference.self, forKey: key))
         case "deleteElements": self = .deleteElements(try container.decode(DeleteElements.self, forKey: key))
+        case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
+        case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
+        case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
@@ -138,6 +145,9 @@ enum StudioCommand: Codable {
         case .moveLayer(let value): try container.encode(value, forKey: StudioWireKey("moveLayer"))
         case .selectLayer(let value): try container.encode(value, forKey: StudioWireKey("selectLayer"))
         case .deleteElements(let value): try container.encode(value, forKey: StudioWireKey("deleteElements"))
+        case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
+        case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
+        case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
         }
     }
@@ -262,6 +272,9 @@ enum StudioCommandExecutor {
             "duplicateFrame": ["source", "result"], "duplicateLayer": ["source", "result"],
             "moveFrame": ["target", "direction"], "moveLayer": ["target", "direction"],
             "addLayer": ["name", "result"], "updateLayer": ["layer", "settings"],
+            "translateElements": ["frame", "elementIDs", "dx", "dy"],
+            "orderElements": ["frame", "elementIDs", "direction"],
+            "reflectElements": ["frame", "elementIDs", "axis"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
         ]
         var inputPoints = 0, strokes = 0
@@ -280,7 +293,10 @@ enum StudioCommandExecutor {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape"])
+                    if let shape = stroke["shape"] {
+                        _ = try object(shape, keys: ["version", "fillColor", "cornerRadius"])
+                    }
                     guard let points = stroke["points"] as? [Any] else { throw StudioCommandError.malformed }
                     guard points.count <= maximumPointsPerStroke, points.count <= maximumInputPoints - inputPoints else { throw StudioCommandError.limitExceeded }
                     inputPoints += points.count
@@ -415,8 +431,12 @@ enum StudioCommandExecutor {
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                           point.timestamp.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw StudioCommandError.invalidGeometry }
                 }
+                if let shape = stroke.shape {
+                    do { try shape.validate(tool: stroke.tool) }
+                    catch { throw StudioCommandError.invalidSettings }
+                }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }
@@ -476,6 +496,23 @@ enum StudioCommandExecutor {
             let existing = Set(document.frames.first { $0.id == id }!.elements.map(\.id))
             guard Set(value.elementIDs).isSubset(of: existing) else { throw StudioCommandError.invalidReference }
             editor.selectFrame(id); editor.selectedElementIDs = Set(value.elementIDs); try editor.deleteSelected()
+        case .translateElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.translateElements(frameID: id, ids: Set(value.elementIDs), dx: value.dx, dy: value.dy,
+                                         checkCancellation: checkCancellation)
+        case .reflectElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.reflectElements(frameID: id, ids: Set(value.elementIDs), axis: value.axis, checkCancellation: checkCancellation)
+        case .orderElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
+                                     checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil else { throw StudioCommandError.invalidSettings }
             try editor.change {

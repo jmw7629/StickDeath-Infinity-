@@ -69,6 +69,120 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Absent on historical drawings: their original rendering stays unchanged.
     /// Width and opacity remain canonical above, never duplicated in this value.
     var brush: StudioBrushDescriptor? = nil
+    /// Absent on historical shapes, which retain their original rendering.
+    var shape: StudioShapeDescriptor? = nil
+    /// Canonical bucket-fill coverage in document pixels, independent of guides.
+    var fillMask: StudioFillMask? = nil
+    /// Document-space translation preserves original brush samples and fill coverage.
+    /// Optional for historical projects; nonzero translations require schema 7.
+    var translation: StudioElementTranslation? = nil
+    /// Reflection keeps original samples and sparse fill coverage editable.
+    /// Absent in historical documents; reflected content requires schema8.
+    var reflection: StudioElementReflection? = nil
+
+    var selectionBounds: CGRect? {
+        let bounds: CGRect
+        if let mask = fillMask {
+            guard let first = mask.spans.first, let last = mask.spans.last,
+                  let left = mask.spans.map(\.start).min(), let right = mask.spans.map(\.end).max() else { return nil }
+            bounds = CGRect(x: left, y: first.row, width: right - left, height: last.row - first.row + 1)
+        } else {
+            guard let left = points.map(\.x).min(), let right = points.map(\.x).max(),
+                  let top = points.map(\.y).min(), let bottom = points.map(\.y).max() else { return nil }
+            bounds = CGRect(x: left, y: top, width: right - left, height: bottom - top).insetBy(dx: -width / 2, dy: -width / 2)
+        }
+        var transformed = bounds
+        if reflection?.horizontal == true { transformed.origin.x = -bounds.maxX }
+        if reflection?.vertical == true { transformed.origin.y = -bounds.maxY }
+        return transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+    }
+}
+
+enum StudioReflectionAxis: String, Codable, Sendable { case horizontal, vertical }
+
+struct StudioElementReflection: Codable, Equatable, Sendable {
+    var horizontal = false
+    var vertical = false
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "Empty artwork reflection is invalid. The original has not changed." }
+    }
+    func validate() throws {
+        guard horizontal || vertical else { throw Failure.invalid }
+    }
+}
+
+struct StudioElementTranslation: Codable, Equatable, Sendable {
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "The artwork move exceeds the supported canvas range. Nothing changed." }
+    }
+    var x: Double
+    var y: Double
+    func validate() throws {
+        guard x.isFinite, y.isFinite, abs(x) <= 100_000, abs(y) <= 100_000 else {
+            throw Failure.invalid
+        }
+    }
+}
+
+struct StudioFillMask: Codable, Equatable, Sendable {
+    static let maximumSpans = 65_536
+    static let maximumDocumentSpans = 262_144
+    var version = 1
+    let width: Int
+    let height: Int
+    var spans: [Span]
+    struct Span: Codable, Equatable, Sendable {
+        let row: Int
+        let start: Int
+        let end: Int
+        let alpha: UInt8
+    }
+    func validate() throws {
+        guard version == 1, (16...4096).contains(width), (16...4096).contains(height),
+              width <= 4_194_304 / height, !spans.isEmpty, spans.count <= Self.maximumSpans else { throw Failure.invalid }
+        var previous: Span?
+        for span in spans {
+            guard (0..<height).contains(span.row), span.start >= 0, span.start < span.end,
+                  span.end <= width, span.alpha > 0 else { throw Failure.invalid }
+            if let previous {
+                guard span.row > previous.row || (span.row == previous.row && span.start >= previous.end) else {
+                    throw Failure.invalid
+                }
+                guard span.row != previous.row || span.start != previous.end || span.alpha != previous.alpha else {
+                    throw Failure.invalid
+                }
+            }
+            previous = span
+        }
+    }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "This fill region is invalid or exceeds the editable limit. Nothing has changed." }
+    }
+}
+
+struct StudioShapeDescriptor: Codable, Equatable {
+    var version = 1
+    var fillColor: String? = nil
+    var cornerRadius: Double = 0
+
+    func validate(tool: DrawingTool) throws {
+        guard version == 1, [.rectangle, .circle].contains(tool),
+              cornerRadius.isFinite, (0...50).contains(cornerRadius),
+              tool == .rectangle || cornerRadius == 0 else { throw Failure.invalid }
+        if let fillColor {
+            let hex = fillColor.hasPrefix("#") ? String(fillColor.dropFirst()) : fillColor
+            guard hex.utf8.count == 6, hex.utf8.allSatisfy({
+                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+            }) else { throw Failure.invalid }
+        }
+    }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "These shape settings are invalid or unsupported. The drawing has not changed." }
+    }
 }
 
 struct StudioBrushDescriptor: Codable, Equatable {
@@ -118,6 +232,7 @@ struct StudioStrokeInput {
     let documentSize: CGSize
     let viewportSize: CGSize
     let startedAt: Date
+    var shape: StudioShapeDescriptor? = nil
     private(set) var points: [StrokePoint] = []
 
     mutating func append(location: CGPoint, time: Date) throws {
@@ -140,7 +255,7 @@ struct StudioStrokeInput {
         let shape = [.line, .rectangle, .circle].contains(tool)
         let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
         return DrawnElement(id: id, tool: tool, points: rendered, color: color,
-            width: width, opacity: opacity, layerID: layerID, brush: brush)
+            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape)
     }
 }
 
@@ -238,6 +353,48 @@ struct AudioClip: Codable, Identifiable, Equatable {
     var volume: Double = 0.8
     /// Immutable audio bytes in the same AnimationProject snapshot; nil for legacy clips.
     var assetID: UUID? = nil
+    /// Source time is independent of placement on the animation timeline.
+    var sourceOffset: Double = 0
+    var isMuted: Bool = false
+
+    enum CodingKeys: String, CodingKey {
+        case id, soundName, track, startTime, duration, volume, assetID, sourceOffset, isMuted
+    }
+    init(id: String, soundName: String, track: Int, startTime: Double, duration: Double,
+         volume: Double = 0.8, assetID: UUID? = nil, sourceOffset: Double = 0, isMuted: Bool = false) {
+        self.id = id; self.soundName = soundName; self.track = track; self.startTime = startTime
+        self.duration = duration; self.volume = volume; self.assetID = assetID
+        self.sourceOffset = sourceOffset; self.isMuted = isMuted
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); soundName = try c.decode(String.self, forKey: .soundName)
+        track = try c.decode(Int.self, forKey: .track); startTime = try c.decode(Double.self, forKey: .startTime)
+        duration = try c.decode(Double.self, forKey: .duration)
+        volume = try c.decodeIfPresent(Double.self, forKey: .volume) ?? 0.8
+        assetID = try c.decodeIfPresent(UUID.self, forKey: .assetID)
+        sourceOffset = try c.decodeIfPresent(Double.self, forKey: .sourceOffset) ?? 0
+        isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+    }
+}
+
+/// One validated command is committed per finished gesture, never per drag tick.
+enum StudioAudioClipEdit: Equatable {
+    case place(start: Double, track: Int)
+    case trim(sourceOffset: Double, duration: Double)
+    case volume(Double)
+    case mute(Bool)
+}
+
+enum StudioAudioTimelineGeometry {
+    static func snapped(_ time: Double, fps: Int, enabled: Bool) -> Double? {
+        guard time.isFinite, (1...60).contains(fps), time >= 0, time <= 1000 else { return nil }
+        return enabled ? (time * Double(fps)).rounded() / Double(fps) : time
+    }
+    static func time(at x: Double, pointsPerSecond: Double, fps: Int, snap: Bool) -> Double? {
+        guard x.isFinite, pointsPerSecond.isFinite, pointsPerSecond > 0 else { return nil }
+        return snapped(max(0, x / pointsPerSecond), fps: fps, enabled: snap)
+    }
 }
 
 // MARK: - Sound Effect

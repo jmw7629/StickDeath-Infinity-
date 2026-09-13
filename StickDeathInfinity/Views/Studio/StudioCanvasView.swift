@@ -6,7 +6,18 @@ struct StudioCanvasView: View {
     @Environment(\.displayScale) private var displayScale
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
+    @State private var moveCapture: StudioViewModel.MoveCapture?
+    @State private var moveLayout: StudioColorSampleGesture.Layout?
+    @State private var moveFrame: AnimationFrame?
+    @State private var startedAsMove = false
+    @State private var moveCancelled = false
     @State private var panOrigin: CGSize?
+    // A completed gesture still needs its captured context in onEnded.
+    // GestureState resets at touch end, so it cannot own this transaction.
+    @State private var colorInput = StudioColorSampleGesture()
+    @State private var touchID: UUID?
+    @State private var fillInput = StudioFillGesture()
+    @StateObject private var fillSession = StudioFillSession()
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -15,7 +26,8 @@ struct StudioCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
-            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: vm.currentFrame) }
+            let displayedFrame = moveFrame ?? vm.currentFrame
+            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: displayedFrame) }
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
             let currentRaster = Result { try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers,
                 data: vm.rasterData(vm.currentFrame.rasterAssetID), maximumDimension: rasterSize) }
@@ -46,7 +58,7 @@ struct StudioCanvasView: View {
                         }
                         switch (currentPrepared, currentRaster) {
                         case (.success(let brushes), .success(let image)):
-                            if let error = StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
+                            if let error = StudioFrameRenderer.draw(context: &context, frame: displayedFrame, layers: vm.layers,
                                 canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
                                 rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
                                 preparedBrushes: brushes, preparedRaster: image) {
@@ -55,14 +67,12 @@ struct StudioCanvasView: View {
                         case (.failure(let error), _), (_, .failure(let error)):
                             StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                         }
-                        for element in vm.currentFrame.elements where vm.selectedElementIDs.contains(element.id) {
-                            guard let first = element.points.first else { continue }
-                            let xs = element.points.map(\.x), ys = element.points.map(\.y)
-                            let x = xs.min() ?? first.x, y = ys.min() ?? first.y
-                            let rect = CGRect(x: x / CGFloat(vm.canvasWidth) * actual.width - 3,
-                                y: y / CGFloat(vm.canvasHeight) * actual.height - 3,
-                                width: ((xs.max() ?? x) - x) / CGFloat(vm.canvasWidth) * actual.width + 6,
-                                height: ((ys.max() ?? y) - y) / CGFloat(vm.canvasHeight) * actual.height + 6)
+                        for element in displayedFrame.elements where vm.selectedElementIDs.contains(element.id) {
+                            guard let bounds = element.selectionBounds else { continue }
+                            let rect = CGRect(x: bounds.minX / CGFloat(vm.canvasWidth) * actual.width - 3,
+                                y: bounds.minY / CGFloat(vm.canvasHeight) * actual.height - 3,
+                                width: bounds.width / CGFloat(vm.canvasWidth) * actual.width + 6,
+                                height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
                     }
@@ -81,8 +91,20 @@ struct StudioCanvasView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
+            .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
+                scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
+                colorInput.invalidate(); fillInput.invalidate(); cancelMovePreview()
+            }
             .overlay(alignment: .bottom) {
-                if let pending = vm.pendingBrushStroke {
+                if fillSession.isFilling {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Filling artwork…").font(.specialElite(12))
+                        Button("Cancel") { fillSession.cancel() }
+                            .accessibilityIdentifier("studio.fill.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.fill.progress")
+                } else if let pending = vm.pendingBrushStroke {
                     VStack(spacing: 6) {
                         Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
                         Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
@@ -100,11 +122,28 @@ struct StudioCanvasView: View {
             }
         }
         .onChange(of: vm.currentFrame.id) { _, _ in
+            fillSession.cancel()
             interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
         }
-        .onChange(of: gestureActive) { _, active in
-            if !active { interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.") }
+        .onChange(of: StudioFillContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            fillInput.invalidate()
+            if fillSession.isFilling { fillSession.cancel() }
         }
+        .onChange(of: gestureActive) { _, active in
+            guard !active, let endedTouch = touchID else { return }
+            // Let onEnded consume its capture first. A cancelled gesture has
+            // no onEnded callback; clear only that touch on the next turn.
+            Task { @MainActor in
+                await Task.yield()
+                guard !gestureActive, touchID == endedTouch else { return }
+                interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
+            }
+        }
+        .onChange(of: vm.document.revision) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
         }
@@ -119,7 +158,27 @@ struct StudioCanvasView: View {
         DragGesture(minimumDistance: 0)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
+                if touchID == nil {
+                    touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
+                    startedAsMove = vm.selectedTool == .move; moveCancelled = false
+                    if startedAsMove {
+                        moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        moveCapture = vm.beginMove(at: documentPoint(value.startLocation, size: size))
+                    }
+                }
+                if startedAsMove {
+                    updateMove(delta: value.translation, size: size)
+                    return
+                }
+                colorInput.update(context: input == nil ? vm.beginColorSample() : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
+                fillInput.update(context: input == nil ? StudioFillContext.current(vm) : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
                 guard vm.pendingBrushStroke == nil else { return }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
                     vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
@@ -134,13 +193,14 @@ struct StudioCanvasView: View {
                         let id = UUID().uuidString
                         let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
+                        let shape = try vm.shapeDescriptor()
                         guard vm.beginStrokeInput(id: id) else { return }
                         input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                             tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
-                            opacity: styled ? vm.capturedStrokeOpacity : vm.strokeOpacity,
+                            opacity: styled || shape != nil ? vm.capturedStrokeOpacity : vm.strokeOpacity,
                             brush: brush,
                             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
-                            startedAt: value.time)
+                            startedAt: value.time, shape: shape)
                     } catch { vm.message = error.localizedDescription; return }
                 }
                 do { try input?.append(location: value.location, time: value.time) }
@@ -158,6 +218,33 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if startedAsMove {
+                    guard updateMove(delta: value.translation, size: size), let capture = moveCapture else { return }
+                    _ = vm.finishMove(capture, delta: documentDelta(value.translation, size: size))
+                    return
+                }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) {
+                    guard let fill = fillInput.resolve(location: value.location,
+                        context: StudioFillContext.current(vm),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio changed during fill input. Choose a visible unlocked layer and start a new tap."
+                        return
+                    }
+                    Task { await fillSession.fill(vm, context: fill.context, point: fill.point) }
+                    return
+                }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) {
+                    guard let sample = colorInput.resolve(location: value.location,
+                        context: vm.beginColorSample(),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio or the canvas changed during color sampling. Start a new tap."
+                        return
+                    }
+                    _ = vm.sampleArtworkColor(at: sample.point, captured: sample.context)
+                    return
+                }
                 if panOrigin != nil { return }
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {
@@ -175,22 +262,47 @@ struct StudioCanvasView: View {
                     return
                 }
                 if vm.selectedTool == .zoom { vm.zoomIn(); return }
-                if vm.selectedTool == .move {
-                    vm.selectElement(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
-                                                 y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
-                    return
-                }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
-    private func clearInput() {
+    private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
+        CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
+    }
+    private func documentDelta(_ delta: CGSize, size: CGSize) -> CGSize {
+        CGSize(width: delta.width / size.width * CGFloat(vm.canvasWidth), height: delta.height / size.height * CGFloat(vm.canvasHeight))
+    }
+    private func cancelMovePreview() {
+        if startedAsMove { moveCancelled = true; moveFrame = nil }
+    }
+    @discardableResult
+    private func updateMove(delta: CGSize, size: CGSize) -> Bool {
+        guard !moveCancelled, let capture = moveCapture else { return false }
+        guard scenePhase == .active, moveLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+              vm.moveIsCurrent(capture) else {
+            cancelMovePreview(); vm.message = "Studio changed during the move. The artwork has not moved."; return false
+        }
+        do { moveFrame = try vm.movePreview(capture, delta: documentDelta(delta, size: size)); return true }
+        catch { cancelMovePreview(); vm.message = error.localizedDescription; return false }
+    }
+    private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
         input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
+        if endingTouch {
+            colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
+            moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
+        }
     }
     private func interruptInput(_ reason: String) {
+        fillSession.cancel()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
-        clearInput()
+        colorInput.invalidate()
+        fillInput.invalidate()
+        cancelMovePreview()
+        // A frame/scene change while the finger is down cancels that whole
+        // touch. Keep its identity until physical end; a later move must not
+        // capture the new frame as though it were a fresh gesture.
+        clearInput(endingTouch: !gestureActive)
     }
 }
 

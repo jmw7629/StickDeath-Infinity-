@@ -2,6 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
+    static let supportedSchemaVersions = 1...8
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -34,7 +35,7 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
-        guard (1...3).contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
+        guard Self.supportedSchemaVersions.contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
               revision >= 0, revision < Int.max - 1 else { throw StudioDocumentError.invalid("Project dimensions, timing, name or size are invalid.") }
@@ -48,6 +49,7 @@ struct StudioDocument: Codable, Equatable {
             }
         }
         var elementIDs = Set<String>(); var pointCount = 0
+        var fillSpanCount = 0
         for frame in frames {
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
@@ -63,6 +65,32 @@ struct StudioDocument: Codable, Equatable {
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             for element in frame.elements {
+                if let reflection = element.reflection {
+                    guard schemaVersion >= 8 else { throw StudioDocumentError.invalid("Reflected artwork requires a newer project version. The original has not changed.") }
+                    try reflection.validate()
+                }
+                if let translation = element.translation {
+                    guard schemaVersion >= 7 else { throw StudioDocumentError.invalid("Moved artwork requires a newer project version. The original has not changed.") }
+                    try translation.validate()
+                }
+                if let mask = element.fillMask {
+                    guard schemaVersion >= 6, element.tool == .fill, element.brush == nil, element.shape == nil,
+                          mask.width == width, mask.height == height, element.points.count == 2 else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    try mask.validate()
+                    try StudioShapeDescriptor(fillColor: element.color).validate(tool: .rectangle)
+                    guard mask.spans.count <= StudioFillMask.maximumDocumentSpans - fillSpanCount else {
+                        throw StudioFillMask.Failure.invalid
+                    }
+                    fillSpanCount += mask.spans.count
+                }
+                if let shape = element.shape {
+                    guard schemaVersion >= 5, element.brush == nil, element.points.count == 2 else {
+                        throw StudioShapeDescriptor.Failure.invalid
+                    }
+                    try shape.validate(tool: element.tool)
+                }
                 guard !element.id.isEmpty, elementIDs.insert(element.id).inserted,
                       element.layerID.map(layerIDs.contains) == true,
                       element.width.isFinite, (0.1...1024).contains(element.width),
@@ -81,6 +109,11 @@ struct StudioDocument: Codable, Equatable {
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
+            guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
+                  (clip.sourceOffset + clip.duration).isFinite,
+                  (clip.sourceOffset == 0 && !clip.isMuted) || schemaVersion >= 4 else {
+                throw StudioDocumentError.invalid("An audio clip has invalid source timing or unsupported edit metadata.")
+            }
             if clip.assetID != nil {
                 guard !clip.id.isEmpty, clip.id.count <= 120, !clip.soundName.isEmpty, clip.soundName.count <= 120,
                       (1...4).contains(clip.track), clip.duration > 0, clip.duration <= 300,
@@ -188,6 +221,10 @@ struct StudioDocumentEditor {
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The drawing frame is unavailable.") }
             value.frames[index].elements.append(element)
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
+            if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
+            if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
+            if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
+            if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
         }
     }
     mutating func addFrame() throws {
@@ -212,11 +249,15 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
+            if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
+            if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
+            if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
+            if elements.contains(where: { $0.reflection != nil }) { value.schemaVersion = max(value.schemaVersion, 8) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -231,6 +272,108 @@ struct StudioDocumentEditor {
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == id }), value.frames.indices.contains(index + offset) else { return }
             value.frames.swapAt(index, index + offset)
+        }
+    }
+    /// One reversible edit; original geometry and fill pixels are never cropped.
+    mutating func translateElements(frameID: String, ids: Set<String>, dx: Double, dy: Double,
+                                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before moving artwork.") }
+        try StudioElementTranslation(x: dx, y: dy).validate()
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame is unavailable. Nothing moved.") }
+            let existing = Set(value.frames[frame].elements.map(\.id))
+            guard ids.isSubset(of: existing) else { throw StudioDocumentError.invalid("The selection contains unavailable artwork. Nothing moved.") }
+            for index in value.frames[frame].elements.indices where ids.contains(value.frames[frame].elements[index].id) {
+                try checkCancellation()
+                let element = value.frames[frame].elements[index]
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+                if dx == 0 && dy == 0 { continue }
+                let moved = StudioElementTranslation(x: (element.translation?.x ?? 0) + dx,
+                                                     y: (element.translation?.y ?? 0) + dy)
+                try moved.validate()
+                value.frames[frame].elements[index].translation = moved.x == 0 && moved.y == 0 ? nil : moved
+                value.schemaVersion = max(value.schemaVersion, 7)
+            }
+            try checkCancellation()
+        }
+    }
+    /// Reflect the group around its combined document-space bounds. Original
+    /// geometry, IDs, ordering and fill masks remain unchanged.
+    mutating func reflectElements(frameID: String, ids: Set<String>, axis: StudioReflectionAxis,
+                                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before flipping artwork.") }
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Nothing flipped.") }
+            let elements = value.frames[frame].elements
+            guard ids.isSubset(of: Set(elements.map(\.id))) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Nothing flipped.") }
+            var bounds = CGRect.null
+            for element in elements where ids.contains(element.id) {
+                try checkCancellation()
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible, layer.opacity > 0,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+                guard let rect = element.selectionBounds, !rect.isNull,
+                      rect.minX.isFinite, rect.maxX.isFinite, rect.minY.isFinite, rect.maxY.isFinite else {
+                    throw StudioDocumentError.invalid("The selected artwork has invalid reflection bounds.")
+                }
+                bounds = bounds.union(rect)
+            }
+            guard !bounds.isNull else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before flipping artwork.") }
+            for index in elements.indices where ids.contains(elements[index].id) {
+                try checkCancellation()
+                var translation = elements[index].translation ?? .init(x: 0, y: 0)
+                var reflection = elements[index].reflection ?? .init()
+                switch axis {
+                case .horizontal: translation.x = bounds.minX + bounds.maxX - translation.x; reflection.horizontal.toggle()
+                case .vertical: translation.y = bounds.minY + bounds.maxY - translation.y; reflection.vertical.toggle()
+                }
+                try translation.validate()
+                value.frames[frame].elements[index].translation = translation.x == 0 && translation.y == 0 ? nil : translation
+                value.frames[frame].elements[index].reflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            }
+            value.schemaVersion = max(value.schemaVersion, 8)
+            try checkCancellation()
+        }
+    }
+    /// Move each explicitly selected element by one unselected neighbor within
+    /// its own layer. Relative selection order and layer stacking stay intact.
+    mutating func orderElements(frameID: String, ids: Set<String>, forward: Bool,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before changing their order.") }
+        try checkCancellation()
+        try change { value in
+            guard let frame = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let elements = value.frames[frame].elements
+            guard ids.isSubset(of: Set(elements.map(\.id))) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let selected = elements.filter { ids.contains($0.id) }
+            guard selected.allSatisfy({ $0.layerID != nil }) else { throw StudioDocumentError.invalid("The selected frame or artwork is unavailable. Its order has not changed.") }
+            let layerIDs = Set(selected.compactMap(\.layerID))
+            for id in layerIDs {
+                try checkCancellation()
+                guard let layer = value.layers.first(where: { $0.id == id }), layer.visible, layer.opacity > 0,
+                      !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            }
+            var positions: [String: [Int]] = [:]
+            for index in elements.indices {
+                try checkCancellation()
+                if let layer = elements[index].layerID, layerIDs.contains(layer) { positions[layer, default: []].append(index) }
+            }
+            for layer in value.layers where layerIDs.contains(layer.id) {
+                let indices = positions[layer.id] ?? []
+                guard indices.count > 1 else { continue }
+                let order = forward ? Array((0..<(indices.count - 1)).reversed()) : Array(1..<indices.count)
+                for position in order {
+                    try checkCancellation()
+                    let current = indices[position], neighbor = indices[position + (forward ? 1 : -1)]
+                    if ids.contains(value.frames[frame].elements[current].id),
+                       !ids.contains(value.frames[frame].elements[neighbor].id) {
+                        value.frames[frame].elements.swapAt(current, neighbor)
+                    }
+                }
+            }
+            try checkCancellation()
         }
     }
     mutating func deleteSelected() throws {
@@ -273,7 +416,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -297,8 +440,16 @@ struct StudioDocumentEditor {
     }
     private mutating func trimHistory() {
         func cost(_ value: StudioDocument) -> Int {
-            value.frames.reduce(0) { sum, frame in sum + frame.elements.reduce(0) { $0 + 256 + $1.points.count * 40 } }
-                + value.layers.count * 512 + value.audioClips.count * 512
+            var bytes = value.layers.count * 512 + value.audioClips.count * 512
+            for frame in value.frames {
+                for element in frame.elements {
+                    bytes += 256 + element.points.count * 40
+                    if let mask = element.fillMask {
+                        bytes += mask.spans.count * MemoryLayout<StudioFillMask.Span>.stride
+                    }
+                }
+            }
+            return bytes
         }
         var bytes = undoDocuments.reduce(0) { $0 + cost($1) }
         while undoDocuments.count > 50 || (bytes > 32 * 1024 * 1024 && undoDocuments.count > 1) {
@@ -356,8 +507,11 @@ enum StudioBrushGeometryCache {
         }
         let settings = try brush.settings(width: element.width, opacity: element.opacity)
         _ = try color(element.color)
+        // Translation is applied by the shared renderer after geometry creation.
+        // Keep the same deterministic geometry in cache throughout a drag.
+        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil
         lock.lock()
-        if var hit = entries[element.id], hit.element == element {
+        if var hit = entries[element.id], hit.element == geometryElement {
             clock &+= 1; hit.used = clock; entries[element.id] = hit
             lock.unlock(); return hit.geometry
         }
@@ -380,7 +534,7 @@ enum StudioBrushGeometryCache {
             bytes -= oldest.value.bytes; entries.removeValue(forKey: oldest.key)
         }
         clock &+= 1
-        entries[element.id] = Entry(element: element, geometry: result, bytes: cost, used: clock)
+        entries[element.id] = Entry(element: geometryElement, geometry: result, bytes: cost, used: clock)
         bytes += cost
         return result
     }
@@ -394,8 +548,8 @@ enum StudioBrushGeometryCache {
                 guard elements <= maximumDocumentElements else {
                     throw StudioBrushError.workLimit("This project exceeds 2,048 styled brush elements. Undo or remove selected content before adding more.")
                 }
-                guard (2...3).contains(document.schemaVersion) else {
-                    throw StudioBrushError.invalidSettings("Brush documents require version 2. The original project has not changed.")
+                guard document.schemaVersion >= 2, StudioDocument.supportedSchemaVersions.contains(document.schemaVersion) else {
+                    throw StudioBrushError.invalidSettings("Styled brushes require a supported project format, version 2 or later. The original project has not changed.")
                 }
                 points += element.points.count
                 guard points <= maximumDocumentPoints else {

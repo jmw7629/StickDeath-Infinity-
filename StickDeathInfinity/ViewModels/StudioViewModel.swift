@@ -79,6 +79,8 @@ final class StudioViewModel: ObservableObject {
     @Published var strokeColor: Color = .red
     @Published var strokeWidth: Double = 3
     @Published var strokeOpacity: Double = 1
+    @Published var shapeFilled = false
+    @Published var shapeCornerRadius: Double = 0
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
     @Published var smoothing: Double = 3
     @Published var pressureSensitivity = false
@@ -109,6 +111,13 @@ final class StudioViewModel: ObservableObject {
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
+    func shapeDescriptor() throws -> StudioShapeDescriptor? {
+        guard [.rectangle, .circle].contains(selectedTool) else { return nil }
+        let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
+            cornerRadius: selectedTool == .rectangle ? shapeCornerRadius : 0)
+        try value.validate(tool: selectedTool)
+        return value
+    }
     var capturedStrokeOpacity: Double {
         #if canImport(UIKit)
         var alpha: CGFloat = 1
@@ -260,7 +269,7 @@ final class StudioViewModel: ObservableObject {
         try addUnits(document.audioClips.count, weight: 32)
         for frame in document.frames {
             try addUnits(frame.elements.count, weight: 32)
-            for element in frame.elements { try addUnits(element.points.count) }
+            for element in frame.elements { try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0) }
         }
         for command in commands {
             switch command {
@@ -531,20 +540,119 @@ final class StudioViewModel: ObservableObject {
             _ = commitElement(element, frameID: pending.frameID)
         } catch { message = error.localizedDescription }
     }
-    func deleteSelected() { command { try $0.deleteSelected() } }
-    func selectElement(at point: CGPoint) {
-        editor.selectedElementIDs.removeAll()
-        for layer in layers where layer.visible && !layer.isFullyLocked {
-            if let element = currentFrame.elements.reversed().first(where: { element in
-                guard element.layerID == layer.id, let first = element.points.first else { return false }
-                let xs = element.points.map(\.x), ys = element.points.map(\.y)
-                let tolerance = max(12, element.width * 2)
-                return point.x >= (xs.min() ?? first.x) - tolerance && point.x <= (xs.max() ?? first.x) + tolerance
-                    && point.y >= (ys.min() ?? first.y) - tolerance && point.y <= (ys.max() ?? first.y) + tolerance
-            }) { editor.selectedElementIDs = [element.id]; break }
+    @discardableResult
+    func orderSelected(forward: Bool) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before changing artwork order."; return false
         }
-        message = "Move currently selects an element for deletion. Dragging selections is unfinished."
+        let ids = selectedElementIDs
+        guard !ids.isEmpty else { message = "Select drawn artwork before changing its order."; return false }
+        let revision = document.revision
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: revision, action: .apply([.orderElements(.init(frame: .id(currentFrame.id),
+                    elementIDs: ids.sorted(), direction: forward ? .later : .earlier))])))
+            editor.selectedElementIDs = ids
+            // Successful direct manipulation keeps the canvas geometry and existing errors unchanged.
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
+    @discardableResult
+    func reflectSelected(axis: StudioReflectionAxis) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before flipping artwork."; return false
+        }
+        let ids = selectedElementIDs
+        guard !ids.isEmpty else { message = "Select drawn artwork before flipping it."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.reflectElements(.init(frame: .id(currentFrame.id),
+                    elementIDs: ids.sorted(), axis: axis))])))
+            editor.selectedElementIDs = ids
+            // The artwork is the success feedback; do not insert a canvas-resizing banner.
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    func deleteSelected() { command { try $0.deleteSelected() } }
+    enum SelectionMode: String, CaseIterable { case new, add, subtract
+        var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
+    }
+    @Published var selectionMode: SelectionMode = .new
+    struct MoveCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let ids: Set<String>
+        let mode: SelectionMode
+    }
+    @discardableResult
+    func selectElement(at point: CGPoint) -> String? {
+        guard point.x.isFinite, point.y.isFinite, activeStrokeID == nil, !isPlaying else { return nil }
+        var hit: String?
+        for layer in layers where layer.visible && layer.opacity > 0 && !layer.isFullyLocked {
+            if let element = currentFrame.elements.reversed().first(where: { element in
+                guard element.layerID == layer.id, element.opacity > 0, let rect = element.selectionBounds else { return false }
+                if let mask = element.fillMask {
+                    let x = (point.x - (element.translation?.x ?? 0)) * (element.reflection?.horizontal == true ? -1 : 1)
+                    let y = (point.y - (element.translation?.y ?? 0)) * (element.reflection?.vertical == true ? -1 : 1)
+                    return mask.spans.contains { y >= Double($0.row) && y < Double($0.row + 1) && x >= Double($0.start) && x < Double($0.end) }
+                }
+                return rect.insetBy(dx: -6, dy: -6).contains(point)
+            }) { hit = element.id; break }
+        }
+        switch selectionMode {
+        case .new:
+            if let hit { if !selectedElementIDs.contains(hit) { editor.selectedElementIDs = [hit] } }
+            else { editor.selectedElementIDs.removeAll() }
+        case .add: if let hit { editor.selectedElementIDs.insert(hit) }
+        case .subtract: if let hit { editor.selectedElementIDs.remove(hit) }
+        }
+        return hit
+    }
+    func beginMove(at point: CGPoint) -> MoveCapture? {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
+              activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
+        let hit = selectElement(at: point)
+        guard selectionMode != .subtract else { return nil }
+        // Empty canvas is ordinary selection input. Guidance belongs in the
+        // tool popup; a status banner here would resize the canvas mid-gesture.
+        // Leave an existing save/validation error visible.
+        guard hit != nil, !selectedElementIDs.isEmpty else { return nil }
+        guard currentFrame.elements.filter({ selectedElementIDs.contains($0.id) }).allSatisfy({ element in
+            layers.contains { $0.id == element.layerID && $0.visible && !$0.isFullyLocked && $0.lockMode == "free" }
+        }) else { message = "This layer's position is locked. Choose Free before moving artwork."; return nil }
+        message = nil
+        return MoveCapture(projectID: document.id, revision: document.revision, frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode)
+    }
+    func moveIsCurrent(_ capture: MoveCapture) -> Bool {
+        isEditing && !isPlaying && selectedTool == .move && activeStrokeID == nil && pendingBrushStroke == nil &&
+        capture.projectID == document.id && capture.revision == document.revision && capture.frameID == currentFrame.id &&
+        capture.ids == selectedElementIDs && capture.mode == selectionMode
+    }
+    /// Preview derives from the captured document and never mutates undo or autosave.
+    func movePreview(_ capture: MoveCapture, delta: CGSize) throws -> AnimationFrame {
+        guard moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
+        try StudioElementTranslation(x: delta.width, y: delta.height).validate()
+        var frame = currentFrame
+        for index in frame.elements.indices where capture.ids.contains(frame.elements[index].id) {
+            let old = frame.elements[index].translation
+            let next = StudioElementTranslation(x: (old?.x ?? 0) + delta.width, y: (old?.y ?? 0) + delta.height)
+            try next.validate(); frame.elements[index].translation = next.x == 0 && next.y == 0 ? nil : next
+        }
+        return frame
+    }
+    @discardableResult
+    func finishMove(_ capture: MoveCapture, delta: CGSize) -> Bool {
+        guard moveIsCurrent(capture) else { message = "Studio changed during the move. The artwork has not moved."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.translateElements(.init(frame: .id(capture.frameID),
+                    elementIDs: capture.ids.sorted(), dx: delta.width, dy: delta.height))])))
+            editor.selectedElementIDs = capture.ids
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    func clearElementSelection() { editor.selectedElementIDs.removeAll() }
     func clearCanvas() { message = "Select elements explicitly before deleting. The canvas has not changed." }
     func selectLayer(_ id: String) {
         guard allowDocumentEditDuringInput() else { return }
@@ -578,7 +686,8 @@ final class StudioViewModel: ObservableObject {
                              frameID: String, trackNumber: Int,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
-        guard isEditing, !isSaving, document.id == expectedProjectID, document.revision == expectedRevision,
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, let frame = frames.firstIndex(where: { $0.id == frameID }) else {
             throw StudioDocumentError.unavailable("The project or selected frame changed. Import again in the current project.")
         }
@@ -617,7 +726,7 @@ final class StudioViewModel: ObservableObject {
             .sorted { $0.id.uuidString < $1.id.uuidString }
         for clip in snapshot.audioClips where clip.assetID != nil {
             guard let asset = tracks.first(where: { $0.id == clip.assetID }), asset.audioData != nil,
-                  asset.duration > 0, clip.duration <= asset.duration + 0.001 else {
+                  asset.duration > 0, clip.sourceOffset + clip.duration <= asset.duration + 0.001 else {
                 throw StudioDocumentError.invalid("An imported audio asset is missing or has inconsistent timing. No save was made.")
             }
         }
@@ -627,6 +736,75 @@ final class StudioViewModel: ObservableObject {
         let needed = editor.referencedAudioAssetIDsIncludingHistory
         managedAudioTracks = managedAudioTracks.filter { needed.contains($0.key) }
         pruneManagedImages()
+    }
+    /// The same command entry point is usable by Studio UI and validated assistants.
+    /// Source bytes stay immutable; only a selected clip in the captured revision changes.
+    func editSelectedAudioClip(_ id: String, expectedRevision: Int, edit: StudioAudioClipEdit) throws {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.revision == expectedRevision, selectedCurrentAudioClip?.id == id,
+              let index = document.audioClips.firstIndex(where: { $0.id == id }),
+              let assetID = document.audioClips[index].assetID,
+              let asset = audioTrack(forAssetID: assetID), asset.audioData != nil else {
+            throw StudioDocumentError.unavailable("Select a saved audio clip in the current idle project before editing it.")
+        }
+        var clip = document.audioClips[index]
+        switch edit {
+        case .place(let start, let track): clip.startTime = start; clip.track = track
+        case .trim(let offset, let duration): clip.sourceOffset = offset; clip.duration = duration
+        case .volume(let value): clip.volume = value
+        case .mute(let value): clip.isMuted = value
+        }
+        guard clip.sourceOffset.isFinite, clip.duration.isFinite, clip.sourceOffset >= 0,
+              clip.duration >= 1 / 48_000.0, asset.duration.isFinite,
+              clip.sourceOffset + clip.duration <= asset.duration + 1 / 48_000.0 else {
+            throw StudioDocumentError.invalid("The trim must contain real audio within the source file.")
+        }
+        guard clip != document.audioClips[index] else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            value.audioClips[index] = clip
+        }
+        try preflightRasterDocument(candidate.document)
+        _ = try audioTracksForSave(candidate.document)
+        editor = candidate; selectedAudioClip = clip; message = nil; scheduleSave()
+    }
+    func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int) throws {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("Stop playback before muting this track.")
+        }
+        let ids = document.audioClips.filter { $0.track == track }.map(\.id)
+        guard !ids.isEmpty else { return }
+        guard document.audioClips.filter({ ids.contains($0.id) }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.audioClips.contains(where: { ids.contains($0.id) && $0.isMuted != muted }) else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            for index in value.audioClips.indices where ids.contains(value.audioClips[index].id) {
+                value.audioClips[index].isMuted = muted
+            }
+        }
+        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        editor = candidate
+        selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
+        message = nil; scheduleSave()
+    }
+    /// Real audio-player time drives the display frame; no second animation timer.
+    func displayAudioPlaybackTime(_ seconds: Double, playing: Bool) {
+        guard seconds.isFinite, seconds >= 0, seconds <= audioDuration, !frames.isEmpty else { return }
+        playbackTimer?.invalidate(); playbackTimer = nil
+        audioPlayheadTime = seconds
+        let target = min(frames.count - 1, max(0, Int((seconds * Double(fps)).rounded(.down))))
+        if playing {
+            playbackFrameIndex = target; isPlaying = true
+        } else {
+            playbackFrameIndex = nil; isPlaying = false
+            guard isEditing, activeStrokeID == nil, pendingBrushStroke == nil else { return }
+            if editor.selectFrame(frames[target].id) { scheduleSave() }
+        }
     }
     func setAudioClipVolume(_ id: String, volume: Double) {
         guard selectedCurrentAudioClip?.id == id else { return }
@@ -736,7 +914,9 @@ final class StudioViewModel: ObservableObject {
             editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded())
     }
     private func preflightRasterDocument(_ candidate: StudioDocument) throws {
-        guard !candidate.referencedRasterAssetIDs.isEmpty else { return }
+        guard !candidate.referencedRasterAssetIDs.isEmpty || candidate.frames.contains(where: {
+            $0.elements.contains(where: { $0.fillMask != nil })
+        }) else { return }
         try storage.preflightAnimation(storageProject(candidate, rasters: retainedRasterFrames))
     }
     private func pruneManagedImages() {

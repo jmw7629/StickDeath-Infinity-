@@ -1,0 +1,17 @@
+# Floating Studio toolbar and tool popup
+
+The white tool rail snaps vertically at either canvas edge and floats horizontally when dragged inward. Joe's updated direction removes the secondary right toolbar entirely. Tool options use the existing dismissible popup beneath the top rail, beside a snapped rail, or above a floating rail when space below is insufficient. Hand and Zoom expose the real zoom and Fit operations in that same popup. Color remains in the primary rail. The default and snapped rails leave the canvas clear; intentionally floating over artwork remains possible.
+
+Fourteen production layout groups pass locally, including 1,440 bounded placement/drag samples, popup clearance and noncollapsed canvas checks. Short landscape popups reserve a full 44-point zoom row by reducing decorative spacing and hiding the optional shortcut/zoom caption. All 107 app declarations and the three changed SwiftUI bodies pass an arm64 iOS 17 typecheck against SDK 26.2. The obsolete right-dock source and its explicit Xcode membership are removed. These checks do not prove a linked app or simulator pass.
+
+The preceding candidate, 7c94e65, linked successfully but failed three of twelve simulator journeys: rail chrome contaminated the blank brush capture, the Files cancellation capture occurred at a different canvas geometry, and a 44-point control was reported a floating-point fraction below 44. The current correction restores canvas clearance, requires original settled geometry after Files dismissal without relaxing pixel comparisons, and verifies the surviving popup close target to the nearest point. All existing drawing, persistence, export and media assertions remain.
+
+The revised native journey exercises both snap edges, undocking, popup dismissal/reopening, Picker closing the popup and real zoom/Fit without undo history. Fresh exact-head native CI remains required. The owner requires one agent; original author-separated reviews cover unchanged foundation source only. Final integration and these corrections have no independent approval and are not eligible for merge on self-review alone.
+
+Unfinished drawing engines, audio/media features and connected services are not declared complete by this workspace change.
+
+## Actual ea9e091 native result and corrective candidate
+
+The exact ea9e091 app and test bundle built, all production stages passed, and the SDK-matched iOS 18.5 simulator executed13journeys:10passed,3failed,0skipped. Photos seeding succeeded on this run. The two toolbar-related failures could not discover a hittable popup close button; the captured brush screenshot shows the close glyph visibly rendered. The new audio library test lost keyboard focus before entering its search term. Drawing/undo/redo, portrait/landscape, picker cancellation, actual Photos import/save/reopen/PNG, image exports, animation-only MP4/native share cancellation and Spatter journeys passed.
+
+The correction makes the existing tool popup an explicit accessibility container with independently identified child controls. It also preserves one audio ScrollView/workspace hierarchy as keyboard-driven size changes cross the compact-height threshold. The prior conditional replaced the focused TextField's containing hierarchy. Both fixes retain the layout, all controls and all test assertions. Close-button failures now capture their actual hierarchy for diagnosis. These are candidate fixes pending a fresh exact-head native run, not a claim that all native tests are green.
