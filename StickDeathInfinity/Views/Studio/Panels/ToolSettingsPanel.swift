@@ -306,6 +306,11 @@ struct FloatingToolSettingsPanel: View {
         // ── MOVE ──
         case .move:
             VStack(alignment: .leading, spacing: 8) {
+                Text(vm.currentFrame.rasterAssetID == nil
+                     ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
+                     : "Move selects drawn artwork. Moving imported image placement is unfinished.")
+                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                    .accessibilityIdentifier("studio.selection.guidance")
                 Text("SELECTION MODE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))

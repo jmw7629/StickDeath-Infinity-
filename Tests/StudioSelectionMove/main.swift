@@ -205,6 +205,21 @@ private struct Failure: Error { let message: String }
         try require(reopened.beginMove(at:CGPoint(x:28,y:92))==nil && reopened.selectedElementIDs == [box.id],"Subtract must not drag remaining selection")
         reopened.clearElementSelection();try require(reopened.selectedElementIDs.isEmpty,"Deselect")
         pass("New Add Subtract and Deselect control real multi-element reversible moves")
+        for mode in StudioViewModel.SelectionMode.allCases {
+            reopened.selectionMode = .new
+            _ = reopened.selectElement(at: CGPoint(x:76,y:44))
+            let selected = reopened.selectedElementIDs
+            reopened.selectionMode = mode; reopened.message = nil
+            let snapshot = reopened.document, canUndo = reopened.canUndo, canRedo = reopened.canRedo
+            try require(reopened.beginMove(at:CGPoint(x:125,y:125)) == nil,"Empty tap began a move")
+            try require(reopened.message == nil,"An ordinary empty Move tap inserted a canvas-resizing status banner")
+            try require(reopened.document == snapshot && reopened.canUndo == canUndo && reopened.canRedo == canRedo,"Empty tap changed artwork/history")
+            try require(reopened.selectedElementIDs == (mode == .new ? [] : selected),"Empty tap changed the selection mode contract")
+        }
+        reopened.message = "Existing save failure remains visible"
+        _ = reopened.beginMove(at:CGPoint(x:125,y:125))
+        try require(reopened.message == "Existing save failure remains visible","Deselect hid an existing error")
+        pass("empty Move taps deselect without status or document layout side effects and preserve real errors")
         print("StudioSelectionMove: \(passed)/\(passed) groups passed")
     }
 }

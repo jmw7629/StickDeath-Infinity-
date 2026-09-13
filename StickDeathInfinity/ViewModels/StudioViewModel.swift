@@ -580,10 +580,10 @@ final class StudioViewModel: ObservableObject {
               activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
         let hit = selectElement(at: point)
         guard selectionMode != .subtract else { return nil }
-        guard hit != nil, !selectedElementIDs.isEmpty else {
-            message = currentFrame.rasterAssetID == nil ? "Tap or drag drawn artwork to move it." : "Tap drawn artwork to move it. Moving imported image placement is unfinished."
-            return nil
-        }
+        // Empty canvas is ordinary selection input. Guidance belongs in the
+        // tool popup; a status banner here would resize the canvas mid-gesture.
+        // Leave an existing save/validation error visible.
+        guard hit != nil, !selectedElementIDs.isEmpty else { return nil }
         guard currentFrame.elements.filter({ selectedElementIDs.contains($0.id) }).allSatisfy({ element in
             layers.contains { $0.id == element.layerID && $0.visible && !$0.isFullyLocked && $0.lockMode == "free" }
         }) else { message = "This layer's position is locked. Choose Free before moving artwork."; return nil }

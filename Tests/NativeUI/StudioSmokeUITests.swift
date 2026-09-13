@@ -150,6 +150,8 @@ final class StudioSmokeUITests: XCTestCase {
             thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.30,dy:0.6)))
         // Empty canvas tap clears the transient selection outline without editing.
         canvas.coordinate(withNormalizedOffset:CGVector(dx:0.85,dy:0.8)).tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        XCTAssertFalse(app.staticTexts["studio.status"].exists,"Empty deselection inserted a resizing status banner")
         let moved = try pixels(canvas.screenshot().image), movedInk = exportInkMask(moved)
         XCTAssertGreaterThan(movedInk.count,12)
         XCTAssertLessThan(originalInk.intersection(movedInk).count,max(4,originalInk.count/10),"Move retained artwork at its old position")
