@@ -1284,14 +1284,14 @@ final class StudioSmokeUITests: XCTestCase {
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
-        XCTAssertTrue(canvas.waitForExistence(timeout: 8))
+        XCTAssertTrue(canvas.waitUntilPresent(timeout: 8))
         try choosePickerTestColor("#FF0000", app: app)
         // A real styled brush must remain editable when shapes and fill upgrade
         // the document format. Draw outside the intended closed rectangle.
         try pickerRailControl("studio.tool.brush", app: app, forward: false).tap()
         app.buttons["studio.brush-library"].tap()
         let round = app.buttons["studio.brush-family.round"]
-        XCTAssertTrue(round.waitForExistence(timeout: 5)); round.tap()
+        XCTAssertTrue(round.waitUntilPresent(timeout: 5)); round.tap()
         app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.2)
         app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
         app.buttons["studio.tool-settings.close"].tap()
@@ -1313,7 +1313,7 @@ final class StudioSmokeUITests: XCTestCase {
         try choosePickerTestColor("#0000FF", app: app)
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
         let tolerance = app.sliders["studio.setting.tolerance"]
-        XCTAssertTrue(tolerance.waitForExistence(timeout: 5) && tolerance.isHittable)
+        XCTAssertTrue(tolerance.waitUntilPresent(timeout: 5) && tolerance.isHittable)
         tolerance.adjust(toNormalizedSliderPosition: 0)
         let contiguous = app.buttons["studio.fill.contiguous"]
         XCTAssertTrue(contiguous.isHittable)
@@ -1327,10 +1327,10 @@ final class StudioSmokeUITests: XCTestCase {
         let deadline = Date().addingTimeInterval(20)
         var colored = try pixels(canvas.screenshot().image)
         while Date() < deadline {
-            colored = try pixels(canvas.screenshot().image)
             let middle = ((colored.height / 2) * colored.width + colored.width / 2) * 4
             if colored.bytes[middle + 2] > 180 && colored.bytes[middle] < 90 { break }
             RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            colored = try pixels(canvas.screenshot().image)
         }
         // A real successful save dismisses the status banner. Compare the
         // same settled canvas size across fill, Undo, Redo and cold reopen.
@@ -1349,13 +1349,13 @@ final class StudioSmokeUITests: XCTestCase {
         let save = app.buttons["studio.save"]; save.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
         app.buttons["studio.back"].tap()
-        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitForExistence(timeout: 8))
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch.waitUntilPresent(timeout: 8))
         app.terminate()
         let reopened = try launchGuestStudio(); defer { reopened.terminate() }
         let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
-        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        XCTAssertTrue(project.waitUntilPresent(timeout: 8)); project.tap()
         let reopenedCanvas = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
-        XCTAssertTrue(reopenedCanvas.waitForExistence(timeout: 8)); try waitForStableCanvas(reopenedCanvas)
+        XCTAssertTrue(reopenedCanvas.waitUntilPresent(timeout: 8)); try waitForStableCanvas(reopenedCanvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(colored, pixels(reopenedCanvas.screenshot().image)), 4)
         capture(reopened, name: "bucket-fill-cold-reopened")
         try openExportPanel(reopened)
@@ -1369,7 +1369,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor private func pickerRailControl(_ id: String, app: XCUIApplication, forward: Bool) throws -> XCUIElement {
         let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
         let element = app.buttons[id], scroll = rail.scrollViews.firstMatch
-        XCTAssertTrue(rail.waitForExistence(timeout: 5) && scroll.exists)
+        XCTAssertTrue(rail.waitUntilPresent(timeout: 5) && scroll.exists)
         for _ in 0..<12 {
             if element.exists, element.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(element.frame) { return element }
             let vertical = rail.value as? String == "Vertical"
@@ -1407,7 +1407,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor private func choosePickerTestColor(_ hex:String, app:XCUIApplication) throws {
         try pickerRailControl("studio.color.open",app:app,forward:false).tap()
         let preset = app.buttons["studio.color.preset."+hex]
-        XCTAssertTrue(preset.waitForExistence(timeout:5)); XCTAssertTrue(preset.isHittable); preset.tap()
+        XCTAssertTrue(preset.waitUntilPresent(timeout:5)); XCTAssertTrue(preset.isHittable); preset.tap()
         XCTAssertEqual(app.staticTexts["studio.color.current"].label,hex)
         let close = app.buttons["studio.panel.close.Color"]
         XCTAssertTrue(close.isHittable); close.tap()
@@ -1506,9 +1506,9 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     private func openExportPanel(_ app: XCUIApplication) throws {
         let open = app.buttons["studio.export.open"]
-        XCTAssertTrue(open.waitForExistence(timeout: 5)); XCTAssertTrue(open.isHittable)
+        XCTAssertTrue(open.waitUntilPresent(timeout: 5)); XCTAssertTrue(open.isHittable)
         open.tap()
-        XCTAssertTrue(app.buttons["studio.export.format.png"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["studio.export.format.png"].waitUntilPresent(timeout: 5))
     }
 
     @MainActor
@@ -1524,7 +1524,7 @@ final class StudioSmokeUITests: XCTestCase {
                                waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
         if waitForExistence {
-            XCTAssertTrue(element.waitForExistence(timeout: 8), "Missing export control: \(identifier)")
+            XCTAssertTrue(element.waitUntilPresent(timeout: 8), "Missing export control: \(identifier)")
         }
         // iOS prunes scrolled-offscreen format buttons from AX after sharing.
         // Locate the unique actual ancestor of the requested export control.
@@ -1569,7 +1569,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     private func waitForPNGPreview(_ app: XCUIApplication) throws -> XCUIElement {
         let preview = app.descendants(matching: .any)["studio.export.preview"].firstMatch
-        XCTAssertTrue(preview.waitForExistence(timeout: 30), "No preview decoded from the actual PNG output appeared")
+        XCTAssertTrue(preview.waitUntilPresent(timeout: 30), "No preview decoded from the actual PNG output appeared")
         let visible = try exportControl("studio.export.preview", app: app, waitForExistence: false)
         let frame = visible.frame
         XCTAssertGreaterThan(frame.width, 20); XCTAssertGreaterThan(frame.height, 20)
@@ -1709,16 +1709,16 @@ final class StudioSmokeUITests: XCTestCase {
         let projectName = "Native smoke \(UUID().uuidString.prefix(8))"
         if library.exists {
             let create = app.buttons["studio.new-project"]
-            XCTAssertTrue(create.waitForExistence(timeout: 5)); create.tap()
+            XCTAssertTrue(create.waitUntilPresent(timeout: 5)); create.tap()
             let name = app.textFields["studio.project-name"]
-            XCTAssertTrue(name.waitForExistence(timeout: 5))
+            XCTAssertTrue(name.waitUntilPresent(timeout: 5))
             name.tap()
             if let value = name.value as? String, !value.isEmpty {
                 name.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count))
             }
             name.typeText(projectName)
             let confirm = app.buttons["studio.create-project"]
-            XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+            XCTAssertTrue(confirm.waitUntilPresent(timeout: 5)); confirm.tap()
         }
         return projectName
     }
@@ -1730,7 +1730,7 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor @discardableResult
     private func waitForButton(_ label: String, in app: XCUIApplication, timeout: TimeInterval = 10) throws -> XCUIElement {
         let element = button(label, in: app)
-        XCTAssertTrue(element.waitForExistence(timeout: timeout), "Missing native button: \(label)")
+        XCTAssertTrue(element.waitUntilPresent(timeout: timeout), "Missing native button: \(label)")
         XCTAssertTrue(element.isHittable, "Native button is not reachable: \(label)")
         return element
     }
@@ -1774,5 +1774,17 @@ final class StudioSmokeUITests: XCTestCase {
 private extension XCTestExpectation {
     func waitUntilFulfilled(timeout: TimeInterval) -> Bool {
         XCTWaiter.wait(for: [self], timeout: timeout) == .completed
+    }
+}
+
+// The recorded 5a6963a failure spent a one-second initial XCTest poll on
+// already-present controls. Keep the same bounded wait for absent controls;
+// presence alone does not replace any existing hittability/geometry assertion.
+private extension XCUIElement {
+    @MainActor func waitUntilPresent(timeout: TimeInterval) -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        if exists { return true }
+        let remaining = deadline - ProcessInfo.processInfo.systemUptime
+        return remaining > 0 && waitForExistence(timeout: remaining)
     }
 }

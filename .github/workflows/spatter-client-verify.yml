@@ -45,7 +45,7 @@ jobs:
         run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
   native-ios-build:
     runs-on: macos-15
-    # Setup/build takes about 23 minutes; the bounded UI suite allows 28 minutes.
+    # The bounded 20-journey UI suite allows 31 minutes after production/build checks.
     # Leave room for result collection without changing individual test limits.
     timeout-minutes: 65
     steps:
@@ -820,6 +820,33 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
             CODE_SIGNING_ALLOWED=NO build
           echo 'XCODE_IOS_BUILD=PASS'
+      - name: Verify simulator review packaging rules
+        id: native-review-rules
+        continue-on-error: true
+        run: python3 -m unittest discover -s Tests/NativeReviewPackage -p 'test_*.py' -v
+      - name: Preserve the unconfigured universal simulator app
+        id: native-review-app
+        if: ${{ !cancelled() && steps.native-review-rules.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --quiet HEAD --
+          python3 scripts/native-review/package_simulator_app.py \
+            --app "$RUNNER_TEMP/sdi-native-build/Build/Products/Debug-iphonesimulator/StickDeathInfinity.app" \
+            --output "$RUNNER_TEMP/sdi-native-review-app" --commit "$(git rev-parse HEAD)"
+          echo "artifact_path=$RUNNER_TEMP/sdi-native-review-app" >> "$GITHUB_OUTPUT"
+      - name: Upload native simulator review app
+        id: native-review-upload
+        if: ${{ !cancelled() && steps.native-review-app.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.native-review-app.outputs.artifact_path }}
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
       - name: Exercise the native Studio and capture simulator evidence
         id: native-smoke
         shell: bash
@@ -845,3 +872,17 @@ jobs:
           retention-days: 3
           compression-level: 3
           if-no-files-found: error
+      - name: Require successful native simulator app preservation
+        if: always()
+        shell: bash
+        env:
+          SDI_REVIEW_RULES: ${{ steps.native-review-rules.outcome }}
+          SDI_REVIEW_PACKAGE: ${{ steps.native-review-app.outcome }}
+          SDI_REVIEW_UPLOAD: ${{ steps.native-review-upload.outcome }}
+        run: |
+          set -euo pipefail
+          # Defer this mandatory result until after the independent UI evidence.
+          # Any packaging, verification or upload failure still fails this job.
+          test "$SDI_REVIEW_RULES" = success
+          test "$SDI_REVIEW_PACKAGE" = success
+          test "$SDI_REVIEW_UPLOAD" = success
