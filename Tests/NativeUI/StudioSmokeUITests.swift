@@ -405,6 +405,82 @@ final class StudioSmokeUITests: XCTestCase {
         reopened.buttons["studio.tool-settings.close"].tap()
     }
 
+    @MainActor
+    func testEditableTextCancelUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.text", app: app, forward: true).tap()
+        XCTAssertTrue(app.buttons["studio.text.new"].waitForExistence(timeout: 5))
+        app.buttons["studio.text.new"].tap()
+        let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("SDI")
+        app.buttons["studio.text.keyboard-dismiss"].tap()
+        let fontSize = app.sliders["studio.setting.font-size"]
+        XCTAssertTrue(fontSize.isHittable); fontSize.adjust(toNormalizedSliderPosition: 0.38)
+        app.buttons["studio.text.apply"].tap()
+        XCTAssertTrue(app.buttons["studio.text.new"].waitForExistence(timeout: 5))
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        // Clear selection outline before measuring actual letter pixels.
+        try pickerRailControl("studio.tool.move", app: app, forward: true).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(original).count, 25, "Text did not draw actual glyphs")
+        capture(app, name: "editable-text-original-glyphs")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let blank = try pixels(canvas.screenshot().image)
+        XCTAssertLessThan(exportInkMask(blank).count, exportInkMask(original).count, "Undo left text pixels behind")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try pickerRailControl("studio.tool.text", app: app, forward: true).tap()
+        app.buttons["studio.text.edit"].tap()
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); XCTAssertEqual(input.value as? String, "SDI")
+        input.tap(); input.typeText(" CANCEL")
+        app.buttons["studio.text.cancel"].tap()
+        app.buttons["studio.text.edit"].tap()
+        XCTAssertEqual(input.value as? String, "SDI", "Cancel changed editable source")
+        input.tap(); input.typeText("!")
+        app.buttons["studio.text.keyboard-dismiss"].tap()
+        capture(app, name: "editable-text-typography-popup")
+        app.buttons["studio.text.apply"].tap(); app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.move", app: app, forward: true).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let edited = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, edited), 4, "Editing text did not change glyphs")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4,
+                                "Cold reopen changed text glyphs")
+        capture(reopened, name: "editable-text-cold-reopened")
+        try pickerRailControl("studio.tool.move", app: reopened, forward: true).tap()
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(restored, expected: frame)
+        restored.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try pickerRailControl("studio.tool.text", app: reopened, forward: true).tap()
+        reopened.buttons["studio.text.edit"].tap()
+        let restoredInput = reopened.descendants(matching: .any)["studio.text.content"].firstMatch
+        XCTAssertTrue(restoredInput.waitForExistence(timeout: 5)); XCTAssertEqual(restoredInput.value as? String, "SDI!")
+        reopened.buttons["studio.text.cancel"].tap()
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
     @MainActor private func resetToolPreferencesInPopup(_ app: XCUIApplication) throws {
         let reset = app.buttons["studio.tool-settings.reset"]
         for attempt in 0...4 {
@@ -1885,14 +1961,28 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
         let samplingMessage = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Sampled #")).firstMatch
         XCTAssertTrue(expectation(for:NSPredicate(format:"exists == false"), evaluatedWith:samplingMessage).waitUntilFulfilled(timeout:5))
+        let appBounds = app.frame
         var previous = CGRect.null
-        var since = Date()
+        var since = ProcessInfo.processInfo.systemUptime
+        var observations: [String] = []
         let stable = NSPredicate { _,_ in
-            guard canvas.isHittable, app.frame.contains(canvas.frame), canvas.frame.width > 80 else { return false }
-            if canvas.frame != previous { previous = canvas.frame; since = Date(); return false }
-            return Date().timeIntervalSince(since) >= 1
+            // Run 35462554349 recorded identical geometry seven times, but
+            // repeated remote frame queries consumed this entire 8s wait.
+            // Sample once per poll; keep visibility, bounds and the 1s stable
+            // interval, plus every downstream undo/reopen pixel assertion.
+            let frame = canvas.frame
+            let hittable = canvas.isHittable
+            let now = ProcessInfo.processInfo.systemUptime
+            observations.append("\(frame), hittable=\(hittable)")
+            if observations.count > 12 { observations.removeFirst() }
+            guard hittable, appBounds.contains(frame), frame.width > 80, frame.height > 80 else {
+                previous = .null; since = now; return false
+            }
+            if frame != previous { previous = frame; since = now; return false }
+            return now - since >= 1
         }
-        XCTAssertTrue(expectation(for:stable,evaluatedWith:nil).waitUntilFulfilled(timeout:8),"Canvas geometry did not settle after clearing status")
+        XCTAssertTrue(expectation(for:stable,evaluatedWith:nil).waitUntilFulfilled(timeout:8),
+                      "Canvas geometry did not settle after clearing status: \(observations)")
     }
 
     private func imageFixtureColors(_ raster: Raster) -> [Int] {

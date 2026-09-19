@@ -74,6 +74,7 @@ struct StudioCommandStroke: Codable {
     let opacity: Double
     var shape: StudioShapeDescriptor? = nil
     var eraser: StudioEraserDescriptor? = nil
+    var text: StudioTextDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
@@ -104,17 +105,19 @@ enum StudioCommand: Codable {
     struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
     struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
+    struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
-    case copyElements(DeleteElements), pasteElements(PasteElements)
+    case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
         case "addFrame": self = .addFrame(try container.decode(AddFrame.self, forKey: key))
         case "duplicateFrame": self = .duplicateFrame(try container.decode(Duplicate.self, forKey: key))
@@ -139,6 +142,7 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .draw(let value): try container.encode(value, forKey: StudioWireKey("draw"))
         case .addFrame(let value): try container.encode(value, forKey: StudioWireKey("addFrame"))
         case .duplicateFrame(let value): try container.encode(value, forKey: StudioWireKey("duplicateFrame"))
@@ -246,7 +250,7 @@ enum StudioCommandExecutor {
     static let maximumInputPoints = 16_384
     static let maximumGeneratedElements = 1024
     static let maximumGeneratedPoints = 65_536
-    static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle]
+    static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
 
     static func decode(_ data: Data) throws -> StudioCommandRequest {
         guard data.count <= maximumRequestBytes else { throw StudioCommandError.limitExceeded }
@@ -278,6 +282,7 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
             "duplicateFrame": ["source", "result"], "duplicateLayer": ["source", "result"],
             "moveFrame": ["target", "direction"], "moveLayer": ["target", "direction"],
@@ -288,6 +293,11 @@ enum StudioCommandExecutor {
             "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
         ]
+        func textDescriptor(_ value: Any) throws {
+            let fields = try object(value, keys: ["version", "content", "style"])
+            guard let style = fields["style"] else { throw StudioCommandError.malformed }
+            _ = try object(style, keys: ["font", "size", "alignment", "bold", "italic", "boxWidth", "boxHeight", "rotation"])
+        }
         var inputPoints = 0, strokes = 0
         for command in commands {
             guard let command = command as? [String: Any], command.count == 1, let kind = command.keys.first,
@@ -300,11 +310,13 @@ enum StudioCommandExecutor {
                 guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
                 _ = try object(settings, keys: ["name", "visible", "opacity", "lock", "blend", "glowEnabled", "glowColor"])
             }
+            if kind == "updateText" { guard let text = fields["text"] else { throw StudioCommandError.malformed }; try textDescriptor(text) }
             if kind == "draw" {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser", "text"])
+                    if let text = stroke["text"] { try textDescriptor(text) }
                     if let eraser = stroke["eraser"] {
                         _ = try object(eraser, keys: ["version", "mode"])
                     }
@@ -437,6 +449,7 @@ enum StudioCommandExecutor {
             budget.strokes += draw.strokes.count
             for stroke in draw.strokes {
                 try checkCancellation()
+                guard stroke.tool != .text || stroke.text != nil else { throw StudioCommandError.invalidSettings }
                 guard supportedTools.contains(stroke.tool) else { throw StudioCommandError.unsupportedTool }
                 guard !stroke.id.isEmpty, stroke.id.count <= 128, validColor(stroke.color),
                       stroke.width.isFinite, (0.1...1024).contains(stroke.width),
@@ -456,10 +469,13 @@ enum StudioCommandExecutor {
                     catch { throw StudioCommandError.invalidSettings }
                 }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape, eraser: stroke.eraser)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape, eraser: stroke.eraser, text: stroke.text)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }
+        case .updateText(let value):
+            try editor.updateText(frameID: frame(value.frame), elementID: value.elementID,
+                text: value.text, color: value.color, opacity: value.opacity)
         case .addFrame(let value):
             let after = try frame(value.after); try validateAlias(value.result, created: created)
             editor.selectFrame(after); try editor.addFrame()

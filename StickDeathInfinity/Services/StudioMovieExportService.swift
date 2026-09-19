@@ -731,7 +731,8 @@ final class StudioMovieExportService {
                 guard tools.contains(element.tool), colorValid(element.color) else { throw ExportError.unsupportedContent }
                 guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 if element.tool == .text {
-                    guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent }
+                    if let text = element.text { try text.validate(element: element) }
+                    else { guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent } }
                 }
             }
         }

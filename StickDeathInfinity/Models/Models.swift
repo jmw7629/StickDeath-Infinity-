@@ -81,10 +81,14 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var reflection: StudioElementReflection? = nil
     /// Schema9: explicit eraser coverage; nil preserves the historical clear renderer.
     var eraser: StudioEraserDescriptor? = nil
+    /// Schema10 editable text. Legacy fillColor text keeps its original renderer.
+    var text: StudioTextDescriptor? = nil
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
-        if let mask = fillMask {
+        if let text, let point = points.first {
+            bounds = text.style.bounds(at: CGPoint(x: point.x, y: point.y))
+        } else if let mask = fillMask {
             guard let first = mask.spans.first, let last = mask.spans.last,
                   let left = mask.spans.map(\.start).min(), let right = mask.spans.map(\.end).max() else { return nil }
             bounds = CGRect(x: left, y: first.row, width: right - left, height: last.row - first.row + 1)
@@ -100,6 +104,55 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     }
 }
 
+enum StudioTextAlignment: String, Codable, CaseIterable { case left, center, right }
+enum StudioTextFont: String, Codable, CaseIterable { case system, monospaced, serif }
+
+struct StudioTextStyle: Codable, Equatable {
+    var font: StudioTextFont = .monospaced
+    var size: Double = 32
+    var alignment: StudioTextAlignment = .left
+    var bold = false
+    var italic = false
+    var boxWidth: Double = 240
+    var boxHeight: Double = 120
+    var rotation: Double = 0
+    var isValid: Bool {
+        size.isFinite && (8...240).contains(size) &&
+        boxWidth.isFinite && (16...4096).contains(boxWidth) &&
+        boxHeight.isFinite && (16...4096).contains(boxHeight) &&
+        rotation.isFinite && (-180...180).contains(rotation)
+    }
+    func bounds(at point: CGPoint) -> CGRect {
+        let rect = CGRect(x: point.x, y: point.y, width: boxWidth, height: boxHeight)
+        let angle = rotation * .pi / 180, c = abs(cos(angle)), s = abs(sin(angle))
+        let w = boxWidth * c + boxHeight * s, h = boxWidth * s + boxHeight * c
+        return CGRect(x: rect.midX-w/2, y: rect.midY-h/2, width: w, height: h)
+    }
+}
+
+struct StudioTextDescriptor: Codable, Equatable {
+    var version = 1
+    var content: String
+    var style = StudioTextStyle()
+    static let maximumBytes = 8_192
+    var paragraphs: [String] { content.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: .newlines) }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "Text needs 1–2,048 characters, valid typography and one text-box origin. Nothing changed." }
+    }
+    func validate(element: DrawnElement) throws {
+        guard version == 1, style.isValid, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              content.count <= 2_048, content.utf8.count <= Self.maximumBytes,
+              paragraphs.count <= 65,
+              element.tool == .text, element.points.count == 1,
+              element.brush == nil, element.shape == nil, element.fillMask == nil, element.eraser == nil,
+              element.opacity.isFinite, (0...1).contains(element.opacity),
+              element.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 100_000 && abs($0.y) <= 100_000 }) else { throw Failure.invalid }
+        let hex = element.color.hasPrefix("#") ? String(element.color.dropFirst()) : element.color
+        guard hex.utf8.count == 6, hex.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else { throw Failure.invalid }
+    }
+}
+
 enum StudioEraserMode: String, Codable, CaseIterable { case hard, soft }
 
 struct StudioEraserDescriptor: Codable, Equatable {
@@ -112,7 +165,7 @@ struct StudioEraserDescriptor: Codable, Equatable {
     }
     func validate(element: DrawnElement) throws {
         guard version == 1, element.tool == .eraser,
-              element.brush == nil, element.shape == nil, element.fillMask == nil,
+              element.brush == nil, element.shape == nil, element.fillMask == nil, element.text == nil,
               element.width.isFinite, (1...512).contains(element.width),
               element.opacity.isFinite, (0...1).contains(element.opacity),
               (1...Self.maximumSamples).contains(element.points.count),

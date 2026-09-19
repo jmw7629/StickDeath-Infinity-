@@ -136,7 +136,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(report['photoFixtureSeeded'])
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], 1860)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], 2700)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_real_ui_failure_is_retained_alongside_photo_fixture_failure(self):

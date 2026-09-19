@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...9
+    static let supportedSchemaVersions = 1...10
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -51,6 +51,7 @@ struct StudioDocument: Codable, Equatable {
         var elementIDs = Set<String>(); var pointCount = 0
         var fillSpanCount = 0
         var eraserCount = 0; var eraserSamples = 0
+        var textBytes = 0
         for frame in frames {
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
@@ -68,7 +69,16 @@ struct StudioDocument: Codable, Equatable {
             guard frame.elements.filter({ $0.eraser != nil }).count <= 256 else {
                 throw StudioDocumentError.invalid("This frame exceeds the 256 styled eraser stroke limit.")
             }
+            guard frame.elements.filter({ $0.text != nil }).count <= 256 else {
+                throw StudioDocumentError.invalid("This frame exceeds its 256 text-box limit.")
+            }
             for element in frame.elements {
+                if let text = element.text {
+                    guard schemaVersion >= 10 else { throw StudioTextDescriptor.Failure.invalid }
+                    try text.validate(element: element)
+                    textBytes += text.content.utf8.count
+                    guard textBytes <= 262_144 else { throw StudioDocumentError.invalid("This project exceeds its editable text budget.") }
+                }
                 if let eraser = element.eraser {
                     guard schemaVersion >= 9 else { throw StudioDocumentError.invalid("Styled erasers require project version9. The original has not changed.") }
                     try eraser.validate(element: element)
@@ -257,6 +267,21 @@ struct StudioDocumentEditor {
             if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
             if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
             if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
+            if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+        }
+    }
+    mutating func updateText(frameID: String, elementID: String, text: StudioTextDescriptor, color: String, opacity: Double) throws {
+        try change { value in
+            guard let fi = value.frames.firstIndex(where: { $0.id == frameID }),
+                  let ei = value.frames[fi].elements.firstIndex(where: { $0.id == elementID }),
+                  value.frames[fi].elements[ei].tool == .text,
+                  value.frames[fi].elements[ei].text != nil else { throw StudioTextDescriptor.Failure.invalid }
+            let original = value.frames[fi].elements[ei]
+            guard let layer = value.layers.first(where: { $0.id == original.layerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            value.frames[fi].elements[ei].text = text
+            value.frames[fi].elements[ei].color = color
+            value.frames[fi].elements[ei].opacity = opacity
         }
     }
     mutating func addFrame() throws {
@@ -294,8 +319,10 @@ struct StudioDocumentEditor {
                     throw StudioDocumentError.unavailable("Copy is limited to 65,536 drawing points. Copy a smaller selection.")
                 }
                 points += element.points.count
-                let cost = 1024 + element.points.count * 40 + (element.fillMask?.spans.count ?? 0) * MemoryLayout<StudioFillMask.Span>.stride
-                    + element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0)
+                let geometryCost = element.points.count * 40 + (element.fillMask?.spans.count ?? 0) * MemoryLayout<StudioFillMask.Span>.stride
+                let identityCost = element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0)
+                let textCost = element.text?.content.utf8.count ?? 0
+                let cost = 1024 + geometryCost + identityCost + textCost
                 guard cost <= 8 * 1024 * 1024 - bytes else {
                     throw StudioDocumentError.unavailable("The drawing clipboard is limited to 8 MB. Copy a smaller selection.")
                 }
@@ -331,7 +358,7 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -339,6 +366,7 @@ struct StudioDocumentEditor {
                 if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
                 if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
                 if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
+                if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
             }
             try checkCancellation()
         }
@@ -354,7 +382,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -522,7 +550,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }

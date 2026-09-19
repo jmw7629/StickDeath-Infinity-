@@ -13,6 +13,7 @@ struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     var alignToBottom = false
     @State private var showBrushLibrary = false
+    @FocusState private var textInputFocused: Bool
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
@@ -40,7 +41,7 @@ struct FloatingToolSettingsPanel: View {
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.8))
                         Spacer()
-                        Button(action: { vm.activePanel = .none }) {
+                        Button(action: { textInputFocused = false; vm.activePanel = .none }) {
                             Text("✕")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
@@ -101,13 +102,22 @@ struct FloatingToolSettingsPanel: View {
         .accessibilityIdentifier("studio.tool-settings")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
+        .toolbar {
+            if textInputFocused {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done typing") { textInputFocused = false }
+                        .accessibilityIdentifier("studio.text.keyboard-dismiss")
+                }
+            }
+        }
     }
     
     @ViewBuilder
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.white.opacity(0.65))
@@ -229,65 +239,52 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Strength", value: .constant(50.0), range: 0...100, unit: "%", accent: accentColor)
             }
             
-        // ── TEXT (MAGENTA THEME) ──
+        // Editable text lives in the same dismissible tool popup.
         case .text:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Font Size", value: .constant(24.0), range: 8...120, unit: "px", accent: accentColor)
-                
-                Text("ALIGNMENT")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                HStack(spacing: 4) {
-                    ForEach(["◁ Left", "☰ Center", "▷ Right"], id: \.self) { align in
-                        Button(action: {}) {
-                            Text(align)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(align.contains("Left") ? accentColor : .white.opacity(0.5))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(align.contains("Left") ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(align.contains("Left") ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
-                                )
-                        }
-                    }
+                if vm.textDraft == nil {
+                    HStack {
+                        Button("New text") { if vm.beginTextEditing() { textInputFocused = true } }
+                            .accessibilityIdentifier("studio.text.new")
+                        Button("Edit selected") { if vm.beginTextEditing(selected: true) { textInputFocused = true } }
+                            .accessibilityIdentifier("studio.text.edit")
+                    }.frame(minHeight: 44)
+                    Text("New text starts at canvas center. Use Move to select and position a text box, then Edit selected.")
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.65))
+                } else {
+                    TextField("Enter text", text: $vm.textInput, axis: .vertical)
+                        .lineLimit(2...4).textFieldStyle(.roundedBorder)
+                        .focused($textInputFocused).accessibilityIdentifier("studio.text.content")
+                    HStack {
+                        Button("Apply") { if vm.applyTextEditing() { textInputFocused = false } }
+                            .accessibilityIdentifier("studio.text.apply")
+                        Button("Cancel") { textInputFocused = false; vm.cancelTextEditing() }
+                            .accessibilityIdentifier("studio.text.cancel")
+                        Button("Done typing") { textInputFocused = false }
+                            .accessibilityIdentifier("studio.text.keyboard-done")
+                    }.frame(minHeight: 44)
                 }
-                
-                Text("STYLE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                HStack(spacing: 4) {
-                    Button(action: {}) {
-                        Text("B Bold")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 1))
-                    }
-                    Button(action: {}) {
-                        Text("I Italic")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 1))
-                    }
-                }
-                
+                Picker("Font", selection: $vm.textStyle.font) {
+                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                }.accessibilityIdentifier("studio.text.font")
+                SettingsSlider(label: "Font Size", value: $vm.textStyle.size, range: 8...240, unit: "px", accent: accentColor)
+                Picker("Alignment", selection: $vm.textStyle.alignment) {
+                    ForEach(StudioTextAlignment.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.text.alignment")
+                HStack {
+                    Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
+                    Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
+                }.font(.specialElite(10))
+                ColorPicker("Text color", selection: $vm.strokeColor, supportsOpacity: true)
+                    .accessibilityIdentifier("studio.text.color")
+                SettingsSlider(label: "Box Width", value: $vm.textStyle.boxWidth, range: 16...4096, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Box Height", value: $vm.textStyle.boxHeight, range: 16...4096, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Rotation", value: $vm.textStyle.rotation, range: -180...180, unit: "°", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Text("Text stays editable. Content outside its box is clipped; enlarge the box to reveal it. Apply commits one undo step; Cancel leaves the artwork unchanged.")
+                    .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
             }
-            
+
         // ── LINE ──
         case .line:
             VStack(alignment: .leading, spacing: 8) {
@@ -405,7 +402,7 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enclose whole drawings, then choose Move to drag them. Image placement and text selection are unfinished.")
+                Text("Enclose whole drawings, then choose Move to drag them. Image placement and legacy text selection are unfinished.")
                     .font(.specialElite(10)).foregroundColor(.white.opacity(0.65))
                 Text("\(vm.selectedElementIDs.count) drawings selected")
                     .font(.specialElite(11)).foregroundColor(.red)

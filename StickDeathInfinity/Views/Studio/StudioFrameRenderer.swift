@@ -129,7 +129,7 @@ struct StudioFrameRenderer {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
-        if element.eraser != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
+        if element.eraser != nil || element.text != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
         if let translation = element.translation {
             try translation.validate()
             context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)
@@ -137,6 +137,53 @@ struct StudioFrameRenderer {
         if let reflection = element.reflection {
             try reflection.validate()
             context.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+        }
+
+        if let text = element.text, let origin = element.points.first {
+            try text.validate(element: element)
+            let style = text.style
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            context.translateBy(x: origin.x + style.boxWidth / 2, y: origin.y + style.boxHeight / 2)
+            context.rotate(by: .degrees(style.rotation))
+            let box = CGRect(x: -style.boxWidth/2, y: -style.boxHeight/2, width: style.boxWidth, height: style.boxHeight)
+            context.clip(to: Path(box))
+            let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
+            var font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            if style.italic { font = font.italic() }
+            // Resolve each actual shaped line using the same font engine used
+            // to draw it. Alignment applies per wrapped line, not just to the
+            // bounding box. No UI-only View modifiers or estimated glyph widths.
+            func resolve(_ value: String) -> GraphicsContext.ResolvedText {
+                context.resolve(Text(value).font(font).foregroundColor(color))
+            }
+            let unlimited = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            let lineHeight = max(1, ceil(resolve("Ag").measure(in: unlimited).height))
+            var y = box.minY
+            for paragraph in text.paragraphs {
+                guard y < box.maxY else { break }
+                let characters = Array(paragraph)
+                if characters.isEmpty { y += lineHeight; continue }
+                var start = 0
+                while start < characters.count && y < box.maxY {
+                    var low = start + 1, high = characters.count, end = start + 1
+                    while low <= high {
+                        let candidate = (low + high) / 2
+                        let measured = resolve(String(characters[start..<candidate])).measure(in: unlimited).width
+                        if measured <= style.boxWidth { end = candidate; low = candidate + 1 }
+                        else { high = candidate - 1 }
+                    }
+                    if end < characters.count, let space = (start..<end).last(where: { characters[$0].isWhitespace }), space > start {
+                        end = space + 1
+                    }
+                    let value = String(characters[start..<end])
+                    let line = resolve(value), width = line.measure(in: unlimited).width
+                    let x = box.minX + (style.alignment == .right ? style.boxWidth-width : style.alignment == .center ? (style.boxWidth-width)/2 : 0)
+                    context.draw(line, at: CGPoint(x: x, y: y), anchor: .topLeading)
+                    y += lineHeight; start = end
+                }
+            }
+            return
         }
 
         if let eraser = element.eraser {

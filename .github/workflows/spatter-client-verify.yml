@@ -47,9 +47,9 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
   native-ios-build:
     runs-on: macos-15
-    # The bounded 28-journey UI suite allows 31 minutes after production/build checks.
-    # Leave room for result collection without changing individual test limits.
-    # Keep the 31-minute UI suite and 180-second journey limits unchanged.
+    # The bounded 29-journey UI suite allows 45 minutes after production/build checks.
+    # Based on preserved run 35462554349 plus the prior remaining-test timings.
+    # Keep 180-second journey limits; never retry or suppress a failed assertion.
     # Checks/builds precede the suite; reserve bounded time to preserve original
     # xcresult, summary and recording after the UI process exits.
     timeout-minutes: 75
@@ -295,6 +295,32 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             -o "$RUNNER_TEMP/sdi-eraser-tests"
           "$RUNNER_TEMP/sdi-eraser-tests"
+      - name: Verify actual editable text typography pixels commands history and device persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioText/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-text-tests"
+          "$RUNNER_TEMP/sdi-text-tests"
       - name: Verify actual selection stacking pixels cancellation history and saved exports
         shell: bash
         run: |

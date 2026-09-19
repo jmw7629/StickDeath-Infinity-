@@ -21,6 +21,17 @@ final class StudioViewModel: ObservableObject {
     }
     @Published private(set) var pendingBrushStroke: PendingBrushStroke?
     @Published private(set) var activeStrokeID: String?
+    struct TextDraft: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let elementID: String?
+        let origin: CGPoint
+    }
+    @Published private(set) var textDraft: TextDraft?
+    @Published var textInput = ""
+    @Published var textStyle = StudioTextStyle() { didSet { rememberDrawingToolPreferences() } }
     private var savedRevision: Int?
     private let storage: DeviceStorageManager
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
@@ -77,7 +88,7 @@ final class StudioViewModel: ObservableObject {
     var copiedDrawingClipboardID: String? { copiedDrawingCount > 0 ? editor.clipboardVersion.uuidString : nil }
     var canDeleteSelected: Bool { !editor.selectedElementIDs.isEmpty }
     var selectedElementIDs: Set<String> { editor.selectedElementIDs }
-    var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil }
+    var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil || textDraft != nil }
     var saveTimeAgo: String { activeStrokeID != nil ? "Drawing…" : isSaving ? "Saving…" : isDirty ? "Unsaved" : "Saved" }
 
     private let toolDefaults: UserDefaults?
@@ -124,6 +135,57 @@ final class StudioViewModel: ObservableObject {
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
+    @discardableResult
+    func beginTextEditing(selected: Bool = false) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
+            message = "Apply or cancel the current draft before starting text."; return false
+        }
+        let element = selectedElementIDs.count == 1 ? currentFrame.elements.first(where: { selectedElementIDs.contains($0.id) }) : nil
+        if selected && element?.text == nil { message = "Select one editable text box with Move before editing text."; return false }
+        let layerID = selected ? element!.layerID! : activeLayerID
+        guard let layer = layers.first(where: { $0.id == layerID }), layer.visible,
+              layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { message = StudioDocumentError.locked.localizedDescription; return false }
+        selectedTool = .text
+        if selected, let element, let text = element.text {
+            textInput = text.content; textStyle = text.style; strokeColor = Color(hex: element.color); strokeOpacity = element.opacity
+        } else { textInput = "" }
+        let origin = selected ? CGPoint(x: element!.points[0].x, y: element!.points[0].y)
+            : CGPoint(x: max(0, (Double(canvasWidth)-textStyle.boxWidth)/2), y: max(0, (Double(canvasHeight)-textStyle.boxHeight)/2))
+        textDraft = TextDraft(projectID: document.id, revision: document.revision,
+            frameID: currentFrame.id, layerID: layerID, elementID: selected ? element!.id : nil, origin: origin)
+        activePanel = .toolSettings; message = nil
+        return true
+    }
+    func cancelTextEditing() { textDraft = nil; textInput = ""; message = nil }
+    @discardableResult
+    func applyTextEditing() -> Bool {
+        guard let draft = textDraft, selectedTool == .text, isEditing, !isPlaying, !isSaving,
+              activeStrokeID == nil, pendingBrushStroke == nil,
+              draft.projectID == document.id, draft.revision == document.revision,
+              draft.frameID == currentFrame.id else {
+            message = "The text draft's Studio context changed. Cancel it and reopen text; the project has not changed."; return false
+        }
+        do {
+            let descriptor = StudioTextDescriptor(content: textInput, style: textStyle)
+            let id = draft.elementID ?? UUID().uuidString
+            let action: StudioCommand
+            if draft.elementID != nil {
+                action = .updateText(.init(frame: .id(draft.frameID), elementID: id,
+                    text: descriptor, color: strokeColorHex, opacity: capturedStrokeOpacity))
+            } else {
+                action = .draw(.init(frame: .id(draft.frameID), layer: .id(draft.layerID), strokes: [
+                    .init(id: id, tool: .text, points: [.init(x: draft.origin.x, y: draft.origin.y)],
+                        color: strokeColorHex, width: 1, opacity: capturedStrokeOpacity, text: descriptor)]))
+            }
+            var candidate = editor
+            _ = try StudioCommandExecutor.execute(.init(requestID: UUID(), projectID: draft.projectID, expectedRevision: draft.revision,
+                action: .apply([action])), editor: &candidate)
+            try preflightRasterDocument(candidate.document)
+            editor = candidate; editor.selectedElementIDs = [id]
+            textDraft = nil; textInput = ""; scheduleSave(); message = nil
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func shapeDescriptor() throws -> StudioShapeDescriptor? {
         guard [.rectangle, .circle].contains(selectedTool) else { return nil }
         let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
@@ -168,7 +230,7 @@ final class StudioViewModel: ObservableObject {
         let value = StudioDrawingToolPreferences.Entry(width: strokeWidth, opacity: strokeOpacity,
             smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
             texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
-            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode)
+            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -189,6 +251,7 @@ final class StudioViewModel: ObservableObject {
                                      blue: value.gradientEnd.blue)
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
         eraserMode = value.eraserMode ?? .hard
+        textStyle = value.textStyle ?? StudioTextStyle()
     }
     func resetCurrentDrawingToolPreferences() {
         toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
@@ -312,6 +375,7 @@ final class StudioViewModel: ObservableObject {
         guard !isSaving else { throw StudioDocumentError.unavailable("Wait for the current save before applying Studio commands.") }
         guard pendingBrushStroke == nil else { throw StudioDocumentError.unavailable("Retry or discard the rejected brush draft before applying Studio commands.") }
         guard activeStrokeID == nil else { throw StudioDocumentError.unavailable("Finish the current touch stroke before applying Studio commands.") }
+        guard textDraft == nil else { throw StudioDocumentError.unavailable("Apply or cancel the text draft before applying Studio commands.") }
     }
 
     /// The current executor validates the whole document after each staged edit.
@@ -338,7 +402,7 @@ final class StudioViewModel: ObservableObject {
         try addUnits(document.audioClips.count, weight: 32)
         for frame in document.frames {
             try addUnits(frame.elements.count, weight: 32)
-            for element in frame.elements { try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0) }
+            for element in frame.elements { try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0); try addUnits(element.text?.content.utf8.count ?? 0) }
         }
         for command in commands {
             switch command {
@@ -346,7 +410,8 @@ final class StudioViewModel: ObservableObject {
                 guard drawing.strokes.count <= StudioCommandExecutor.maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }
                 strokes += drawing.strokes.count; edits += drawing.strokes.count
                 try addUnits(drawing.strokes.count, weight: 32)
-                for stroke in drawing.strokes { try addUnits(stroke.points.count) }
+                for stroke in drawing.strokes { try addUnits(stroke.points.count); try addUnits(stroke.text?.content.utf8.count ?? 0) }
+            case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
             case .duplicateFrame, .duplicateLayer, .pasteElements:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
@@ -394,7 +459,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
-        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
+        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
             retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
@@ -404,7 +469,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func openProject(_ metadata: AnimationMetadata) async -> Bool {
-        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil else { message = "Finish or discard any drawing draft, then save and return to projects before opening another animation."; return false }
+        guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before opening another animation."; return false }
         do {
             guard let stored = try storage.loadAnimation(id: metadata.id) else { throw StudioDocumentError.invalid("This project is no longer available.") }
             var decoded: StudioDocument
@@ -496,6 +561,7 @@ final class StudioViewModel: ObservableObject {
             await loadProjects()
             // A save may persist prior committed work during a long stroke, but
             // must not acknowledge the uncommitted touch capture as saved.
+            if textDraft != nil { message = "Committed artwork is saved. Apply or cancel the unsaved text draft before leaving."; return false }
             if activeStrokeID != nil { return false }
             if pendingBrushStroke != nil {
                 message = "The committed project is saved. A rejected brush draft is still unsaved; retry or discard it before leaving."
@@ -540,6 +606,7 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     private func allowDocumentEditDuringInput() -> Bool {
+        guard textDraft == nil else { message = "Apply or cancel the text draft before changing the document."; return false }
         guard activeStrokeID == nil else { message = "Finish the current touch stroke before changing the document."; return false }
         return true
     }
@@ -566,6 +633,7 @@ final class StudioViewModel: ObservableObject {
     func prevFrame() { if currentFrameIndex > 0 { currentFrameIndex -= 1 } }
     @discardableResult
     func commitElement(_ element: DrawnElement, frameID: String? = nil) -> Bool {
+        guard textDraft == nil else { message = "Apply or cancel the text draft before drawing."; return false }
         guard activeStrokeID == nil || activeStrokeID == element.id else {
             message = "Finish the current touch stroke before adding another drawing."
             return false
@@ -599,7 +667,7 @@ final class StudioViewModel: ObservableObject {
         message = reason + " The rejected draft remains open. Retry with current brush settings or discard it explicitly."
     }
     func beginStrokeInput(id: String) -> Bool {
-        guard isEditing, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil else { return false }
+        guard isEditing, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else { return false }
         activeStrokeID = id
         return true
     }
@@ -1244,6 +1312,7 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var shapeFilled = false
         var cornerRadius: Double = 0
         var eraserMode: StudioEraserMode? = nil
+        var textStyle: StudioTextStyle? = nil
 
         var isValid: Bool {
             width.isFinite && (0.25...512).contains(width) &&
@@ -1253,7 +1322,8 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             texture.isFinite && (0...1).contains(texture) &&
             grain.isFinite && (0...1).contains(grain) &&
             cornerRadius.isFinite && (0...50).contains(cornerRadius) &&
-            (try? gradientEnd.validate()) != nil && gradientEnd.alpha == 1
+            (try? gradientEnd.validate()) != nil && gradientEnd.alpha == 1 &&
+            (textStyle?.isValid ?? true)
         }
         static func defaults(for tool: DrawingTool) -> Self {
             var value = Self()

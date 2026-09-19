@@ -207,7 +207,8 @@ final class StudioExportService {
                 guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 guard validColor(element.color) else { throw ExportError.invalidColor }
                 if element.tool == .text {
-                    guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent }
+                    if let text = element.text { try text.validate(element: element) }
+                    else { guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent } }
                 }
             }
         }

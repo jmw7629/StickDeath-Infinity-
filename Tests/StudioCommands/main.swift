@@ -171,7 +171,8 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     stroke(points: [.init(x: 1, y: 1, pressure: 2)]), stroke(points: []),
                     stroke(tool: .rectangle, points: [.init(x: 1, y: 1)])]
                 for value in invalid { var editor = try fresh(); try rejected(request(editor, .apply([draw(editor, [value])])), editor: &editor, expected: .invalidGeometry) }
-                for tool in [DrawingTool.fill, .text, .smudge, .blur, .calligraphy] {
+                var textEditor = try fresh(); try rejected(request(textEditor, .apply([draw(textEditor, [stroke(tool: .text)])])), editor: &textEditor, expected: .invalidSettings)
+                for tool in [DrawingTool.fill, .smudge, .blur, .calligraphy] {
                     var editor = try fresh(); try rejected(request(editor, .apply([draw(editor, [stroke(tool: tool)])])), editor: &editor, expected: .unsupportedTool)
                 }
             }
