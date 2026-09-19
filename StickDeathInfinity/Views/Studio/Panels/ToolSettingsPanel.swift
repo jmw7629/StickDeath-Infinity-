@@ -397,6 +397,25 @@ struct FloatingToolSettingsPanel: View {
                         .disabled(action.contains("Copy") && vm.selectedElementIDs.isEmpty)
                     }
                 }
+                Divider().background(Color.white.opacity(0.08))
+                Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.white.opacity(0.65))
+                SettingsSlider(label: "Scale", value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
+                SettingsSlider(label: "Angle", value: $vm.selectionRotationDegrees, range: -180...180, unit: "°", accent: .red)
+                HStack {
+                    Button(action: { _ = vm.transformSelected() }) {
+                        Text("Apply transform").frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(.white).background(Color.red.opacity(0.8)).cornerRadius(8)
+                    }
+                    .accessibilityIdentifier("studio.selection.transform-apply")
+                    .disabled(vm.selectedElementIDs.isEmpty)
+                    Button(action: { vm.resetSelectionTransform() }) {
+                        Text("Reset values").frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(.white.opacity(0.8)).background(Color.white.opacity(0.08)).cornerRadius(8)
+                    }
+                    .accessibilityIdentifier("studio.selection.transform-reset")
+                }.font(.specialElite(10))
+                Text("Scale and rotate selected drawings or text together. Apply makes one undo step; Reset only clears these controls.")
+                    .font(.specialElite(9)).foregroundColor(.white.opacity(0.55))
             }
             
         // ── LASSO ──

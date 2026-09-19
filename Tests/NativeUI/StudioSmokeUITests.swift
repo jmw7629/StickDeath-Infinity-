@@ -421,7 +421,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText("SDI")
         app.buttons["studio.text.keyboard-dismiss"].tap()
         let fontSize = app.sliders["studio.setting.font-size"]
-        XCTAssertTrue(fontSize.isHittable); fontSize.adjust(toNormalizedSliderPosition: 0.38)
+        // All four glyphs must fit the 240 px box. At 100 px the final !
+        // correctly wraps below its 120 px height, hiding the expected edit.
+        XCTAssertTrue(fontSize.isHittable); fontSize.adjust(toNormalizedSliderPosition: 0.18)
         app.buttons["studio.text.apply"].tap()
         XCTAssertTrue(app.buttons["studio.text.new"].waitForExistence(timeout: 5))
         app.buttons["studio.tool-settings.close"].tap()
@@ -449,6 +451,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.text.edit"].tap()
         XCTAssertEqual(input.value as? String, "SDI", "Cancel changed editable source")
         input.tap(); input.typeText("!")
+        XCTAssertEqual(input.value as? String, "SDI!", "Text entry did not update the editable draft")
         app.buttons["studio.text.keyboard-dismiss"].tap()
         capture(app, name: "editable-text-typography-popup")
         app.buttons["studio.text.apply"].tap(); app.buttons["studio.tool-settings.close"].tap()
@@ -609,6 +612,73 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(reopenedCanvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(reopenedCanvas.screenshot().image)), 4, "Saved stacking did not survive cold reopen")
         capture(reopened, name: "selection-stacking-cold-reopened")
+    }
+
+    @MainActor
+    func testSelectionScaleRotateUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let stableFrame = canvas.frame
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.35, dy: 0.46)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.54)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image), originalInk = exportInkMask(original)
+        XCTAssertGreaterThan(originalInk.count, 12)
+        try selectToolbarTool("move", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try selectToolbarTool("move", app: app)
+        let scale = app.sliders["studio.setting.scale"], angle = app.sliders["studio.setting.angle"]
+        let apply = app.buttons["studio.selection.transform-apply"]
+        let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+        let scroll = popup.scrollViews.firstMatch
+        func revealTransformControl(_ control: XCUIElement) throws {
+            for _ in 0..<4 {
+                if control.isHittable { return }
+                XCTAssertTrue(scroll.exists, "Transform controls have no reachable popup scroll container")
+                scroll.swipeUp(velocity: .slow)
+            }
+            XCTAssertTrue(control.isHittable, "Transform control is unreachable in its sole popup")
+        }
+        try revealTransformControl(scale)
+        scale.adjust(toNormalizedSliderPosition: 0.4667) // roughly 200% in 25...400
+        try revealTransformControl(angle)
+        angle.adjust(toNormalizedSliderPosition: 0.75) // roughly 90 degrees
+        try revealTransformControl(apply)
+        capture(app, name: "selection-scale-rotate-popup")
+        apply.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: stableFrame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.04)).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let changed = try pixels(canvas.screenshot().image), changedInk = exportInkMask(changed)
+        XCTAssertGreaterThan(changedInk.count, originalInk.count * 3 / 2,
+                             "Scale changed controls without increasing actual ink")
+        let originalRows = originalInk.map { $0 / original.width }, changedRows = changedInk.map { $0 / changed.width }
+        let oldHeight = try XCTUnwrap(originalRows.max()) - XCTUnwrap(originalRows.min()) + 1
+        let newHeight = try XCTUnwrap(changedRows.max()) - XCTUnwrap(changedRows.min()) + 1
+        XCTAssertGreaterThan(newHeight, oldHeight * 2, "Rotation did not turn the near-horizontal drawing vertically")
+        XCTAssertGreaterThan(try changedPixelCount(original, changed), 20)
+        XCTAssertFalse(app.descendants(matching: .any)["studio.status"].firstMatch.exists,
+                       "Applying the transform resized the canvas with a status banner")
+        capture(app, name: "selection-scaled-rotated-artwork")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
+                                 "One Undo did not restore exact pre-transform artwork")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(changed, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: stableFrame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(changed, pixels(restored.screenshot().image)), 4,
+                                 "Cold reopen changed transformed drawing pixels")
+        capture(reopened, name: "selection-transform-cold-reopened")
     }
 
     @MainActor

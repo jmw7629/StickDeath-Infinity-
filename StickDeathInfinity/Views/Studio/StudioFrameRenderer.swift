@@ -129,7 +129,14 @@ struct StudioFrameRenderer {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
-        if element.eraser != nil || element.text != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
+        if element.eraser != nil || element.text != nil || element.transform != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
+        if let t = element.transform {
+            try t.validate()
+            // Conjugate by the viewport scale; rotation remains correct even
+            // when the destination aspect ratio differs from document pixels.
+            context.concatenate(CGAffineTransform(a:t.a,b:t.b*scaleY/scaleX,c:t.c*scaleX/scaleY,
+                                                  d:t.d,tx:t.tx*scaleX,ty:t.ty*scaleY))
+        }
         if let translation = element.translation {
             try translation.validate()
             context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)

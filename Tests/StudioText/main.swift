@@ -58,6 +58,26 @@ private struct Failure: Error { let message: String }
         setbuf(stdout, nil)
         let original = try document(), base = try render(original)
         try require(ink(base) > 100, "New text rendered no real glyphs")
+        // Native run 35466786218 edited SDI -> SDI! at 100 px inside a
+        // 240 x 120 box. The fourth monospace glyph wraps below that box.
+        // Keep clipping intentional and prove that fitting edits change pixels.
+        var narrow = try StudioDocument.new(name: "Text clipping regression", width: 512, height: 256, fps: 12)
+        narrow.schemaVersion = 10
+        narrow.frames[0].elements = [text(narrow.activeLayerID, content: "SDI")]
+        narrow.frames[0].elements[0].text?.style = .init(size: 100, boxWidth: 240, boxHeight: 120)
+        let beforeClipping = try render(narrow)
+        var clippedAppend = narrow; clippedAppend.frames[0].elements[0].text?.content = "SDI!"
+        let afterClipping = try render(clippedAppend)
+        print("TEXT_NATIVE_FAILURE_REPRO clippedAppendChanged=\(beforeClipping != afterClipping)")
+        try require(beforeClipping == afterClipping && clippedAppend.frames[0].elements[0].text?.content == "SDI!",
+                    "Clipped text changed visible glyphs or lost editable content")
+        clippedAppend.frames[0].elements[0].text?.style.boxWidth = 320
+        try require(try render(clippedAppend) != afterClipping, "Widening the box failed to reveal appended glyph")
+        narrow.frames[0].elements[0].text?.style.size = 50
+        var fittingAppend = narrow; fittingAppend.frames[0].elements[0].text?.content = "SDI!"
+        try require(try render(narrow) != render(fittingAppend), "A fitting text edit failed to change actual glyphs")
+        pass("clipped appended glyph preserves content and appears when the box or font allows it")
+
         let unicode = "Café e\u{301} 漢字 مرحبا 🦴\nSDI"
         var unicodeDoc = original; unicodeDoc.frames[0].elements[0].text?.content = unicode
         let data = try StudioDocumentArchive(document: unicodeDoc, rasterFrameIndices: [:]).encoded()

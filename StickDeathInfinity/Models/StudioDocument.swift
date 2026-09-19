@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...10
+    static let supportedSchemaVersions = 1...11
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -73,6 +73,10 @@ struct StudioDocument: Codable, Equatable {
                 throw StudioDocumentError.invalid("This frame exceeds its 256 text-box limit.")
             }
             for element in frame.elements {
+                if let transform = element.transform {
+                    guard schemaVersion >= 11 else { throw StudioDocumentError.invalid("Transformed drawings require project version 11.") }
+                    try transform.validate()
+                }
                 if let text = element.text {
                     guard schemaVersion >= 10 else { throw StudioTextDescriptor.Failure.invalid }
                     try text.validate(element: element)
@@ -268,6 +272,7 @@ struct StudioDocumentEditor {
             if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
             if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
             if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+            if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
         }
     }
     mutating func updateText(frameID: String, elementID: String, text: StudioTextDescriptor, color: String, opacity: Double) throws {
@@ -358,7 +363,7 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -367,6 +372,7 @@ struct StudioDocumentEditor {
                 if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
                 if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
                 if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+                if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             }
             try checkCancellation()
         }
@@ -382,7 +388,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -392,6 +398,8 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
             if elements.contains(where: { $0.reflection != nil }) { value.schemaVersion = max(value.schemaVersion, 8) }
             if elements.contains(where: { $0.eraser != nil }) { value.schemaVersion = max(value.schemaVersion, 9) }
+            if elements.contains(where: { $0.text != nil }) { value.schemaVersion = max(value.schemaVersion, 10) }
+            if elements.contains(where: { $0.transform != nil }) { value.schemaVersion = max(value.schemaVersion, 11) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -424,6 +432,11 @@ struct StudioDocumentEditor {
                 guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible,
                       !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
                 if dx == 0 && dy == 0 { continue }
+                if let prior = element.transform {
+                    let moved = StudioElementTransform(tx: dx, ty: dy).after(prior)
+                    try moved.validate(); value.frames[frame].elements[index].transform = moved
+                    continue
+                }
                 let moved = StudioElementTranslation(x: (element.translation?.x ?? 0) + dx,
                                                      y: (element.translation?.y ?? 0) + dy)
                 try moved.validate()
@@ -431,6 +444,54 @@ struct StudioDocumentEditor {
                 value.schemaVersion = max(value.schemaVersion, 7)
             }
             try checkCancellation()
+        }
+    }
+    /// Scale/rotate around the explicit group's current world-space center.
+    /// One change stages every member before validation/history commit.
+    mutating func transformElements(frameID: String, ids: Set<String>, scaleX: Double, scaleY: Double, rotation: Double,
+                                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select 1–1,024 drawings or text boxes before transforming.") }
+        try checkCancellation()
+        try change { value in
+            guard let fi=value.frames.firstIndex(where:{$0.id==frameID}),
+                  ids.isSubset(of:Set(value.frames[fi].elements.map(\.id))) else { throw StudioDocumentError.invalid("The selected artwork is unavailable. Nothing changed.") }
+            var bounds=CGRect.null
+            var selectedBounds: [String: CGRect] = [:]
+            for e in value.frames[fi].elements where ids.contains(e.id) {
+                try checkCancellation()
+                guard let layer=value.layers.first(where:{$0.id==e.layerID}),layer.visible,layer.opacity>0,
+                      !layer.isFullyLocked,layer.lockMode=="free" else { throw StudioDocumentError.locked }
+                guard e.tool != .eraser else { throw StudioDocumentError.unavailable("Select drawings or text without eraser masks before transforming.") }
+                let rect: CGRect?
+                if e.brush != nil {
+                    var r=try StudioBrushGeometryCache.geometry(for:e).bounds
+                    if e.reflection?.horizontal == true { r.origin.x = -r.maxX }
+                    if e.reflection?.vertical == true { r.origin.y = -r.maxY }
+                    r=r.offsetBy(dx:e.translation?.x ?? 0,dy:e.translation?.y ?? 0)
+                    rect=e.transform?.bounds(r) ?? r
+                } else { rect=e.selectionBounds }
+                guard let rect,!rect.isNull,rect.width>0,rect.height>0,
+                      [rect.minX,rect.maxX,rect.minY,rect.maxY].allSatisfy({$0.isFinite && abs($0)<=100_000}) else {
+                    throw StudioDocumentError.invalid("The selected artwork has unsupported transform bounds.")
+                }
+                selectedBounds[e.id] = rect
+                bounds=bounds.union(rect)
+            }
+            let operation=try StudioElementTransform.scaleRotation(x:scaleX,y:scaleY,degrees:rotation,
+                center:CGPoint(x:bounds.midX,y:bounds.midY))
+            if scaleX==1 && scaleY==1 && rotation==0 { return }
+            for i in value.frames[fi].elements.indices where ids.contains(value.frames[fi].elements[i].id) {
+                try checkCancellation()
+                let element = value.frames[fi].elements[i]
+                guard let before = selectedBounds[element.id] else { throw StudioDocumentError.invalid("The selected artwork changed. Nothing changed.") }
+                let after = operation.bounds(before)
+                guard [after.minX, after.maxX, after.minY, after.maxY].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else {
+                    throw StudioElementTransform.Failure.limits
+                }
+                let transformed=operation.after(element.transform ?? .init())
+                try transformed.validate();value.frames[fi].elements[i].transform=transformed
+            }
+            value.schemaVersion=max(value.schemaVersion,11);try checkCancellation()
         }
     }
     /// Reflect the group around its combined document-space bounds. Original
@@ -457,6 +518,14 @@ struct StudioDocumentEditor {
             guard !bounds.isNull else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before flipping artwork.") }
             for index in elements.indices where ids.contains(elements[index].id) {
                 try checkCancellation()
+                if let prior = elements[index].transform {
+                    let flip = axis == .horizontal
+                        ? StudioElementTransform(a: -1, tx: bounds.minX+bounds.maxX)
+                        : StudioElementTransform(d: -1, ty: bounds.minY+bounds.maxY)
+                    let transformed = flip.after(prior); try transformed.validate()
+                    value.frames[frame].elements[index].transform = transformed
+                    continue
+                }
                 var translation = elements[index].translation ?? .init(x: 0, y: 0)
                 var reflection = elements[index].reflection ?? .init()
                 switch axis {
@@ -550,7 +619,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }
@@ -643,7 +712,7 @@ enum StudioBrushGeometryCache {
         _ = try color(element.color)
         // Translation is applied by the shared renderer after geometry creation.
         // Keep the same deterministic geometry in cache throughout a drag.
-        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil
+        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil; geometryElement.transform = nil
         lock.lock()
         if var hit = entries[element.id], hit.element == geometryElement {
             clock &+= 1; hit.used = clock; entries[element.id] = hit

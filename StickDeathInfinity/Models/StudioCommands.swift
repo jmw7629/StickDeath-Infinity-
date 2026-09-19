@@ -105,6 +105,7 @@ enum StudioCommand: Codable {
     struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
     struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
+    struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
@@ -112,11 +113,12 @@ enum StudioCommand: Codable {
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
-    case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText)
+    case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
         case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
         case "addFrame": self = .addFrame(try container.decode(AddFrame.self, forKey: key))
@@ -142,6 +144,7 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .draw(let value): try container.encode(value, forKey: StudioWireKey("draw"))
         case .addFrame(let value): try container.encode(value, forKey: StudioWireKey("addFrame"))
@@ -282,6 +285,7 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
             "duplicateFrame": ["source", "result"], "duplicateLayer": ["source", "result"],
@@ -549,6 +553,12 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.translateElements(frameID: id, ids: Set(value.elementIDs), dx: value.dx, dy: value.dy,
                                          checkCancellation: checkCancellation)
+        case .transformElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.transformElements(frameID:id,ids:Set(value.elementIDs),scaleX:value.scaleX,scaleY:value.scaleY,
+                                         rotation:value.rotation,checkCancellation:checkCancellation)
         case .reflectElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,

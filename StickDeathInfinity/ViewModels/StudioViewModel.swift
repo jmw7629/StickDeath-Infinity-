@@ -417,6 +417,7 @@ final class StudioViewModel: ObservableObject {
                 try addUnits(drawing.strokes.count, weight: 32)
                 for stroke in drawing.strokes { try addUnits(stroke.points.count); try addUnits(stroke.text?.content.utf8.count ?? 0) }
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
+            case .transformElements(let selection): edits += selection.elementIDs.count; try addUnits(selection.elementIDs.count, weight: 32)
             case .duplicateFrame, .duplicateLayer, .pasteElements:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
@@ -752,6 +753,21 @@ final class StudioViewModel: ObservableObject {
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
     }
     @Published var selectionMode: SelectionMode = .new
+    @Published var selectionScalePercent: Double = 100
+    @Published var selectionRotationDegrees: Double = 0
+    @discardableResult
+    func transformSelected() -> Bool {
+        let ids=selectedElementIDs
+        guard isEditing,!isPlaying,!ids.isEmpty else { message="Select drawings or text before transforming.";return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.transformElements(.init(frame:.id(currentFrame.id),
+                    elementIDs:ids.sorted(),scaleX:selectionScalePercent/100,scaleY:selectionScalePercent/100,
+                    rotation:selectionRotationDegrees))])))
+            editor.selectedElementIDs=ids;resetSelectionTransform();return true
+        } catch { message=error.localizedDescription;return false }
+    }
+    func resetSelectionTransform() { selectionScalePercent=100;selectionRotationDegrees=0 }
     @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand
     @Published var areaSelectionSmoothing: Double = 3
     struct AreaSelectionCapture: Equatable {
@@ -821,8 +837,9 @@ final class StudioViewModel: ObservableObject {
                 guard element.layerID == layer.id, element.opacity > 0,
                       let rect = try? StudioSelectionRegion.drawingBounds(element) else { return false }
                 if let mask = element.fillMask {
-                    let x = (point.x - (element.translation?.x ?? 0)) * (element.reflection?.horizontal == true ? -1 : 1)
-                    let y = (point.y - (element.translation?.y ?? 0)) * (element.reflection?.vertical == true ? -1 : 1)
+                    guard let placed = try? element.transform?.inversePoint(point) ?? point else { return false }
+                    let x = (placed.x - (element.translation?.x ?? 0)) * (element.reflection?.horizontal == true ? -1 : 1)
+                    let y = (placed.y - (element.translation?.y ?? 0)) * (element.reflection?.vertical == true ? -1 : 1)
                     return mask.spans.contains { y >= Double($0.row) && y < Double($0.row + 1) && x >= Double($0.start) && x < Double($0.end) }
                 }
                 return rect.insetBy(dx: -6, dy: -6).contains(point)
@@ -863,6 +880,11 @@ final class StudioViewModel: ObservableObject {
         try StudioElementTranslation(x: delta.width, y: delta.height).validate()
         var frame = currentFrame
         for index in frame.elements.indices where capture.ids.contains(frame.elements[index].id) {
+            if let prior = frame.elements[index].transform {
+                let next = StudioElementTransform(tx: delta.width, ty: delta.height).after(prior)
+                try next.validate(); frame.elements[index].transform = next
+                continue
+            }
             let old = frame.elements[index].translation
             let next = StudioElementTranslation(x: (old?.x ?? 0) + delta.width, y: (old?.y ?? 0) + delta.height)
             try next.validate(); frame.elements[index].translation = next.x == 0 && next.y == 0 ? nil : next
@@ -1294,7 +1316,8 @@ struct StudioSelectionRegion {
         guard !bounds.isNull else { return nil }
         if element.reflection?.horizontal == true { bounds.origin.x = -bounds.maxX }
         if element.reflection?.vertical == true { bounds.origin.y = -bounds.maxY }
-        return bounds.offsetBy(dx: element.translation?.x ?? 0, dy: element.translation?.y ?? 0)
+        let placed=bounds.offsetBy(dx: element.translation?.x ?? 0, dy: element.translation?.y ?? 0)
+        return element.transform?.bounds(placed) ?? placed
     }
 }
 

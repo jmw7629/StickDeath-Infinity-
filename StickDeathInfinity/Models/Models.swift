@@ -83,6 +83,8 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var eraser: StudioEraserDescriptor? = nil
     /// Schema10 editable text. Legacy fillColor text keeps its original renderer.
     var text: StudioTextDescriptor? = nil
+    /// Schema11: world-space affine transform, applied after legacy placement.
+    var transform: StudioElementTransform? = nil
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
@@ -100,7 +102,62 @@ struct DrawnElement: Codable, Identifiable, Equatable {
         var transformed = bounds
         if reflection?.horizontal == true { transformed.origin.x = -bounds.maxX }
         if reflection?.vertical == true { transformed.origin.y = -bounds.maxY }
-        return transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+        let placed = transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+        return transform?.bounds(placed) ?? placed
+    }
+}
+
+/// A compact transform preserves samples, sparse fills, text and brush seeds.
+/// Matrix maps (x,y) to (a*x+c*y+tx, b*x+d*y+ty).
+struct StudioElementTransform: Codable, Equatable, Sendable {
+    enum Failure: LocalizedError {
+        case limits, settings
+        var errorDescription: String? {
+            switch self {
+            case .limits: return "The transform exceeds the supported scale or position limits. Nothing changed."
+            case .settings: return "Scale must be 10–1,000% and rotation between −180° and 180°. Nothing changed."
+            }
+        }
+    }
+    var a: Double = 1, b: Double = 0, c: Double = 0, d: Double = 1
+    var tx: Double = 0, ty: Double = 0
+    func validate() throws {
+        let determinant = a*d-b*c
+        let norm = max(abs(a)+abs(c), abs(b)+abs(d))
+        let inverseNorm = max(abs(d)+abs(c), abs(b)+abs(a)) / abs(determinant)
+        guard [a,b,c,d,tx,ty].allSatisfy(\.isFinite), abs(tx) <= 100_000, abs(ty) <= 100_000,
+              abs(determinant) > 0.000001, norm <= 64, inverseNorm <= 64 else {
+            throw Failure.limits
+        }
+    }
+    func point(_ p: CGPoint) -> CGPoint { CGPoint(x: a*p.x+c*p.y+tx, y: b*p.x+d*p.y+ty) }
+    func inversePoint(_ p: CGPoint) throws -> CGPoint {
+        try validate()
+        let determinant = a*d-b*c, x = p.x-tx, y = p.y-ty
+        return CGPoint(x: (d*x-c*y)/determinant, y: (a*y-b*x)/determinant)
+    }
+    func bounds(_ rect: CGRect) -> CGRect {
+        guard !rect.isNull else { return .null }
+        let p = [CGPoint(x:rect.minX,y:rect.minY),CGPoint(x:rect.maxX,y:rect.minY),
+                 CGPoint(x:rect.maxX,y:rect.maxY),CGPoint(x:rect.minX,y:rect.maxY)].map(point)
+        let xs=p.map(\.x), ys=p.map(\.y)
+        return CGRect(x:xs.min()!,y:ys.min()!,width:xs.max()!-xs.min()!,height:ys.max()!-ys.min()!)
+    }
+    /// Apply self after inner: world-space edits retain earlier rotations.
+    func after(_ inner: Self) -> Self {
+        .init(a:a*inner.a+c*inner.b, b:b*inner.a+d*inner.b,
+              c:a*inner.c+c*inner.d, d:b*inner.c+d*inner.d,
+              tx:a*inner.tx+c*inner.ty+tx, ty:b*inner.tx+d*inner.ty+ty)
+    }
+    static func scaleRotation(x: Double, y: Double, degrees: Double, center: CGPoint) throws -> Self {
+        guard x.isFinite,y.isFinite,degrees.isFinite,(0.1...10).contains(x),(0.1...10).contains(y),
+              (-180...180).contains(degrees),center.x.isFinite,center.y.isFinite else {
+            throw Failure.settings
+        }
+        let theta=degrees * .pi/180, cosine=cos(theta), sine=sin(theta)
+        let a=cosine*x,b=sine*x,c = -sine*y,d=cosine*y
+        let result=Self(a:a,b:b,c:c,d:d,tx:center.x-a*center.x-c*center.y,ty:center.y-b*center.x-d*center.y)
+        try result.validate();return result
     }
 }
 
