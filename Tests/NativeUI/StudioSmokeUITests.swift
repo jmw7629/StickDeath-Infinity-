@@ -7,6 +7,25 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testRoomsReplaceMessagingWithoutClaimingConnectedServices() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate() }
+        XCTAssertFalse(button("Messages", in: app).exists)
+        try waitForButton("Rooms", in: app).tap()
+        XCTAssertTrue(app.descendants(matching: .any)["rooms.unavailable"].firstMatch.waitForExistence(timeout: 5))
+        let warRoom = app.descendants(matching: .any)["rooms.warRoom"].firstMatch
+        XCTAssertTrue(warRoom.isHittable)
+        warRoom.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["warRoom.unavailable"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertFalse(button("Find Match", in: app).exists)
+        try waitForButton("Back to Rooms", in: app).tap()
+        XCTAssertTrue(app.descendants(matching: .any)["rooms.unavailable"].firstMatch.exists)
+        try waitForButton("Studio", in: app).tap()
+        XCTAssertTrue(app.buttons["studio.new-project"].waitForExistence(timeout: 5))
+        capture(app, name: "rooms-back-to-studio")
+    }
+
+    @MainActor
     func testFloatingToolbarDockingAndPopupDismissal() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -188,6 +207,61 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(reopenedCanvas,expected:frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(moved,pixels(reopenedCanvas.screenshot().image)),4,"Moved artwork did not survive cold reopen")
         capture(reopened,name:"move-artwork-cold-reopened")
+    }
+
+    @MainActor
+    func testSelectedArtworkCopyPasteUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app:app, forward:false).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.25)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.6)))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let original = try pixels(canvas.screenshot().image), originalInk = exportInkMask(original)
+        XCTAssertGreaterThan(originalInk.count,12)
+        try selectToolbarTool("move",app:app)
+        XCTAssertTrue(app.buttons["studio.selection.copy"].waitForExistence(timeout:5))
+        XCTAssertFalse(app.buttons["studio.selection.copy"].isEnabled,"Copy requires explicit selection")
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.4)).tap()
+        try selectToolbarTool("move",app:app)
+        let copy = app.buttons["studio.selection.copy"]
+        XCTAssertTrue(copy.isHittable && copy.isEnabled); copy.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Copy must not dirty the saved document")
+        let paste = app.buttons["studio.paste"]
+        XCTAssertTrue(paste.isEnabled && paste.isHittable)
+        XCTAssertEqual(paste.label,"Paste drawing")
+        paste.tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.4)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.65,dy:0.4)))
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.9,dy:0.85)).tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        XCTAssertFalse(app.descendants(matching:.any)["studio.status"].firstMatch.exists,"Copy or Paste inserted a resizing success banner")
+        let duplicated = try pixels(canvas.screenshot().image), duplicatedInk = exportInkMask(duplicated)
+        XCTAssertGreaterThan(Double(duplicatedInk.count)/Double(originalInk.count),1.75,"Paste failed to retain both original and copied artwork in one frame")
+        XCTAssertLessThan(Double(duplicatedInk.count)/Double(originalInk.count),2.25)
+        XCTAssertGreaterThanOrEqual(originalInk.intersection(duplicatedInk).count,originalInk.count-4,"Moving the pasted selection moved or removed the original")
+        capture(app,name:"selected-artwork-copy-paste-moved")
+        app.buttons["studio.undo"].tap();app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(original,pixels(canvas.screenshot().image)),4,"Undo Move and Paste did not restore the exact original")
+        app.buttons["studio.redo"].tap();app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(duplicated,pixels(canvas.screenshot().image)),4,"Redo changed the actual copied artwork")
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened = try launchGuestStudio();defer {reopened.terminate()}
+        let project = reopened.buttons.matching(NSPredicate(format:"label == %@",name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout:8));project.tap()
+        let restoredCanvas = reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restoredCanvas,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(duplicated,pixels(restoredCanvas.screenshot().image)),4,"Saved original and copied artwork did not survive cold reopen")
+        XCTAssertFalse(reopened.buttons["studio.paste"].isEnabled,"Transient clipboard was incorrectly persisted")
+        capture(reopened,name:"selected-artwork-cold-reopened")
     }
 
     @MainActor

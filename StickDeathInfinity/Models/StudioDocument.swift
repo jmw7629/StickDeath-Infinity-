@@ -169,18 +169,31 @@ struct StudioDocumentEditor {
     private(set) var document: StudioDocument
     private var undoDocuments: [StudioDocument] = []
     private var redoDocuments: [StudioDocument] = []
-    private var clipboard: AnimationFrame?
+    private enum Clipboard { case frame(AnimationFrame), elements([DrawnElement]) }
+    private var clipboard: Clipboard?
+    private(set) var clipboardVersion = UUID()
     var selectedElementIDs = Set<String>()
     var canUndo: Bool { !undoDocuments.isEmpty }
     var canRedo: Bool { !redoDocuments.isEmpty }
     var canPaste: Bool { clipboard != nil }
+    var clipboardElements: [DrawnElement]? {
+        guard case .elements(let values) = clipboard else { return nil }
+        return values
+    }
+    var clipboardElementCount: Int { clipboardElements?.count ?? 0 }
+    /// Preserve staged clipboard changes when a typed batch is coalesced into
+    /// one document/history edit. This never imports another project's files.
+    mutating func adoptClipboard(from source: Self) throws {
+        guard source.document.id == document.id else { throw StudioDocumentError.invalid("The clipboard belongs to another project.") }
+        clipboard = source.clipboard; clipboardVersion = source.clipboardVersion
+    }
     /// Asset lifetime follows the actual full-document history, never a mirror.
     var referencedAudioAssetIDsIncludingHistory: Set<UUID> {
         (undoDocuments + redoDocuments).reduce(into: document.referencedAudioAssetIDs) { $0.formUnion($1.referencedAudioAssetIDs) }
     }
     var referencedRasterAssetIDsIncludingHistoryAndClipboard: Set<String> {
         var ids = (undoDocuments + redoDocuments).reduce(into: document.referencedRasterAssetIDs) { $0.formUnion($1.referencedRasterAssetIDs) }
-        if let id = clipboard?.rasterAssetID { ids.insert(id) }
+        if case .frame(let frame) = clipboard, let id = frame.rasterAssetID { ids.insert(id) }
         return ids
     }
 
@@ -234,10 +247,82 @@ struct StudioDocumentEditor {
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
         }
     }
-    mutating func copyFrame() { clipboard = document.frames.first { $0.id == document.activeFrameID } }
+    mutating func copyFrame() {
+        if let frame = document.frames.first(where: { $0.id == document.activeFrameID }) { clipboard = .frame(frame); clipboardVersion = UUID() }
+    }
     mutating func pasteFrame() throws {
-        guard let source = clipboard else { return }
+        guard case .frame(let source) = clipboard else { return }
         try insertCopy(source)
+    }
+    /// The selection clipboard is an immutable, bounded snapshot. Copy changes
+    /// neither document revision nor undo history and never uses the OS clipboard.
+    mutating func copyElements(frameID: String, ids: Set<String>,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard !ids.isEmpty, ids.count <= 1024,
+              let frame = document.frames.first(where: { $0.id == frameID }),
+              ids.isSubset(of: Set(frame.elements.map(\.id))) else {
+            throw StudioDocumentError.invalid("Select between 1 and 1,024 existing drawings before copying.")
+        }
+        try checkCancellation()
+        var values: [DrawnElement] = [], points = 0, bytes = 0
+        // Flatten the selected drawings in the same back-to-front order as the
+        // canonical renderer; paste uses the destination layer's own appearance.
+        for layer in document.layers.reversed() {
+            for element in frame.elements where ids.contains(element.id) && element.layerID == layer.id {
+                try checkCancellation()
+                guard layer.visible, layer.opacity > 0, !layer.isFullyLocked else { throw StudioDocumentError.locked }
+                guard element.points.count <= 65_536 - points else {
+                    throw StudioDocumentError.unavailable("Copy is limited to 65,536 drawing points. Copy a smaller selection.")
+                }
+                points += element.points.count
+                let cost = 1024 + element.points.count * 40 + (element.fillMask?.spans.count ?? 0) * MemoryLayout<StudioFillMask.Span>.stride
+                    + element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0)
+                guard cost <= 8 * 1024 * 1024 - bytes else {
+                    throw StudioDocumentError.unavailable("The drawing clipboard is limited to 8 MB. Copy a smaller selection.")
+                }
+                bytes += cost; values.append(element)
+            }
+        }
+        guard values.count == ids.count else { throw StudioDocumentError.invalid("The selected drawings are unavailable.") }
+        try checkCancellation()
+        clipboard = .elements(values)
+        clipboardVersion = UUID()
+    }
+    @discardableResult
+    mutating func pasteElements(frameID: String, layerID: String,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Set<String> {
+        guard let source = clipboardElements, !source.isEmpty else {
+            throw StudioDocumentError.unavailable("Copy selected drawings before pasting artwork.")
+        }
+        try checkCancellation()
+        var ids = Set<String>()
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  let layer = value.layers.first(where: { $0.id == layerID }) else {
+                throw StudioDocumentError.invalid("The paste destination is unavailable. Nothing changed.")
+            }
+            guard layer.visible, layer.opacity > 0, !layer.isFullyLocked,
+                  layer.lockMode == "free" || layer.lockMode == "position" else { throw StudioDocumentError.locked }
+            guard source.count <= 20_000 - value.frames[index].elements.count else {
+                throw StudioDocumentError.invalid("This paste exceeds the frame's drawing limit.")
+            }
+            for element in source {
+                try checkCancellation()
+                let id = UUID().uuidString
+                value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
+                    color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
+                    layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
+                    translation: element.translation, reflection: element.reflection))
+                ids.insert(id)
+                if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
+                if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
+                if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
+                if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
+                if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
+            }
+            try checkCancellation()
+        }
+        return ids
     }
     mutating func duplicateFrame() throws {
         guard let source = document.frames.first(where: { $0.id == document.activeFrameID }) else { return }

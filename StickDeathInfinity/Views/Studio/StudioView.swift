@@ -231,8 +231,10 @@ struct StudioBottomBar: View {
             
             // Paste
             BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
-                vm.pasteFrame()
+                vm.pasteClipboard()
             }
+            .accessibilityIdentifier("studio.paste")
+            .accessibilityLabel(vm.copiedDrawingCount == 1 ? "Paste drawing" : vm.copiedDrawingCount > 0 ? "Paste \(vm.copiedDrawingCount) drawings" : "Paste frame")
             
             // Delete
             BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected) {

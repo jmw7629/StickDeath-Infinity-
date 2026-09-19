@@ -22,8 +22,19 @@ targets:
     sources:
       - path: StickDeathInfinity
         excludes:
-          # Historical alternate service; the canonical service is Services/LiveKit/LiveKitService.swift.
+          # Retired user messaging/calls are retained as history, never app code.
           - Services/LiveKitService.swift
+          - Services/LiveKit
+          - Services/Message
+          - ViewModels/MessagesViewModel.swift
+          - Views/Messages/MessagesView.swift
+          - Views/Messages/ChatRoomView.swift
+          - Views/Messages/CallsView.swift
+          - Views/Messages/ContactsView.swift
+          - Views/Messages/VideoCall
+          - Views/Messages/WatchParty
+          - Views/Collab/CreatorRoomView.swift
+          - Views/Collab/WatchTogetherView.swift
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist
@@ -32,7 +43,6 @@ targets:
         GENERATE_INFOPLIST_FILE: false
     dependencies:
       - package: supabase-swift
-      - package: client-sdk-swift
       # StoreKit 2 is built into iOS 15+ — no external package needed
       # Stripe SDK removed: iOS subscriptions use StoreKit IAP per Apple policy
     entitlements:
@@ -69,7 +79,4 @@ schemes:
 packages:
   supabase-swift:
     url: https://github.com/supabase-community/supabase-swift.git
-    from: "2.0.0"
-  client-sdk-swift:
-    url: https://github.com/livekit/client-sdk-swift.git
     from: "2.0.0"

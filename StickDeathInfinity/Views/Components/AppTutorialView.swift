@@ -17,7 +17,7 @@ private let tutorialSteps: [TutorialStep] = [
     TutorialStep(icon: "🏠", title: "Home Feed", description: "Browse animations from the community. Like, comment, and share your favorites.", tab: "home"),
     TutorialStep(icon: "⚔️", title: "Challenges", description: "Enter weekly animation battles. Vote on entries and win prizes.", tab: "challenges"),
     TutorialStep(icon: "🎨", title: "Studio", description: "Create stick figure animations with brushes, layers, and frames. Your creative playground.", tab: "studio"),
-    TutorialStep(icon: "💬", title: "Messages", description: "Chat with other creators. Start video calls, watch parties, and collaborate.", tab: "messages"),
+    TutorialStep(icon: "🤝", title: "Rooms", description: "Studio collaboration by invitation is coming next. Rooms will share only projects you choose, with no chat or calls.", tab: "rooms"),
     TutorialStep(icon: "👤", title: "Profile", description: "Your portfolio. Edit your profile, view achievements, and manage settings.", tab: "profile"),
 ]
 

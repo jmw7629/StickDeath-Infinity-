@@ -43,6 +43,8 @@ jobs:
         run: python3 scripts/verify_spatter_client.py
       - name: Verify simulator fixture orchestration guards (mocked subprocesses)
         run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
+      - name: Verify retired messaging and calls cannot enter the native target
+        run: python3 scripts/verify_retired_communications.py
   native-ios-build:
     runs-on: macos-15
     # The bounded 20-journey UI suite allows 31 minutes after production/build checks.
@@ -189,6 +191,32 @@ jobs:
             StickDeathInfinity/Services/StudioMuxCapture.swift \
             -o "$RUNNER_TEMP/sdi-selection-flip-tests"
           "$RUNNER_TEMP/sdi-selection-flip-tests"
+      - name: Verify real selection clipboard identity pixels history persistence and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionClipboard/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-clipboard-tests"
+          "$RUNNER_TEMP/sdi-selection-clipboard-tests"
       - name: Verify actual selection stacking pixels cancellation history and saved exports
         shell: bash
         run: |

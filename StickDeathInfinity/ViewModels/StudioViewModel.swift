@@ -70,6 +70,8 @@ final class StudioViewModel: ObservableObject {
     var canUndo: Bool { activeStrokeID == nil && editor.canUndo }
     var canRedo: Bool { activeStrokeID == nil && editor.canRedo }
     var canPaste: Bool { activeStrokeID == nil && editor.canPaste }
+    var copiedDrawingCount: Int { editor.clipboardElementCount }
+    var copiedDrawingClipboardID: String? { copiedDrawingCount > 0 ? editor.clipboardVersion.uuidString : nil }
     var canDeleteSelected: Bool { !editor.selectedElementIDs.isEmpty }
     var selectedElementIDs: Set<String> { editor.selectedElementIDs }
     var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil }
@@ -166,6 +168,8 @@ final class StudioViewModel: ObservableObject {
         let selectedTool: DrawingTool?
         let document: StudioCommandContext?
         let selectedElementIDs: Set<String>
+        let copiedDrawingCount: Int
+        let copiedDrawingClipboardID: String?
         let selectedAudioClipID: String?
         let displayedFrameID: String?
         let isPlaying: Bool
@@ -181,12 +185,13 @@ final class StudioViewModel: ObservableObject {
     var commandScreenContext: CommandScreenContext {
         guard isEditing else {
             return .init(route: .library, activePanel: .none, selectedTool: nil, document: nil,
-                selectedElementIDs: [], selectedAudioClipID: nil, displayedFrameID: nil,
+                selectedElementIDs: [], copiedDrawingCount: 0, copiedDrawingClipboardID: nil, selectedAudioClipID: nil, displayedFrameID: nil,
                 isPlaying: false, audioPlayheadTime: nil, retainedAudio: [], canApplyCommands: false,
                 isDirty: false, isSaving: false, canUndo: false, canRedo: false)
         }
         return .init(route: .editor, activePanel: activePanel, selectedTool: selectedTool,
             document: StudioCommandContext(document: document), selectedElementIDs: selectedElementIDs,
+            copiedDrawingCount: copiedDrawingCount, copiedDrawingClipboardID: copiedDrawingClipboardID,
             selectedAudioClipID: selectedAudioClip.flatMap { selected in
                 document.audioClips.contains(where: { $0.id == selected.id }) ? selected.id : nil
             }, displayedFrameID: currentFrame.id,
@@ -209,6 +214,7 @@ final class StudioViewModel: ObservableObject {
         try checkCancellation()
         try requireOpenCommandEditor()
         try validateCommandWorkBudget(request)
+        let clipboardVersion = editor.clipboardVersion
         var candidate = editor
         let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
         try preflightRasterDocument(candidate.document)
@@ -219,6 +225,7 @@ final class StudioViewModel: ObservableObject {
         try requireOpenCommandEditor()
         guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
         guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
+        guard editor.clipboardVersion == clipboardVersion else { throw StudioCommandError.staleClipboard }
         editor = candidate
         if receipt.outcome != .unchanged {
             stopPlayback()
@@ -278,7 +285,7 @@ final class StudioViewModel: ObservableObject {
                 strokes += drawing.strokes.count; edits += drawing.strokes.count
                 try addUnits(drawing.strokes.count, weight: 32)
                 for stroke in drawing.strokes { try addUnits(stroke.points.count) }
-            case .duplicateFrame, .duplicateLayer:
+            case .duplicateFrame, .duplicateLayer, .pasteElements:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
                 // rather than undercounting a reference we have not staged yet.
@@ -473,6 +480,18 @@ final class StudioViewModel: ObservableObject {
     func duplicateFrame() { stopPlayback(); command { try $0.duplicateFrame() } }
     func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
+    func pasteClipboard() {
+        guard copiedDrawingCount > 0 else { pasteFrame(); return }
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before pasting drawings."; return
+        }
+        do {
+            let receipt = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.pasteElements(.init(
+                    frame: .id(currentFrame.id), layer: .id(activeLayerID), clipboardID: editor.clipboardVersion.uuidString))])))
+            editor.selectedElementIDs = Set(receipt.createdElementIDs)
+        } catch { message = error.localizedDescription }
+    }
     func deleteFrame(_ id: String) { stopPlayback(); command { try $0.deleteFrame(id) } }
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
     func nextFrame() { if currentFrameIndex + 1 < frames.count { currentFrameIndex += 1 } }
@@ -570,6 +589,20 @@ final class StudioViewModel: ObservableObject {
                     elementIDs: ids.sorted(), axis: axis))])))
             editor.selectedElementIDs = ids
             // The artwork is the success feedback; do not insert a canvas-resizing banner.
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    @discardableResult
+    func copySelected() -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+            message = "Finish the current Studio operation before copying drawings."; return false
+        }
+        guard !selectedElementIDs.isEmpty else { message = "Select drawn artwork before copying."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.copyElements(.init(
+                    frame: .id(currentFrame.id), elementIDs: selectedElementIDs.sorted()))])))
+            pruneManagedImages()
             return true
         } catch { message = error.localizedDescription; return false }
     }

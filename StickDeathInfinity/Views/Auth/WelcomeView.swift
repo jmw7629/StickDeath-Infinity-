@@ -20,7 +20,7 @@ struct WelcomeView: View {
 
     private let features: [(icon: String, title: String, desc: String)] = [
         ("🎨", "Animation Studio", "Full-featured drawing & rigging tools"),
-        ("💬", "Messaging", "Channels, DMs, threads & calls"),
+        ("🤝", "Rooms", "Invited Studio collaboration · coming next"),
         ("🔥", "Challenges", "Weekly battles with the community"),
         ("🧠", "Spatter AI", "Your creative AI assistant"),
     ]

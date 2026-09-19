@@ -315,7 +315,8 @@ struct FloatingToolSettingsPanel: View {
         // ── MOVE ──
         case .move:
             VStack(alignment: .leading, spacing: 8) {
-                Text(vm.currentFrame.rasterAssetID == nil
+                Text(vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
+                     : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
                      : "Move selects drawn artwork. Moving imported image placement is unfinished.")
                     .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
@@ -353,7 +354,8 @@ struct FloatingToolSettingsPanel: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
                     ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Deselect"], id: \.self) { action in
                         Button(action: {
-                            if action.contains("Delete") { vm.deleteSelected() }
+                            if action.contains("Copy") { _ = vm.copySelected() }
+                            else if action.contains("Delete") { vm.deleteSelected() }
                             else if action.contains("Deselect") { vm.clearElementSelection() }
                             else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
                             else if action.contains("Flip V") { _ = vm.reflectSelected(axis: .vertical) }
@@ -374,6 +376,7 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
+                        .disabled(action.contains("Copy") && vm.selectedElementIDs.isEmpty)
                     }
                 }
             }

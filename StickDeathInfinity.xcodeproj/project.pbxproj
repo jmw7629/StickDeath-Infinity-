@@ -7,6 +7,7 @@
 	objects = {
 
 		/* Begin PBXBuildFile section */
+		474C02AD0626C4DCF990DAAD /* View+SD.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2437DC0F788F555FEB2FE99A /* View+SD.swift */; };
 		58E595DEE29F48DC6C574164 /* StudioSounds in Resources */ = {isa = PBXBuildFile; fileRef = ED3882FF92FD75F2AA002547 /* StudioSounds */; };
 		C78F7A10ED9C1C37F9E967F8 /* StudioSoundCatalogue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0969F92AF096667A84958B1A /* StudioSoundCatalogue.swift */; };
 		8B1C8066B49EB1158BD7E095 /* StudioAudioTimelineSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */; };
@@ -22,8 +23,6 @@
 		0441EC321BA02E7A4D08A95F /* SpatterBotModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */; };
 		CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0479BA6F7780A4DEB3C60F2 /* AuthService.swift */; };
 		9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE48B38951EADD41C6E5E75A /* ChallengeService.swift */; };
-		A37266EB99951BE232EB024C /* LiveKitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = E28F2F44C4B2B81A5856CD87 /* LiveKitService.swift */; };
-		E769F44B7879B929E021304C /* MessageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = EADE3D049E1E4301AC533C65 /* MessageService.swift */; };
 		748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41F0B165DD87455546A7D836 /* ProjectService.swift */; };
 		B36809DEAD6E1AC1EA8CC097 /* SocialService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20DBEA40743E8B29BF0DA349 /* SocialService.swift */; };
 		3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */ = {isa = PBXBuildFile; fileRef = C34E427184981FBEC697F07A /* SpatterKnowledgeBase.swift */; };
@@ -36,7 +35,6 @@
 		4377F0896C66D50813A746B0 /* SpatterAIViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D37B6356D409139DC66A1A7A /* SpatterAIViewModel.swift */; };
 		970BF6BD90BFB545BAB11C0E /* StudioViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D38EE64D979F2B1718BC78C /* StudioViewModel.swift */; };
 		3FC9DAA95ED7D8B3640FF323 /* ThemeViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 03D7D03F95D0AE9B7FF502D6 /* ThemeViewModel.swift */; };
-		F2E1D0C9B8A7F6E5D4C3B2A1 /* MessagesViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F6A7B8C9D0E1F2 /* MessagesViewModel.swift */; };
 		0765A524FAB995229497C18C /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D8E36EFD259F132F76C4836 /* LoginView.swift */; };
 		1AC2784C6D044D2BE822A632 /* SignUpView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3D8C98DBB50A7A28A77F83D /* SignUpView.swift */; };
 		B1B23E35563668C6066EA650 /* WelcomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38D0B8AC0FF35E1636C47E9C /* WelcomeView.swift */; };
@@ -47,11 +45,6 @@
 		C61C73D26242A6912A669F18 /* CreatePostView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B32B62FCB6CB5F06F86A8E1C /* CreatePostView.swift */; };
 		BCEE96CF3C9AB75B0D4D5317 /* HomeFeedView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8342660DAF7FA877D246B033 /* HomeFeedView.swift */; };
 		EDCA338612FBE1E8E55D827F /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DCFCADBBE1F676FC5DCACE5 /* MainTabView.swift */; };
-		9B60A65259324FA41F065BE3 /* ChatRoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99E13990B9C48B23D16CB0DB /* ChatRoomView.swift */; };
-		23A4A267BFB74A79131EF459 /* ContactsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3ABF70BAA7653E47BA8EEE6B /* ContactsView.swift */; };
-		96984E18163021CF9C0FC59D /* MessagesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92961875067AEC59496BA6B9 /* MessagesView.swift */; };
-		E50CCE2727CA896C46841DEC /* VideoCallView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E6B0FF9D0B115E695260908 /* VideoCallView.swift */; };
-		EFFFF9325B8FD19AE567A993 /* WatchPartyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA39AC26563199D7B22AE4A4 /* WatchPartyView.swift */; };
 		17A82E6CDF75E4E8E00CF34B /* ChoosePlanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2438E02A52ED77EFB1FB344B /* ChoosePlanView.swift */; };
 		6506D249ECBA5B0DACCB3B8B /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 933A78E959C04A8D568E545A /* OnboardingView.swift */; };
 		22EF597BA2D981E93BA52A6B /* EditProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E94727A422980C826DCA0587 /* EditProfileView.swift */; };
@@ -74,17 +67,13 @@
 		E1EBF30959AF698AD53EDE22 /* spatter_core_20.json in Resources */ = {isa = PBXBuildFile; fileRef = FBF0C5BF5FFCFD537F4AF522 /* spatter_core_20.json */; };
 		B08F79CCEDA61C3317EA4D09 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A58386C9AEBE847DB9B6FA95 /* Assets.xcassets */; };
 		26DC1157C43122DB89395CAB /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 942276A7C2AD5F02FCFE142E /* Supabase */; };
-		990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */ = {isa = PBXBuildFile; productRef = 0B86BD26C0F4E5851CCB9969 /* LiveKit */; };
 		6D3F591B404BDCD5F2216548 /* SpatterBrainLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19231393DA2ECA79F7A76B60 /* SpatterBrainLoader.swift */; };
 		8330063EC77BDD2C502C77F5 /* AdminDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58C1679245D538CC044751D7 /* AdminDashboardView.swift */; };
 		6260DA8DF449BE20C32FB9BE /* ChallengeDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E64EF844B48F9271A11F9765 /* ChallengeDetailView.swift */; };
 		07EFDADF3CEB9020D448D504 /* CollabRoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9CABAE2448C228E09C52179C /* CollabRoomView.swift */; };
-		90D7E3FBF45FAE767527592A /* CreatorRoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2366E4822178184406AA3D4B /* CreatorRoomView.swift */; };
 		B94FD5E096DBD0F8D41D758F /* LeaderboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C0D08E83E94DBD4E2B0D72A /* LeaderboardView.swift */; };
 		79F3C4DD8ACBDE4106EAEB78 /* WarRoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2DA6516F6657DAD373396C /* WarRoomView.swift */; };
-		0A8F0F8EDD8FBE1BB0DF266A /* WatchTogetherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBFA0DC9DB6DCE2A3459B51F /* WatchTogetherView.swift */; };
 		219D7440135A12A23546886A /* CalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4656A17FEDE038AEB1110AD8 /* CalendarView.swift */; };
-		D6DD09C6808B553081A29C39 /* CallsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4488DE848BD5B2E8592E9E06 /* CallsView.swift */; };
 		3F241526A6B3032C6AB1B106 /* SubscriptionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A532F4DD804EF3BF476F9BE /* SubscriptionView.swift */; };
 		7A11BF142A81C5884600C025 /* SoundLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B31A841BDFE99A171865FA9 /* SoundLibrary.swift */; };
 		09C972AFC1287A7D68017468 /* StickerLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7657D5FD74DD0EE029DCDE /* StickerLibrary.swift */; };
@@ -156,6 +145,7 @@
 		/* End PBXTargetDependency section */
 
 		/* Begin PBXFileReference section */
+		2437DC0F788F555FEB2FE99A /* View+SD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "View+SD.swift"; sourceTree = "<group>"; };
 		ED3882FF92FD75F2AA002547 /* StudioSounds */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "StickDeathInfinity/Resources/StudioSounds"; sourceTree = SOURCE_ROOT; };
 		0969F92AF096667A84958B1A /* StudioSoundCatalogue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSoundCatalogue.swift"; sourceTree = SOURCE_ROOT; };
 		08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioTimelineSession.swift"; sourceTree = SOURCE_ROOT; };
@@ -304,7 +294,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				26DC1157C43122DB89395CAB /* Supabase in Frameworks */,
-				990A23F2F31BFCE9428F1418 /* LiveKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -391,6 +380,7 @@
 			children = (
 				C22C180D3484DBB4FE4B35E3 /* Color+SD.swift */,
 				DBD18CEA0067C48D3ABBC674 /* Font+SD.swift */,
+				2437DC0F788F555FEB2FE99A /* View+SD.swift */,
 			);
 			path = Extensions;
 			sourceTree = "<group>";
@@ -778,7 +768,6 @@
 			name = StickDeathInfinity;
 			packageProductDependencies = (
 				942276A7C2AD5F02FCFE142E /* Supabase */,
-				0B86BD26C0F4E5851CCB9969 /* LiveKit */,
 			);
 			productName = StickDeathInfinity;
 			productReference = C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */;
@@ -823,7 +812,6 @@
 			mainGroup = 0B1447498EC4F1F69A2A1BCC;
 			packageReferences = (
 				AD8BA8041B6CA7947F5006AE /* supabase-swift */,
-				A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */,
 			);
 			productRefGroup = F35AEC2E38F2F9ACFEFB2B5F /* Products */;
 			projectDirPath = "";
@@ -907,12 +895,9 @@
 				8330063EC77BDD2C502C77F5 /* AdminDashboardView.swift in Sources */,
 				6260DA8DF449BE20C32FB9BE /* ChallengeDetailView.swift in Sources */,
 				07EFDADF3CEB9020D448D504 /* CollabRoomView.swift in Sources */,
-				90D7E3FBF45FAE767527592A /* CreatorRoomView.swift in Sources */,
 				B94FD5E096DBD0F8D41D758F /* LeaderboardView.swift in Sources */,
 				79F3C4DD8ACBDE4106EAEB78 /* WarRoomView.swift in Sources */,
-				0A8F0F8EDD8FBE1BB0DF266A /* WatchTogetherView.swift in Sources */,
 				219D7440135A12A23546886A /* CalendarView.swift in Sources */,
-				D6DD09C6808B553081A29C39 /* CallsView.swift in Sources */,
 				3F241526A6B3032C6AB1B106 /* SubscriptionView.swift in Sources */,
 				7A11BF142A81C5884600C025 /* SoundLibrary.swift in Sources */,
 				09C972AFC1287A7D68017468 /* StickerLibrary.swift in Sources */,
@@ -935,12 +920,11 @@
 				170FE91D743943923A25ECBF /* StickDeathInfinityApp.swift in Sources */,
 				2521183A1B876C324220E6BB /* Color+SD.swift in Sources */,
 				3D7A47976B9D00AFE3401083 /* Font+SD.swift in Sources */,
+				474C02AD0626C4DCF990DAAD /* View+SD.swift in Sources */,
 				8E13CD8B6EE7E40F82501E78 /* Models.swift in Sources */,
 				0441EC321BA02E7A4D08A95F /* SpatterBotModels.swift in Sources */,
 				CC8F8BF92ACF1F89EE1627F9 /* AuthService.swift in Sources */,
 				9833E4086A52A2A5B405C4E7 /* ChallengeService.swift in Sources */,
-				A37266EB99951BE232EB024C /* LiveKitService.swift in Sources */,
-				E769F44B7879B929E021304C /* MessageService.swift in Sources */,
 				748453AED889D7E4CD66A74D /* ProjectService.swift in Sources */,
 				B36809DEAD6E1AC1EA8CC097 /* SocialService.swift in Sources */,
 				3A794D3755DF28CDDA6127E2 /* SpatterKnowledgeBase.swift in Sources */,
@@ -953,7 +937,6 @@
 				4377F0896C66D50813A746B0 /* SpatterAIViewModel.swift in Sources */,
 				970BF6BD90BFB545BAB11C0E /* StudioViewModel.swift in Sources */,
 				3FC9DAA95ED7D8B3640FF323 /* ThemeViewModel.swift in Sources */,
-				F2E1D0C9B8A7F6E5D4C3B2A1 /* MessagesViewModel.swift in Sources */,
 				0765A524FAB995229497C18C /* LoginView.swift in Sources */,
 				1AC2784C6D044D2BE822A632 /* SignUpView.swift in Sources */,
 				B1B23E35563668C6066EA650 /* WelcomeView.swift in Sources */,
@@ -964,11 +947,6 @@
 				C61C73D26242A6912A669F18 /* CreatePostView.swift in Sources */,
 				BCEE96CF3C9AB75B0D4D5317 /* HomeFeedView.swift in Sources */,
 				EDCA338612FBE1E8E55D827F /* MainTabView.swift in Sources */,
-				9B60A65259324FA41F065BE3 /* ChatRoomView.swift in Sources */,
-				23A4A267BFB74A79131EF459 /* ContactsView.swift in Sources */,
-				96984E18163021CF9C0FC59D /* MessagesView.swift in Sources */,
-				E50CCE2727CA896C46841DEC /* VideoCallView.swift in Sources */,
-				EFFFF9325B8FD19AE567A993 /* WatchPartyView.swift in Sources */,
 				17A82E6CDF75E4E8E00CF34B /* ChoosePlanView.swift in Sources */,
 				6506D249ECBA5B0DACCB3B8B /* OnboardingView.swift in Sources */,
 				22EF597BA2D981E93BA52A6B /* EditProfileView.swift in Sources */,
@@ -1235,14 +1213,6 @@
 				minimumVersion = 2.0.0;
 			};
 		};
-		A4CA4C66E9E948D381ACDF42 /* client-sdk-swift */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/livekit/client-sdk-swift.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.0.0;
-			};
-		};
 		/* End XCRemoteSwiftPackageReference section */
 
 		/* Begin XCSwiftPackageProductDependency section */
@@ -1250,11 +1220,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AD8BA8041B6CA7947F5006AE /* Supabase */;
 			productName = Supabase;
-		};
-		0B86BD26C0F4E5851CCB9969 /* LiveKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A4CA4C66E9E948D381ACDF42 /* LiveKit */;
-			productName = LiveKit;
 		};
 		/* End XCSwiftPackageProductDependency section */
 	};

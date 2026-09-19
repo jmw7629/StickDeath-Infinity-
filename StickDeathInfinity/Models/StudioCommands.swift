@@ -5,7 +5,7 @@ import Foundation
 enum StudioCommandError: LocalizedError, Equatable {
     case malformed, unsupportedCommand, unsupportedTool, unsupportedCapability
     case wrongProject, staleRevision, limitExceeded, invalidReference, invalidGeometry
-    case invalidSettings, missingSelection, cannotDeleteLastFrame, cannotMove, noHistory
+    case invalidSettings, missingSelection, cannotDeleteLastFrame, cannotMove, noHistory, staleClipboard
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +23,7 @@ enum StudioCommandError: LocalizedError, Equatable {
         case .cannotDeleteLastFrame: return "The last frame cannot be deleted. Nothing changed."
         case .cannotMove: return "The requested item cannot move in that direction. Nothing changed."
         case .noHistory: return "There is no matching undo or redo history. Nothing changed."
+        case .staleClipboard: return "The copied artwork changed. Refresh the clipboard context before pasting. Nothing changed."
         }
     }
 }
@@ -101,12 +102,14 @@ enum StudioCommand: Codable {
     struct TranslateElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let dx: Double; let dy: Double }
     struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
     struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
+    struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
+    case copyElements(DeleteElements), pasteElements(PasteElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
@@ -126,6 +129,8 @@ enum StudioCommand: Codable {
         case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
         case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
         case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
+        case "copyElements": self = .copyElements(try container.decode(DeleteElements.self, forKey: key))
+        case "pasteElements": self = .pasteElements(try container.decode(PasteElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
@@ -148,6 +153,8 @@ enum StudioCommand: Codable {
         case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
         case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
         case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
+        case .copyElements(let value): try container.encode(value, forKey: StudioWireKey("copyElements"))
+        case .pasteElements(let value): try container.encode(value, forKey: StudioWireKey("pasteElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
         }
     }
@@ -198,6 +205,8 @@ struct StudioCommandReceipt {
     let deletedLayerIDs: [String]
     let createdElementIDs: [String]
     let deletedElementIDs: [String]
+    let clipboardElementCount: Int
+    let clipboardID: String?
 }
 
 /// Actual editable context only. Audio assets and export are unavailable to this
@@ -275,6 +284,7 @@ enum StudioCommandExecutor {
             "translateElements": ["frame", "elementIDs", "dx", "dy"],
             "orderElements": ["frame", "elementIDs", "direction"],
             "reflectElements": ["frame", "elementIDs", "axis"],
+            "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
         ]
         var inputPoints = 0, strokes = 0
@@ -317,6 +327,7 @@ enum StudioCommandExecutor {
                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
         try checkCancellation()
         let original = editor.document
+        let originalClipboardVersion = editor.clipboardVersion
         try checkPreconditions(request, document: original)
         var candidate = editor
         var created: [String: StudioCommandReceipt.Identity] = [:]
@@ -334,8 +345,10 @@ enum StudioCommandExecutor {
             var result = candidate.document
             result.revision = original.revision; result.modifiedAt = original.modifiedAt
             try result.validate()
+            let stagedClipboard = candidate
             candidate = editor
             try candidate.change { $0 = result }
+            try candidate.adoptClipboard(from: stagedClipboard)
             if candidate.document != original { candidate.selectedElementIDs.removeAll() }
             outcome = candidate.document == original ? .unchanged : .applied
         case .undo:
@@ -348,7 +361,10 @@ enum StudioCommandExecutor {
         try candidate.document.validate()
         try checkCancellation()
         try checkPreconditions(request, document: editor.document)
-        let receipt = receipt(request, original: original, final: candidate.document, created: created, outcome: outcome)
+        guard editor.clipboardVersion == originalClipboardVersion else { throw StudioCommandError.staleClipboard }
+        let receipt = receipt(request, original: original, final: candidate.document, created: created, outcome: outcome,
+                              clipboardElementCount: candidate.clipboardElementCount,
+                              clipboardID: candidate.clipboardElementCount > 0 ? candidate.clipboardVersion.uuidString : nil)
         editor = candidate
         return receipt
     }
@@ -489,6 +505,17 @@ enum StudioCommandExecutor {
             guard document.layers.indices.contains(index + value.direction.offset) else { throw StudioCommandError.cannotMove }
             try editor.moveLayer(id, offset: value.direction.offset)
         case .selectLayer(let reference): editor.selectLayer(try layer(reference))
+        case .copyElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.copyElements(frameID: id, ids: Set(value.elementIDs), checkCancellation: checkCancellation)
+        case .pasteElements(let value):
+            let frameID = try frame(value.frame), layerID = try layer(value.layer)
+            guard value.clipboardID == editor.clipboardVersion.uuidString else { throw StudioCommandError.staleClipboard }
+            guard let elements = editor.clipboardElements else { throw StudioCommandError.invalidReference }
+            try budget.generate(elements)
+            try editor.pasteElements(frameID: frameID, layerID: layerID, checkCancellation: checkCancellation)
         case .deleteElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
@@ -522,7 +549,8 @@ enum StudioCommandExecutor {
         }
     }
     private static func receipt(_ request: StudioCommandRequest, original: StudioDocument, final: StudioDocument,
-                                created: [String: StudioCommandReceipt.Identity], outcome: StudioCommandReceipt.Outcome) -> StudioCommandReceipt {
+                                created: [String: StudioCommandReceipt.Identity], outcome: StudioCommandReceipt.Outcome,
+                                clipboardElementCount: Int, clipboardID: String?) -> StudioCommandReceipt {
         func added(_ old: [String], _ new: [String]) -> [String] { let existing = Set(old); return new.filter { !existing.contains($0) } }
         let oldFrames = original.frames.map(\.id), newFrames = final.frames.map(\.id)
         let oldLayers = original.layers.map(\.id), newLayers = final.layers.map(\.id)
@@ -534,6 +562,7 @@ enum StudioCommandExecutor {
             revision: final.revision, outcome: outcome, created: survivingResults,
             createdFrameIDs: added(oldFrames, newFrames), deletedFrameIDs: added(newFrames, oldFrames),
             createdLayerIDs: added(oldLayers, newLayers), deletedLayerIDs: added(newLayers, oldLayers),
-            createdElementIDs: added(oldElements, newElements), deletedElementIDs: added(newElements, oldElements))
+            createdElementIDs: added(oldElements, newElements), deletedElementIDs: added(newElements, oldElements),
+            clipboardElementCount: clipboardElementCount, clipboardID: clipboardID)
     }
 }
