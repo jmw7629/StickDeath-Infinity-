@@ -275,6 +275,92 @@ private struct Failure: Error { let message: String }
         try require(!reopened.transformSelected() && reopened.document==before,"Transform during unfinished touch")
         reopened.finishStrokeInput(id:touch)
         pass("every cancellation checkpoint strict typed commands stale revisions atomic batches and live-input guards")
+        let handleVM = StudioViewModel(storage: store)
+        let handleCreated = await handleVM.createProject(name: "Direct canvas handles", width:128,height:128,fps:12)
+        try require(handleCreated,"Handle project creation")
+        var handleShape = a; handleShape.layerID = handleVM.activeLayerID
+        try require(handleVM.commitElement(handleShape),"Handle source artwork")
+        handleVM.selectedTool = .move; _ = handleVM.selectElement(at:CGPoint(x:64,y:64))
+        let savedBeforeHandle = await handleVM.save(); try require(savedBeforeHandle,"Handle source saved")
+        guard let captured = handleVM.beginSelectionHandle(),
+              let layout = StudioSelectionHandleGeometry(bounds:captured.bounds,documentSize:.init(width:128,height:128),viewport:.init(width:128,height:128),zoom:1),
+              let corner = layout.handles.first(where:{$0.kind == .bottomRight}) else { throw Failure(message:"Actual handle capture/layout missing") }
+        let handleBefore = handleVM.document, handlePixels = try render(handleBefore)
+        let handleEnd = CGPoint(x:captured.bounds.midX+2*(corner.point.x-captured.bounds.midX),
+                               y:captured.bounds.midY+2*(corner.point.y-captured.bounds.midY))
+        let resize = try layout.values(kind:.bottomRight,start:corner.point,current:handleEnd)
+        try require(abs(resize.scale-2)<0.00001 && resize.rotation==0 && layout.hit(corner.point) == .bottomRight,"Resize handle produced wrong geometry")
+        let resizePreview = try handleVM.selectionHandlePreview(captured,values:resize)
+        var handlePreviewDocument = handleBefore; handlePreviewDocument.frames[0] = resizePreview
+        let previewPixels = try render(handlePreviewDocument)
+        try require(handleVM.document==handleBefore && !handleVM.isDirty && previewPixels != handlePixels,
+                    "Handle preview changed saved document or failed to draw real scaled artwork")
+        try require(handleVM.finishSelectionHandle(captured,values:resize) && handleVM.document.revision==handleBefore.revision+1,
+                    "Handle gesture was not one transaction")
+        try require(try render(handleVM.document)==previewPixels && handleVM.currentFrame.elements[0].id==handleShape.id,
+                    "Handle commit differs from actual preview or replaced artwork identity")
+        handleVM.undo(); try require(try render(handleVM.document)==handlePixels,"One Undo did not undo resize gesture")
+        handleVM.redo(); try require(try render(handleVM.document)==previewPixels,"Redo differs from resize preview")
+        pass("actual resize handle preview preserves clean document and final pixels commit as one undoable edit")
+
+        _ = handleVM.selectElement(at:CGPoint(x:64,y:64))
+        guard let rotatedCapture = handleVM.beginSelectionHandle(),
+              let rotationLayout = StudioSelectionHandleGeometry(bounds:rotatedCapture.bounds,documentSize:.init(width:128,height:128),viewport:.init(width:128,height:128),zoom:1),
+              let knob = rotationLayout.handles.first(where:{$0.kind == .rotate}) else { throw Failure(message:"Rotation handle missing") }
+        let center = CGPoint(x:rotatedCapture.bounds.midX,y:rotatedCapture.bounds.midY)
+        let rotatedPoint = CGPoint(x:center.x-(knob.point.y-center.y),y:center.y+(knob.point.x-center.x))
+        let rotate = try rotationLayout.values(kind:.rotate,start:knob.point,current:rotatedPoint)
+        try require(abs(rotate.rotation-90)<0.00001 && rotate.scale==1,"Rotation did not use actual canvas center")
+        let rotatedPreview = try handleVM.selectionHandlePreview(rotatedCapture,values:rotate)
+        try require(handleVM.finishSelectionHandle(rotatedCapture,values:rotate),"Rotation handle commit")
+        try require(handleVM.currentFrame==rotatedPreview,"Rotation preview and commit geometry differ")
+        let finalHandlePixels = try render(handleVM.document)
+        try require(finalHandlePixels != previewPixels,"Rotation handle failed to change real pixels")
+        let handleSaved = await handleVM.save(); try require(handleSaved,"Handle save")
+        let handleID = handleVM.document.id, handleReload = StudioViewModel(storage:store)
+        await handleReload.loadProjects()
+        guard let handleRecord = handleReload.savedProjects.first(where:{$0.id==handleID}) else { throw Failure(message:"Saved handle project absent") }
+        let handleOpened = await handleReload.openProject(handleRecord)
+        try require(handleOpened && handleReload.document==handleVM.document && render(handleReload.document)==finalHandlePixels,
+                    "Cold reopen lost handle-edited geometry or pixels")
+        pass("rotation handles use canonical preview and real cold storage preserves rotated pixels")
+
+        for zoom in [0.25,1.0,2.0,5.0] {
+            guard let scaled = StudioSelectionHandleGeometry(bounds:captured.bounds,documentSize:.init(width:128,height:128),viewport:.init(width:256,height:512),zoom:zoom),
+                  let h=scaled.handles.first(where:{$0.kind == .bottomRight}) else { throw Failure(message:"Zoomed layout unavailable") }
+            try require(abs(scaled.hitRadius*zoom-22)<0.00001 && scaled.hit(h.point) == .bottomRight,"Zoom changed physical hit target")
+            let c=CGPoint(x:captured.bounds.midX*2,y:captured.bounds.midY*4)
+            let end=CGPoint(x:c.x+1.5*(h.point.x-c.x),y:c.y+1.5*(h.point.y-c.y))
+            let v=try scaled.values(kind:.bottomRight,start:h.point,current:end)
+            try require(abs(v.scale-1.5)<0.00001,"Zoom or unequal viewport scales changed document geometry")
+        }
+        try require(StudioSelectionHandleGeometry(bounds:.null,documentSize:.init(width:128,height:128),viewport:.init(width:128,height:128),zoom:1)==nil,"Invalid layout accepted")
+        try require(layout.hit(CGPoint(x:Double.nan,y:0))==nil,"Nonfinite handle hit accepted")
+        try rejects {_ = try layout.values(kind:.rotate,start:corner.point,current:CGPoint(x:Double.infinity,y:0))}
+        let limited = try layout.values(kind:.bottomRight,start:corner.point,current:CGPoint(x:99999,y:99999))
+        try require(limited.scale==4,"Touch scale upper bound not enforced")
+        pass("zoomed non-square viewport handles preserve document scale and bounded physical hit geometry")
+
+        handleReload.selectedTool = .move; _ = handleReload.selectElement(at:CGPoint(x:64,y:64))
+        guard let staleHandle = handleReload.beginSelectionHandle() else { throw Failure(message:"Stale handle setup") }
+        let beforeCancel = handleReload.document
+        _ = try handleReload.selectionHandlePreview(staleHandle,values:.init(scale:1.1))
+        try require(handleReload.document==beforeCancel,"Cancelled preview changed project")
+        handleReload.addFrame(); let afterIntervening = handleReload.document
+        try rejects {_ = try handleReload.selectionHandlePreview(staleHandle,values:.init(scale:1.1))}
+        try require(!handleReload.finishSelectionHandle(staleHandle,values:.init(scale:1.1)) && handleReload.document==afterIntervening,
+                    "Stale gesture overwrote later edit")
+        handleVM.selectedTool = .move; _ = handleVM.selectElement(at:CGPoint(x:64,y:64))
+        let draftID = UUID().uuidString; try require(handleVM.beginStrokeInput(id:draftID),"Input guard setup")
+        try require(handleVM.beginSelectionHandle()==nil,"Handle accepted unfinished drawing")
+        handleVM.finishStrokeInput(id:draftID)
+        for mode in [LayerLockMode.position,.full] {
+            handleVM.setLayerLockMode(handleVM.activeLayerID,mode:mode)
+            try require(handleVM.beginSelectionHandle()==nil,"Locked layer offered transform handles")
+            handleVM.setLayerLockMode(handleVM.activeLayerID,mode:.free)
+        }
+        handleVM.selectionMode = .subtract; try require(handleVM.beginSelectionHandle()==nil,"Subtract selection offered transform handles")
+        pass("cancelled stale locked and interrupted handle gestures never overwrite committed content")
         print("StudioSelectionTransform: \(passed) groups passed")
     }
 }

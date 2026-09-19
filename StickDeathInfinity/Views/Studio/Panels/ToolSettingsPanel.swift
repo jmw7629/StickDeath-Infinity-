@@ -414,7 +414,7 @@ struct FloatingToolSettingsPanel: View {
                     }
                     .accessibilityIdentifier("studio.selection.transform-reset")
                 }.font(.specialElite(10))
-                Text("Scale and rotate selected drawings or text together. Apply makes one undo step; Reset only clears these controls.")
+                Text("Drag the canvas corner handles to resize or the red handle to rotate. These sliders offer the same group transform. Apply makes one undo step; Reset only clears these controls.")
                     .font(.specialElite(9)).foregroundColor(.white.opacity(0.55))
             }
             

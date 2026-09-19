@@ -768,6 +768,63 @@ final class StudioViewModel: ObservableObject {
         } catch { message=error.localizedDescription;return false }
     }
     func resetSelectionTransform() { selectionScalePercent=100;selectionRotationDegrees=0 }
+    struct SelectionHandleCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let ids: Set<String>
+        let mode: SelectionMode
+        let bounds: CGRect
+    }
+    func beginSelectionHandle() -> SelectionHandleCapture? {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move, selectionMode != .subtract,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
+        var bounds = CGRect.null
+        let elements = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+        guard elements.count == selectedElementIDs.count else { return nil }
+        for element in elements {
+            guard element.tool != .eraser,
+                  layers.contains(where: { $0.id == element.layerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" }),
+                  let rect = try? StudioSelectionRegion.drawingBounds(element), !rect.isNull,
+                  rect.width > 0, rect.height > 0,
+                  [rect.minX,rect.minY,rect.maxX,rect.maxY].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else { return nil }
+            bounds = bounds.union(rect)
+        }
+        return SelectionHandleCapture(projectID: document.id, revision: document.revision,
+            frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds)
+    }
+    private func selectionHandleRequest(_ capture: SelectionHandleCapture,
+                                        values: StudioSelectionHandleGeometry.Values) throws -> StudioCommandRequest {
+        guard beginSelectionHandle() == capture else { throw StudioCommandError.staleRevision }
+        return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
+            action: .apply([.transformElements(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
+                scaleX: values.scale, scaleY: values.scale, rotation: values.rotation))]))
+    }
+    /// Uses the same validated command as the final edit, on a disposable editor.
+    /// Preview never mutates document history, selection, autosave or source assets.
+    func selectionHandlePreview(_ capture: SelectionHandleCapture,
+                                values: StudioSelectionHandleGeometry.Values) throws -> AnimationFrame {
+        let request = try selectionHandleRequest(capture, values: values)
+        try validateCommandWorkBudget(request)
+        var candidate = editor
+        _ = try StudioCommandExecutor.execute(request, editor: &candidate)
+        guard let frame = candidate.document.frames.first(where: { $0.id == capture.frameID }) else {
+            throw StudioCommandError.staleRevision
+        }
+        return frame
+    }
+    @discardableResult
+    func finishSelectionHandle(_ capture: SelectionHandleCapture,
+                               values: StudioSelectionHandleGeometry.Values) -> Bool {
+        do {
+            let request = try selectionHandleRequest(capture, values: values)
+            _ = try applyStudioCommands(request)
+            editor.selectedElementIDs = capture.ids
+            resetSelectionTransform()
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand
     @Published var areaSelectionSmoothing: Double = 3
     struct AreaSelectionCapture: Equatable {
@@ -1318,6 +1375,61 @@ struct StudioSelectionRegion {
         if element.reflection?.vertical == true { bounds.origin.y = -bounds.maxY }
         let placed=bounds.offsetBy(dx: element.translation?.x ?? 0, dy: element.translation?.y ?? 0)
         return element.transform?.bounds(placed) ?? placed
+    }
+}
+
+/// Editor-only handle geometry. Coordinates enter in the unscaled canvas view;
+/// zoom affects touch radius and decoration size, never document transforms.
+struct StudioSelectionHandleGeometry {
+    enum Kind: String, CaseIterable { case topLeft, topRight, bottomLeft, bottomRight, rotate }
+    struct Handle { let kind: Kind; let point: CGPoint }
+    struct Values: Equatable { var scale: Double = 1; var rotation: Double = 0 }
+    let bounds: CGRect
+    let documentSize: CGSize
+    let viewport: CGSize
+    let zoom: Double
+    var hitRadius: Double { 22 / zoom }
+    var visualRadius: Double { 6 / zoom }
+    init?(bounds: CGRect, documentSize: CGSize, viewport: CGSize, zoom: Double) {
+        guard !bounds.isNull, bounds.width > 0, bounds.height > 0,
+              [bounds.minX,bounds.minY,bounds.maxX,bounds.maxY,documentSize.width,documentSize.height,viewport.width,viewport.height,zoom].allSatisfy(\.isFinite),
+              documentSize.width > 0, documentSize.height > 0, zoom >= 0.25, zoom <= 5,
+              viewport.width * zoom >= 44, viewport.height * zoom >= 44 else { return nil }
+        self.bounds = bounds; self.documentSize = documentSize; self.viewport = viewport; self.zoom = zoom
+    }
+    var handles: [Handle] {
+        let sx = viewport.width / documentSize.width, sy = viewport.height / documentSize.height
+        let margin = visualRadius + 2 / zoom
+        func x(_ v: Double) -> Double { min(viewport.width-margin,max(margin,v)) }
+        func y(_ v: Double) -> Double { min(viewport.height-margin,max(margin,v)) }
+        let halfWidth = max(bounds.width*sx/2,hitRadius), halfHeight = max(bounds.height*sy/2,hitRadius)
+        let center = CGPoint(x: bounds.midX*sx, y: bounds.midY*sy)
+        let left=x(center.x-halfWidth), right=x(center.x+halfWidth)
+        let top=y(center.y-halfHeight), bottom=y(center.y+halfHeight)
+        let rotationY = top-30/zoom >= margin ? top-30/zoom : min(viewport.height-margin,bottom+30/zoom)
+        return [.init(kind:.topLeft,point:.init(x:left,y:top)), .init(kind:.topRight,point:.init(x:right,y:top)),
+                .init(kind:.bottomLeft,point:.init(x:left,y:bottom)), .init(kind:.bottomRight,point:.init(x:right,y:bottom)),
+                .init(kind:.rotate,point:.init(x:x(center.x),y:rotationY))]
+    }
+    func hit(_ point: CGPoint) -> Kind? {
+        guard point.x.isFinite, point.y.isFinite else { return nil }
+        return handles.filter { hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius }
+            .min { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }?.kind
+    }
+    func values(kind: Kind, start: CGPoint, current: CGPoint) throws -> Values {
+        guard [start.x,start.y,current.x,current.y].allSatisfy(\.isFinite) else { throw StudioElementTransform.Failure.settings }
+        let sx = documentSize.width / viewport.width, sy = documentSize.height / viewport.height
+        let a = CGPoint(x:start.x*sx-bounds.midX,y:start.y*sy-bounds.midY)
+        let b = CGPoint(x:current.x*sx-bounds.midX,y:current.y*sy-bounds.midY)
+        let length = a.x*a.x+a.y*a.y
+        guard length > 0.000001 else { throw StudioElementTransform.Failure.settings }
+        if kind == .rotate {
+            guard b.x*b.x+b.y*b.y > 0.000001 else { throw StudioElementTransform.Failure.settings }
+            var degrees = (atan2(b.y,b.x)-atan2(a.y,a.x))*180 / .pi
+            if degrees > 180 { degrees -= 360 }; if degrees < -180 { degrees += 360 }
+            return Values(rotation: degrees)
+        }
+        return Values(scale: min(4,max(0.25,(a.x*b.x+a.y*b.y)/length)))
     }
 }
 

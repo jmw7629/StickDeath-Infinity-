@@ -47,7 +47,7 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
   native-ios-build:
     runs-on: macos-15
-    # The bounded 30-journey UI suite allows 45 minutes after production/build checks.
+    # The bounded 32-journey UI suite allows 45 minutes after production/build checks.
     # Based on preserved run 35462554349 plus the prior remaining-test timings.
     # Keep 180-second journey limits; never retry or suppress a failed assertion.
     # Checks/builds precede the suite; reserve bounded time to preserve original
