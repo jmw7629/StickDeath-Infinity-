@@ -265,6 +265,85 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testToolPreferencesSwitchDrawAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        let size = app.sliders["studio.setting.size"]
+        let opacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(size.waitForExistence(timeout: 5) && size.isHittable && opacity.isHittable)
+        size.adjust(toNormalizedSliderPosition: 0.28)
+        opacity.adjust(toNormalizedSliderPosition: 0.8)
+        let pencilSize = try XCTUnwrap(size.value as? String)
+        let pencilOpacity = try XCTUnwrap(opacity.value as? String)
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Tool preferences changed document history")
+
+        try pickerRailControl("studio.tool.pen", app: app, forward: true).tap()
+        XCTAssertTrue(size.waitForExistence(timeout: 5) && size.isHittable)
+        size.adjust(toNormalizedSliderPosition: 0.75)
+        opacity.adjust(toNormalizedSliderPosition: 0.35)
+        let penSize = try XCTUnwrap(size.value as? String)
+        XCTAssertNotEqual(penSize, pencilSize)
+        app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        XCTAssertEqual(size.value as? String, pencilSize, "Switching tools lost pencil size")
+        XCTAssertEqual(opacity.value as? String, pencilOpacity, "Switching tools lost pencil opacity")
+        capture(app, name: "independent-pencil-settings-restored")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.55)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.55)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let artwork = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(artwork).count, 30, "Restored settings did not draw real artwork")
+        app.buttons["studio.back"].tap(); app.terminate()
+
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
+                                "Preference cold reopen changed actual artwork")
+        try pickerRailControl("studio.tool.pencil", app: reopened, forward: false).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, pencilSize,
+                       "Pencil preferences did not survive actual app termination")
+        XCTAssertEqual(reopened.sliders["studio.setting.opacity"].value as? String, pencilOpacity)
+        capture(reopened, name: "independent-tool-settings-cold-reopened")
+        try resetToolPreferencesInPopup(reopened)
+        XCTAssertNotEqual(try XCTUnwrap(reopened.sliders["studio.setting.size"].value as? String), pencilSize)
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.pen", app: reopened, forward: true).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, penSize,
+                       "Resetting pencil also reset pen")
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
+                                "Resetting tool preferences rewrote existing artwork")
+        XCTAssertFalse(reopened.buttons["studio.undo"].isEnabled, "Preference reset inserted document history")
+    }
+
+    @MainActor private func resetToolPreferencesInPopup(_ app: XCUIApplication) throws {
+        let reset = app.buttons["studio.tool-settings.reset"]
+        for attempt in 0...4 {
+            if reset.exists && reset.isHittable { reset.tap(); return }
+            guard attempt < 4 else { break }
+            let scroll = app.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
+            XCTAssertTrue(scroll.exists, "Reset this tool has no reachable popup scroll container")
+            scroll.swipeUp()
+        }
+        captureHierarchy(app, name: "tool-preference-reset-unreachable")
+        XCTFail("Reset this tool is unreachable")
+        throw NSError(domain: "NativeToolPreferences", code: 1)
+    }
+
+    @MainActor
     func testRectangleSelectionDeleteUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

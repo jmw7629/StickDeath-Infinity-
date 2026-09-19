@@ -105,6 +105,23 @@ struct FloatingToolSettingsPanel: View {
     
     @ViewBuilder
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolSpecificSettings(def, compactHeight: compactHeight)
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(def.tool) {
+                Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.65))
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.tool-settings.reset")
+            }
+            if let warning = vm.toolPreferencesWarning {
+                Text(warning).font(.system(size: 9)).foregroundColor(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func toolSpecificSettings(_ def: ToolDef, compactHeight: Bool) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:

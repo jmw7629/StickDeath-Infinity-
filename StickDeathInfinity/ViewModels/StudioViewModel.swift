@@ -1,8 +1,11 @@
 import SwiftUI
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @MainActor
 final class StudioViewModel: ObservableObject {
-    static let shared = StudioViewModel()
+    static let shared = StudioViewModel(toolDefaults: .standard)
     @Published private var editor: StudioDocumentEditor
     @Published private(set) var savedProjects: [AnimationMetadata] = []
     @Published var isEditing = false
@@ -77,20 +80,27 @@ final class StudioViewModel: ObservableObject {
     var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil }
     var saveTimeAgo: String { activeStrokeID != nil ? "Drawing…" : isSaving ? "Saving…" : isDirty ? "Unsaved" : "Saved" }
 
-    @Published var selectedTool: DrawingTool = .brush
+    private let toolDefaults: UserDefaults?
+    static let toolPreferencesKey = "studio.drawing-tool-preferences.v1"
+    private var toolPreferences = StudioDrawingToolPreferences()
+    private var restoringToolPreferences = false
+    @Published private(set) var toolPreferencesWarning: String?
+    @Published var selectedTool: DrawingTool = .brush {
+        didSet { if selectedTool != oldValue { restoreDrawingToolPreferences() } }
+    }
     @Published var strokeColor: Color = .red
-    @Published var strokeWidth: Double = 3
-    @Published var strokeOpacity: Double = 1
-    @Published var shapeFilled = false
-    @Published var shapeCornerRadius: Double = 0
+    @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
+    @Published var strokeOpacity: Double = 1 { didSet { rememberDrawingToolPreferences() } }
+    @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
+    @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
-    @Published var smoothing: Double = 3
+    @Published var smoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     @Published var pressureSensitivity = false
-    @Published var brushFamily: StudioBrushFamily = .round
-    @Published var brushTipAngle: Double = 45
-    @Published var brushTexture: Double = 0.5
-    @Published var brushGrain: Double = 0.3
-    @Published var brushGradientEndColor: Color = .blue
+    @Published var brushFamily: StudioBrushFamily = .round { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushTipAngle: Double = 45 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushTexture: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushGrain: Double = 0.3 { didSet { rememberDrawingToolPreferences() } }
+    @Published var brushGradientEndColor: Color = .blue { didSet { rememberDrawingToolPreferences() } }
     @Published var fillTolerance: Double = 32
     @Published var fillExpand: Double = 0
     @Published var fillGapClose: Double = 0
@@ -137,15 +147,54 @@ final class StudioViewModel: ObservableObject {
         _ = try value.settings(width: strokeWidth, opacity: capturedStrokeOpacity)
         return value
     }
-    func selectDrawingTool(_ tool: DrawingTool) {
-        selectedTool = tool
-        switch tool {
-        case .marker: brushFamily = .calligraphy
-        case .crayon: brushFamily = .grain
-        case .pen: brushFamily = .roughPen
-        case .pencil: brushFamily = .round
-        default: break
+    func selectDrawingTool(_ tool: DrawingTool) { selectedTool = tool }
+
+    // Tool preferences are device settings, separate from the editable project,
+    // its revision/history, and an in-flight stroke's immutable capture.
+    private func rememberDrawingToolPreferences() {
+        guard !restoringToolPreferences else { return }
+        let value = StudioDrawingToolPreferences.Entry(width: strokeWidth, opacity: strokeOpacity,
+            smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
+            texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
+            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius)
+        // Invalid programmatic values remain visible to the existing operation
+        // validators, but can never poison the next launch or another tool.
+        guard value.isValid else { return }
+        var candidate = toolPreferences
+        candidate.values[selectedTool.rawValue] = value
+        guard let data = try? candidate.encoded() else { return }
+        toolPreferences = candidate
+        toolDefaults?.set(data, forKey: Self.toolPreferencesKey)
+    }
+    private func restoreDrawingToolPreferences() {
+        restoringToolPreferences = true
+        defer { restoringToolPreferences = false }
+        let value = toolPreferences.settings(for: selectedTool)
+        strokeWidth = value.width; strokeOpacity = value.opacity; smoothing = value.smoothing
+        brushFamily = value.family; brushTipAngle = value.tipAngle
+        brushTexture = value.texture; brushGrain = value.grain
+        brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
+                                     blue: value.gradientEnd.blue)
+        shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
+    }
+    func resetCurrentDrawingToolPreferences() {
+        toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
+        restoreDrawingToolPreferences()
+        rememberDrawingToolPreferences()
+    }
+    private static func preferenceRGB(_ color: Color) -> StudioBrushColor {
+        #if canImport(UIKit)
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 1
+        guard UIColor(color).getRed(&red, green: &green, blue: &blue, alpha: &alpha) else {
+            return .init(red: 0, green: 0, blue: 1)
         }
+        return .init(red: Double(red), green: Double(green), blue: Double(blue))
+        #elseif canImport(AppKit)
+        guard let value = NSColor(color).usingColorSpace(.sRGB) else { return .init(red: 0, green: 0, blue: 1) }
+        return .init(red: Double(value.redComponent), green: Double(value.greenComponent), blue: Double(value.blueComponent))
+        #else
+        return .init(red: 0, green: 0, blue: 1)
+        #endif
     }
 
     /// Snapshot of this Studio route, not a claim about another foreground tab.
@@ -313,9 +362,15 @@ final class StudioViewModel: ObservableObject {
         return "#FF0000"
         #endif
     }
-    init(storage: DeviceStorageManager = .shared) {
+    init(storage: DeviceStorageManager = .shared, toolDefaults: UserDefaults? = nil) {
         self.storage = storage
+        self.toolDefaults = toolDefaults
         editor = try! StudioDocumentEditor(document: .new(name: "Untitled Animation", width: 1080, height: 1080, fps: 12))
+        if let data = toolDefaults?.data(forKey: Self.toolPreferencesKey) {
+            do { toolPreferences = try StudioDrawingToolPreferences.decode(data) }
+            catch { toolPreferencesWarning = "Saved tool preferences could not be read. Default settings are available; your projects are unchanged." }
+        }
+        restoreDrawingToolPreferences()
     }
     func loadProjects() async {
         do {
@@ -1154,5 +1209,68 @@ struct StudioSelectionRegion {
         if element.reflection?.horizontal == true { bounds.origin.x = -bounds.maxX }
         if element.reflection?.vertical == true { bounds.origin.y = -bounds.maxY }
         return bounds.offsetBy(dx: element.translation?.x ?? 0, dy: element.translation?.y ?? 0)
+    }
+}
+
+/// Bounded, versioned device preferences. Documents continue to store their own
+/// captured stroke/shape settings, so changing these never changes existing art.
+struct StudioDrawingToolPreferences: Codable, Equatable {
+    static let maximumBytes = 32_768
+    var version = 1
+    var values: [String: Entry] = [:]
+
+    struct Entry: Codable, Equatable {
+        var width: Double = 3
+        var opacity: Double = 1
+        var smoothing: Double = 3
+        var family: StudioBrushFamily = .round
+        var tipAngle: Double = 45
+        var texture: Double = 0.5
+        var grain: Double = 0.3
+        var gradientEnd = StudioBrushColor(red: 0, green: 0, blue: 1)
+        var shapeFilled = false
+        var cornerRadius: Double = 0
+
+        var isValid: Bool {
+            width.isFinite && (0.25...512).contains(width) &&
+            opacity.isFinite && (0...1).contains(opacity) &&
+            smoothing.isFinite && (0...10).contains(smoothing) &&
+            tipAngle.isFinite && (0..<180).contains(tipAngle) &&
+            texture.isFinite && (0...1).contains(texture) &&
+            grain.isFinite && (0...1).contains(grain) &&
+            cornerRadius.isFinite && (0...50).contains(cornerRadius) &&
+            (try? gradientEnd.validate()) != nil && gradientEnd.alpha == 1
+        }
+        static func defaults(for tool: DrawingTool) -> Self {
+            var value = Self()
+            switch tool {
+            case .pencil: value.width = 2; value.smoothing = 2
+            case .pen: value.family = .roughPen
+            case .marker: value.width = 12; value.opacity = 0.75; value.family = .calligraphy
+            case .crayon: value.width = 8; value.opacity = 0.9; value.family = .grain; value.smoothing = 1
+            case .eraser: value.width = 8
+            default: break
+            }
+            return value
+        }
+    }
+    func settings(for tool: DrawingTool) -> Entry { values[tool.rawValue] ?? .defaults(for: tool) }
+    func validate() throws {
+        guard version == 1, values.count <= DrawingTool.allCases.count,
+              values.allSatisfy({ DrawingTool(rawValue: $0.key) != nil && $0.value.isValid }) else {
+            throw StudioDocumentError.invalid("Saved tool preferences are unsupported or outside their valid ranges.")
+        }
+    }
+    func encoded() throws -> Data {
+        try validate()
+        let data = try JSONEncoder().encode(self)
+        guard data.count <= Self.maximumBytes else { throw StudioDocumentError.invalid("Tool preferences are too large.") }
+        return data
+    }
+    static func decode(_ data: Data) throws -> Self {
+        guard data.count <= maximumBytes else { throw StudioDocumentError.invalid("Tool preferences are too large.") }
+        let value = try JSONDecoder().decode(Self.self, from: data)
+        try value.validate()
+        return value
     }
 }
