@@ -73,6 +73,7 @@ struct StudioCommandStroke: Codable {
     let width: Double
     let opacity: Double
     var shape: StudioShapeDescriptor? = nil
+    var eraser: StudioEraserDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
@@ -303,7 +304,10 @@ enum StudioCommandExecutor {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser"])
+                    if let eraser = stroke["eraser"] {
+                        _ = try object(eraser, keys: ["version", "mode"])
+                    }
                     if let shape = stroke["shape"] {
                         _ = try object(shape, keys: ["version", "fillColor", "cornerRadius"])
                     }
@@ -452,7 +456,7 @@ enum StudioCommandExecutor {
                     catch { throw StudioCommandError.invalidSettings }
                 }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape, eraser: stroke.eraser)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }

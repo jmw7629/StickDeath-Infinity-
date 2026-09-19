@@ -222,13 +222,14 @@ struct StudioCanvasView: View {
                         let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
                         let shape = try vm.shapeDescriptor()
+                        let eraser = try vm.eraserDescriptor()
                         guard vm.beginStrokeInput(id: id) else { return }
                         input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                             tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
                             opacity: styled || shape != nil ? vm.capturedStrokeOpacity : vm.strokeOpacity,
                             brush: brush,
                             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
-                            startedAt: value.time, shape: shape)
+                            startedAt: value.time, shape: shape, eraser: eraser)
                     } catch { vm.message = error.localizedDescription; return }
                 }
                 do { try input?.append(location: value.location, time: value.time) }

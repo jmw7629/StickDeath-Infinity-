@@ -79,6 +79,8 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Reflection keeps original samples and sparse fill coverage editable.
     /// Absent in historical documents; reflected content requires schema8.
     var reflection: StudioElementReflection? = nil
+    /// Schema9: explicit eraser coverage; nil preserves the historical clear renderer.
+    var eraser: StudioEraserDescriptor? = nil
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
@@ -95,6 +97,28 @@ struct DrawnElement: Codable, Identifiable, Equatable {
         if reflection?.horizontal == true { transformed.origin.x = -bounds.maxX }
         if reflection?.vertical == true { transformed.origin.y = -bounds.maxY }
         return transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
+    }
+}
+
+enum StudioEraserMode: String, Codable, CaseIterable { case hard, soft }
+
+struct StudioEraserDescriptor: Codable, Equatable {
+    var version = 1
+    var mode: StudioEraserMode = .hard
+    static let maximumSamples = 8_192
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "These eraser settings are invalid or exceed the 8,192 sample limit. Nothing changed." }
+    }
+    func validate(element: DrawnElement) throws {
+        guard version == 1, element.tool == .eraser,
+              element.brush == nil, element.shape == nil, element.fillMask == nil,
+              element.width.isFinite, (1...512).contains(element.width),
+              element.opacity.isFinite, (0...1).contains(element.opacity),
+              (1...Self.maximumSamples).contains(element.points.count),
+              element.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 100_000 && abs($0.y) <= 100_000 }) else {
+            throw Failure.invalid
+        }
     }
 }
 
@@ -233,13 +257,14 @@ struct StudioStrokeInput {
     let viewportSize: CGSize
     let startedAt: Date
     var shape: StudioShapeDescriptor? = nil
+    var eraser: StudioEraserDescriptor? = nil
     private(set) var points: [StrokePoint] = []
 
     mutating func append(location: CGPoint, time: Date) throws {
         guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
             throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
         }
-        let limit = brush == nil ? 100_000 : 8_192
+        let limit = brush == nil && eraser == nil ? 100_000 : 8_192
         guard points.count < limit else {
             throw StudioBrushError.workLimit("Touch capture reached its \(limit) sample limit. This entire stroke was rejected; no shortened stroke was saved. Discard the draft and draw a shorter stroke.")
         }
@@ -255,7 +280,7 @@ struct StudioStrokeInput {
         let shape = [.line, .rectangle, .circle].contains(tool)
         let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
         return DrawnElement(id: id, tool: tool, points: rendered, color: color,
-            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape)
+            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape, eraser: eraser)
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...8
+    static let supportedSchemaVersions = 1...9
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -50,6 +50,7 @@ struct StudioDocument: Codable, Equatable {
         }
         var elementIDs = Set<String>(); var pointCount = 0
         var fillSpanCount = 0
+        var eraserCount = 0; var eraserSamples = 0
         for frame in frames {
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
@@ -64,7 +65,18 @@ struct StudioDocument: Codable, Equatable {
                 }
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
+            guard frame.elements.filter({ $0.eraser != nil }).count <= 256 else {
+                throw StudioDocumentError.invalid("This frame exceeds the 256 styled eraser stroke limit.")
+            }
             for element in frame.elements {
+                if let eraser = element.eraser {
+                    guard schemaVersion >= 9 else { throw StudioDocumentError.invalid("Styled erasers require project version9. The original has not changed.") }
+                    try eraser.validate(element: element)
+                    eraserCount += 1; eraserSamples += element.points.count
+                    guard eraserCount <= 1_024, eraserSamples <= 65_536 else {
+                        throw StudioDocumentError.invalid("This project exceeds its styled eraser rendering budget.")
+                    }
+                }
                 if let reflection = element.reflection {
                     guard schemaVersion >= 8 else { throw StudioDocumentError.invalid("Reflected artwork requires a newer project version. The original has not changed.") }
                     try reflection.validate()
@@ -226,8 +238,14 @@ struct StudioDocumentEditor {
         return true
     }
     mutating func commit(_ element: DrawnElement, frameID: String) throws {
+        if element.tool == .eraser, !selectedElementIDs.isEmpty {
+            throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
+        }
         try change { value in
             guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
+            if element.tool == .eraser {
+                guard layer.opacity > 0, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            }
             guard layer.lockMode == "free" || layer.lockMode == "position" else {
                 throw StudioDocumentError.unavailable("Alpha-lock painting is unfinished. Choose Free to draw; this layer has not changed.")
             }
@@ -238,6 +256,7 @@ struct StudioDocumentEditor {
             if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
             if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
             if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
+            if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
         }
     }
     mutating func addFrame() throws {
@@ -312,13 +331,14 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
                 if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
                 if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
                 if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
+                if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
             }
             try checkCancellation()
         }
@@ -334,7 +354,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -343,6 +363,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
             if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
             if elements.contains(where: { $0.reflection != nil }) { value.schemaVersion = max(value.schemaVersion, 8) }
+            if elements.contains(where: { $0.eraser != nil }) { value.schemaVersion = max(value.schemaVersion, 9) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
         }
     }
@@ -501,7 +522,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }

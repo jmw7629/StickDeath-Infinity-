@@ -187,7 +187,7 @@ struct FloatingToolSettingsPanel: View {
         // ── ERASER (ORANGE THEME) ──
         case .eraser:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...150, unit: "px", accent: accentColor)
                 
                 Text("ERASER TYPE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
@@ -195,26 +195,30 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 HStack(spacing: 4) {
-                    ForEach(["◼ Hard", "◐ Soft"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
+                    ForEach(StudioEraserMode.allCases, id: \.self) { mode in
+                        Button { vm.eraserMode = mode } label: {
+                            Text(mode == .hard ? "◼ Hard" : "◐ Soft")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("Hard") ? accentColor : .white.opacity(0.5))
+                                .foregroundColor(vm.eraserMode == mode ? accentColor : .white.opacity(0.5))
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .frame(minHeight: 44)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("Hard") ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
+                                        .fill(vm.eraserMode == mode ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("Hard") ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(vm.eraserMode == mode ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
+                        .accessibilityIdentifier("studio.eraser.mode." + mode.rawValue)
+                        .accessibilityValue(vm.eraserMode == mode ? "Selected" : "Not selected")
                     }
                 }
                 
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Text("Erases this layer. Soft adds a feathered edge. Deselect artwork before erasing.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
             }
             
         // ── SMUDGE (PURPLE THEME) ──

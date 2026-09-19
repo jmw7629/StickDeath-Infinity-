@@ -91,6 +91,7 @@ final class StudioViewModel: ObservableObject {
     @Published var strokeColor: Color = .red
     @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     @Published var strokeOpacity: Double = 1 { didSet { rememberDrawingToolPreferences() } }
+    @Published var eraserMode: StudioEraserMode = .hard { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -130,6 +131,17 @@ final class StudioViewModel: ObservableObject {
         try value.validate(tool: selectedTool)
         return value
     }
+    func eraserDescriptor() throws -> StudioEraserDescriptor? {
+        guard selectedTool == .eraser else { return nil }
+        guard let layer = layers.first(where: { $0.id == activeLayerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+            throw StudioDocumentError.locked
+        }
+        guard editor.selectedElementIDs.isEmpty else {
+            throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
+        }
+        return StudioEraserDescriptor(mode: eraserMode)
+    }
     var capturedStrokeOpacity: Double {
         #if canImport(UIKit)
         var alpha: CGFloat = 1
@@ -156,7 +168,7 @@ final class StudioViewModel: ObservableObject {
         let value = StudioDrawingToolPreferences.Entry(width: strokeWidth, opacity: strokeOpacity,
             smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
             texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
-            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius)
+            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -176,6 +188,7 @@ final class StudioViewModel: ObservableObject {
         brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
                                      blue: value.gradientEnd.blue)
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
+        eraserMode = value.eraserMode ?? .hard
     }
     func resetCurrentDrawingToolPreferences() {
         toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
@@ -1230,6 +1243,7 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var gradientEnd = StudioBrushColor(red: 0, green: 0, blue: 1)
         var shapeFilled = false
         var cornerRadius: Double = 0
+        var eraserMode: StudioEraserMode? = nil
 
         var isValid: Bool {
             width.isFinite && (0.25...512).contains(width) &&

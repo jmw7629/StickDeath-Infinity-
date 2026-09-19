@@ -129,6 +129,7 @@ struct StudioFrameRenderer {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
+        if element.eraser != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
         if let translation = element.translation {
             try translation.validate()
             context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)
@@ -136,6 +137,32 @@ struct StudioFrameRenderer {
         if let reflection = element.reflection {
             try reflection.validate()
             context.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+        }
+
+        if let eraser = element.eraser {
+            try eraser.validate(element: element)
+            guard element.opacity > 0 else { return }
+            // One opaque mask, then one destination-out composite. Crossing a
+            // stroke over itself cannot multiply its captured strength.
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            context.blendMode = .destinationOut
+            context.drawLayer { mask in
+                mask.opacity = 1; mask.blendMode = .normal
+                if eraser.mode == .soft { mask.addFilter(.blur(radius: element.width * 0.2)) }
+                let first = element.points[0]
+                if element.points.count == 1 {
+                    mask.fill(Path(ellipseIn: CGRect(x: first.x - element.width / 2,
+                        y: first.y - element.width / 2, width: element.width, height: element.width)), with: .color(.black))
+                } else {
+                    var path = Path(); path.move(to: CGPoint(x: first.x, y: first.y))
+                    for point in element.points.dropFirst() { path.addLine(to: CGPoint(x: point.x, y: point.y)) }
+                    let outline = path.strokedPath(StrokeStyle(lineWidth: element.width, lineCap: .round, lineJoin: .round))
+                    mask.fill(outline,
+                        with: .color(.black), style: FillStyle(eoFill: false))
+                }
+            }
+            return
         }
 
         if let mask = element.fillMask {

@@ -329,6 +329,82 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(reopened.buttons["studio.undo"].isEnabled, "Preference reset inserted document history")
     }
 
+    @MainActor
+    func testEraserModesStrengthUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.85)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85,dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(original).count, 60)
+
+        try pickerRailControl("studio.tool.eraser", app: app, forward: true).tap()
+        let hard = app.buttons["studio.eraser.mode.hard"], soft = app.buttons["studio.eraser.mode.soft"]
+        XCTAssertTrue(hard.waitForExistence(timeout: 5) && hard.isHittable && soft.isHittable)
+        hard.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.7)
+        app.sliders["studio.setting.strength"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        func eraseAcrossStroke() {
+            canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.35)).press(forDuration: 0.05,
+                thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.65)))
+        }
+        eraseAcrossStroke(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let hardPixels = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, hardPixels), 30, "Hard eraser did not change actual artwork")
+        XCTAssertLessThan(exportInkMask(hardPixels).count, exportInkMask(original).count, "Hard eraser failed to remove ink")
+        capture(app, name: "hard-eraser-real-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Undo lost original artwork")
+
+        try pickerRailControl("studio.tool.eraser", app: app, forward: true).tap()
+        soft.tap(); XCTAssertEqual(soft.value as? String, "Selected")
+        let strength = app.sliders["studio.setting.strength"]
+        strength.adjust(toNormalizedSliderPosition: 0.5)
+        let capturedStrength = try XCTUnwrap(strength.value as? String)
+        capture(app, name: "soft-eraser-strength-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        eraseAcrossStroke(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let softPixels = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, softPixels), 30, "Soft eraser did not change actual pixels")
+        XCTAssertGreaterThan(try changedPixelCount(hardPixels, softPixels), 30, "Mode and strength changed labels only")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(softPixels, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(softPixels, pixels(restored.screenshot().image)), 4,
+                                "Cold reopen changed erased artwork")
+        capture(reopened, name: "soft-eraser-cold-reopened")
+        try pickerRailControl("studio.tool.eraser", app: reopened, forward: true).tap()
+        XCTAssertEqual(reopened.buttons["studio.eraser.mode.soft"].value as? String, "Selected")
+        XCTAssertEqual(reopened.sliders["studio.setting.strength"].value as? String, capturedStrength)
+        try resetToolPreferencesInPopup(reopened)
+        XCTAssertEqual(reopened.buttons["studio.eraser.mode.hard"].value as? String, "Selected")
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.pencil", app: reopened, forward: false).tap()
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
     @MainActor private func resetToolPreferencesInPopup(_ app: XCUIApplication) throws {
         let reset = app.buttons["studio.tool-settings.reset"]
         for attempt in 0...4 {
