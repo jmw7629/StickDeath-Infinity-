@@ -611,6 +611,59 @@ final class StudioViewModel: ObservableObject {
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
     }
     @Published var selectionMode: SelectionMode = .new
+    @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand
+    @Published var areaSelectionSmoothing: Double = 3
+    struct AreaSelectionCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let selectedIDs: Set<String>
+        let mode: SelectionMode
+        let kind: StudioAreaSelectionKind
+        let smoothing: Double
+    }
+    func beginAreaSelection() -> AreaSelectionCapture? {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .lasso,
+              activeStrokeID == nil, pendingBrushStroke == nil,
+              areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+            selectedIDs: selectedElementIDs, mode: selectionMode, kind: areaSelectionKind,
+            smoothing: areaSelectionSmoothing)
+    }
+    @discardableResult
+    func finishAreaSelection(_ capture: AreaSelectionCapture, points: [CGPoint],
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard beginAreaSelection() == capture else { throw StudioCommandError.staleRevision }
+            try checkCancellation()
+            let region = try StudioSelectionRegion(points: points, kind: capture.kind, smoothing: capture.smoothing)
+            guard currentFrame.elements.count <= 2_000_000 / region.points.count else {
+                throw StudioDocumentError.unavailable("This lasso is too complex for the current frame. Use Rectangle or a simpler outline.")
+            }
+            let eligibleLayers = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
+            var found = Set<String>()
+            for element in currentFrame.elements {
+                try checkCancellation()
+                guard let layerID = element.layerID, eligibleLayers.contains(layerID), element.opacity > 0,
+                      element.tool != .eraser, let bounds = try StudioSelectionRegion.drawingBounds(element) else { continue }
+                let visibleBounds = bounds.intersection(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
+                guard !visibleBounds.isNull, region.contains(visibleBounds) else { continue }
+                found.insert(element.id)
+            }
+            var selected = capture.selectedIDs
+            switch capture.mode {
+            case .new: selected = found
+            case .add: selected.formUnion(found)
+            case .subtract: selected.subtract(found)
+            }
+            try checkCancellation()
+            guard beginAreaSelection() == capture else { throw StudioCommandError.staleRevision }
+            // Selection is transient UI state: no document edit, revision,
+            // autosave or Undo entry, and no success banner resizing the canvas.
+            editor.selectedElementIDs = selected
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     struct MoveCapture: Equatable {
         let projectID: UUID
         let revision: Int
@@ -624,7 +677,8 @@ final class StudioViewModel: ObservableObject {
         var hit: String?
         for layer in layers where layer.visible && layer.opacity > 0 && !layer.isFullyLocked {
             if let element = currentFrame.elements.reversed().first(where: { element in
-                guard element.layerID == layer.id, element.opacity > 0, let rect = element.selectionBounds else { return false }
+                guard element.layerID == layer.id, element.opacity > 0,
+                      let rect = try? StudioSelectionRegion.drawingBounds(element) else { return false }
                 if let mask = element.fillMask {
                     let x = (point.x - (element.translation?.x ?? 0)) * (element.reflection?.horizontal == true ? -1 : 1)
                     let y = (point.y - (element.translation?.y ?? 0)) * (element.reflection?.vertical == true ? -1 : 1)
@@ -985,4 +1039,120 @@ enum StudioPanelType: String {
 }
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// Area selection encloses whole editable drawings, rather than altering pixels.
+/// The exact same region is used for the visible outline and selected IDs.
+enum StudioAreaSelectionKind: String, CaseIterable {
+    case freehand, rectangle
+    var label: String { self == .freehand ? "Freehand" : "Rectangle" }
+}
+
+struct StudioSelectionTrace {
+    static let maximumPoints = 512
+    private(set) var points: [CGPoint] = []
+    mutating func append(_ point: CGPoint, kind: StudioAreaSelectionKind) throws {
+        guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 1_000_000, abs(point.y) <= 1_000_000 else {
+            throw StudioDocumentError.invalid("The selection outline has invalid coordinates.")
+        }
+        if kind == .rectangle {
+            if points.isEmpty { points = [point] }
+            else if points.count == 1 { points.append(point) }
+            else { points[1] = point }
+            return
+        }
+        if let last = points.last, hypot(point.x - last.x, point.y - last.y) < 0.5 { return }
+        if points.count > 1 {
+            let a = points[points.count - 2], b = points[points.count - 1]
+            let length = hypot(point.x - a.x, point.y - a.y)
+            let cross = abs((b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x))
+            let dot = (b.x - a.x) * (point.x - a.x) + (b.y - a.y) * (point.y - a.y)
+            if length > 0, cross / length <= 0.25, dot >= 0, dot <= length * length { points.removeLast() }
+        }
+        guard points.count < Self.maximumPoints else {
+            throw StudioDocumentError.unavailable("The selection outline is too complex. Draw a simpler outline or choose Rectangle.")
+        }
+        points.append(point)
+    }
+}
+
+struct StudioSelectionRegion {
+    let points: [CGPoint]
+    private let rectangle: CGRect?
+    private let path: Path
+    init(points input: [CGPoint], kind: StudioAreaSelectionKind, smoothing: Double) throws {
+        guard input.count <= StudioSelectionTrace.maximumPoints,
+              smoothing.isFinite, (0...10).contains(smoothing),
+              input.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 1_000_000 && abs($0.y) <= 1_000_000 }) else {
+            throw StudioDocumentError.invalid("The selection outline is invalid or too large.")
+        }
+        let vertices: [CGPoint]
+        if kind == .rectangle {
+            guard let a = input.first, let b = input.last, input.count >= 2 else {
+                throw StudioDocumentError.invalid("Drag to enclose the drawings you want to select.")
+            }
+            let rect = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+            guard rect.width >= 1, rect.height >= 1 else { throw StudioDocumentError.invalid("Drag a larger selection rectangle.") }
+            rectangle = rect
+            vertices = [.init(x: rect.minX, y: rect.minY), .init(x: rect.maxX, y: rect.minY),
+                        .init(x: rect.maxX, y: rect.maxY), .init(x: rect.minX, y: rect.maxY)]
+        } else {
+            var unique = input
+            if unique.count > 1, let first = unique.first, let last = unique.last,
+               hypot(first.x - last.x, first.y - last.y) < 0.5 { unique.removeLast() }
+            guard unique.count >= 3 else { throw StudioDocumentError.invalid("Draw a closed outline around the drawings you want to select.") }
+            vertices = unique.indices.map { index in
+                let prev = unique[(index + unique.count - 1) % unique.count], next = unique[(index + 1) % unique.count], p = unique[index]
+                let dx = (prev.x + next.x) / 2 - p.x, dy = (prev.y + next.y) / 2 - p.y
+                let distance = hypot(dx, dy)
+                let weight = distance > 0 ? min(0.5, CGFloat(smoothing) / distance) : 0
+                return CGPoint(x: p.x + dx * weight, y: p.y + dy * weight)
+            }
+            var area: CGFloat = 0
+            for i in vertices.indices { let a = vertices[i], b = vertices[(i + 1) % vertices.count]; area += a.x * b.y - b.x * a.y }
+            guard abs(area) >= 1 else { throw StudioDocumentError.invalid("Draw an outline with a visible enclosed area.") }
+            rectangle = nil
+        }
+        self.points = vertices
+        var p = Path(); p.move(to: vertices[0]); vertices.dropFirst().forEach { p.addLine(to: $0) }; p.closeSubpath(); path = p
+    }
+    func contains(_ rect: CGRect) -> Bool {
+        guard !rect.isNull, !rect.isInfinite, rect.width >= 0, rect.height >= 0 else { return false }
+        if let rectangle { return rectangle.minX <= rect.minX && rectangle.maxX >= rect.maxX && rectangle.minY <= rect.minY && rectangle.maxY >= rect.maxY }
+        let corners = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+                       CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
+        guard corners.allSatisfy({ path.contains($0, eoFill: true) || onBoundary($0) }) else { return false }
+        // Corner-only tests incorrectly select a drawing cut through by a
+        // concave lasso. Reject any outline edge entering its open bounds.
+        let inner = rect.insetBy(dx: min(0.0001, rect.width / 4), dy: min(0.0001, rect.height / 4))
+        for i in points.indices where segmentIntersects(points[i], points[(i + 1) % points.count], inner) { return false }
+        return true
+    }
+    private func onBoundary(_ p: CGPoint) -> Bool {
+        for i in points.indices {
+            let a = points[i], b = points[(i + 1) % points.count], dx = b.x - a.x, dy = b.y - a.y
+            let length = hypot(dx, dy)
+            if length > 0, abs((p.x-a.x)*dy-(p.y-a.y)*dx) / length < 0.0001,
+               (p.x-a.x)*dx+(p.y-a.y)*dy >= 0, (p.x-a.x)*dx+(p.y-a.y)*dy <= length*length { return true }
+        }
+        return false
+    }
+    private func segmentIntersects(_ a: CGPoint, _ b: CGPoint, _ rect: CGRect) -> Bool {
+        var low: CGFloat = 0, high: CGFloat = 1
+        for (origin, delta, minimum, maximum) in [(a.x,b.x-a.x,rect.minX,rect.maxX),(a.y,b.y-a.y,rect.minY,rect.maxY)] {
+            if abs(delta) < 0.0000001 { if origin < minimum || origin > maximum { return false }; continue }
+            let t1 = (minimum-origin)/delta, t2 = (maximum-origin)/delta
+            low = max(low,min(t1,t2)); high = min(high,max(t1,t2))
+            if low > high { return false }
+        }
+        return low <= high
+    }
+    static func drawingBounds(_ element: DrawnElement) throws -> CGRect? {
+        guard element.brush != nil else { return element.selectionBounds }
+        var bounds = try StudioBrushGeometryCache.geometry(for: element).bounds
+        guard !bounds.isNull else { return nil }
+        if element.reflection?.horizontal == true { bounds.origin.x = -bounds.maxX }
+        if element.reflection?.vertical == true { bounds.origin.y = -bounds.maxY }
+        return bounds.offsetBy(dx: element.translation?.x ?? 0, dy: element.translation?.y ?? 0)
+    }
 }

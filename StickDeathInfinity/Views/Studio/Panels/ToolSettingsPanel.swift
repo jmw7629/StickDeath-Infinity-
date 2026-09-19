@@ -384,35 +384,49 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("LASSO MODE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
-                    ForEach(["✏️ Freehand", "⬡ Polygon", "🧲 Magnetic", "✨ Smart"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("Free") ? .cyan : .white.opacity(0.5))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("Free") ? Color.cyan.opacity(0.2) : Color.white.opacity(0.05))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("Free") ? Color.cyan.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
-                                )
-                        }
+                Text("Enclose whole drawings, then choose Move to drag them. Image placement and text selection are unfinished.")
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.65))
+                Text("\(vm.selectedElementIDs.count) drawings selected")
+                    .font(.specialElite(11)).foregroundColor(.red)
+                    .accessibilityIdentifier("studio.selection.count")
+                HStack(spacing: 4) {
+                    ForEach(StudioAreaSelectionKind.allCases, id: \.self) { kind in
+                        Button(kind.label) { vm.areaSelectionKind = kind }
+                            .font(.specialElite(10)).frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(vm.areaSelectionKind == kind ? .red : .white.opacity(0.6))
+                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityIdentifier("studio.selection.kind." + kind.rawValue)
+                            .accessibilityAddTraits(vm.areaSelectionKind == kind ? .isSelected : [])
                     }
                 }
-                
-                SettingsSlider(label: "Feather", value: .constant(0.0), range: 0...20, unit: "px", accent: .cyan)
-                SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
+                HStack(spacing: 4) {
+                    ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
+                        Button(mode.label) { vm.selectionMode = mode }
+                            .font(.specialElite(10)).frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(vm.selectionMode == mode ? .red : .white.opacity(0.6))
+                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityIdentifier("studio.selection.mode." + mode.rawValue)
+                    }
+                }
+                if vm.areaSelectionKind == .freehand {
+                    SettingsSlider(label: "Smoothness", value: $vm.areaSelectionSmoothing, range: 0...10, unit: "px", accent: .red)
+                }
+                HStack(spacing: 4) {
+                    Button("Copy") { _ = vm.copySelected() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.copy")
+                    Button("Delete") { vm.deleteSelected() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.delete")
+                    Button("Deselect") { vm.clearElementSelection() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.deselect")
+                }.font(.specialElite(11)).frame(minHeight: 44)
+                    .disabled(vm.selectedElementIDs.isEmpty)
+                Text("Polygon, Magnetic, Smart and feathered pixel selection are unavailable.")
+                    .font(.specialElite(9)).foregroundColor(.white.opacity(0.45))
             }
-            
+
         case .hand, .zoom:
             VStack(alignment: .leading, spacing: 8) {
                 if !compactHeight {

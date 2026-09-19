@@ -265,6 +265,58 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testRectangleSelectionDeleteUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app:app, forward:false).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.65,dy:0.60)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.82,dy:0.60)))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let rightOnly = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(rightOnly).count,12)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.20,dy:0.42)).press(forDuration:0.05,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.43,dy:0.42)))
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let both = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(both).count,exportInkMask(rightOnly).count+12)
+        try selectToolbarTool("lasso",app:app)
+        let rectangle = app.buttons["studio.selection.kind.rectangle"]
+        XCTAssertTrue(rectangle.waitForExistence(timeout:5) && rectangle.isHittable); rectangle.tap()
+        XCTAssertFalse(app.buttons["studio.lasso.delete"].isEnabled,"Area Delete requires explicit selection")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        canvas.coordinate(withNormalizedOffset:CGVector(dx:0.13,dy:0.34)).press(forDuration:0.1,
+            thenDragTo:canvas.coordinate(withNormalizedOffset:CGVector(dx:0.51,dy:0.50)))
+        try selectToolbarTool("lasso",app:app)
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Rectangle must select only the enclosed drawing")
+        XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Selection must not edit the document")
+        let delete = app.buttons["studio.lasso.delete"]
+        XCTAssertTrue(delete.isEnabled && delete.isHittable); delete.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rightOnly,pixels(canvas.screenshot().image)),4,"Selection Delete removed the wrong artwork or kept the enclosed drawing")
+        capture(app,name:"rectangle-selection-deleted-only-enclosed-artwork")
+        app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(both,pixels(canvas.screenshot().image)),4,"Delete Undo failed to restore exact artwork")
+        app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(rightOnly,pixels(canvas.screenshot().image)),4,"Delete Redo changed surviving artwork")
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened = try launchGuestStudio(); defer {reopened.terminate()}
+        let project = reopened.buttons.matching(NSPredicate(format:"label == %@",name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout:8));project.tap()
+        let restored = reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rightOnly,pixels(restored.screenshot().image)),4,"Selection edit did not survive cold reopen")
+        capture(reopened,name:"rectangle-selection-cold-reopened")
+    }
+
+    @MainActor
     func testSelectionForwardBackUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
