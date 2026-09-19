@@ -147,7 +147,12 @@ final class StudioViewModel: ObservableObject {
               layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { message = StudioDocumentError.locked.localizedDescription; return false }
         selectedTool = .text
         if selected, let element, let text = element.text {
-            textInput = text.content; textStyle = text.style; strokeColor = Color(hex: element.color); strokeOpacity = element.opacity
+            let hex = element.color.hasPrefix("#") ? String(element.color.dropFirst()) : element.color
+            guard let rgb = UInt32(hex, radix: 16) else { message = StudioTextDescriptor.Failure.invalid.localizedDescription; return false }
+            textInput = text.content; textStyle = text.style
+            strokeColor = Color(red: Double((rgb >> 16) & 255) / 255,
+                                green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+            strokeOpacity = element.opacity
         } else { textInput = "" }
         let origin = selected ? CGPoint(x: element!.points[0].x, y: element!.points[0].y)
             : CGPoint(x: max(0, (Double(canvasWidth)-textStyle.boxWidth)/2), y: max(0, (Double(canvasHeight)-textStyle.boxHeight)/2))

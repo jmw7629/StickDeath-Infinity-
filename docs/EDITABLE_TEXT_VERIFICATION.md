@@ -18,6 +18,8 @@ Spatter uses strict `draw` text descriptors and `updateText` commands through th
 
 Original unsuccessful attempts are preserved privately: initial renderer API/request wiring, a legacy-only export guard, a compiler expression-complexity error, a cancellation test whose chosen checkpoint never occurred, and a local command-test harness with excess UIKit-dependent sources. Final checks distinguish real source corrections from fixture/harness corrections.
 
+The first published text head `a6bb87a` failed run 35466455297 before the app build: the offline-document target does not include the UI theme's `Color(hex:)` initializer. Editing an existing text box now reconstructs its validated RGB color using SwiftUI's standard initializer directly. The exact offline-document production target then passed all 10 journeys locally, and all 10 text groups passed again, including original color/pixel preservation. The original failed log is retained; no failed run is relabelled green.
+
 ## Remaining scope
 
 Native runtime, independent review, physical device and release acceptance remain required. New text uses explicit creation and Apply, not tap-to-place or a live uncommitted glyph preview. Legacy text can be rendered/exported but has no automatic conversion to the new editable descriptor. Free transform handles, rich text spans, custom font imports, overflow indicators and recovery of a force-quit uncommitted text draft are unfinished. Saved editable text remains protected by the existing atomic document persistence. No exact cross-OS font-pixel parity is claimed.
