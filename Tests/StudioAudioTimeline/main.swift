@@ -950,6 +950,133 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             var invalid = old; invalid.audioClips[0].fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 48_000, fadeInFrames: 100, fadeOutFrames: 100)
             do { try invalid.validate(); throw Failure(message: "old schema accepted fades") } catch is StudioDocumentError { }
         }
+        func audioCommandFixture(_ name: String) async throws -> (StudioViewModel, DeviceStorageManager, String) {
+            let folder = root.appendingPathComponent(name)
+            let store = DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder)
+            let local = StudioViewModel(storage: store)
+            let made = await local.createProject(name: name, width: 64, height: 64, fps: 8)
+            try check(made, "command fixture create")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 2)
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1, duration: 1))
+            await local.flush()
+            return (local, store, clipID)
+        }
+        func audioRequest(_ local: StudioViewModel, _ id: String, _ settings: StudioAudioClipSettings) -> StudioCommandRequest {
+            .init(requestID: UUID(), projectID: local.document.id, expectedRevision: local.document.revision,
+                  action: .apply([.updateAudioClip(.init(clipID: id, settings: settings))]))
+        }
+        func content(_ value: StudioDocument) -> StudioDocument {
+            var value = value; value.revision = 0; value.modifiedAt = value.createdAt; return value
+        }
+        try await test("strict audio command reaches actual stereo PCM full Undo and cold production reopen") {
+            let (local, store, clipID) = try await audioCommandFixture("command-pcm")
+            let trackCapture = local.prepareAudioTrackVolume(2)!
+            try local.setAudioTrackVolume(trackCapture, volume: 0.5)
+            let before = local.document
+            let receipt = try local.applyStudioCommands(JSONEncoder().encode(audioRequest(local, clipID,
+                .init(volume: 0.4, isMuted: false, fades: .init(fadeIn: 0.25, fadeOut: 0.25)))))
+            let edited = local.document
+            try check(receipt.changedAudioClipIDs == [clipID] && receipt.outcome == .applied
+                      && edited.revision == before.revision + 1, "command receipt/revision")
+            local.undo(); try check(content(local.document) == content(before), "full audio command Undo")
+            local.redo(); try check(content(local.document) == content(edited), "full audio command Redo")
+            let output = try await StudioAudioMixService().mix(document: local.document,
+                retainedAudioTracks: local.projectAudioTracks, durationSeconds: 1.25, outputParent: scratch)
+            defer { try? output.cleanup() }
+            let data = try decode(output)
+            try check(data[0].count == 60_000 && data[1].count == 60_000, "command mix duration")
+            for n in 0..<48_000 {
+                let gain = min(1, Double(n) / 12_000, Double(47_999 - n) / 12_000)
+                try check(abs(Double(data[0][n]) - 0.05 * gain) < 0.00001
+                          && abs(Double(data[1][n]) + 0.1 * gain) < 0.00001, "command gain/fade/source PCM at sample \(n)")
+            }
+            try check(data[0][48_000...].allSatisfy { $0 == 0 } && data[1][48_000...].allSatisfy { $0 == 0 }, "audio outside selected clip")
+            let saved = await local.save(); try check(saved, "command audio save")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            let opened = await cold.openProject(cold.savedProjects.first { $0.id == local.document.id }!)
+            try check(opened && cold.document == local.document && cold.projectAudioTracks.first?.audioData == imported.track.audioData,
+                      "command clip or original source changed on cold reopen")
+            let muteReceipt = try cold.applyStudioCommands(JSONEncoder().encode(audioRequest(cold, clipID, .init(isMuted: true))))
+            let muted = try await StudioAudioMixService().mix(document: cold.document,
+                retainedAudioTracks: cold.projectAudioTracks, durationSeconds: 1, outputParent: scratch)
+            defer { try? muted.cleanup() }
+            try check(muteReceipt.changedAudioClipIDs == [clipID] && (try decode(muted)).flatMap { $0 }.allSatisfy { $0 == 0 }, "command mute not real silence")
+            try check(cold.audioClips[0].fadeEnvelope == edited.audioClips[0].fadeEnvelope && cold.audioClips[0].volume == 0.4,
+                      "mute command overwrote omitted settings")
+            await cold.flush(); await local.flush()
+        }
+        try await test("manual controls and assistant clip settings produce identical documents") {
+            let (local, _, clipID) = try await audioCommandFixture("command-manual-parity")
+            let before = local.document
+            _ = try local.applyStudioCommands(audioRequest(local, clipID, .init(volume: 0.2, isMuted: true,
+                fades: .init(fadeIn: 0.125, fadeOut: 0.375))))
+            let automated = local.document
+            local.undo(); try check(content(local.document) == content(before), "command parity Undo")
+            try local.setAudioClipVolume(local.prepareAudioClipVolume()!, volume: 0.2)
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .mute(true))
+            try local.setAudioFades(local.prepareAudioFades()!, fadeIn: 0.125, fadeOut: 0.375)
+            try check(content(local.document) == content(automated) && local.projectAudioTracks.first?.audioData == imported.track.audioData,
+                      "manual and command settings diverged")
+            await local.flush()
+        }
+        try await test("audio command cancellation and playback reentry retain current document and history") {
+            let (local, _, clipID) = try await audioCommandFixture("command-cancellation")
+            let before = local.document, undo = local.canUndo, redo = local.canRedo
+            let request = audioRequest(local, clipID, .init(volume: 0.3))
+            for checkpoint in 1...5 {
+                var calls = 0
+                do {
+                    try local.applyStudioCommands(request, checkCancellation: {
+                        calls += 1; if calls == checkpoint { throw CancellationError() }
+                    }); throw Failure(message: "cancelled actual VM audio command committed")
+                } catch is CancellationError { }
+                try check(local.document == before && local.canUndo == undo && local.canRedo == redo, "cancelled command changed history")
+            }
+            local.displayAudioPlaybackTime(0, playing: true)
+            do { try local.applyStudioCommands(request); throw Failure(message: "playing audio command accepted") }
+            catch StudioDocumentError.unavailable { }
+            local.stopPlayback()
+            var calls = 0
+            do {
+                try local.applyStudioCommands(request, checkCancellation: {
+                    calls += 1; if calls == 5 { local.displayAudioPlaybackTime(0, playing: true) }
+                }); throw Failure(message: "playback reentry accepted audio command")
+            } catch StudioDocumentError.unavailable { }
+            try check(local.isPlaying && local.document == before, "reentrant playback/document was overwritten")
+            local.stopPlayback(); calls = 0
+            do {
+                try local.applyStudioCommands(request, checkCancellation: {
+                    calls += 1
+                    if calls == 5 { try local.setAudioClipVolume(local.prepareAudioClipVolume()!, volume: 0.6) }
+                }); throw Failure(message: "stale audio command replaced intervening UI edit")
+            } catch StudioCommandError.staleRevision { }
+            try check(local.audioClips[0].volume == 0.6 && local.document.revision == before.revision + 1,
+                      "intervening UI edit lost")
+            local.undo(); try check(content(local.document) == content(before), "intervening edit Undo lost original")
+            await local.flush()
+        }
+        try await test("audio wire rejects missing source bytes and source overrun before editor assignment") {
+            let (local, _, clipID) = try await audioCommandFixture("command-asset-preflight")
+            for missing in [true, false] {
+                let clean = local.document
+                var clip = clean.audioClips[0]
+                if missing { clip.assetID = UUID() } else { clip.sourceOffset = 1.5 }
+                // Deliberately malformed host state reaches the real command gateway;
+                // the new command may not claim success or save it as valid audio.
+                local.audioClips = [clip]
+                let before = local.document, undo = local.canUndo, redo = local.canRedo
+                do {
+                    try local.applyStudioCommands(JSONEncoder().encode(audioRequest(local, clipID, .init(volume: 0.1))))
+                    throw Failure(message: "missing/out-of-range source was accepted")
+                } catch is StudioDocumentError { }
+                try check(local.document == before && local.canUndo == undo && local.canRedo == redo,
+                          "asset preflight changed document/history")
+                local.undo(); try check(content(local.document) == content(clean), "invalid fixture could not restore original")
+                try check(local.projectAudioTracks.first?.audioData == imported.track.audioData, "rejection lost original bytes")
+            }
+            await local.flush()
+        }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }
 }

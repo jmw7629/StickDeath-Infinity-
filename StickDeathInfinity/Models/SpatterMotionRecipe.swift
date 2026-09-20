@@ -154,3 +154,92 @@ struct SpatterMotionRecipe: Equatable {
         }
     }
 }
+
+/// Explicit local audio instructions only. No provider text, file path or
+/// imported metadata can enter this parser without a separate user submission.
+struct SpatterAudioInstruction: Equatable {
+    let settings: StudioAudioClipSettings
+    enum Example: String, CaseIterable, Identifiable {
+        case volume, mute, unmute, fades, clear
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .volume: return "Set volume"
+            case .mute: return "Mute clip"
+            case .unmute: return "Unmute clip"
+            case .fades: return "Set fades"
+            case .clear: return "Clear fades"
+            }
+        }
+        var instruction: String {
+            switch self {
+            case .volume: return "Set selected audio clip volume to 40%."
+            case .mute: return "Mute selected audio clip."
+            case .unmute: return "Unmute selected audio clip."
+            case .fades: return "Fade selected audio clip in over 0.05 seconds and out over 0.10 seconds."
+            case .clear: return "Clear selected audio clip fades."
+            }
+        }
+    }
+    enum InstructionError: LocalizedError, Equatable {
+        case unsupported, invalidValue, missingClip
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use one complete audio instruction from the examples. Additional actions are unavailable. Nothing changed."
+            case .invalidValue: return "Use a volume from 0–100% or finite nonnegative fade durations that fit the selected clip. Nothing changed."
+            case .missingClip: return "Select a playable clip in the Audio workspace, then reopen Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isAudioInstruction(_ text: String) -> Bool {
+        let first = text.split(whereSeparator: { $0.isWhitespace }).first?.lowercased()
+        return ["set", "mute", "unmute", "fade", "clear"].contains(first ?? "")
+    }
+    private static let patterns: [(String, String)] = [
+        ("volume", #"\A\s*set\s+selected\s+audio\s+clip\s+volume\s+to\s+([^\s%]+)\s*%\.?\s*\z"#),
+        ("mute", #"\A\s*(mute|unmute)\s+selected\s+audio\s+clip\.?\s*\z"#),
+        ("fades", #"\A\s*fade\s+selected\s+audio\s+clip\s+in\s+over\s+([^\s]+)\s+seconds\s+and\s+out\s+over\s+([^\s]+)\s+seconds\.?\s*\z"#),
+        ("clear", #"\A\s*clear\s+selected\s+audio\s+clip\s+fades\.?\s*\z"#)
+    ]
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
+            throw SpatterMotionRecipe.RecipeError.instructionTooLong
+        }
+        guard !text.unicodeScalars.contains(where: {
+            CharacterSet.controlCharacters.contains($0) && !CharacterSet.whitespacesAndNewlines.contains($0)
+        }) else { throw InstructionError.unsupported }
+        for (kind, pattern) in patterns {
+            let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { continue }
+            func token(_ index: Int) throws -> String {
+                guard let range = Range(match.range(at: index), in: text) else { throw InstructionError.unsupported }
+                return String(text[range])
+            }
+            func number(_ index: Int, maximum: Double) throws -> Double {
+                let raw = try token(index)
+                guard raw.utf8.count <= 32, let value = Double(raw), value.isFinite, value >= 0, value <= maximum else {
+                    throw InstructionError.invalidValue
+                }
+                return value
+            }
+            switch kind {
+            case "volume": return .init(settings: .init(volume: try number(1, maximum: 100) / 100))
+            case "mute": return .init(settings: .init(isMuted: try token(1).lowercased() == "mute"))
+            case "fades": return .init(settings: .init(fades: .init(fadeIn: try number(1, maximum: 300), fadeOut: try number(2, maximum: 300))))
+            case "clear": return .init(settings: .init(fades: .init(fadeIn: 0, fadeOut: 0)))
+            default: throw InstructionError.unsupported
+            }
+        }
+        throw InstructionError.unsupported
+    }
+    func prepare(in context: StudioCommandContext, selectedClipID: String?, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard let selectedClipID, let clip = context.editableAudioClips.first(where: { $0.id == selectedClipID }),
+              clip.assetID != nil else { throw InstructionError.missingClip }
+        _ = try settings.applying(to: clip)
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.updateAudioClip(.init(clipID: clip.id, settings: settings))]))
+    }
+}

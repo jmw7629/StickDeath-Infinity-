@@ -113,8 +113,10 @@ enum StudioCommand: Codable {
         let assetID: String
         let placement: StudioRasterPlacement
     }
+    struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
+    case updateAudioClip(UpdateAudioClip)
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
@@ -125,6 +127,7 @@ enum StudioCommand: Codable {
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
         case "deleteImage": self = .deleteImage(try container.decode(DeleteImage.self, forKey: key))
         case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
         case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
@@ -154,6 +157,7 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
         case .deleteImage(let value): try container.encode(value, forKey: StudioWireKey("deleteImage"))
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
@@ -226,12 +230,13 @@ struct StudioCommandReceipt {
     let deletedLayerIDs: [String]
     let createdElementIDs: [String]
     let deletedElementIDs: [String]
+    let changedAudioClipIDs: [String]
     let clipboardElementCount: Int
     let clipboardID: String?
 }
 
-/// Actual editable context only. Audio assets and export are unavailable to this
-/// bounded interface; this snapshot does not imply the rest of the app lacks them.
+/// Actual editable context only. Existing managed clip settings are supported;
+/// audio asset import, rendering and export remain separate bounded interfaces.
 struct StudioCommandContext {
     struct Frame {
         let id: String
@@ -252,6 +257,7 @@ struct StudioCommandContext {
     let frames: [Frame]
     let layers: [CanvasLayer]
     let editableAudioClips: [AudioClip]
+    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades"]
     let supportedTools: [DrawingTool]
     let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
 
@@ -309,6 +315,7 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "updateAudioClip": ["clipID", "settings"],
             "deleteImage": ["frame", "assetID"],
             "updateImagePlacement": ["frame", "assetID", "placement"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
@@ -336,6 +343,13 @@ enum StudioCommandExecutor {
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
+            if kind == "updateAudioClip" {
+                guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
+                let values = try object(settings, keys: ["volume", "isMuted", "fades"])
+                if let fades = values["fades"] {
+                    _ = try object(fades, keys: ["fadeIn", "fadeOut"])
+                }
+            }
             if kind == "updateImagePlacement" {
                 guard let placement = fields["placement"] else { throw StudioCommandError.malformed }
                 _ = try object(placement, keys: ["x", "y", "width", "height"])
@@ -478,6 +492,8 @@ enum StudioCommandExecutor {
         func frame(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .frame, document: document, created: created) }
         func layer(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .layer, document: document, created: created) }
         switch command {
+        case .updateAudioClip(let value):
+            try editor.updateAudioClip(value.clipID, settings: value.settings)
         case .draw(let draw):
             let frameID = try frame(draw.frame), layerID = try layer(draw.layer)
             guard !draw.strokes.isEmpty, draw.strokes.count <= maximumStrokes - budget.strokes else { throw StudioCommandError.limitExceeded }
@@ -641,6 +657,11 @@ enum StudioCommandExecutor {
             createdFrameIDs: added(oldFrames, newFrames), deletedFrameIDs: added(newFrames, oldFrames),
             createdLayerIDs: added(oldLayers, newLayers), deletedLayerIDs: added(newLayers, oldLayers),
             createdElementIDs: added(oldElements, newElements), deletedElementIDs: added(newElements, oldElements),
+            changedAudioClipIDs: final.audioClips.filter { clip in
+                original.audioClips.first(where: { $0.id == clip.id }) != clip
+            }.map(\.id) + original.audioClips.filter { clip in
+                !final.audioClips.contains(where: { $0.id == clip.id })
+            }.map(\.id),
             clipboardElementCount: clipboardElementCount, clipboardID: clipboardID)
     }
 }

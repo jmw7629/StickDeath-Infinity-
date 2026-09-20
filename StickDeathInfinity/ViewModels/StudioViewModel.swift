@@ -347,6 +347,10 @@ final class StudioViewModel: ObservableObject {
         let clipboardVersion = editor.clipboardVersion
         var candidate = editor
         let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
+        if candidate.document.audioClips != document.audioClips {
+            guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before applying audio edits.") }
+            _ = try audioTracksForSave(candidate.document)
+        }
         try preflightRasterDocument(candidate.document)
         try checkCancellation()
         // A caller's synchronous cancellation probe may also change the live
@@ -356,6 +360,9 @@ final class StudioViewModel: ObservableObject {
         guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
         guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
         guard editor.clipboardVersion == clipboardVersion else { throw StudioCommandError.staleClipboard }
+        if candidate.document.audioClips != document.audioClips, isPlaying {
+            throw StudioDocumentError.unavailable("Playback started while preparing audio edits. Nothing changed.")
+        }
         clearMissingImageMoveTarget(in: candidate.document)
         editor = candidate
         if receipt.outcome != .unchanged {
@@ -1273,9 +1280,14 @@ final class StudioViewModel: ObservableObject {
         }
         guard clip != document.audioClips[index] else { return }
         var candidate = editor
-        try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 4)
-            value.audioClips[index] = clip
+        switch edit {
+        case .volume(let value): try candidate.updateAudioClip(id, settings: .init(volume: value))
+        case .mute(let value): try candidate.updateAudioClip(id, settings: .init(isMuted: value))
+        default:
+            try candidate.change { value in
+                value.schemaVersion = max(value.schemaVersion, 4)
+                value.audioClips[index] = clip
+            }
         }
         try preflightRasterDocument(candidate.document)
         _ = try audioTracksForSave(candidate.document)
@@ -1334,26 +1346,13 @@ final class StudioViewModel: ObservableObject {
         guard prepareAudioFades() == capture else {
             throw StudioDocumentError.unavailable("The selected clip or project changed. Reopen its fade options.")
         }
-        let clip = capture.selection.clip, rate = StudioAudioTimelineGeometry.sampleRate
-        guard fadeIn.isFinite, fadeOut.isFinite, fadeIn >= 0, fadeOut >= 0,
-              fadeIn <= clip.duration, fadeOut <= clip.duration, fadeIn + fadeOut <= clip.duration else {
-            throw AudioFadeEnvelope.Failure.invalid
-        }
-        let start = Int((clip.sourceOffset * rate).rounded())
-        let count = Int(((clip.startTime + clip.duration) * rate).rounded() - (clip.startTime * rate).rounded())
-        let incoming = Int((fadeIn * rate).rounded()), outgoing = Int((fadeOut * rate).rounded())
-        let envelope: AudioFadeEnvelope? = incoming == 0 && outgoing == 0 ? nil : .init(
-            sourceStartFrame: start, frameCount: count, fadeInFrames: incoming, fadeOutFrames: outgoing)
-        try envelope?.validate()
-        guard clip.fadeEnvelope != envelope else { return }
+        let clip = capture.selection.clip
         guard let index = document.audioClips.firstIndex(where: { $0.id == clip.id }) else {
             throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
         }
         var candidate = editor
-        try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 14)
-            value.audioClips[index].fadeEnvelope = envelope
-        }
+        try candidate.updateAudioClip(clip.id, settings: .init(fades: .init(fadeIn: fadeIn, fadeOut: fadeOut)))
+        guard candidate.document != document else { return }
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
         guard prepareAudioFades() == capture else {
@@ -1378,10 +1377,7 @@ final class StudioViewModel: ObservableObject {
         }
         guard capture.selection.clip.volume != volume else { return }
         var candidate = editor
-        try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 4)
-            value.audioClips[index].volume = volume
-        }
+        try candidate.updateAudioClip(capture.selection.clip.id, settings: .init(volume: volume))
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
         guard prepareAudioClipVolume() == capture else {

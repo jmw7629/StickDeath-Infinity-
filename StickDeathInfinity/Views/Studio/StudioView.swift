@@ -815,7 +815,7 @@ struct SpatterAISheet: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
-                    Button("Create local motion…") { showLocalRecipe = true }
+                    Button("Local Studio edits…") { showLocalRecipe = true }
                         .font(.caption).foregroundColor(.red)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.local-motion")

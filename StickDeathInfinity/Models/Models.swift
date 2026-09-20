@@ -550,6 +550,20 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
     }
 }
 
+/// Optional values preserve existing settings. A pair of zero fade durations
+/// explicitly clears the envelope; omission preserves its original source phase.
+struct StudioAudioClipSettings: Codable, Equatable {
+    struct Fades: Codable, Equatable {
+        let fadeIn: Double
+        let fadeOut: Double
+    }
+    var volume: Double? = nil
+    var isMuted: Bool? = nil
+    var fades: Fades? = nil
+
+
+}
+
 /// One validated command is committed per finished gesture, never per drag tick.
 enum StudioAudioClipEdit: Equatable {
     case place(start: Double, track: Int)

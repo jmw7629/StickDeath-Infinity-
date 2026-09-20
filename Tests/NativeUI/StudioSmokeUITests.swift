@@ -2017,6 +2017,85 @@ final class StudioSmokeUITests: XCTestCase {
     /// A different complete instruction from the example must create real
     /// editable content and a decoded exported file through ordinary controls.
     @MainActor
+    func testSpatterSelectedAudioVolumeUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                                  evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5))
+        try waitForStableCanvas(app.descendants(matching: .any)["studio.canvas"].firstMatch)
+        func audioControl(_ identifier: String, in target: XCUIApplication, towardBottom: Bool) throws -> XCUIElement {
+            let element = target.descendants(matching: .any)[identifier].firstMatch
+            let scroll = target.scrollViews["studio.audio.compact.scroll"]
+            XCTAssertTrue(scroll.waitForExistence(timeout: 8))
+            for _ in 0..<4 {
+                if element.exists && element.isHittable { break }
+                if towardBottom { scroll.swipeUp(velocity: .slow) }
+                else { scroll.swipeDown(velocity: .slow) }
+            }
+            XCTAssertTrue(element.exists && element.isHittable, "Audio inspector control unavailable: \(identifier)")
+            return element
+        }
+        func openAudio(_ target: XCUIApplication) {
+            let button = target.buttons["studio.audio.open"]
+            XCTAssertTrue(button.waitForExistence(timeout: 8) && button.isHittable); button.tap()
+        }
+        func closeAudio(_ target: XCUIApplication) throws {
+            try audioControl("studio.audio.close", in: target, towardBottom: false).tap()
+        }
+        func assertVolume(_ expected: String, in target: XCUIApplication) throws {
+            let slider = try audioControl("studio.audio.volume", in: target, towardBottom: true)
+            XCTAssertEqual(slider.value as? String, expected)
+            XCTAssertEqual(target.buttons["studio.audio.clip-mute"].label, "Mute selected clip")
+        }
+        openAudio(app)
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5) && library.isHittable); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        app.buttons["studio.audio.library.close"].tap()
+        try assertVolume("80 percent", in: app); try closeAudio(app)
+        app.buttons["studio.menu.open"].tap()
+        let spatter = app.buttons["studio.spatter.open"]
+        XCTAssertTrue(spatter.waitForExistence(timeout: 8)); spatter.tap()
+        let local = app.buttons["spatter.studio.local-motion"]
+        XCTAssertTrue(local.waitForExistence(timeout: 8) && local.isHittable); local.tap()
+        try localMotionControl("spatter.audio.examples", app: app).tap()
+        let example = app.buttons["spatter.audio.example.volume"]
+        XCTAssertTrue(example.waitForExistence(timeout: 5) && example.isHittable); example.tap()
+        let input = try localMotionControl("spatter.motion.input", app: app)
+        XCTAssertEqual(input.value as? String, "Set selected audio clip volume to 40%.")
+        try localMotionControl("spatter.motion.apply", app: app).tap()
+        let receipt = try localMotionControl("spatter.motion.result", app: app)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
+            "Updated the selected audio clip in one undoable local edit."),
+            evaluatedWith: receipt).waitUntilFulfilled(timeout: 8))
+        capture(app, name: "spatter-selected-audio-volume-receipt")
+        let back = app.buttons["spatter.motion.back"]
+        XCTAssertTrue(back.isHittable); back.tap()
+        let done = app.buttons["spatter.studio.close"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5) && done.isHittable); done.tap()
+        openAudio(app); try assertVolume("40 percent", in: app); try closeAudio(app)
+        app.buttons["studio.undo"].tap()
+        openAudio(app); try assertVolume("80 percent", in: app); try closeAudio(app)
+        app.buttons["studio.redo"].tap()
+        openAudio(app); try assertVolume("40 percent", in: app); try closeAudio(app)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap(); openAudio(reopened)
+        try audioControl("studio.audio.clip-picker", in: reopened, towardBottom: false).tap()
+        let clip = reopened.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.select-clip.")).firstMatch
+        XCTAssertTrue(clip.waitForExistence(timeout: 5) && clip.isHittable); clip.tap()
+        try assertVolume("40 percent", in: reopened)
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        capture(reopened, name: "spatter-selected-audio-volume-cold-reopened")
+    }
+
+    @MainActor
     func testSpatterLocalMotionEditsExportsAndReopens() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -2693,9 +2772,20 @@ final class StudioSmokeUITests: XCTestCase {
         try exportControl("studio.export.share", app: app).tap()
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
-        XCTAssertTrue(files.waitForExistence(timeout: 10) && files.isHittable)
-        capture(app, name: "mp4-bundled-audio-native-share")
         let dismiss = nativeShare.buttons["header.closeButton"]
+        // Run35527329460 recorded the real MP4 share sheet and Save to Files,
+        // but the action's first AX snapshots had no application children.
+        // Wait for usable remote actions within the existing ten-second bound.
+        // Do not retap Share, use coordinates, skip or substitute an app mock.
+        let shareReady = expectation(for: NSPredicate { _, _ in
+            nativeShare.exists && files.exists && files.isHittable && dismiss.isHittable
+        }, evaluatedWith: nil).waitUntilFulfilled(timeout: 10)
+        if !shareReady {
+            capture(app, name: "mp4-native-share-readiness-failure")
+            captureHierarchy(app, name: "mp4-native-share-readiness-failure-hierarchy")
+        }
+        XCTAssertTrue(shareReady, "Native MP4 share actions did not become accessible")
+        capture(app, name: "mp4-bundled-audio-native-share")
         XCTAssertTrue(dismiss.isHittable); dismiss.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: dismiss).waitUntilFulfilled(timeout: 8))
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Sharing cancelled. The MP4 remains available."), evaluatedWith: status).waitUntilFulfilled(timeout: 8))

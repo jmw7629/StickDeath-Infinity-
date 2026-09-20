@@ -219,6 +219,44 @@ enum StudioDocumentError: LocalizedError {
     }
 }
 
+// Settings remain a standalone Codable transport model. Editor validation
+// belongs here so native model/storage stages do not depend on the editor.
+extension StudioAudioClipSettings {
+    func applying(to clip: AudioClip) throws -> AudioClip {
+        guard clip.assetID != nil else {
+            throw StudioDocumentError.unavailable("This clip has no managed audio source. Import playable audio before editing its settings.")
+        }
+        guard volume != nil || isMuted != nil || fades != nil else {
+            throw StudioDocumentError.invalid("Specify an audio setting to change.")
+        }
+        var result = clip
+        if let volume {
+            guard volume.isFinite, (0...1).contains(volume) else {
+                throw StudioDocumentError.invalid("Clip volume must be between 0% and 100%.")
+            }
+            result.volume = volume
+        }
+        if let isMuted { result.isMuted = isMuted }
+        if let fades {
+            let incoming = fades.fadeIn, outgoing = fades.fadeOut
+            guard incoming.isFinite, outgoing.isFinite, incoming >= 0, outgoing >= 0,
+                  clip.duration.isFinite, clip.duration > 0, clip.duration <= 300,
+                  clip.startTime.isFinite, (0...1000).contains(clip.startTime),
+                  clip.sourceOffset.isFinite, (0...300).contains(clip.sourceOffset),
+                  incoming <= clip.duration, outgoing <= clip.duration,
+                  incoming + outgoing <= clip.duration else { throw AudioFadeEnvelope.Failure.invalid }
+            let rate = StudioAudioTimelineGeometry.sampleRate
+            let start = Int((clip.sourceOffset * rate).rounded())
+            let count = Int(((clip.startTime + clip.duration) * rate).rounded() - (clip.startTime * rate).rounded())
+            let inFrames = Int((incoming * rate).rounded()), outFrames = Int((outgoing * rate).rounded())
+            result.fadeEnvelope = inFrames == 0 && outFrames == 0 ? nil : .init(
+                sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames)
+            try result.fadeEnvelope?.validate()
+        }
+        return result
+    }
+}
+
 /// Production commands used by the UI and suitable for validated Spatter commands.
 /// A failed command leaves the entire document and undo history unchanged.
 struct StudioDocumentEditor {
@@ -265,6 +303,21 @@ struct StudioDocumentEditor {
         undoDocuments.append(previous)
         trimHistory()
         redoDocuments.removeAll(); document = next
+    }
+
+    /// Shared by manual controls and the bounded assistant command transport.
+    /// The host validates real asset bytes before publishing this staged editor.
+    mutating func updateAudioClip(_ id: String, settings: StudioAudioClipSettings) throws {
+        guard !id.isEmpty, id.count <= 120,
+              let index = document.audioClips.firstIndex(where: { $0.id == id }) else {
+            throw StudioDocumentError.invalid("Choose an existing audio clip in this project.")
+        }
+        let original = document.audioClips[index], updated = try settings.applying(to: original)
+        guard updated != original else { return }
+        try change { value in
+            value.schemaVersion = max(value.schemaVersion, original.fadeEnvelope != updated.fadeEnvelope ? 14 : 4)
+            value.audioClips[index] = updated
+        }
     }
 
     @discardableResult

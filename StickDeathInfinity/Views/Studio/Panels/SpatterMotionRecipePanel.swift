@@ -35,17 +35,17 @@ struct SpatterMotionRecipePanel: View {
                 Button("Back to advice") { session.close(); onBack() }
                     .accessibilityIdentifier("spatter.motion.back")
                 Spacer()
-                Text("LOCAL MOTION").font(.system(.caption, design: .monospaced).bold())
+                Text("LOCAL EDITS").font(.system(.caption, design: .monospaced).bold())
             }
             .foregroundColor(.red).padding(16)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Create editable circle motion")
+                    Text("Create motion or edit audio")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text("This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit.")
                         .font(.subheadline)
-                    Text("Use the complete form below. Other shapes, free-form briefs, video and audio generation are unfinished. This operation stays on this device.")
+                    Text("Use a complete motion or selected-audio instruction. Other shapes, free-form briefs, video and audio generation are unfinished. These edits stay on this device.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
                     Text(example).font(.system(.caption, design: .monospaced))
@@ -54,6 +54,19 @@ struct SpatterMotionRecipePanel: View {
                     Button("Use example in draft") { draft = example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
+                    Menu("Use an audio instruction") {
+                        ForEach(SpatterAudioInstruction.Example.allCases) { example in
+                            Button(example.title) { draft = example.instruction }
+                                .accessibilityIdentifier("spatter.audio.example." + example.id)
+                        }
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.audio.examples")
+                    Text(vm.selectedCurrentAudioClip.map { "Audio target: " + $0.soundName }
+                         ?? "For audio edits, select a clip in Audio before opening Spatter.")
+                        .font(.caption).foregroundColor(.white.opacity(0.7))
+                        .accessibilityIdentifier("spatter.audio.target")
                     Text("Positions use canvas percentages. Radius uses the shorter canvas side; line width is in pixels. The full outline must fit inside the canvas.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
@@ -63,12 +76,12 @@ struct SpatterMotionRecipePanel: View {
                         .frame(minHeight: 150)
                         .padding(8).background(Color(hex: "1A1A24")).cornerRadius(10)
                         .disabled(session.isWorking || session.isClosed)
-                        .accessibilityLabel("Local motion instruction")
+                        .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
                     Text("\(draft.utf8.count) / 1,024 bytes · \(vm.fps) FPS")
                         .font(.caption).foregroundColor(.white.opacity(0.6))
-                    Button("Add editable frames") {
+                    Button("Apply local edit") {
                         draftFocused = false
                         let submitted = draft
                         let account = authVM.userId
@@ -101,7 +114,7 @@ struct SpatterMotionRecipePanel: View {
                         }
                         .disabled(!receiptIsCurrent || vm.isSaving)
                         .accessibilityIdentifier("spatter.motion.export")
-                        Text("Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio. A file is created only when export finishes. GIF and direct publishing are unavailable.")
+                        Text("Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio, or GIF for an animated image. A file is created only when export finishes. Direct publishing is unfinished.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                     }
                     if let message = vm.message {

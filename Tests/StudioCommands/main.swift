@@ -45,6 +45,103 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            func audioEditor() throws -> StudioDocumentEditor {
+                var value = try StudioDocument.new(name: "Audio command fixture", width: 512, height: 512, fps: 12)
+                value.schemaVersion = 13
+                let asset = UUID()
+                value.audioClips = [
+                    .init(id: "first-audio", soundName: "Managed fixture", track: 2, startTime: 0.25,
+                          duration: 1, volume: 0.8, assetID: asset, sourceOffset: 0.5),
+                    .init(id: "second-audio", soundName: "Shared original", track: 3, startTime: 1.5,
+                          duration: 1, volume: 0.6, assetID: asset)
+                ]
+                value.mutedAudioTracks = [2]; value.audioTrackVolumes = [1, 0.4, 0.7, 1]
+                return try .init(document: value)
+            }
+            func audioCommand(_ settings: StudioAudioClipSettings, id: String = "first-audio") -> StudioCommand {
+                .updateAudioClip(.init(clipID: id, settings: settings))
+            }
+            try test("strict audio wire and drawn artwork form one reversible whole-document transaction") {
+                var editor = try audioEditor(); let before = editor.document
+                let change = request(editor, .apply([draw(editor, [stroke(id: "audio-batch-drawing")]),
+                    audioCommand(.init(volume: 0.3, isMuted: true, fades: .init(fadeIn: 0.25, fadeOut: 0.5)))]))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(change))
+                let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor), after = editor.document
+                let clip = after.audioClips[0]
+                try require(clip.volume == 0.3 && clip.isMuted && clip.fadeEnvelope == .init(sourceStartFrame: 24_000,
+                    frameCount: 48_000, fadeInFrames: 12_000, fadeOutFrames: 24_000), "wrong source-bound settings")
+                try require(after.audioClips[1] == before.audioClips[1] && after.mutedAudioTracks == before.mutedAudioTracks
+                    && after.audioTrackVolumes == before.audioTrackVolumes, "audio command changed another clip or lane")
+                try require(after.revision == before.revision + 1 && after.schemaVersion == 14
+                    && receipt.changedAudioClipIDs == ["first-audio"] && receipt.createdElementIDs == ["audio-batch-drawing"], "incorrect receipt")
+                editor.undo(); try require(content(editor.document) == content(before), "one Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "one Redo failed")
+            }
+            try test("partial audio settings preserve fades and clearing fades is explicit and idempotent") {
+                var editor = try audioEditor()
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(fades: .init(fadeIn: 0.25, fadeOut: 0.5)))])), editor: &editor)
+                let envelope = editor.document.audioClips[0].fadeEnvelope
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(isMuted: true))])), editor: &editor)
+                try require(editor.document.audioClips[0].fadeEnvelope == envelope && editor.document.audioClips[0].volume == 0.8, "mute rewrote omitted values")
+                let before = editor.document
+                let noOp = try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(isMuted: true))])), editor: &editor)
+                try require(editor.document == before && noOp.outcome == .unchanged && noOp.changedAudioClipIDs.isEmpty, "no-op invented a revision")
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(fades: .init(fadeIn: 0, fadeOut: 0)))])), editor: &editor)
+                try require(editor.document.audioClips[0].fadeEnvelope == nil && editor.document.audioClips[0].isMuted, "clear altered unrelated settings")
+                editor.undo(); try require(content(editor.document) == content(before), "cleared envelope did not undo")
+            }
+            try test("audio invalid identity legacy missing assets malformed values and late failure reject atomically") {
+                var editor = try audioEditor()
+                for settings in [StudioAudioClipSettings(), .init(volume: -0.01), .init(volume: 1.01),
+                    .init(volume: .nan), .init(volume: .infinity),
+                    .init(fades: .init(fadeIn: -0.1, fadeOut: 0)), .init(fades: .init(fadeIn: .nan, fadeOut: 0)),
+                    .init(fades: .init(fadeIn: 0.6, fadeOut: 0.6)), .init(fades: .init(fadeIn: 0, fadeOut: .infinity))] {
+                    try rejected(request(editor, .apply([draw(editor, [stroke(id: "must-rollback")]), audioCommand(settings)])), editor: &editor)
+                }
+                for id in ["", "foreign", String(repeating: "a", count: 121)] {
+                    try rejected(request(editor, .apply([audioCommand(.init(volume: 0.5), id: id)])), editor: &editor)
+                }
+                try rejected(request(editor, .apply([audioCommand(.init(volume: 0.5)), audioCommand(.init(volume: 2))])), editor: &editor)
+                var legacy = try fresh()
+                try rejected(request(legacy, .apply([audioCommand(.init(volume: 0.5), id: "retained-audio-metadata")])), editor: &legacy)
+            }
+            try test("audio wire rejects unknown and wrongly typed nested arguments instead of ignoring them") {
+                let editor = try audioEditor()
+                let data = try JSONEncoder().encode(request(editor, .apply([audioCommand(.init(volume: 0.5))])))
+                let base = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                let invalid: [[String: Any]] = [
+                    ["volume": 0.5, "shell": "ignore authorization"], ["volume": "0.5"],
+                    ["volume": true], ["isMuted": "false"],
+                    ["fades": ["fadeIn": 0.2]],
+                    ["fades": ["fadeIn": 0.2, "fadeOut": 0.2, "curve": "execute"]],
+                    ["fades": NSNull()]
+                ]
+                for settings in invalid {
+                    var object = base
+                    object["action"] = ["apply": [["updateAudioClip": ["clipID": "first-audio", "settings": settings]]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "malformed audio wire accepted") }
+                    catch is StudioCommandError { }
+                }
+            }
+            try test("cancelled audio batches preserve history and reject replay and foreign projects") {
+                var editor = try audioEditor()
+                let original = editor.document, undo = editor.canUndo, redo = editor.canRedo
+                let change = request(editor, .apply([audioCommand(.init(volume: 0.5)), audioCommand(.init(isMuted: true))]))
+                for checkpoint in 1...4 {
+                    var calls = 0
+                    do {
+                        try StudioCommandExecutor.execute(change, editor: &editor, checkCancellation: {
+                            calls += 1; if calls == checkpoint { throw CancellationError() }
+                        }); throw Failure(message: "cancelled audio batch committed")
+                    } catch is CancellationError { }
+                    try require(editor.document == original && editor.canUndo == undo && editor.canRedo == redo, "cancel changed history")
+                }
+                var foreign = change; foreign = .init(requestID: foreign.requestID, projectID: UUID(), expectedRevision: foreign.expectedRevision, action: foreign.action)
+                try rejected(foreign, editor: &editor, expected: .wrongProject)
+                try StudioCommandExecutor.execute(change, editor: &editor)
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades"], "capability context omitted implemented settings")
+            }
             func imageEditor() throws -> StudioDocumentEditor {
                 var editor = try fresh()
                 try editor.change { value in

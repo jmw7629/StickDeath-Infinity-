@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import AVFoundation
 
 private struct Failure: Error { let message: String }
 private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
@@ -369,6 +370,147 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .rejected && session.notice?.contains("too large") == true
                 && session.appliedEdit == nil && session.submittedDraft == red && vm.document == before && !vm.isDirty && !vm.canUndo,
                 "Work-limit failure changed existing data or produced a false receipt")
+        }
+        func audioFixture(_ name: String) async throws -> (StudioViewModel, DeviceStorageManager, AudioTrack, String) {
+            let (vm, store) = try await fixture(name)
+            let source = root.appendingPathComponent(name + ".wav")
+            let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2)!
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48_000)!; buffer.frameLength = 48_000
+            for i in 0..<48_000 { buffer.floatChannelData![0][i] = 0.25; buffer.floatChannelData![1][i] = -0.5 }
+            do { let file = try AVAudioFile(forWriting: source, settings: format.settings); try file.write(from: buffer) }
+            let track = AudioTrack(id: UUID(), name: "Measured local test audio", format: "wav", audioData: try Data(contentsOf: source), startTime: 0, duration: 1)
+            let id = try vm.attachImportedAudio(track, expectedProjectID: vm.document.id, expectedRevision: vm.document.revision,
+                                               frameID: vm.document.activeFrameID, trackNumber: 1)
+            await vm.flush()
+            return (vm, store, track, id)
+        }
+        func samples(_ output: StudioAudioMixService.Output) throws -> [[Float]] {
+            let file = try AVAudioFile(forReading: output.checkedURL())
+            let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
+            try file.read(into: buffer)
+            return (0..<2).map { Array(UnsafeBufferPointer(start: buffer.floatChannelData![$0], count: Int(buffer.frameLength))) }
+        }
+        try await test("explicit selected audio instructions reach real PCM history save and cold reopen") {
+            let (vm, store, source, clipID) = try await audioFixture("audio-complete")
+            let initial = vm.document, session = SpatterStudioEditSession()
+            let volume = "Set selected audio clip volume to 42.5%."
+            try require(session.submit(volume, in: vm, accountID: nil, currentScope: { guest }), "volume submission rejected")
+            await session.waitForCompletion()
+            guard let result = session.appliedEdit else { throw Failure(message: session.notice ?? "volume receipt missing") }
+            try require(session.status == .applied && result.isAudioEdit && result.addedFrameCount == 0
+                && result.receipt.changedAudioClipIDs == [clipID] && vm.audioClips[0].volume == 0.425
+                && result.summary == "Updated the selected audio clip in one undoable local edit."
+                && session.submittedDraft == volume && vm.document.revision == initial.revision + 1, "false audio receipt or ignored volume")
+            let changed = vm.document
+            vm.undo(); try require(content(vm.document) == content(initial), "one audio Undo lost full project")
+            vm.redo(); try require(content(vm.document) == content(changed), "one audio Redo lost full project")
+            try require(session.submit("Fade selected audio clip in over 0.2 seconds and out over 0.3 seconds.", in: vm, accountID: nil, currentScope: { guest }), "fade submission rejected")
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.audioClips[0].fadeEnvelope == .init(sourceStartFrame: 0,
+                frameCount: 48_000, fadeInFrames: 9_600, fadeOutFrames: 14_400), "fade prompt ignored")
+            let output = try await StudioAudioMixService().mix(document: vm.document, retainedAudioTracks: vm.projectAudioTracks,
+                durationSeconds: 1.25, outputParent: root)
+            defer { try? output.cleanup() }; let data = try samples(output)
+            for n in 0..<48_000 {
+                let gain = min(1, Double(n) / 9_600, Double(47_999 - n) / 14_400)
+                try require(abs(Double(data[0][n]) - 0.10625 * gain) < 0.00001
+                    && abs(Double(data[1][n]) + 0.2125 * gain) < 0.00001, "Spatter audio PCM mismatch at \(n)")
+            }
+            try require(data[0].count == 60_000 && data[0][48_000...].allSatisfy { $0 == 0 }
+                && data[1][48_000...].allSatisfy { $0 == 0 }, "Spatter audio outside clip")
+            try require(await vm.save(), "actual audio instruction save failed")
+            try require(session.saveState(in: vm, currentScope: guest) == .saved, "save state was not factual")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            try require(await cold.openProject(cold.savedProjects.first { $0.id == vm.document.id }!), "cold reopen failed")
+            try require(cold.document == vm.document && cold.projectAudioTracks[0].audioData == source.audioData
+                && vm.frames == initial.frames && vm.layers == initial.layers, "audio instructions changed source or artwork")
+            await cold.flush(); await vm.flush()
+        }
+        try await test("audio mute unmute clear and no-op report actual effects without inventing frames") {
+            let (vm, _, source, clipID) = try await audioFixture("audio-options"), session = SpatterStudioEditSession()
+            for prompt in ["Mute selected audio clip.", "Unmute selected audio clip.",
+                           "Fade selected audio clip in over 0.1 seconds and out over 0.2 seconds.", "Clear selected audio clip fades."] {
+                try require(session.submit(prompt, in: vm, accountID: nil, currentScope: { guest }), "audio option rejected")
+                await session.waitForCompletion()
+                try require(session.status == .applied && session.appliedEdit?.isAudioEdit == true
+                    && session.appliedEdit?.receipt.changedAudioClipIDs == [clipID], "audio option invented no-op/success")
+                if prompt.hasPrefix("Mute") {
+                    let output = try await StudioAudioMixService().mix(document: vm.document, retainedAudioTracks: vm.projectAudioTracks,
+                        durationSeconds: 1, outputParent: root)
+                    defer { try? output.cleanup() }
+                    try require(try samples(output).flatMap { $0 }.allSatisfy { $0 == 0 }, "audio instruction mute not real silence")
+                }
+            }
+            try require(!vm.audioClips[0].isMuted && vm.audioClips[0].fadeEnvelope == nil
+                && vm.projectAudioTracks[0].audioData == source.audioData, "audio options lost source or wrong state")
+            let before = vm.document
+            try require(session.submit("Clear selected audio clip fades.", in: vm, accountID: nil, currentScope: { guest }), "no-op not scheduled")
+            await session.waitForCompletion()
+            try require(vm.document == before && session.appliedEdit?.receipt.outcome == .unchanged
+                && session.notice == "The selected audio clip already matches this instruction. Nothing changed.", "audio no-op invented edits")
+            await vm.flush()
+        }
+        try await test("audio selection account scope and intervening revision invalidate prepared instructions") {
+            for change in ["selection", "account", "screen", "revision", "playback"] {
+                let (vm, _, _, clipID) = try await audioFixture("audio-stale-" + change)
+                _ = try vm.duplicateAudioClip(vm.prepareAudioDuplication()!); vm.selectedAudioClip = vm.audioClips.first { $0.id == clipID }
+                await vm.flush()
+                let before = vm.document, gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                var account: String? = nil, visible = true
+                try require(session.submit("Set selected audio clip volume to 20%.", in: vm, accountID: account,
+                    currentScope: { .init(isStudioVisible: visible, accountID: account) }), "audio stale fixture not scheduled")
+                try await reachSecond(gate)
+                switch change {
+                case "selection": vm.selectedAudioClip = vm.audioClips.last
+                case "account": account = "different-account"
+                case "screen": visible = false
+                case "revision": try vm.setAudioClipVolume(vm.prepareAudioClipVolume()!, volume: 0.7)
+                case "playback": vm.displayAudioPlaybackTime(0, playing: true)
+                default: break
+                }
+                let intervening = vm.document
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.status == .stale && session.appliedEdit == nil && vm.document == intervening
+                    && vm.audioClips[0].volume != 0.2, "stale audio instruction overwrote current editor")
+                if change != "revision" { try require(vm.document == before, "non-edit scope change rewrote project") }
+                vm.stopPlayback(); await vm.flush()
+            }
+        }
+        try await test("audio cancellation and closing at both checkpoints preserve draft source and history") {
+            for boundary in 1...2 { for close in [false, true] {
+                let (vm, _, source, _) = try await audioFixture("audio-cancel-\(boundary)-\(close)")
+                let before = vm.document, gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                let draft = "Mute selected audio clip."
+                try require(session.submit(draft, in: vm, accountID: nil, currentScope: { guest }), "audio cancel not scheduled")
+                if boundary == 2 { try await reachSecond(gate) } else { try await gate.waitFor(1) }
+                if close { session.close() } else { try require(session.cancel(), "audio cancellation failed") }
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (close ? .closed : .cancelled) && session.appliedEdit == nil
+                    && session.submittedDraft == draft && vm.document == before
+                    && vm.projectAudioTracks[0].audioData == source.audioData, "cancelled audio command changed document/source/draft")
+                await vm.flush()
+            } }
+        }
+        try await test("audio unavailable selection overlong fades unsupported suffixes and playback have no success receipt") {
+            let (vm, _, _, clipID) = try await audioFixture("audio-rejected"), session = SpatterStudioEditSession()
+            let before = vm.document
+            for draft in ["Set selected audio clip volume to 101%.", "Mute selected audio clip. and publish",
+                          "Fade selected audio clip in over 0.6 seconds and out over 0.6 seconds."] {
+                try require(session.submit(draft, in: vm, accountID: nil, currentScope: { guest }), "bounded bad draft not scheduled")
+                await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before,
+                    "bad audio draft executed a prefix or produced receipt")
+            }
+            vm.selectedAudioClip = nil
+            try require(session.submit("Mute selected audio clip.", in: vm, accountID: nil, currentScope: { guest }), "missing selection not scheduled")
+            await session.waitForCompletion(); try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before,
+                                                          "missing selection silently chose another clip")
+            vm.selectedAudioClip = vm.audioClips.first { $0.id == clipID }; vm.displayAudioPlaybackTime(0, playing: true)
+            try require(session.submit("Mute selected audio clip.", in: vm, accountID: nil, currentScope: { guest }), "playback not scheduled")
+            await session.waitForCompletion()
+            try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before && vm.isPlaying,
+                        "audio instruction altered playing project")
+            vm.stopPlayback(); await vm.flush()
         }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
