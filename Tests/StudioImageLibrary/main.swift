@@ -168,6 +168,45 @@ private final class NetworkTrap: URLProtocol {
                 try require(try await exported(reopened) == pixels, "New pack cold reopen changed PNG pixels")
             }
         }
+        try await test("image layer rename preserves actual pixels rights identity and cold-reopened name") {
+            let (editor, storage) = try await fixture(), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image fixture Add failed")
+            let imageID = session.appliedImage!.assetID, layerID = editor.currentFrame.rasterLayerID!
+            editor.selectLayer(layerID)
+            let before = editor.document, originalName = editor.layers.first { $0.id == layerID }!.name
+            let pixels = try await exported(editor), capture = editor.prepareLayerRename(layerID)!
+            try require(editor.document == before, "Preparing rename edited the project")
+            try require(editor.renameLayer(capture, to: "  Hero 💀  "), "Explicit rename failed")
+            try require(editor.layers.first { $0.id == layerID }?.name == "Hero 💀", "Name was not trimmed or stable ID changed")
+            try require(editor.document.frames == before.frames && editor.document.audioClips == before.audioClips, "Rename changed content ownership")
+            try require(try await exported(editor) == pixels, "Renaming changed actual PNG pixels")
+            try require(editor.originalImageSource(imageID)?.originalData == original && editor.originalImageSource(imageID)?.catalogueAttribution == provenance, "Renaming lost original bytes/rights")
+            editor.undo();try require(editor.layers.first { $0.id == layerID }?.name == originalName, "One Undo did not restore name")
+            editor.redo();try require(editor.layers.first { $0.id == layerID }?.name == "Hero 💀", "One Redo did not restore name")
+            try require(await editor.save(), "Renamed project save failed")
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Renamed project cold reopen failed")
+            try require(reopened.layers.first { $0.id == layerID }?.name == "Hero 💀" && reopened.currentFrame.rasterLayerID == layerID, "Cold reopen lost layer name or ownership")
+            try require(try await exported(reopened) == pixels, "Cold reopen changed actual image pixels")
+        }
+        try await test("layer rename cancels without editing and rejects invalid stale and changed-selection drafts") {
+            let (editor, _) = try await fixture(), id = editor.document.activeLayerID
+            let initial = editor.document, capture = editor.prepareLayerRename(id)!
+            try require(editor.document == initial, "Preparing/cancelling changed project")
+            for invalid in ["", " ", String(repeating: "a", count: 121), "Hero\nInk"] {
+                try require(!editor.renameLayer(capture, to: invalid) && editor.document == initial, "Invalid name changed project")
+            }
+            try require(editor.renameLayer(capture, to: " Layer 1 ") && editor.document == initial, "Same normalized name created history")
+            editor.addLayer();let second = editor.document.activeLayerID
+            let changed = editor.document
+            try require(!editor.renameLayer(capture, to: "Stale") && editor.document == changed, "Stale rename replaced changed project")
+            let selected = editor.prepareLayerRename(second)!
+            editor.selectLayer(id);let switched = editor.document
+            try require(!editor.renameLayer(selected, to: "Wrong target") && editor.document == switched, "Changed selection renamed previous target")
+            editor.setLayerLockMode(id, mode: .full)
+            let locked = editor.prepareLayerRename(id)!
+            try require(editor.renameLayer(locked, to: "Locked artwork") && editor.layers.first { $0.id == id }!.isFullyLocked, "Metadata rename removed artwork lock")
+        }
         try await test("confirmed image-layer delete retains actual originals for Undo and saves only the selected removal") {
             let (editor,storage)=try await fixture(),session=try await prepare(editor)
             try require(session.apply(currentScope:scope),"Image fixture Add failed")

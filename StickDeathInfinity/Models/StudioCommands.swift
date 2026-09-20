@@ -439,8 +439,9 @@ enum StudioCommandExecutor {
             (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
         }
     }
-    private static func validName(_ value: String) -> Bool {
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.count <= 120
+    static func isValidLayerName(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.count <= 120 &&
+        value.utf8.count <= 4096 && value.rangeOfCharacter(from: .controlCharacters) == nil
     }
     private static func apply(_ command: StudioCommand, editor: inout StudioDocumentEditor,
                               created: inout [String: StudioCommandReceipt.Identity], budget: inout Budget,
@@ -502,7 +503,7 @@ enum StudioCommandExecutor {
         case .selectFrame(let reference): editor.selectFrame(try frame(reference))
         case .addLayer(let value):
             try validateAlias(value.result, created: created)
-            guard validName(value.name) else { throw StudioCommandError.invalidSettings }
+            guard isValidLayerName(value.name) else { throw StudioCommandError.invalidSettings }
             try editor.addLayer()
             let id = editor.document.activeLayerID
             try editor.updateLayer(id) { $0.name = value.name }
@@ -514,7 +515,7 @@ enum StudioCommandExecutor {
             created[value.result] = .init(kind: .layer, id: editor.document.activeLayerID)
         case .updateLayer(let value):
             let id = try layer(value.layer), settings = value.settings
-            guard settings.name.map(validName) ?? true,
+            guard settings.name.map(isValidLayerName) ?? true,
                   settings.opacity.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                   settings.glowColor.map(validColor) ?? true else { throw StudioCommandError.invalidSettings }
             try editor.updateLayer(id) { target in

@@ -978,6 +978,42 @@ final class StudioViewModel: ObservableObject {
     func setLayerColor(_ id: String, color: Color) {
         let hex = Self.hex(color); command { try $0.updateLayer(id) { $0.colorLabel = hex } }
     }
+    struct LayerRenameCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let layerID: String
+        let originalName: String
+    }
+    func canRenameLayer(_ id: String) -> Bool {
+        isEditing && !isPlaying && !isSaving && activeStrokeID == nil &&
+        pendingBrushStroke == nil && textDraft == nil && document.activeLayerID == id &&
+        layers.contains(where: { $0.id == id })
+    }
+    func prepareLayerRename(_ id: String) -> LayerRenameCapture? {
+        guard canRenameLayer(id), let layer = layers.first(where: { $0.id == id }) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, layerID: id, originalName: layer.name)
+    }
+    static func normalizedLayerName(_ proposed: String) -> String? {
+        let name = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        return StudioCommandExecutor.isValidLayerName(name) ? name : nil
+    }
+    @discardableResult
+    func renameLayer(_ capture: LayerRenameCapture, to proposed: String) -> Bool {
+        guard prepareLayerRename(capture.layerID) == capture else {
+            message = "Studio changed while the layer name was being edited. Select the layer again. Nothing was renamed."
+            return false
+        }
+        guard let name = Self.normalizedLayerName(proposed) else {
+            message = "Use 1–120 characters for the layer name, without control characters. Nothing was renamed."
+            return false
+        }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.updateLayer(.init(
+                    layer: .id(capture.layerID), settings: .init(name: name)))])))
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     struct LayerDeleteCapture: Equatable {
         let projectID: UUID
         let revision: Int

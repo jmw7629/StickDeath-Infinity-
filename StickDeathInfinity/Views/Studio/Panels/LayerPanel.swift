@@ -124,6 +124,8 @@ struct LayerRow: View {
             
             // Layer name (red text)
             Text(layer.name)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(Color(hex: "DC2626"))
             
@@ -166,9 +168,22 @@ struct LayerDetailView: View {
     let layer: CanvasLayer
     @State private var draftOpacity: Double?
     @State private var pendingDeletion: StudioViewModel.LayerDeleteCapture?
+    @State private var pendingRename: StudioViewModel.LayerRenameCapture?
+    @State private var proposedName = ""
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Button {
+                guard let capture = vm.prepareLayerRename(layer.id) else { return }
+                proposedName = capture.originalName
+                pendingRename = capture
+            } label: {
+                Label("Rename layer", systemImage: "pencil")
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("studio.layer.rename." + layer.id)
+            .disabled(!vm.canRenameLayer(layer.id))
             // Opacity slider (RED bar)
             HStack {
                 Text("Opacity")
@@ -305,6 +320,18 @@ struct LayerDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(hex: "14141E"))
+        .alert("Rename layer", isPresented: Binding(
+            get: { pendingRename != nil }, set: { if !$0 { pendingRename = nil } }),
+            presenting: pendingRename) { capture in
+                TextField("Layer name", text: $proposedName)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("studio.layer.rename.input")
+                Button("Save name") { _ = vm.renameLayer(capture, to: proposedName); pendingRename = nil }
+                    .disabled(StudioViewModel.normalizedLayerName(proposedName) == nil)
+                Button("Cancel", role: .cancel) { pendingRename = nil }
+            } message: { _ in
+                Text("Use 1–120 characters. Renaming changes the label only; artwork and layer order stay intact.")
+            }
         .confirmationDialog("Delete selected layer?", isPresented: Binding(
             get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
             titleVisibility: .visible, presenting: pendingDeletion) { capture in

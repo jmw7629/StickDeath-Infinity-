@@ -45,6 +45,29 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            try test("layer naming is one actual metadata transaction with Unicode and reversible history") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "named-ink")])])), editor: &editor)
+                let id = editor.document.activeLayerID, before = editor.document
+                let rename = request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: "Hero 💀 é")))]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(rename)), editor: &editor)
+                let after = editor.document
+                try require(after.layers[0].id == id && after.layers[0].name == "Hero 💀 é", "Rename lost identity or Unicode")
+                try require(after.frames == before.frames && after.audioClips == before.audioClips, "Rename changed artwork or audio")
+                try require(after.revision == before.revision + 1 && receipt.createdLayerIDs.isEmpty && receipt.deletedLayerIDs.isEmpty, "Rename invented layer creation/deletion")
+                editor.undo();try require(content(editor.document) == content(before), "Rename Undo changed original content")
+                editor.redo();try require(content(editor.document) == content(after), "Rename Redo changed content")
+            }
+            try test("invalid layer names reject the whole command without metadata or history changes") {
+                var editor = try fresh();let id = editor.document.activeLayerID
+                for name in ["", "   ", String(repeating: "a", count: 121), "Hero\nInk", "Hero\tInk", "Hero\u{0000}", "e" + String(repeating: "\u{0301}", count: 3000)] {
+                    try rejected(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: name)))])), editor: &editor, expected: .invalidSettings)
+                }
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: String(repeating: "a", count: 120))))])), editor: &editor)
+                let before = editor.document
+                let receipt = try StudioCommandExecutor.execute(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: before.layers[0].name)))])), editor: &editor)
+                try require(receipt.outcome == .unchanged && editor.document == before, "Unchanged name created an edit")
+            }
             try test("explicit layer deletion is one multi-frame transaction with real receipt undo and redo") {
                 var editor = try fresh()
                 let keep = editor.document.activeLayerID, first = editor.document.activeFrameID

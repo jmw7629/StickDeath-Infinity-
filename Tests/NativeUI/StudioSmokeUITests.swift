@@ -7,6 +7,56 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testLayerRenameCancelUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app), canvas = prepared.canvas
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let frame = canvas.frame, original = try pixels(canvas.screenshot().image)
+        func showLayers() { app.buttons["studio.layers.open"].tap() }
+        func renameInput() throws -> XCUIElement {
+            let rename = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.layer.rename.")).firstMatch
+            XCTAssertTrue(rename.waitForExistence(timeout: 5))
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: rename).waitUntilFulfilled(timeout: 8))
+            rename.tap()
+            let input = app.alerts.textFields["studio.layer.rename.input"]
+            XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
+            return input
+        }
+        showLayers();app.staticTexts["Layer 1"].tap()
+        let cancelled = try renameInput();cancelled.typeText(" cancelled")
+        app.alerts.buttons["Cancel"].tap()
+        XCTAssertTrue(app.staticTexts["Layer 1"].exists)
+        let input = try renameInput()
+        XCTAssertEqual(input.value as? String, "Layer 1")
+        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Layer 1".count))
+        XCTAssertFalse(app.alerts.buttons["Save name"].isEnabled, "Empty name can be saved")
+        input.typeText("Hero ink")
+        capture(app, name: "layer-rename-draft")
+        app.alerts.buttons["Save name"].tap()
+        XCTAssertTrue(app.staticTexts["Hero ink"].waitForExistence(timeout: 5))
+        app.buttons["studio.layers.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Rename changed canvas pixels")
+        app.buttons["studio.undo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        showLayers();XCTAssertTrue(app.staticTexts["Layer 1"].waitForExistence(timeout: 5));app.buttons["studio.layers.close"].tap()
+        app.buttons["studio.redo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        showLayers();XCTAssertTrue(app.staticTexts["Hero ink"].waitForExistence(timeout: 5));capture(app, name: "layer-renamed-after-redo");app.buttons["studio.layers.close"].tap()
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(restored.screenshot().image)), 4, "Renamed layer pixels changed after cold reopen")
+        reopened.buttons["studio.layers.open"].tap()
+        XCTAssertTrue(reopened.staticTexts["Hero ink"].waitForExistence(timeout: 5))
+        capture(reopened, name: "layer-name-cold-reopened")
+    }
+
+    @MainActor
     func testLayerDeleteConfirmationUndoAndColdReopen() throws {
         let app=try launchGuestStudio()
         defer { app.terminate();XCUIDevice.shared.orientation = .portrait }
@@ -154,13 +204,26 @@ final class StudioSmokeUITests: XCTestCase {
         var since = Date()
         let settled = NSPredicate { _, _ in
             let frame = canvas.frame
-            guard canvas.exists, canvas.isHittable, frame.width > 80, frame.height > 80,
+            // Sample geometry once per poll. Existence and hittability each
+            // initiate another accessibility query; on a cold simulator those
+            // queries can consume the whole wait after the frame is stable.
+            guard frame.width > 80, frame.height > 80,
                   expected == nil || frame == expected else { since = Date(); return false }
             if last != frame { last = frame; since = Date(); return false }
             return Date().timeIntervalSince(since) >= 1
         }
-        XCTAssertTrue(expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
-                      "The real canvas did not settle at its expected geometry")
+        let geometrySettled = expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8)
+        if !geometrySettled {
+            let evidence = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            evidence.name = "canvas-geometry-wait-failed"
+            evidence.lifetime = .keepAlways
+            add(evidence)
+        }
+        XCTAssertTrue(geometrySettled, "The real canvas did not settle at its expected geometry")
+        // Keep both interaction assertions, once, after observing unchanged
+        // geometry for a full second. No retry, sleep or larger test timeout.
+        XCTAssertTrue(canvas.exists, "The settled canvas disappeared")
+        XCTAssertTrue(canvas.isHittable, "The settled canvas is not reachable")
     }
 
     @MainActor

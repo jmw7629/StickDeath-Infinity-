@@ -49,7 +49,7 @@ jobs:
     runs-on: macos-15
     # c080's production/build work took 30 minutes and its 75-minute outer
     # deadline interrupted the UI suite before all journeys could complete.
-    # Keep each journey at 180s; give the complete 34-journey suite a bounded
+    # Keep each journey at 180s; give the complete 35-journey suite a bounded
     # 55 minutes plus setup and original evidence preservation. No retries.
     timeout-minutes: 95
     steps:
