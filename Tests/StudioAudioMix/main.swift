@@ -80,6 +80,44 @@ private actor Barrier {
             let out = try await StudioAudioMixService().mix(document: document([clip(stereo,volume:0.25,track:1),clip(stereo,volume:0.5,track:4)]), retainedAudioTracks:[stereo],durationSeconds:0.1,outputParent:scratch)
             let pcm=try read(out);try near(pcm[1][0],0.225);try check(out.receipt.clipCount==2 && out.receipt.assetCount==1,"repeated asset");try out.cleanup()
         }
+        try await test("track and clip volume multiply independently in the actual overlapping stereo mix") {
+            var doc = try document([clip(stereo, volume: 0.25, track: 1), clip(stereo, volume: 0.5, track: 4)])
+            doc.schemaVersion = 13; doc.audioTrackVolumes = [0.5, 1, 1, 0.2]
+            let original = doc
+            let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(out)
+            for n in 0..<4800 {
+                try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000)) * 0.045)
+                try near(pcm[1][n], Float(cos(Double(n)*2*Double.pi*960/48000)) * 0.0675)
+            }
+            try check(doc == original && out.receipt.clipCount == 2 && out.receipt.assetCount == 1, "gain changed identities or source document")
+            try out.cleanup()
+        }
+        try await test("track volume never bypasses independent clip or track mute") {
+            var muted = clip(stereo, volume: 0.8, track: 4); muted.isMuted = true
+            var doc = try document([clip(stereo, volume: 0.25, track: 1), muted])
+            doc.schemaVersion = 13; doc.audioTrackVolumes = [0.5, 1, 1, 0.2]
+            for lanes in [[1], []] {
+                doc.mutedAudioTracks = lanes
+                let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+                let pcm = try read(out), gain: Float = lanes.isEmpty ? 0.125 : 0
+                for n in 0..<4800 {
+                    try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000)) * 0.2 * gain)
+                    try near(pcm[1][n], Float(cos(Double(n)*2*Double.pi*960/48000)) * 0.3 * gain)
+                }
+                try check(doc.audioClips[1].isMuted && doc.audioClips[1].volume == 0.8, "track gain revived or rewrote muted clip")
+                try out.cleanup()
+            }
+        }
+        try await test("zero track volume produces actual silence without muting or deleting its clip") {
+            var doc = try document([clip(stereo, volume: 0.7, track: 2)])
+            doc.schemaVersion = 13; doc.audioTrackVolumes = [1, 0, 1, 1]
+            let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(out)
+            try check(pcm.flatMap { $0 }.allSatisfy { $0 == 0 } && out.receipt.peakAbsoluteSample == 0, "zero gain was not silence")
+            try check(!doc.audioClips[0].isMuted && !doc.isAudioTrackMuted(2) && doc.audioClips[0].volume == 0.7, "zero gain changed independent clip state")
+            try out.cleanup()
+        }
         try await test("track mute silences only its lane with sample-exact gain and retained source identities") {
             var doc = try document([clip(stereo, volume: 0.25, track: 1), clip(stereo, volume: 0.5, track: 4)])
             doc.schemaVersion = 12; doc.mutedAudioTracks = [1]

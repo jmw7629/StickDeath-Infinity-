@@ -32,7 +32,7 @@ guessed asset counts and provider claims are not shipped as facts.
 login/signup Back routes, guide Next/Back/dots, landscape controls, completion,
 cold-relaunch persistence, Skip and preservation of a newly created local project.
 All existing Studio journeys continue to enter via the real guest action. The
-suite also includes the independent track-mute regression and contains 43 journeys with the same 180-second per-case and 3900-second
+suite also includes independent track-mute and track-volume regressions and contains 44 journeys with the same 180-second per-case and 3900-second
 whole-suite limits; no retry, skip or assertion relaxation is introduced.
 
 Local checks type-check the changed production views against the iOS SDK and
@@ -44,3 +44,11 @@ before advancing the workstream; do not infer a runtime pass from compilation.
 Authenticated startup, revoked sessions, provider callbacks, account isolation,
 physical-device/Reduce Motion verification, complete visual acceptance and
 independent review remain open. This change does not complete #134, #136 or #137.
+
+## Native Back-button failure and correction
+
+Run 35511645436 at `e94698919ed3f17f5581cabe33663b4a6bc5e165` built the app and executed all 43 journeys: 42 passed, one failed, zero skipped. `testWelcomeGuideNavigationAndLocalCompletion` failed at the first `auth.back` tap on Login. Its enabled 44×44 accessibility frame existed, but XCTest reported no hittable point. Original recording shows the Login screen rendered after the transition; this was not a missing screen or a suite timeout. Original artifacts, full XCResult, diagnostics and raw logs were preserved.
+
+Both Login and Sign Up now give the complete framed Back label an explicit rectangular hit area. Their decorative separator cannot intercept touches. Layout, account authorization and navigation actions are unchanged. The same journey now captures each account screen and asserts the Back control is hittable before the existing tap; no coordinates, skip, retry, or weakened navigation assertions substitute for the actual control.
+
+The correction needs the next complete native run. The preceding failure remains recorded and does not count as a passing entry-flow gate.

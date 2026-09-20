@@ -48,7 +48,7 @@ The independently muted second clip stays silent in both renditions.
 
 `testAudioTrackMutePreservesClipMuteUndoAndColdReopen` exercises visible native
 track/clip buttons, undo/redo, inspector state, local save and cold reopening.
-The suite contains 43 journeys, with the same 180-second per-case and 3900-second
+The suite contains 44 journeys, including independent track volume, with the same 180-second per-case and 3900-second
 suite limits; no existing journey, assertion, retry or skip policy is relaxed.
 Local SDK type-checking and XCTest compilation do not establish simulator runtime
 success. Exact-source macOS CI must run the complete app and native journeys.

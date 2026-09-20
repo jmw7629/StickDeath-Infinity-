@@ -1428,6 +1428,45 @@ final class StudioViewModel: ObservableObject {
         selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
         message = nil; scheduleSave()
     }
+    struct AudioTrackVolumeCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let track: Int
+        let volume: Double
+    }
+    func prepareAudioTrackVolume(_ track: Int) -> AudioTrackVolumeCapture? {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              (1...4).contains(track),
+              document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, track: track,
+                     volume: document.audioTrackVolume(track))
+    }
+    func setAudioTrackVolume(_ capture: AudioTrackVolumeCapture, volume: Double,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard volume.isFinite, (0...1).contains(volume) else {
+            throw StudioDocumentError.invalid("Track volume must be between 0% and 100%.")
+        }
+        guard prepareAudioTrackVolume(capture.track) == capture else {
+            throw StudioDocumentError.unavailable("The project or track changed. Finish saving and stop playback before changing track volume.")
+        }
+        guard capture.volume != volume else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 13)
+            var volumes = value.audioTrackVolumes ?? Array(repeating: 1, count: 4)
+            volumes[capture.track - 1] = volume
+            value.audioTrackVolumes = volumes
+        }
+        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard prepareAudioTrackVolume(capture.track) == capture else {
+            throw StudioDocumentError.unavailable("The project changed while setting track volume. Nothing was changed.")
+        }
+        editor = candidate
+        selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
+        message = nil; scheduleSave()
+    }
     /// Real audio-player time drives the display frame; no second animation timer.
     func displayAudioPlaybackTime(_ seconds: Double, playing: Bool) {
         guard seconds.isFinite, seconds >= 0, seconds <= audioDuration, !frames.isEmpty else { return }

@@ -105,6 +105,37 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 try out.cleanup(); try empty(p)
             }
         }
+        for busVolume in [0.0, 0.25] {
+            try await run("real MP4 applies track volume \(busVolume) while retaining clip gain mute timing and pictures") {
+                var candidate = document
+                candidate.schemaVersion = 13; candidate.audioTrackVolumes = [busVolume, 1, 1, 1]
+                let before = candidate
+                let p = try parent("track-volume")
+                let out = try await service.export(snapshot: .init(document: candidate, retainedAudioTracks: [track], rasterDataByID: [:]), outputParent: p)
+                let asset = AVURLAsset(url: try out.checkedURLs()[0])
+                let audio = try await asset.loadTracks(withMediaType: .audio), video = try await asset.loadTracks(withMediaType: .video)
+                try require(audio.count == 1 && video.count == 1, "volume export omitted media tracks")
+                try await verifyPixels(asset, track: video[0])
+                let samples = try await decodeAudio(asset, track: audio[0])
+                try require(samples.count == 96_000, "bus gain changed AAC duration")
+                var error = [0.0, 0.0], silence: Float = 0
+                for n in 0..<48_000 { for c in 0..<2 {
+                    let actual = samples[n*2+c]
+                    if (16_000..<20_000).contains(n) {
+                        let expected = sin(Double(n - 12_000 + 5_904) * 2 * .pi * (c == 0 ? 480 : 960) / 48_000)
+                            * (c == 0 ? 0.125 : 0.075) * busVolume
+                        error[c] += pow(Double(actual)-expected, 2)
+                    }
+                    if busVolume == 0 || n < 10_000 || n > 28_000 { silence = max(silence, abs(actual)) }
+                } }
+                let rmse = error.map { sqrt($0 / 4_000) }
+                print("ACTUAL_TRACK_VOLUME=\(busVolume) AAC_RMSE=\(rmse) SILENCE_PEAK=\(silence)")
+                try require(rmse.allSatisfy { $0 < 0.003 } && silence < 0.0005, "actual AAC ignored track gain or revived muted clip")
+                try require(candidate == before && track.audioData == originalAudio, "volume export changed original project or source")
+                try require(fm.contentsOfDirectory(atPath: p.path).count == 1, "volume export left intermediates")
+                try out.cleanup(); try empty(p)
+            }
+        }
         for phase in [StudioMixedMovieExportService.Phase.rendering, .mixing, .muxing, .verifying] {
             try await run("phase callback failure cleans all intermediate and final files: \(phase)") {
                 let p=try parent("callback")

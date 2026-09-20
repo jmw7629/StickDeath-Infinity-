@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...12
+    static let supportedSchemaVersions = 1...13
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -17,6 +17,9 @@ struct StudioDocument: Codable, Equatable {
     // Additive metadata: older documents decode with no muted tracks. Keep
     // per-clip mute independent so a track toggle never destroys that choice.
     var mutedAudioTracks: [Int]?
+    // Four numbered bus levels, independent of each clip's own gain/mute.
+    // Absent in historical projects means unity gain on every track.
+    var audioTrackVolumes: [Double]?
     var gridEnabled = false
     var onionEnabled = false
     var createdAt: Date
@@ -36,6 +39,10 @@ struct StudioDocument: Codable, Equatable {
 
     var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
     func isAudioTrackMuted(_ track: Int) -> Bool { mutedAudioTracks?.contains(track) == true }
+    func audioTrackVolume(_ track: Int) -> Double {
+        guard (1...4).contains(track), let audioTrackVolumes, audioTrackVolumes.count == 4 else { return 1 }
+        return audioTrackVolumes[track - 1]
+    }
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
@@ -141,6 +148,12 @@ struct StudioDocument: Codable, Equatable {
                   mutedAudioTracks.allSatisfy({ (1...4).contains($0) }),
                   mutedAudioTracks == Array(Set(mutedAudioTracks)).sorted() else {
                 throw StudioDocumentError.invalid("Audio track mute settings are invalid or need a newer project version.")
+            }
+        }
+        if let audioTrackVolumes {
+            guard schemaVersion >= 13, audioTrackVolumes.count == 4,
+                  audioTrackVolumes.allSatisfy({ $0.isFinite && (0...1).contains($0) }) else {
+                throw StudioDocumentError.invalid("Audio track volumes are invalid or need a newer project version.")
             }
         }
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }

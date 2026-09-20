@@ -84,7 +84,7 @@ private struct StudioAudioWorkspace: View {
                 if timeline.isPreparing {
                     HStack {
                         ProgressView(value: timeline.progress).tint(.sdRed)
-                        Button("Cancel") { timeline.stop() }.foregroundColor(.sdRed)
+                        Button("Cancel") { timeline.stop() }.foregroundColor(.sdStudioActionText)
                     }.padding(.horizontal, 16).padding(.bottom, 8)
                 }
                 if let notice = timeline.notice ?? vm.message {
@@ -97,9 +97,9 @@ private struct StudioAudioWorkspace: View {
                 Spacer(minLength: 0)
                 if let clip = vm.selectedCurrentAudioClip { clipInspector(clip) }
                 HStack {
-                    Text("Drag clips to move · Drag edges to trim").foregroundColor(.white.opacity(0.4))
+                    Text("Drag clips to move · Drag edges to trim").foregroundColor(.sdStudioSecondaryText)
                     Spacer()
-                    Button("+ Add Sound") { showingLibrary = true }.foregroundColor(.sdRed)
+                    Button("+ Add Sound") { showingLibrary = true }.foregroundColor(.sdStudioActionText)
                 }.font(.specialElite(10)).padding(12)
             }
             .background(background).foregroundColor(.white)
@@ -113,7 +113,7 @@ private struct StudioAudioWorkspace: View {
                 .accessibilityIdentifier("studio.audio.clip-count")
             Spacer(minLength: 0)
             Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
-                .font(.specialElite(10)).foregroundColor(.sdRed)
+                .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
                 .accessibilityIdentifier("studio.audio.snap")
             Button("+ Add") { showingLibrary = true }
                 .font(.specialElite(12)).padding(.horizontal, 12).padding(.vertical, 9)
@@ -136,8 +136,8 @@ private struct StudioAudioWorkspace: View {
                 .accessibilityIdentifier("studio.audio.timelinePlay")
             Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
                 .accessibilityLabel("Audio end")
-            Text(clock(vm.audioPlayheadTime)).foregroundColor(.sdRed)
-            Text("/ " + clock(vm.audioDuration)).foregroundColor(.white.opacity(0.35))
+            Text(clock(vm.audioPlayheadTime)).foregroundColor(.sdStudioActionText)
+            Text("/ " + clock(vm.audioDuration)).foregroundColor(.sdStudioSecondaryText)
             Spacer(minLength: 0)
         }.font(.specialElite(14)).padding(.horizontal, 12).padding(.bottom, 10)
     }
@@ -185,7 +185,7 @@ private struct StudioAudioWorkspace: View {
                     AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
                     if let catalogue {
                         Text("\(catalogue.sounds.count) offline sounds · CC0")
-                            .font(.caption2).foregroundColor(.white.opacity(0.5))
+                            .font(.caption2).foregroundColor(.sdStudioSecondaryText)
                             .accessibilityIdentifier("studio.audio.catalogue.count")
                         if category != nil || !search.isEmpty {
                             catalogueRows(catalogue)
@@ -194,10 +194,10 @@ private struct StudioAudioWorkspace: View {
                                 ForEach(catalogue.categories, id: \.self) { name in
                                     Button { category = name } label: {
                                         VStack(alignment: .leading, spacing: 12) {
-                                            Image(systemName: "waveform").font(.title2).foregroundColor(.sdRed)
+                                            Image(systemName: "waveform").font(.title2).foregroundColor(.sdStudioActionText)
                                             Text(name).font(.specialElite(15)).multilineTextAlignment(.leading)
                                             Text("\(catalogue.search("", category: name).count) sounds")
-                                                .font(.caption2).foregroundColor(.white.opacity(0.4))
+                                                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
                                         }.frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
                                             .padding(14).background(Color.sdRed.opacity(0.06)).cornerRadius(18)
                                             .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.sdRed.opacity(0.18)))
@@ -206,7 +206,7 @@ private struct StudioAudioWorkspace: View {
                             }.padding(.horizontal, 16)
                         }
                     } else if let catalogueError {
-                        Text(catalogueError).font(.caption2).foregroundColor(.white.opacity(0.6)).padding(16)
+                        Text(catalogueError).font(.caption2).foregroundColor(.sdStudioSecondaryText).padding(16)
                     } else {
                         ProgressView("Loading sound library…")
                             .font(.caption).tint(.sdRed).padding(16)
@@ -221,7 +221,7 @@ private struct StudioAudioWorkspace: View {
         LazyVStack(spacing: 8) {
             Picker("Add sounds to track", selection: $libraryTrack) {
                 ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
-            }.tint(.sdRed).accessibilityIdentifier("studio.audio.catalogue.track")
+            }.tint(.sdStudioActionText).accessibilityIdentifier("studio.audio.catalogue.track")
             ForEach(catalogue.search(search, category: category)) { sound in
                 HStack(spacing: 12) {
                     Button {
@@ -246,8 +246,8 @@ private struct StudioAudioWorkspace: View {
                         HStack {
                             Text(String(format: "%.2fs", sound.duration)).font(.caption2)
                             MeasuredAudioWaveform(peaks: sound.waveformPeaks).frame(width: 56, height: 14)
-                        }.foregroundColor(.white.opacity(0.45))
-                        Text(sound.author + " · CC0").font(.system(size: 9)).foregroundColor(.white.opacity(0.35))
+                        }.foregroundColor(.sdStudioSecondaryText)
+                        Text(sound.author + " · CC0").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                     }
                     Spacer(minLength: 0)
                     Button {
@@ -263,7 +263,7 @@ private struct StudioAudioWorkspace: View {
                                 })
                         } catch { vm.message = error.localizedDescription }
                     } label: {
-                        Image(systemName: "plus").foregroundColor(.sdRed).frame(width: 44, height: 44)
+                        Image(systemName: "plus").foregroundColor(.sdStudioActionText).frame(width: 44, height: 44)
                             .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.sdRed.opacity(0.35)))
                     }.disabled(audio.isBusy || timeline.isPreparing || vm.isSaving)
                         .accessibilityLabel("Add " + sound.title)
@@ -320,7 +320,7 @@ private struct StudioAudioWorkspace: View {
                     ForEach(1...4, id: \.self) { track in
                         let muted = vm.document.isAudioTrackMuted(track)
                         VStack(spacing: 0) {
-                            Text("\(track)").font(.specialElite(10)).foregroundColor(.white.opacity(0.45))
+                            Text("\(track)").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                             Button {
                                 timeline.stop(); audio.stop(); vm.stopPlayback()
                                 do { try vm.setAudioTrackMuted(track, muted: !muted, expectedRevision: vm.document.revision) }
@@ -345,7 +345,7 @@ private struct StudioAudioWorkspace: View {
                             Rectangle().fill(Color.white.opacity(0.02))
                             ForEach(Array(stride(from: 0, through: Int(ceil(length)), by: length > 120 ? 10 : 1)), id: \.self) { second in
                                 Text(clock(Double(second))).font(.specialElite(9))
-                                    .foregroundColor(.sdRed.opacity(0.65)).offset(x: Double(second) * pps + 3, y: 8)
+                                    .foregroundColor(.sdStudioActionText).offset(x: Double(second) * pps + 3, y: 8)
                             }
                         }.frame(height: 26).contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { value in seek(Double(value.location.x) / pps) })
@@ -389,7 +389,7 @@ private struct StudioAudioWorkspace: View {
         return VStack(spacing: 6) {
             if vm.document.isAudioTrackMuted(clip.track) {
                 Text("Track \(clip.track) is muted")
-                    .font(.caption2).foregroundColor(.sdRed)
+                    .font(.caption2).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.selected-track-muted")
             }
             HStack {
@@ -406,19 +406,24 @@ private struct StudioAudioWorkspace: View {
                         volumeRevision = nil
                     }
                 }).tint(.sdRed).accessibilityIdentifier("studio.audio.volume")
+                    .accessibilityLabel("Selected clip volume")
                 Text("\(Int(volume * 100))%").font(.caption2).frame(width: 30)
                 Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); vm.deleteAudioClip(clip.id) }
-                    .foregroundColor(.sdRed).font(.specialElite(11)).frame(minHeight: 44)
+                    .foregroundColor(.sdStudioActionText).font(.specialElite(11)).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.delete")
             }
+            StudioAudioTrackVolumeControl(vm: vm, track: clip.track) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("\(vm.document.id):\(vm.document.revision):\(clip.track)")
             HStack {
                 Text(String(format: "Start %.2fs · Source %.2fs · %.2fs", clip.startTime, clip.sourceOffset, clip.duration))
-                    .font(.caption2).foregroundColor(.white.opacity(0.5))
+                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.clip-timing")
                 Spacer()
                 Button("− frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: max(1 / 48_000, clip.duration - 1 / Double(vm.fps))), clip: clip) }
                 Button("+ frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: clip.duration + 1 / Double(vm.fps)), clip: clip) }
-            }.font(.caption2).foregroundColor(.sdRed)
+            }.font(.caption2).foregroundColor(.sdStudioActionText)
             HStack {
                 Button("Duplicate after") {
                     guard let duplication else { return }
@@ -426,7 +431,7 @@ private struct StudioAudioWorkspace: View {
                     do { try vm.duplicateAudioClip(duplication) }
                     catch { vm.message = error.localizedDescription }
                 }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
-                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
                     .accessibilityLabel("Duplicate selected audio clip after its end")
                     .accessibilityIdentifier("studio.audio.duplicate")
                 Button("Split at playhead") {
@@ -435,14 +440,14 @@ private struct StudioAudioWorkspace: View {
                     do { try vm.splitAudioClip(split) }
                     catch { vm.message = error.localizedDescription }
                 }.disabled(split == nil || audio.isBusy || timeline.isPreparing)
-                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
                     .accessibilityHint("Move the red playhead inside the selected clip first")
                     .accessibilityIdentifier("studio.audio.split")
                 Button("Trim values") {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
                     trimCapture = vm.prepareAudioTrim()
                 }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
-                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.trim.open")
                 Spacer()
             }
@@ -457,6 +462,43 @@ private struct StudioAudioWorkspace: View {
         timeline.stop(); audio.stop(); vm.stopPlayback()
         do { try vm.editSelectedAudioClip(clip.id, expectedRevision: vm.document.revision, edit: edit) }
         catch { vm.message = error.localizedDescription }
+    }
+}
+
+private struct StudioAudioTrackVolumeControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let track: Int
+    let stopPlayback: () -> Void
+    @State private var volume: Double
+    @State private var capture: StudioViewModel.AudioTrackVolumeCapture?
+
+    init(vm: StudioViewModel, track: Int, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.track = track; self.stopPlayback = stopPlayback
+        _volume = State(initialValue: vm.document.audioTrackVolume(track))
+    }
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Track \(track) volume").font(.specialElite(10))
+                .foregroundColor(.sdStudioSecondaryText)
+            Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
+                if editing {
+                    stopPlayback(); capture = vm.prepareAudioTrackVolume(track)
+                } else {
+                    defer { capture = nil; volume = vm.document.audioTrackVolume(track) }
+                    guard let capture else { return }
+                    do { try vm.setAudioTrackVolume(capture, volume: volume) }
+                    catch { vm.message = error.localizedDescription }
+                }
+            }).tint(.sdRed)
+                .disabled(vm.isSaving || vm.prepareAudioTrackVolume(track) == nil)
+                .accessibilityLabel("Track \(track) volume")
+                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+                .accessibilityHint("Changes the whole track; individual clip levels stay unchanged")
+                .accessibilityIdentifier("studio.audio.track-volume.\(track)")
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.caption2).frame(width: 38, alignment: .trailing)
+                .accessibilityIdentifier("studio.audio.track-volume-value.\(track)")
+        }.frame(minHeight: 44)
     }
 }
 
@@ -482,7 +524,7 @@ private struct StudioAudioNumericTrimEditor: View {
                 input("Duration (sec)", text: $duration, field: .duration)
             }
             if let notice {
-                Text(notice).font(.caption2).foregroundColor(.sdRed)
+                Text(notice).font(.caption2).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.trim.notice")
             }
             if vm.prepareAudioTrim() != capture {
@@ -504,12 +546,12 @@ private struct StudioAudioNumericTrimEditor: View {
                     } catch { notice = error.localizedDescription }
                 }.disabled(vm.prepareAudioTrim() != capture)
                     .accessibilityIdentifier("studio.audio.trim.apply")
-            }.font(.specialElite(12)).foregroundColor(.sdRed).frame(minHeight: 44)
+            }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
         }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption2).foregroundColor(.white.opacity(0.6))
+            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
             TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(.system(size: 14, design: .monospaced)).padding(10)
@@ -536,7 +578,7 @@ private struct StudioAudioTimelineClip: View {
             VStack(alignment: .leading, spacing: 3) {
                 if width >= 44 {
                     Text(clip.soundName).lineLimit(1).font(.specialElite(11))
-                    Text(String(format: "%.2fs", clip.duration)).font(.system(size: 8)).foregroundColor(.white.opacity(0.4))
+                    Text(String(format: "%.2fs", clip.duration)).font(.system(size: 8)).foregroundColor(.sdStudioSecondaryText)
                 } else if width >= 12 {
                     Image(systemName: "waveform").font(.system(size: 10))
                         .frame(maxWidth: .infinity)
@@ -625,32 +667,32 @@ private struct AudioFilesImportControls: View {
                 }
                 .disabled(audio.isBusy || !vm.isEditing || vm.isSaving)
                 .accessibilityIdentifier("studio.audio.import")
-                .font(.specialElite(12)).foregroundColor(.sdRed)
+                .font(.specialElite(12)).foregroundColor(.sdStudioActionText)
                 Spacer()
                 Picker("Track", selection: $track) {
                     ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
                 }.font(.caption).tint(.white).disabled(audio.isBusy)
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
-                .font(.caption2).foregroundColor(.white.opacity(0.45))
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
             Text("Adds audio at the selected frame. Move and trim clips in the timeline, then include them in MP4 export.")
-                .font(.caption2).foregroundColor(.white.opacity(0.6))
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
             if let projectNotice = vm.message {
-                Text(projectNotice).font(.caption).foregroundColor(.sdRed)
+                Text(projectNotice).font(.caption).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.projectNotice")
             }
             if audio.isBusy {
                 HStack {
                     ProgressView(value: audio.progress).tint(.sdRed)
-                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdRed)
+                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdStudioActionText)
                         .accessibilityIdentifier("studio.audio.cancel")
                 }
             }
             if let notice = audio.notice {
-                Text(notice).font(.caption).foregroundColor(.sdRed)
+                Text(notice).font(.caption).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.notice")
             } else if let id = audio.lastImportedClipID, vm.audioClips.contains(where: { $0.id == id }) {
-                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.white.opacity(0.6))
+                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.imported")
             }
         }
@@ -698,7 +740,7 @@ private struct AudioProjectClips: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(clip.soundName).font(.specialElite(14)).lineLimit(1)
                             Text(String(format: "%.2fs · Track %d%@", clip.duration, clip.track, clip.isMuted ? " · Muted" : ""))
-                                .font(.caption2).foregroundColor(.white.opacity(0.5))
+                                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
                             if let id = clip.assetID, let measured = audio.measurements[id] {
                                 MeasuredAudioWaveform(peaks: measured.peaks).frame(height: 14)
                             }

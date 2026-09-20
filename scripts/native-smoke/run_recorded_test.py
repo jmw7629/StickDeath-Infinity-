@@ -81,7 +81,7 @@ def main() -> int:
     # Run 35502963713 reached the old 3300-second suite deadline after 36
     # completed journeys. Those plus prior measured durations for the remaining
     # five already total 3350.804 seconds before runner/finalization overhead.
-    # Keep the individual 180-second cap, all 43 journeys and zero retries.
+    # Keep the individual 180-second cap, all 44 journeys and zero retries.
     # Give the expanded suite a finite 65-minute budget within the existing
     # 95-minute job. Timeout/failure codes still fail the mandatory native gate.
     test_timeout_seconds = 3900

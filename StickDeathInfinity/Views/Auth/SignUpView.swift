@@ -43,6 +43,7 @@ struct SignUpView: View {
                             .font(.system(size: 24, weight: .bold))
                             .foregroundColor(.white)
                             .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
                     .accessibilityLabel("Back to Welcome")
                     .accessibilityIdentifier("auth.back")
@@ -51,7 +52,8 @@ struct SignUpView: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .overlay(
-                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1),
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                        .allowsHitTesting(false),
                     alignment: .bottom
                 )
 

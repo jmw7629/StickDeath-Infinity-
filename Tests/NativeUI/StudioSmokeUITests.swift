@@ -15,10 +15,18 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "welcome-reference-layout")
         try tapWelcomeAction("welcome.sign-in", in: app)
         XCTAssertTrue(app.staticTexts["Welcome Back"].waitForExistence(timeout: 5))
-        app.buttons["auth.back"].tap()
+        let loginBack = app.buttons["auth.back"]
+        XCTAssertTrue(loginBack.waitForExistence(timeout: 5))
+        capture(app, name: "login-back-hit-target")
+        XCTAssertTrue(loginBack.isHittable, "Account Back must expose a tappable hit target")
+        loginBack.tap()
         try tapWelcomeAction("welcome.create-account", in: app)
         XCTAssertTrue(app.staticTexts["Join the Carnage"].waitForExistence(timeout: 5))
-        app.buttons["auth.back"].tap()
+        let signupBack = app.buttons["auth.back"]
+        XCTAssertTrue(signupBack.waitForExistence(timeout: 5))
+        capture(app, name: "signup-back-hit-target")
+        XCTAssertTrue(signupBack.isHittable, "Account Back must expose a tappable hit target")
+        signupBack.tap()
         try tapWelcomeAction("welcome.guide", in: app)
         XCTAssertTrue(app.staticTexts["onboarding.position"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["onboarding.position"].label, "1 of 5")
@@ -1364,6 +1372,77 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap();openAudio(reopened);clipCount("2 clips", in: reopened)
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         capture(reopened, name: "audio-duplicate-cold-reopened")
+    }
+
+    @MainActor
+    func testAudioTrackVolumePreservesClipSettingsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        func reveal(_ element: XCUIElement, in target: XCUIApplication, down: Bool) throws {
+            let scroll = target.scrollViews["studio.audio.compact.scroll"]
+            for _ in 0..<4 {
+                if element.exists && element.isHittable { break }
+                if down { scroll.swipeUp(velocity: .slow) } else { scroll.swipeDown(velocity: .slow) }
+            }
+            XCTAssertTrue(element.exists && element.isHittable, "Audio volume control is not reachable")
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: element).waitUntilFulfilled(timeout: 8))
+        }
+        func openAndSelect(_ target: XCUIApplication) throws {
+            let audio = target.buttons["studio.audio.open"]
+            XCTAssertTrue(audio.waitForExistence(timeout: 8) && audio.isHittable); audio.tap()
+            let picker = target.buttons["studio.audio.clip-picker"]
+            try reveal(picker, in: target, down: false); picker.tap()
+            let clip = target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.select-clip.")).firstMatch
+            XCTAssertTrue(clip.waitForExistence(timeout: 5) && clip.isHittable); clip.tap()
+        }
+        func closeAudio(_ target: XCUIApplication) throws {
+            let close = target.buttons["studio.audio.close"]
+            try reveal(close, in: target, down: false); close.tap()
+        }
+        func gain(_ target: XCUIApplication) throws -> XCUIElement {
+            let slider = target.sliders["studio.audio.track-volume.1"]
+            try reveal(slider, in: target, down: true); return slider
+        }
+        app.buttons["studio.audio.open"].tap(); app.buttons["studio.audio.library.open"].tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-count"].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        app.buttons["studio.audio.library.close"].tap()
+        let clipMute = app.buttons["studio.audio.clip-mute"]
+        try reveal(clipMute, in: app, down: true); clipMute.tap()
+        XCTAssertEqual(clipMute.label, "Unmute selected clip")
+        let clipVolume = app.sliders["studio.audio.volume"].value as? String
+        XCTAssertNotNil(clipVolume)
+        let slider = try gain(app)
+        XCTAssertEqual(slider.value as? String, "100 percent")
+        slider.adjust(toNormalizedSliderPosition: 0.25)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "100 percent"), evaluatedWith: slider).waitUntilFulfilled(timeout: 8))
+        let savedValue = try XCTUnwrap(slider.value as? String)
+        let percent = try XCTUnwrap(Int(savedValue.components(separatedBy: " ")[0]))
+        XCTAssertTrue((20...30).contains(percent), "Track slider did not commit the requested region")
+        XCTAssertEqual(app.sliders["studio.audio.volume"].value as? String, clipVolume)
+        XCTAssertEqual(clipMute.label, "Unmute selected clip")
+        capture(app, name: "audio-track-volume-independent-of-clip")
+        try closeAudio(app); app.buttons["studio.undo"].tap(); try openAndSelect(app)
+        XCTAssertEqual(try gain(app).value as? String, "100 percent")
+        try closeAudio(app); app.buttons["studio.redo"].tap(); try openAndSelect(app)
+        XCTAssertEqual(try gain(app).value as? String, savedValue)
+        XCTAssertEqual(app.sliders["studio.audio.volume"].value as? String, clipVolume)
+        XCTAssertEqual(app.buttons["studio.audio.clip-mute"].label, "Unmute selected clip")
+        try closeAudio(app)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap(); try openAndSelect(reopened)
+        XCTAssertEqual(try gain(reopened).value as? String, savedValue)
+        XCTAssertEqual(reopened.sliders["studio.audio.volume"].value as? String, clipVolume)
+        XCTAssertEqual(reopened.buttons["studio.audio.clip-mute"].label, "Unmute selected clip")
+        capture(reopened, name: "audio-track-volume-cold-reopened")
     }
 
     @MainActor

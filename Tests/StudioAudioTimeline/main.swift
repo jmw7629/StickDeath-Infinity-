@@ -168,6 +168,119 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             do { try downgraded.validate(); throw Failure(message: "old schema accepted mute metadata") } catch is StudioDocumentError { }
             try check(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) == original, "historical input bytes altered")
         }
+        try await test("track volume preserves clip gain and mute through undo redo save and cold reopen") {
+            let folder = root.appendingPathComponent("track-volume-docs")
+            let store = DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder)
+            let local = StudioViewModel(storage: store)
+            let made = await local.createProject(name: "Track volume", width: 64, height: 64, fps: 8)
+            try check(made, "create track volume fixture")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 3)
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .volume(0.4))
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .mute(true))
+            try local.setAudioTrackMuted(3, muted: true, expectedRevision: local.document.revision)
+            let before = local.document, clips = local.audioClips
+            guard let capture = local.prepareAudioTrackVolume(3) else { throw Failure(message: "missing volume capture") }
+            try local.setAudioTrackVolume(capture, volume: 0.25)
+            try check(local.document.schemaVersion == 13 && local.document.revision == before.revision + 1,
+                      "track volume must be one schema-versioned edit")
+            try check(local.document.audioTrackVolume(3) == 0.25 && local.document.audioTrackVolume(1) == 1,
+                      "wrong lane gain")
+            try check(local.audioClips == clips && local.document.isAudioTrackMuted(3)
+                      && local.selectedCurrentAudioClip?.id == clipID, "gain changed clip gain/mute or selection")
+            local.undo()
+            try check(local.document.audioTrackVolumes == nil && local.document.schemaVersion == before.schemaVersion
+                      && local.audioClips == clips && local.document.isAudioTrackMuted(3), "volume Undo")
+            local.redo()
+            try check(local.document.audioTrackVolume(3) == 0.25 && local.audioClips == clips, "volume Redo")
+            let saved = await local.save(); try check(saved, "volume save")
+            let other = StudioViewModel(storage: store); await other.loadProjects()
+            guard let metadata = other.savedProjects.first(where: { $0.id == local.document.id }) else { throw Failure(message: "volume project absent") }
+            let opened = await other.openProject(metadata)
+            try check(opened && other.document == local.document, "complete volume document changed on cold reopen")
+            try check(other.projectAudioTracks[0].audioData == imported.track.audioData, "volume changed source bytes")
+        }
+        try await test("track volume rejects invalid stale busy and cancelled captures without changing document or history") {
+            let folder = root.appendingPathComponent("track-volume-rejection")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder))
+            let made = await local.createProject(name: "Volume rejection", width: 64, height: 64, fps: 8)
+            try check(made, "create rejection fixture")
+            guard let capture = local.prepareAudioTrackVolume(2) else { throw Failure(message: "empty lane capture") }
+            let before = local.document, undo = local.canUndo, redo = local.canRedo
+            try local.setAudioTrackVolume(capture, volume: 1)
+            for invalid in [-0.1, 1.1, Double.nan, Double.infinity] {
+                do { try local.setAudioTrackVolume(capture, volume: invalid); throw Failure(message: "invalid volume accepted") }
+                catch is StudioDocumentError { }
+            }
+            let invalidCaptures: [StudioViewModel.AudioTrackVolumeCapture] = [
+                .init(projectID: UUID(), revision: capture.revision, track: 2, volume: 1),
+                .init(projectID: capture.projectID, revision: capture.revision + 1, track: 2, volume: 1),
+                .init(projectID: capture.projectID, revision: capture.revision, track: 0, volume: 1),
+                .init(projectID: capture.projectID, revision: capture.revision, track: 5, volume: 1),
+                .init(projectID: capture.projectID, revision: capture.revision, track: 2, volume: 0.5)
+            ]
+            for invalid in invalidCaptures {
+                do { try local.setAudioTrackVolume(invalid, volume: 0.5); throw Failure(message: "invalid capture accepted") }
+                catch is StudioDocumentError { }
+            }
+            for cancellationAt in [1, 2] {
+                var calls = 0
+                do {
+                    try local.setAudioTrackVolume(capture, volume: 0.5, checkCancellation: {
+                        calls += 1; if calls == cancellationAt { throw CancellationError() }
+                    }); throw Failure(message: "cancelled volume accepted")
+                } catch is CancellationError { }
+                try check(calls == cancellationAt, "volume cancellation boundary")
+            }
+            local.displayAudioPlaybackTime(0, playing: true)
+            try check(local.prepareAudioTrackVolume(2) == nil, "volume available during playback")
+            do { try local.setAudioTrackVolume(capture, volume: 0.5); throw Failure(message: "busy volume accepted") }
+            catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0, playing: false)
+            try check(local.document == before && local.canUndo == undo && local.canRedo == redo, "rejected/no-op volume changed document/history")
+            var checks = 0
+            do {
+                try local.setAudioTrackVolume(capture, volume: 0.5, checkCancellation: {
+                    checks += 1
+                    if checks == 2 { try local.setAudioTrackMuted(2, muted: true, expectedRevision: local.document.revision) }
+                }); throw Failure(message: "late stale volume accepted")
+            } catch is StudioDocumentError { }
+            try check(checks == 2 && local.document.isAudioTrackMuted(2) && local.document.audioTrackVolumes == nil,
+                      "late stale volume overwrote the intervening edit")
+            await local.flush()
+        }
+        try await test("empty track volume applies to later clips and moving a clip uses destination track gain") {
+            let folder = root.appendingPathComponent("empty-track-volume")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder))
+            let made = await local.createProject(name: "Empty track volume", width: 64, height: 64, fps: 8)
+            try check(made, "empty volume create")
+            guard let capture = local.prepareAudioTrackVolume(4) else { throw Failure(message: "empty capture") }
+            try local.setAudioTrackVolume(capture, volume: 0.1)
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 4)
+            let originalGain = local.audioClips[0].volume
+            try check(local.document.audioTrackVolume(local.audioClips[0].track) == 0.1, "new clip bypassed lane gain")
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .place(start: 0, track: 1))
+            try check(local.document.audioTrackVolume(local.audioClips[0].track) == 1
+                      && local.document.audioTrackVolume(4) == 0.1 && local.audioClips[0].volume == originalGain,
+                      "move dragged lane volume or rewrote clip gain")
+            await local.flush()
+        }
+        try await test("historical track volume defaults to unity and malformed or downgraded metadata is rejected") {
+            let old = try StudioDocument.new(name: "Historical", width: 64, height: 64, fps: 8)
+            let bytes = try JSONEncoder().encode(old)
+            let decoded = try JSONDecoder().decode(StudioDocument.self, from: bytes); try decoded.validate()
+            try check(decoded.audioTrackVolumes == nil && (1...4).allSatisfy { decoded.audioTrackVolume($0) == 1 }, "historical gain default")
+            try check(decoded == old && decoded.schemaVersion == 1, "decoding migrated original")
+            let invalidValues: [[Double]] = [[], [1], [1, 1, 1], [1, 1, 1, 1, 1], [-0.1, 1, 1, 1], [1, 1, 1, 1.1], [1, 1, .nan, 1], [.infinity, 1, 1, 1]]
+            for volumes in invalidValues {
+                var invalid = old; invalid.schemaVersion = 13; invalid.audioTrackVolumes = volumes
+                do { try invalid.validate(); throw Failure(message: "invalid track volumes accepted") } catch is StudioDocumentError { }
+            }
+            var downgraded = old; downgraded.schemaVersion = 12; downgraded.audioTrackVolumes = [1, 1, 1, 1]
+            do { try downgraded.validate(); throw Failure(message: "older schema accepted bus gain") } catch is StudioDocumentError { }
+            try check(try JSONDecoder().decode(StudioDocument.self, from: bytes) == old, "historical bytes changed")
+        }
         func decode(_ out: StudioAudioMixService.Output) throws -> [[Float]] {
             let file = try AVAudioFile(forReading: out.checkedURL())
             let pcm = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: AVAudioFrameCount(file.length))!
