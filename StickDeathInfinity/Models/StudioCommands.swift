@@ -601,6 +601,10 @@ enum StudioCommandExecutor {
                                      checkCancellation: checkCancellation)
         case .updateImagePlacement(let value):
             let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
             try editor.updateImagePlacement(frameID: id, assetID: value.assetID,
                 placement: value.placement, checkCancellation: checkCancellation)
         case .canvasOptions(let value):

@@ -426,7 +426,9 @@ struct StudioDocumentEditor {
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  value.frames[index].rasterPlacement != nil else { throw StudioCommandError.invalidReference }
+                  value.frames[index].rasterPlacement != nil else {
+                throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
+            }
             guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
