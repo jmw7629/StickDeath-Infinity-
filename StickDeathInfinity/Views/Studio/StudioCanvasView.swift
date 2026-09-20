@@ -6,6 +6,10 @@ struct StudioCanvasView: View {
     @Environment(\.displayScale) private var displayScale
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
+    @State private var imageMoveCapture: StudioViewModel.ImageMoveCapture?
+    @State private var imageMoveFrame: AnimationFrame?
+    @State private var startedAsImageMove = false
+    @State private var imageMoveCancelled = false
     @State private var moveCapture: StudioViewModel.MoveCapture?
     @State private var moveLayout: StudioColorSampleGesture.Layout?
     @State private var moveFrame: AnimationFrame?
@@ -40,7 +44,7 @@ struct StudioCanvasView: View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
             let documentSize = CGSize(width: vm.canvasWidth, height: vm.canvasHeight)
-            let displayedFrame = handleFrame ?? moveFrame ?? vm.currentFrame
+            let displayedFrame = imageMoveFrame ?? handleFrame ?? moveFrame ?? vm.currentFrame
             let handles = selectionHandles(frame: displayedFrame, size: size)
             let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: displayedFrame) }
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
@@ -90,6 +94,14 @@ struct StudioCanvasView: View {
                                 height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
+                        if vm.currentImageMoveCapture() != nil, let placement = displayedFrame.rasterPlacement {
+                            let rect = CGRect(x: placement.x / Double(vm.canvasWidth) * actual.width,
+                                y: placement.y / Double(vm.canvasHeight) * actual.height,
+                                width: placement.width / Double(vm.canvasWidth) * actual.width,
+                                height: placement.height / Double(vm.canvasHeight) * actual.height)
+                            context.stroke(Path(rect.insetBy(dx: 1, dy: 1)), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
+                        }
                         if let handles {
                             for handle in handles.handles {
                                 let r = handles.visualRadius
@@ -118,7 +130,7 @@ struct StudioCanvasView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
-                    .accessibilityValue(handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Position image in the Move popup changes its size." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
                     if vm.gridEnabled { GridOverlay().allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -133,7 +145,7 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate(); fillInput.invalidate(); cancelMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                colorInput.invalidate(); fillInput.invalidate(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
             }
             .overlay(alignment: .bottom) {
                 if fillSession.isFilling {
@@ -183,6 +195,7 @@ struct StudioCanvasView: View {
         .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
         .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
         .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
         .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
         .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
         .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
@@ -202,7 +215,13 @@ struct StudioCanvasView: View {
             .onChanged { value in
                 if touchID == nil {
                     touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
-                    startedAsMove = vm.selectedTool == .move; moveCancelled = false
+                    startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
+                    imageMoveCancelled = false
+                    startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
+                    if startedAsImageMove {
+                        moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        imageMoveCapture = vm.beginImageMove(at: documentPoint(value.startLocation, size: size))
+                    }
                     startedAsArea = vm.selectedTool == .lasso; areaCancelled = false
                     if let geometry = selectionHandles(frame: vm.currentFrame, size: size),
                        let kind = geometry.hit(value.startLocation), let capture = vm.beginSelectionHandle() {
@@ -220,6 +239,7 @@ struct StudioCanvasView: View {
                         _ = updateArea(location: value.startLocation, size: size)
                     }
                 }
+                if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
                 if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
                 if startedAsArea { _ = updateArea(location: value.location, size: size); return }
                 if startedAsMove {
@@ -275,6 +295,11 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if startedAsImageMove {
+                    guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
+                    _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
+                    return
+                }
                 if startedAsHandle {
                     guard updateHandle(start: value.startLocation, location: value.location, size: size, final: true),
                           let capture = handleCapture else { return }
@@ -369,6 +394,19 @@ struct StudioCanvasView: View {
             return true
         } catch { cancelHandlePreview(); vm.message = error.localizedDescription; return false }
     }
+    private func cancelImageMovePreview() {
+        if startedAsImageMove { imageMoveCancelled = true; imageMoveFrame = nil }
+    }
+    @discardableResult
+    private func updateImageMove(delta: CGSize, size: CGSize) -> Bool {
+        guard !imageMoveCancelled, let capture = imageMoveCapture else { return false }
+        guard scenePhase == .active, vm.currentImageMoveCapture() == capture,
+              moveLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else {
+            cancelImageMovePreview(); return false
+        }
+        do { imageMoveFrame = try vm.imageMovePreview(capture, delta: documentDelta(delta, size: size)); return true }
+        catch { cancelImageMovePreview(); vm.message = error.localizedDescription; return false }
+    }
     private func cancelMovePreview() {
         if startedAsMove { moveCancelled = true; moveFrame = nil }
     }
@@ -405,6 +443,7 @@ struct StudioCanvasView: View {
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
+            imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
             handleValues = .init(); startedAsHandle = false; handleCancelled = false
@@ -418,6 +457,7 @@ struct StudioCanvasView: View {
         colorInput.invalidate()
         fillInput.invalidate()
         cancelMovePreview()
+        cancelImageMovePreview()
         cancelAreaPreview()
         cancelHandlePreview()
         // A frame/scene change while the finger is down cancels that whole

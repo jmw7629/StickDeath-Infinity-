@@ -58,6 +58,65 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             func imageCommand(_ editor: StudioDocumentEditor, _ placement: StudioRasterPlacement, assetID: String = "image-fixture") -> StudioCommand {
                 .updateImagePlacement(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, placement: placement))
             }
+            func imageDeletion(_ editor: StudioDocumentEditor, assetID: String = "image-fixture") -> StudioCommand {
+                .deleteImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID))
+            }
+            try test("explicit image deletion preserves drawings layers other frames and reversible history") {
+                var editor = try imageEditor()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "retained-drawing")])])), editor: &editor)
+                try editor.duplicateFrame()
+                let before = editor.document, selected = before.activeFrameID
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageDeletion(editor)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document, frame = after.frames.first { $0.id == selected }!
+                try require(frame.rasterAssetID == nil && frame.rasterLayerID == nil && frame.rasterPlacement == nil, "Image reference remains")
+                try require(frame.elements == before.frames.first { $0.id == selected }!.elements && after.layers == before.layers && after.audioClips == before.audioClips, "Delete changed drawings layers or audio")
+                try require(after.frames.filter { $0.id != selected } == before.frames.filter { $0.id != selected }, "Delete changed another frame sharing the original")
+                try require(after.activeFrameID == before.activeFrameID && after.activeLayerID == before.activeLayerID, "Delete changed editor selection")
+                try require(after.revision == before.revision + 1 && receipt.outcome == .applied && receipt.deletedElementIDs.isEmpty && receipt.deletedLayerIDs.isEmpty, "Wrong deletion receipt")
+                editor.undo();try require(content(editor.document) == content(before), "One Undo did not restore complete original")
+                editor.redo();try require(content(editor.document) == content(after), "One Redo did not restore image deletion")
+                try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image deletion strict wire explicit identity historical protection and batch rollback") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([imageDeletion(editor, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                try rejected(request(editor, .apply([.deleteImage(.init(frame: .id("foreign"), assetID: "image-fixture"))])), editor: &editor)
+                try rejected(request(editor, .apply([imageDeletion(editor), imageCommand(editor, .init(x: 0, y: 0, width: 50, height: 50))])), editor: &editor)
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageDeletion(editor)])))
+                var object = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
+                var action = object["action"] as! [String: Any], commands = action["apply"] as! [[String: Any]]
+                var arguments = commands[0]["deleteImage"] as! [String: Any];arguments["deleteAll"] = true
+                commands[0]["deleteImage"] = arguments;action["apply"] = commands;object["action"] = action
+                do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object));throw Failure(message: "Unknown deletion field accepted") }
+                catch StudioCommandError.malformed { }
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image deletion respects every lock hidden layers and stale revisions") {
+                for mode in ["full", "position", "alpha"] {
+                    var editor = try imageEditor();try editor.change { $0.layers[0].lockMode = mode }
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                }
+                for hidden in [true, false] {
+                    var editor = try imageEditor();try editor.change { if hidden { $0.layers[0].visible = false } else { $0.layers[0].opacity = 0 } }
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                }
+                var editor = try imageEditor();let stale = request(editor, .apply([imageDeletion(editor)]))
+                try editor.change { $0.gridEnabled = true }
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+            }
+            try test("image deletion cancellation at every observed production checkpoint is atomic") {
+                var probe = try imageEditor(), total = 0
+                _ = try StudioCommandExecutor.execute(request(probe, .apply([imageDeletion(probe)])), editor: &probe, checkCancellation: { total += 1 })
+                try require(total >= 5, "Expected staged cancellation checks absent")
+                for cancelAt in 1...total {
+                    var editor = try imageEditor(), count = 0
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, cancellation: {
+                        count += 1;if count == cancelAt { throw CancellationError() }
+                    })
+                }
+            }
             try test("image placement uses strict wire one transaction and original image identity") {
                 var editor = try imageEditor(); let before = editor.document
                 let placement = StudioRasterPlacement(x: 7, y: 15, width: 64, height: 128)

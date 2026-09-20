@@ -14,13 +14,15 @@ struct FloatingToolSettingsPanel: View {
     var alignToBottom = false
     @State private var showBrushLibrary = false
     @State private var imagePlacement: StudioViewModel.ImagePlacementCapture?
-    // The popup owns these fields so ViewThatFits switching to its scroll
-    // variant (including while the keyboard opens) cannot reset a draft.
+    @State private var imageDeletion: StudioViewModel.ImagePlacementCapture?
+    // The popup owns both draft values and distinct field focus. Keyboard
+    // and viewport changes must not recreate an interactive input.
     @State private var imageX = ""
     @State private var imageY = ""
     @State private var imageWidth = ""
     @State private var imageHeight = ""
     @FocusState private var textInputFocused: Bool
+    @FocusState private var imageFocusedField: StudioImagePlacementField?
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
@@ -48,7 +50,7 @@ struct FloatingToolSettingsPanel: View {
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.8))
                         Spacer()
-                        Button(action: { textInputFocused = false; vm.activePanel = .none }) {
+                        Button(action: { textInputFocused = false; imageFocusedField = nil; vm.activePanel = .none }) {
                             Text("✕")
                                 .font(.system(size: 14))
                                 .foregroundColor(.white.opacity(0.4))
@@ -66,13 +68,7 @@ struct FloatingToolSettingsPanel: View {
                     // scroll inside the same bounded popup instead of covering
                     // empty canvas with an oversized scroll viewport.
                     ToolSettingsContentLayout(maximumHeight: max(0, min(360, available.size.height - (compact ? 60 : 132)))) {
-                        ViewThatFits(in: .vertical) {
-                            toolSettingsContent(def, compactHeight: compact)
-                                .fixedSize(horizontal: false, vertical: true)
-                            ScrollView {
-                                toolSettingsContent(def, compactHeight: compact)
-                            }
-                        }
+                        toolSettingsContent(def, compactHeight: compact)
                     }
                     
                     // The short landscape popup keeps the actual operation controls reachable.
@@ -109,13 +105,21 @@ struct FloatingToolSettingsPanel: View {
         .accessibilityIdentifier("studio.tool-settings")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
-        .onChange(of: vm.selectedTool) { _, _ in imagePlacement = nil }
-        .onDisappear { imagePlacement = nil }
+        .onChange(of: vm.selectedTool) { _, _ in imagePlacement = nil; imageDeletion = nil; imageFocusedField = nil }
+        .onDisappear { imagePlacement = nil; imageDeletion = nil; imageFocusedField = nil }
+        .confirmationDialog("Delete this frame's image?", isPresented: Binding(
+            get: { imageDeletion != nil }, set: { if !$0 { imageDeletion = nil } }),
+            titleVisibility: .visible, presenting: imageDeletion) { capture in
+            Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture); imageDeletion = nil }
+            Button("Cancel", role: .cancel) { imageDeletion = nil }
+        } message: { _ in
+            Text("Only this frame's picture will be removed. Its layer and drawings stay. Undo restores the picture.")
+        }
         .toolbar {
-            if textInputFocused {
+            if textInputFocused || imageFocusedField != nil {
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
-                    Button("Done typing") { textInputFocused = false }
+                    Button("Done typing") { textInputFocused = false; imageFocusedField = nil }
                         .accessibilityIdentifier("studio.text.keyboard-dismiss")
                 }
             }
@@ -342,19 +346,28 @@ struct FloatingToolSettingsPanel: View {
         // ── MOVE ──
         case .move:
             if let capture = imagePlacement {
-                StudioImagePlacementControls(vm: vm, capture: capture, focused: $textInputFocused,
+                StudioImagePlacementControls(vm: vm, capture: capture, focused: $imageFocusedField,
                     x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
-                    textInputFocused = false; imagePlacement = nil
+                    imageFocusedField = nil; imagePlacement = nil
                 }
             } else {
             VStack(alignment: .leading, spacing: 8) {
-                Text(vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
+                Text(vm.isMovingImageOnCanvas ? "Drag inside the image to move it. It stays inside the canvas. Use Position image to make it smaller first if it fills the canvas." : vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
                      : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
-                     : "Drag drawn artwork, or choose Position image for the imported picture.")
+                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture.")
                     .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
                     .accessibilityIdentifier("studio.selection.guidance")
                 if vm.currentFrame.rasterPlacement != nil {
+                    Button(vm.isMovingImageOnCanvas ? "Move drawings" : "Move image on canvas") {
+                        _ = vm.setImageCanvasMove(!vm.isMovingImageOnCanvas)
+                    }
+                    .font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
+                    .foregroundColor(vm.isMovingImageOnCanvas ? .red : .white)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("studio.image-move.target")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Image" : "Drawings")
+                    .disabled(!vm.isMovingImageOnCanvas && vm.prepareImagePlacement() == nil)
                     Button {
                         guard let capture = vm.prepareImagePlacement() else { return }
                         imageX = String(capture.original.x); imageY = String(capture.original.y)
@@ -368,11 +381,16 @@ struct FloatingToolSettingsPanel: View {
                     .background(Color.red.opacity(0.75)).cornerRadius(8)
                     .accessibilityIdentifier("studio.image-placement.open")
                     .disabled(vm.prepareImagePlacement() == nil)
+                    Button("Delete image…", role: .destructive) { imageDeletion = vm.prepareImagePlacement() }
+                        .font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.image-delete.open")
+                        .disabled(vm.prepareImagePlacement() == nil)
                     if vm.prepareImagePlacement() == nil {
-                        Text("Show the image layer and choose Free to position it. Finish any pending edit or save first.")
+                        Text("Show the image layer and choose Free to edit it. Finish any pending edit or save first.")
                             .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
                     }
                 }
+                if !vm.isMovingImageOnCanvas {
                 Text("SELECTION MODE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
@@ -450,6 +468,7 @@ struct FloatingToolSettingsPanel: View {
                 }.font(.specialElite(10))
                 Text("Drag the canvas corner handles to resize or the red handle to rotate. These sliders offer the same group transform. Apply makes one undo step; Reset only clears these controls.")
                     .font(.specialElite(9)).foregroundColor(.white.opacity(0.55))
+                }
             }
             
             }
@@ -610,22 +629,33 @@ struct ToolSettingsPanel: View {
     var body: some View { FloatingToolSettingsPanel(vm: vm) }
 }
 
-/// Fits short controls to their real content, while proposing a bounded viewport
-/// to ViewThatFits so larger brush libraries choose the scrollable variant.
-private struct ToolSettingsContentLayout: Layout {
-    var maximumHeight: CGFloat
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        guard let content = subviews.first else { return .zero }
-        let ideal = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
-        return CGSize(width: proposal.width ?? ideal.width,
-                      height: min(maximumHeight, max(0, ideal.height)))
-    }
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
-                             proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+/// One persistent scroll container keeps focused fields alive as the keyboard
+/// changes available height. Content measurement still fits short tool popups.
+private struct ToolSettingsContentHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+private struct ToolSettingsContentLayout<Content: View>: View {
+    let maximumHeight: CGFloat
+    @ViewBuilder let content: () -> Content
+    @State private var contentHeight: CGFloat?
+
+    var body: some View {
+        ScrollView {
+            content().fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: ToolSettingsContentHeight.self, value: geometry.size.height)
+                })
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
+        .onPreferenceChange(ToolSettingsContentHeight.self) { height in
+            if height.isFinite && height >= 0 { contentHeight = height }
+        }
     }
 }
 
+private enum StudioImagePlacementField: String { case x, y, width, height }
 
 /// Draft fields live only in the existing tool popup. Apply commits the same
 /// typed command available to Studio automation; dismissal never edits content.
@@ -633,13 +663,13 @@ private struct StudioImagePlacementControls: View {
     @ObservedObject var vm: StudioViewModel
     let capture: StudioViewModel.ImagePlacementCapture
     let dismiss: () -> Void
-    @FocusState.Binding private var fieldFocused: Bool
+    @FocusState.Binding private var fieldFocused: StudioImagePlacementField?
     @Binding private var x: String
     @Binding private var y: String
     @Binding private var width: String
     @Binding private var height: String
 
-    init(vm: StudioViewModel, capture: StudioViewModel.ImagePlacementCapture, focused: FocusState<Bool>.Binding,
+    init(vm: StudioViewModel, capture: StudioViewModel.ImagePlacementCapture, focused: FocusState<StudioImagePlacementField?>.Binding,
          x: Binding<String>, y: Binding<String>, width: Binding<String>, height: Binding<String>, dismiss: @escaping () -> Void) {
         self.vm = vm; self.capture = capture; self.dismiss = dismiss; self._fieldFocused = focused
         _x = x; _y = y; _width = width; _height = height
@@ -655,10 +685,10 @@ private struct StudioImagePlacementControls: View {
     private func set(_ value: StudioRasterPlacement) {
         x = String(value.x); y = String(value.y); width = String(value.width); height = String(value.height)
     }
-    private func field(_ name: String, _ value: Binding<String>) -> some View {
+    private func field(_ name: String, _ value: Binding<String>, focus: StudioImagePlacementField) -> some View {
         HStack {
             Text(name).frame(width: 52, alignment: .leading)
-            TextField(name, text: value).keyboardType(.decimalPad).focused($fieldFocused)
+            TextField(name, text: value).keyboardType(.decimalPad).focused($fieldFocused, equals: focus)
                 .textFieldStyle(.roundedBorder).foregroundColor(.primary)
                 .accessibilityIdentifier("studio.image-placement." + name.lowercased())
             Text("px").foregroundColor(.white.opacity(0.5))
@@ -667,7 +697,8 @@ private struct StudioImagePlacementControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("IMAGE POSITION").font(.specialElite(12)).foregroundColor(.white)
-            field("X", $x); field("Y", $y); field("Width", $width); field("Height", $height)
+            field("X", $x, focus: .x); field("Y", $y, focus: .y)
+            field("Width", $width, focus: .width); field("Height", $height, focus: .height)
             HStack {
                 Button("Half size") {
                     guard let p = proposed else { return }

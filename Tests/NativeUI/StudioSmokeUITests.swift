@@ -1587,6 +1587,132 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testImageDeleteCancelUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame, blank = try pixels(canvas.screenshot().image)
+        try openImagePanel(app)
+        try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8));search.tap();search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5));dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blank, original), 100)
+        func requestDeletion() throws {
+            try selectToolbarTool("move", app: app)
+            let button = app.buttons["studio.image-delete.open"]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            for _ in 0..<4 where !button.isHittable {
+                let scroll = popup.scrollViews.firstMatch
+                XCTAssertTrue(scroll.exists);scroll.swipeUp(velocity: .slow)
+            }
+            XCTAssertTrue(button.isHittable)
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: button).waitUntilFulfilled(timeout: 8))
+            button.tap()
+            XCTAssertTrue(app.buttons["Delete image"].waitForExistence(timeout: 5))
+        }
+        try requestDeletion()
+        capture(app, name: "image-delete-confirmation")
+        app.buttons["Cancel"].tap();app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Cancel removed actual image pixels")
+        try requestDeletion();app.buttons["Delete image"].tap()
+        XCTAssertFalse(app.buttons["studio.image-delete.open"].exists, "Deleted picture still exposes Delete")
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4, "Delete left picture pixels")
+        app.buttons["studio.undo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "One Undo did not restore picture pixels")
+        capture(app, name: "image-delete-undone")
+        app.buttons["studio.redo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.layers.open"].tap()
+        XCTAssertTrue(app.staticTexts["Layer 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Dungeon Dragon")).firstMatch.exists,
+                      "Deleting the picture deleted its layer")
+        app.buttons["studio.layers.close"].tap()
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(restored.screenshot().image)), 4, "Deleted picture returned on cold reopen")
+        capture(reopened, name: "image-delete-cold-reopened")
+    }
+
+    @MainActor
+    func testImageCanvasDragUndoAndColdReopen() throws {
+        let app = try launchGuestStudio();defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try openImagePanel(app);try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8));search.tap();search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5));dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app);try settlePickerCanvasAfterSave(app, canvas: canvas)
+        func control(_ id: String) throws -> XCUIElement {
+            let button = app.buttons[id]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            for _ in 0..<4 where !button.isHittable {
+                let scroll = popup.scrollViews.firstMatch
+                XCTAssertTrue(scroll.exists);scroll.swipeUp(velocity: .slow)
+            }
+            XCTAssertTrue(button.isHittable)
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: button).waitUntilFulfilled(timeout: 8))
+            return button
+        }
+        try selectToolbarTool("move", app: app)
+        try control("studio.image-placement.open").tap()
+        try control("studio.image-placement.half").tap()
+        try control("studio.image-placement.apply").tap()
+        try control("studio.image-move.target").tap()
+        XCTAssertEqual(app.buttons["studio.image-move.target"].value as? String, "Image")
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertTrue((canvas.value as? String)?.contains("Selected image") == true)
+        let selected = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.68, dy: 0.65)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let moved = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(selected, moved), 100, "Real image drag changed no canvas pixels")
+        capture(app, name: "image-canvas-drag")
+        app.buttons["studio.undo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(selected, pixels(canvas.screenshot().image)), 4, "One Undo lost the prior image placement")
+        app.buttons["studio.redo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(moved, pixels(canvas.screenshot().image)), 4, "One Redo lost the moved image")
+        // Compare persisted artwork without transient red selection decoration.
+        try selectToolbarTool("move", app: app);try control("studio.image-move.target").tap()
+        XCTAssertEqual(app.buttons["studio.image-move.target"].value as? String, "Drawings")
+        app.buttons["studio.tool-settings.close"].tap();try waitForStableCanvas(canvas, expected: frame)
+        let plainMoved = try pixels(canvas.screenshot().image)
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(plainMoved, pixels(restored.screenshot().image)), 4, "Cold reopen lost dragged image pixels")
+        capture(reopened, name: "image-canvas-drag-cold-reopened")
+    }
+
+    @MainActor
     func testImagePlacementCancelApplyUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -2408,27 +2534,14 @@ final class StudioSmokeUITests: XCTestCase {
         let samplingMessage = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Sampled #")).firstMatch
         XCTAssertTrue(expectation(for:NSPredicate(format:"exists == false"), evaluatedWith:samplingMessage).waitUntilFulfilled(timeout:5))
         let appBounds = app.frame
-        var previous = CGRect.null
-        var since = ProcessInfo.processInfo.systemUptime
-        var observations: [String] = []
-        let stable = NSPredicate { _,_ in
-            // Run 35462554349 recorded identical geometry seven times, but
-            // repeated remote frame queries consumed this entire 8s wait.
-            // Sample once per poll; keep visibility, bounds and the 1s stable
-            // interval, plus every downstream undo/reopen pixel assertion.
-            let frame = canvas.frame
-            let hittable = canvas.isHittable
-            let now = ProcessInfo.processInfo.systemUptime
-            observations.append("\(frame), hittable=\(hittable)")
-            if observations.count > 12 { observations.removeFirst() }
-            guard hittable, appBounds.contains(frame), frame.width > 80, frame.height > 80 else {
-                previous = .null; since = now; return false
-            }
-            if frame != previous { previous = frame; since = now; return false }
-            return now - since >= 1
-        }
-        XCTAssertTrue(expectation(for:stable,evaluatedWith:nil).waitUntilFulfilled(timeout:8),
-                      "Canvas geometry did not settle after clearing status: \(observations)")
+        // Run35491555925 recorded the visible canvas throughout, while a
+        // frame query (2.83s) plus a second hittability query (3.18s) consumed
+        // nearly the entire 8s polling budget before a stable second sample.
+        // Reuse the existing single-query geometry wait: same 8s/1s bounds,
+        // then check existence, hittability and containment once. Preserve
+        // every downstream pixel, undo, edit and cold-reopen assertion.
+        try waitForStableCanvas(canvas)
+        XCTAssertTrue(appBounds.contains(canvas.frame), "The settled canvas escaped the app bounds")
     }
 
     private func imageFixtureColors(_ raster: Raster) -> [Int] {

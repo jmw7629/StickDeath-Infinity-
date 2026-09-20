@@ -419,6 +419,29 @@ struct StudioDocumentEditor {
     /// One reversible edit; original geometry and fill pixels are never cropped.
     /// Placement edits retain the immutable image identity and original bytes.
     /// Historical full-canvas raster records are deliberately not converted here.
+    mutating func deleteImage(frameID: String, assetID: String,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  value.frames[index].rasterAssetID == assetID,
+                  value.frames[index].rasterPlacement != nil else {
+                throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
+            }
+            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+                throw StudioDocumentError.locked
+            }
+            try checkCancellation()
+            // Only this explicit managed picture reference is removed. Keep
+            // frame/layer identity, drawings, other frames and immutable assets.
+            value.frames[index].rasterAssetID = nil
+            value.frames[index].rasterLayerID = nil
+            value.frames[index].rasterPlacement = nil
+            try checkCancellation()
+        }
+    }
+
     mutating func updateImagePlacement(frameID: String, assetID: String,
                                       placement: StudioRasterPlacement,
                                       checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {

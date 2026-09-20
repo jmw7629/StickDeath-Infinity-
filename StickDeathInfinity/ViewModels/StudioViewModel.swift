@@ -72,7 +72,7 @@ final class StudioViewModel: ObservableObject {
             guard allowDocumentEditDuringInput() else { return }
             guard frames.indices.contains(newValue) else { return }
             stopPlayback()
-            if editor.selectFrame(frames[newValue].id) { scheduleSave() }
+            if editor.selectFrame(frames[newValue].id) { imageMoveTarget = nil; scheduleSave() }
         }
     }
     var currentLayerIndex: Int {
@@ -97,7 +97,7 @@ final class StudioViewModel: ObservableObject {
     private var restoringToolPreferences = false
     @Published private(set) var toolPreferencesWarning: String?
     @Published var selectedTool: DrawingTool = .brush {
-        didSet { if selectedTool != oldValue { restoreDrawingToolPreferences() } }
+        didSet { if selectedTool != oldValue { imageMoveTarget = nil; restoreDrawingToolPreferences() } }
     }
     @Published var strokeColor: Color = .red
     @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
@@ -356,6 +356,7 @@ final class StudioViewModel: ObservableObject {
         guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
         guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
         guard editor.clipboardVersion == clipboardVersion else { throw StudioCommandError.staleClipboard }
+        clearMissingImageMoveTarget(in: candidate.document)
         editor = candidate
         if receipt.outcome != .unchanged {
             stopPlayback()
@@ -590,7 +591,7 @@ final class StudioViewModel: ObservableObject {
     private func resetSession() {
         stopPlayback(); autosaveTask?.cancel(); autosaveTask = nil
         activePanel = .none; showToolbar = true; canvasScale = 1; canvasOffset = .zero
-        selectedAudioClip = nil; audioPlayheadTime = 0; message = nil
+        selectedAudioClip = nil; audioPlayheadTime = 0; message = nil; imageMoveTarget = nil
     }
     private func scheduleSave() {
         guard isEditing else { return }
@@ -608,6 +609,7 @@ final class StudioViewModel: ObservableObject {
             var candidate = editor
             try operation(&candidate)
             try preflightRasterDocument(candidate.document)
+            clearMissingImageMoveTarget(in: candidate.document)
             editor = candidate; pruneManagedAudio(); scheduleSave()
         } catch { message = error.localizedDescription }
     }
@@ -630,6 +632,7 @@ final class StudioViewModel: ObservableObject {
             let receipt = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
                 expectedRevision: document.revision, action: .apply([.pasteElements(.init(
                     frame: .id(currentFrame.id), layer: .id(activeLayerID), clipboardID: editor.clipboardVersion.uuidString))])))
+            imageMoveTarget = nil
             editor.selectedElementIDs = Set(receipt.createdElementIDs)
         } catch { message = error.localizedDescription }
     }
@@ -777,7 +780,7 @@ final class StudioViewModel: ObservableObject {
         let bounds: CGRect
     }
     func beginSelectionHandle() -> SelectionHandleCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .move, selectionMode != .subtract,
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move, !isMovingImageOnCanvas, selectionMode != .subtract,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
         var bounds = CGRect.null
@@ -878,6 +881,76 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    private struct ImageMoveTarget: Equatable {
+        let selectionID = UUID()
+        let projectID: UUID
+        let frameID: String
+        let assetID: String
+    }
+    @Published private var imageMoveTarget: ImageMoveTarget?
+    var isMovingImageOnCanvas: Bool {
+        guard let target = imageMoveTarget else { return false }
+        return selectedTool == .move && target.projectID == document.id &&
+            target.frameID == currentFrame.id && target.assetID == currentFrame.rasterAssetID
+    }
+    @discardableResult
+    func setImageCanvasMove(_ enabled: Bool) -> Bool {
+        if !enabled { imageMoveTarget = nil; return true }
+        guard let capture = prepareImagePlacement() else { return false }
+        imageMoveTarget = .init(projectID: capture.projectID, frameID: capture.frameID, assetID: capture.assetID)
+        editor.selectedElementIDs.removeAll()
+        return true
+    }
+    private func clearMissingImageMoveTarget(in next: StudioDocument) {
+        guard let target = imageMoveTarget else { return }
+        if target.projectID != next.id || target.frameID != next.activeFrameID ||
+            next.frames.first(where: { $0.id == target.frameID })?.rasterAssetID != target.assetID {
+            imageMoveTarget = nil
+        }
+    }
+    struct ImageMoveCapture: Equatable {
+        let placement: ImagePlacementCapture
+        let selectionID: UUID
+    }
+    func currentImageMoveCapture() -> ImageMoveCapture? {
+        guard isMovingImageOnCanvas, let target = imageMoveTarget,
+              let placement = prepareImagePlacement() else { return nil }
+        return .init(placement: placement, selectionID: target.selectionID)
+    }
+    func beginImageMove(at point: CGPoint) -> ImageMoveCapture? {
+        guard point.x.isFinite, point.y.isFinite, let capture = currentImageMoveCapture() else { return nil }
+        let p = capture.placement.original
+        return CGRect(x: p.x, y: p.y, width: p.width, height: p.height).contains(point) ? capture : nil
+    }
+    /// A transient frame preview; only finishImageMove commits through the shared command.
+    func imageMovePreview(_ capture: ImageMoveCapture, delta: CGSize) throws -> AnimationFrame {
+        guard currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+        guard delta.width.isFinite, delta.height.isFinite,
+              abs(delta.width) <= 131_072, abs(delta.height) <= 131_072 else {
+            throw StudioDocumentError.invalid("The image move has invalid coordinates.")
+        }
+        var frame = currentFrame
+        let original = capture.placement.original
+        // Keep the whole managed image inside the canvas, matching numeric placement.
+        frame.rasterPlacement = .init(
+            x: min(max(0, original.x + delta.width), max(0, Double(capture.placement.canvasWidth) - original.width)),
+            y: min(max(0, original.y + delta.height), max(0, Double(capture.placement.canvasHeight) - original.height)),
+            width: original.width, height: original.height)
+        return frame
+    }
+    @discardableResult
+    func finishImageMove(_ capture: ImageMoveCapture, delta: CGSize,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            let preview = try imageMovePreview(capture, delta: delta)
+            guard let placement = preview.rasterPlacement else { throw StudioCommandError.invalidReference }
+            return placeImage(capture.placement, at: placement, checkCancellation: {
+                try checkCancellation()
+                guard self.currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+            })
+        } catch { message = error.localizedDescription; return false }
+    }
+
     struct ImagePlacementCapture: Equatable {
         let projectID: UUID
         let revision: Int
@@ -911,6 +984,23 @@ final class StudioViewModel: ObservableObject {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
                     frame: .id(capture.frameID), assetID: capture.assetID, placement: placement))])),
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+                })
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func deleteImage(_ capture: ImagePlacementCapture,
+                     checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.deleteImage(.init(
+                    frame: .id(capture.frameID), assetID: capture.assetID))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -953,7 +1043,7 @@ final class StudioViewModel: ObservableObject {
         return hit
     }
     func beginMove(at point: CGPoint) -> MoveCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move, !isMovingImageOnCanvas,
               activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
         let hit = selectElement(at: point)
         guard selectionMode != .subtract else { return nil }
@@ -968,7 +1058,7 @@ final class StudioViewModel: ObservableObject {
         return MoveCapture(projectID: document.id, revision: document.revision, frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode)
     }
     func moveIsCurrent(_ capture: MoveCapture) -> Bool {
-        isEditing && !isPlaying && selectedTool == .move && activeStrokeID == nil && pendingBrushStroke == nil &&
+        isEditing && !isPlaying && selectedTool == .move && !isMovingImageOnCanvas && activeStrokeID == nil && pendingBrushStroke == nil &&
         capture.projectID == document.id && capture.revision == document.revision && capture.frameID == currentFrame.id &&
         capture.ids == selectedElementIDs && capture.mode == selectionMode
     }

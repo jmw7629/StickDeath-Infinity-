@@ -107,6 +107,7 @@ enum StudioCommand: Codable {
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
+    struct DeleteImage: Codable { let frame: StudioCommandReference; let assetID: String }
     struct UpdateImagePlacement: Codable {
         let frame: StudioCommandReference
         let assetID: String
@@ -118,12 +119,13 @@ enum StudioCommand: Codable {
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
-    case updateImagePlacement(UpdateImagePlacement)
+    case deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "deleteImage": self = .deleteImage(try container.decode(DeleteImage.self, forKey: key))
         case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
         case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
         case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
@@ -152,6 +154,7 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .deleteImage(let value): try container.encode(value, forKey: StudioWireKey("deleteImage"))
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
@@ -306,6 +309,7 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "deleteImage": ["frame", "assetID"],
             "updateImagePlacement": ["frame", "assetID", "placement"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
@@ -599,6 +603,13 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
                                      checkCancellation: checkCancellation)
+        case .deleteImage(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.deleteImage(frameID: id, assetID: value.assetID, checkCancellation: checkCancellation)
         case .updateImagePlacement(let value):
             let id = try frame(value.frame)
             guard let selected = editor.document.frames.first(where: { $0.id == id }),

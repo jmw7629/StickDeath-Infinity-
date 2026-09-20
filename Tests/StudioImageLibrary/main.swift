@@ -84,6 +84,166 @@ private final class NetworkTrap: URLProtocol {
             try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Owned import scratch leaked")
             groups += 1; print("PASS " + name)
         }
+        func imageMoveFixture() async throws -> (StudioViewModel, DeviceStorageManager, StudioViewModel.ImageMoveCapture) {
+            let (editor, storage) = try await fixture(), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image Add failed")
+            editor.selectedTool = .move
+            try require(editor.placeImage(editor.prepareImagePlacement()!, at: .init(x: 10, y: 20, width: 40, height: 80)), "Initial placement failed")
+            try require(editor.setImageCanvasMove(true), "Image target rejected")
+            guard let capture = editor.beginImageMove(at: .init(x: 30, y: 60)) else { throw Failure(message: "Image hit did not capture") }
+            return (editor, storage, capture)
+        }
+        try await test("canvas image drag previews without edits then changes real PNG in one reversible persisted command") {
+            let (editor, storage, capture) = try await imageMoveFixture()
+            let before = editor.document, beforePixels = try await exported(editor)
+            let preview = try editor.imageMovePreview(capture, delta: .init(width: 35, height: 15))
+            try require(preview.rasterPlacement == .init(x: 45, y: 35, width: 40, height: 80), "Preview placement wrong")
+            try require(editor.document == before && preview.rasterAssetID == capture.placement.assetID, "Preview edited production document or export")
+            try require(editor.finishImageMove(capture, delta: .init(width: 35, height: 15)), "Drag commit failed")
+            let after = editor.document, afterPixels = try await exported(editor)
+            try require(after.revision == before.revision + 1 && afterPixels != beforePixels, "Drag did not commit actual pixels exactly once")
+            try require(after.frames[0].rasterPlacement == preview.rasterPlacement && after.layers == before.layers && after.frames[0].elements == before.frames[0].elements, "Drag changed other content")
+            let ink = (0..<(160*160)).filter { afterPixels[$0*4+3] > 128 }
+            try require(ink.count > 30 && ink.allSatisfy { (45..<85).contains($0%160) && (35..<115).contains($0/160) }, "Rendered pixels escaped moved rectangle")
+            editor.undo();try require((try await exported(editor)) == beforePixels, "One Undo failed")
+            editor.redo();try require((try await exported(editor)) == afterPixels, "One Redo failed")
+            try require(await editor.save(), "Moved image save failed")
+            let stored = try storage.loadAnimation(id: after.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Moved image cold reopen failed")
+            try require((try await exported(reopened)) == afterPixels && !reopened.isMovingImageOnCanvas, "Cold reopen lost pixels or kept transient selection")
+            let source = reopened.originalImageSource(capture.placement.assetID)
+            try require(source?.originalData == original && source?.catalogueAttribution == provenance, "Drag or save lost source bytes/rights")
+        }
+        try await test("image hit testing edge clamping and taps preserve identity and avoid no-op history") {
+            let (editor, _, capture) = try await imageMoveFixture(), before = editor.document
+            try require(editor.beginImageMove(at: .init(x: 2, y: 2)) == nil && editor.beginImageMove(at: .init(x: CGFloat.nan, y: 30)) == nil, "Empty or invalid hit selected image")
+            try require(editor.beginMove(at: .init(x: 30, y: 60)) == nil && editor.beginSelectionHandle() == nil, "Image target selected drawing gesture")
+            try require(editor.finishImageMove(capture, delta: .zero) && editor.document == before, "Tap created Undo entry")
+            let corner = try editor.imageMovePreview(capture, delta: .init(width: 1000, height: -1000))
+            try require(corner.rasterPlacement == .init(x: 120, y: 0, width: 40, height: 80), "Edge clamp changed size or left canvas")
+            for delta in [CGSize(width: CGFloat.infinity, height: 0), CGSize(width: 0, height: CGFloat.nan), CGSize(width: 131073, height: 0)] {
+                try require(!editor.finishImageMove(capture, delta: delta) && editor.document == before, "Invalid drag changed project")
+            }
+            try require(editor.setImageCanvasMove(false), "Drawings switch failed")
+            try require(editor.placeImage(editor.prepareImagePlacement()!, at: .init(x: 0, y: 0, width: 160, height: 160)), "Full canvas fixture failed")
+            try require(editor.setImageCanvasMove(true), "Full canvas selection failed")
+            let full = editor.document
+            try require(editor.finishImageMove(editor.currentImageMoveCapture()!, delta: .init(width: 20, height: 30)) && editor.document == full, "Full canvas image moved outside or made history")
+        }
+        try await test("image drag cancellation at every production checkpoint and reselected targets cannot commit") {
+            let (probe, _, capture) = try await imageMoveFixture()
+            var total = 0
+            try require(probe.finishImageMove(capture, delta: .init(width: 20, height: 10), checkCancellation: { total += 1 }), "Probe failed")
+            try require(total >= 4, "No staged cancellation checkpoints")
+            for stop in 1...total {
+                let (editor, _, current) = try await imageMoveFixture(), before = editor.document
+                var count = 0
+                try require(!editor.finishImageMove(current, delta: .init(width: 20, height: 10), checkCancellation: {
+                    count += 1; if count == stop { throw CancellationError() }
+                }) && editor.document == before, "Cancellation at checkpoint \(stop) changed document")
+                editor.undo()
+                try require(editor.currentFrame.rasterPlacement == current.placement.fitted, "Cancelled drag created history")
+            }
+            let (editor, _, old) = try await imageMoveFixture(), before = editor.document
+            try require(editor.setImageCanvasMove(false) && editor.setImageCanvasMove(true), "Reselection failed")
+            try require(!editor.finishImageMove(old, delta: .init(width: 20, height: 10)) && editor.document == before, "Old gesture survived image reselection")
+            let next = editor.currentImageMoveCapture()!;var count = 0
+            try require(!editor.finishImageMove(next, delta: .init(width: 20, height: 10), checkCancellation: {
+                count += 1; if count == 4 { _ = editor.setImageCanvasMove(false); _ = editor.setImageCanvasMove(true) }
+            }) && editor.document == before, "Late reselection bypassed staged guard")
+        }
+        try await test("image drag rejects changed frames tools playback and hidden or locked layers") {
+            let (editor, _, capture) = try await imageMoveFixture()
+            editor.selectedTool = .brush;editor.selectedTool = .move
+            try require(!editor.isMovingImageOnCanvas && !editor.finishImageMove(capture, delta: .init(width: 1, height: 1)), "Tool switch retained image gesture")
+            try require(editor.setImageCanvasMove(true), "Target activation failed")
+            let previous = editor.currentImageMoveCapture()!
+            editor.addFrame()
+            editor.togglePlayback()
+            try require(editor.isPlaying && editor.currentImageMoveCapture() == nil, "Playback exposed image drag")
+            editor.stopPlayback()
+            let newFrame = editor.document
+            try require(!editor.isMovingImageOnCanvas && !editor.finishImageMove(previous, delta: .init(width: 1, height: 1)) && editor.document == newFrame, "Gesture moved another frame")
+            editor.undo()
+            try require(!editor.isMovingImageOnCanvas, "Returning to old frame revived image selection")
+            for lock in [StudioCommandLock.full, .position] {
+                let (locked, _, old) = try await imageMoveFixture()
+                _ = try locked.applyStudioCommands(.init(requestID: UUID(), projectID: locked.document.id, expectedRevision: locked.document.revision,
+                    action: .apply([.updateLayer(.init(layer: .id(old.placement.layerID), settings: .init(lock: lock)))])))
+                let before = locked.document
+                try require(locked.currentImageMoveCapture() == nil && !locked.finishImageMove(old, delta: .init(width: 10, height: 10)) && locked.document == before, "Layer lock bypassed")
+            }
+            let (hidden, _, old) = try await imageMoveFixture()
+            hidden.toggleLayerVisibility(old.placement.layerID)
+            try require(hidden.currentImageMoveCapture() == nil && !hidden.setImageCanvasMove(true), "Hidden image enabled movement")
+            let (transparent, _, initial) = try await imageMoveFixture()
+            _ = try transparent.applyStudioCommands(.init(requestID: UUID(), projectID: transparent.document.id, expectedRevision: transparent.document.revision,
+                action: .apply([.updateLayer(.init(layer: .id(initial.placement.layerID), settings: .init(opacity: 0)))])))
+            try require(transparent.currentImageMoveCapture() == nil, "Transparent image enabled movement")
+        }
+        try await test("pasting drawings exits image targeting and moving the pasted selection preserves image placement") {
+            let (editor, _, capture) = try await imageMoveFixture()
+            try require(editor.setImageCanvasMove(false), "Drawings target failed")
+            let drawing = DrawnElement(id: UUID().uuidString, tool: .rectangle,
+                points: [.init(x: 110, y: 100), .init(x: 140, y: 140)], color: "#0000FF", width: 2,
+                opacity: 1, layerID: editor.activeLayerID, shape: .init(fillColor: "#0000FF", cornerRadius: 0))
+            try require(editor.commitElement(drawing), "Real drawing fixture failed")
+            try require(editor.beginMove(at: .init(x: 125, y: 120)) != nil && editor.copySelected(), "Drawing copy failed")
+            try require(editor.setImageCanvasMove(true) && editor.selectedElementIDs.isEmpty, "Image target kept drawing selection")
+            let before = editor.document
+            editor.pasteClipboard()
+            try require(!editor.isMovingImageOnCanvas && editor.selectedElementIDs.count == 1 && editor.currentFrame.elements.count == 2,
+                        "Paste kept image target or lost actual new drawing selection")
+            try require(editor.currentFrame.rasterPlacement == capture.placement.original, "Paste moved the image")
+            guard let pasted = editor.beginMove(at: .init(x: 125, y: 120)) else { throw Failure(message: "Pasted drawing cannot move") }
+            try require(editor.finishMove(pasted, delta: .init(width: -30, height: -10)), "Actual pasted selection move failed")
+            try require(editor.currentFrame.rasterPlacement == capture.placement.original && editor.document.revision == before.revision + 2,
+                        "Drawing move affected image or wrong transaction count")
+            editor.undo();editor.undo()
+            try require(editor.currentFrame.elements == before.frames[0].elements && editor.currentFrame.rasterPlacement == capture.placement.original,
+                        "Drawing Undo changed image or originals")
+        }
+        try await test("image deletion removes actual pixels preserves originals for Undo and survives cold reopen") {
+            let (editor, storage) = try await fixture(), blank = try await exported(editor), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image Add failed")
+            editor.selectedTool = .move
+            let capture = editor.prepareImagePlacement()!, before = editor.document, originalPixels = try await exported(editor)
+            try require(originalPixels != blank, "Image did not render")
+            try require(editor.deleteImage(capture), "Explicit image delete failed")
+            let deleted = editor.document, deletedPixels = try await exported(editor)
+            try require(deletedPixels == blank && deleted.layers == before.layers && deleted.frames[0].elements == before.frames[0].elements, "Delete changed unrelated content or retained image pixels")
+            try require(editor.originalImageSource(capture.assetID)?.originalData == original && editor.originalImageSource(capture.assetID)?.catalogueAttribution == provenance, "Delete lost history's original bytes or rights")
+            editor.undo();let undoPixels = try await exported(editor)
+            try require(undoPixels == originalPixels && editor.currentFrame.rasterAssetID == capture.assetID, "One Undo lost actual original pixels")
+            editor.redo();let redoPixels = try await exported(editor)
+            try require(redoPixels == blank && editor.currentFrame.rasterAssetID == nil, "One Redo lost removal")
+            try require(await editor.save(), "Deleted project did not save")
+            let reopened = StudioViewModel(storage: storage), stored = try storage.loadAnimation(id: deleted.id)!
+            try require(await reopened.openProject(stored.metadata), "Deleted project did not reopen")
+            let reopenedPixels = try await exported(reopened)
+            try require(reopenedPixels == blank && reopened.layers == before.layers && reopened.currentFrame.rasterAssetID == nil, "Deleted picture returned or its layer changed on cold reopen")
+        }
+        try await test("image deletion rejects stale and cancelled captures without losing pixels or history") {
+            let (editor, _) = try await fixture(), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image Add failed")
+            editor.selectedTool = .move
+            let capture = editor.prepareImagePlacement()!, before = editor.document, pixels = try await exported(editor)
+            try require(!editor.deleteImage(capture, checkCancellation: { throw CancellationError() }), "Cancelled Delete applied")
+            var probes = 0
+            try require(!editor.deleteImage(capture, checkCancellation: {
+                probes += 1;if probes == 4 { editor.selectedTool = .brush }
+            }), "Late tool change allowed image deletion")
+            let unchangedPixels = try await exported(editor)
+            try require(editor.document == before && unchangedPixels == pixels, "Rejected Delete changed pixels or content")
+            editor.selectedTool = .move
+            editor.addLayer();let intervening = editor.document
+            try require(!editor.deleteImage(capture) && editor.document == intervening, "Old confirmation deleted newer work")
+            let current = editor.prepareImagePlacement()!
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id, expectedRevision: editor.document.revision,
+                action: .apply([.updateLayer(.init(layer: .id(current.layerID), settings: .init(lock: .full)))])))
+            let locked = editor.document
+            try require(!editor.deleteImage(current) && editor.document == locked, "Delete bypassed image-layer lock")
+        }
         try await test("image positioning changes real PNG pixels in one edit and survives source-independent cold reopen") {
             let (editor, storage) = try await fixture(), session = try await prepare(editor)
             try require(session.apply(currentScope: scope), "Image Add failed")
