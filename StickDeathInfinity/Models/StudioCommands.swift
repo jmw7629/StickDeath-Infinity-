@@ -107,17 +107,24 @@ enum StudioCommand: Codable {
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
+    struct UpdateImagePlacement: Codable {
+        let frame: StudioCommandReference
+        let assetID: String
+        let placement: StudioRasterPlacement
+    }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
+    case updateImagePlacement(UpdateImagePlacement)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
         case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
         case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
@@ -145,6 +152,7 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .draw(let value): try container.encode(value, forKey: StudioWireKey("draw"))
@@ -222,7 +230,14 @@ struct StudioCommandReceipt {
 /// Actual editable context only. Audio assets and export are unavailable to this
 /// bounded interface; this snapshot does not imply the rest of the app lacks them.
 struct StudioCommandContext {
-    struct Frame { let id: String; let elementCount: Int; let hasOriginalRecord: Bool }
+    struct Frame {
+        let id: String
+        let elementCount: Int
+        let hasOriginalRecord: Bool
+        let imageAssetID: String?
+        let imageLayerID: String?
+        let imagePlacement: StudioRasterPlacement?
+    }
     let projectID: UUID
     let revision: Int
     let name: String
@@ -241,7 +256,11 @@ struct StudioCommandContext {
         projectID = document.id; revision = document.revision; name = document.name
         width = document.width; height = document.height; fps = document.fps
         activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
-        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count, hasOriginalRecord: $0.rasterAssetID != nil) }
+        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count,
+            hasOriginalRecord: $0.rasterAssetID != nil,
+            imageAssetID: $0.rasterPlacement == nil ? nil : $0.rasterAssetID,
+            imageLayerID: $0.rasterPlacement == nil ? nil : $0.rasterLayerID,
+            imagePlacement: $0.rasterPlacement) }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
     }
@@ -287,6 +306,7 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "updateImagePlacement": ["frame", "assetID", "placement"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
@@ -312,6 +332,10 @@ enum StudioCommandExecutor {
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
+            if kind == "updateImagePlacement" {
+                guard let placement = fields["placement"] else { throw StudioCommandError.malformed }
+                _ = try object(placement, keys: ["x", "y", "width", "height"])
+            }
             if kind == "updateLayer" {
                 guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
                 _ = try object(settings, keys: ["name", "visible", "opacity", "lock", "blend", "glowEnabled", "glowColor"])
@@ -575,6 +599,10 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
                                      checkCancellation: checkCancellation)
+        case .updateImagePlacement(let value):
+            let id = try frame(value.frame)
+            try editor.updateImagePlacement(frameID: id, assetID: value.assetID,
+                placement: value.placement, checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil else { throw StudioCommandError.invalidSettings }
             try editor.change {

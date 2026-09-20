@@ -45,6 +45,90 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            func imageEditor() throws -> StudioDocumentEditor {
+                var editor = try fresh()
+                try editor.change { value in
+                    value.schemaVersion = 3
+                    value.frames[0].rasterAssetID = "image-fixture"
+                    value.frames[0].rasterLayerID = value.activeLayerID
+                    value.frames[0].rasterPlacement = .init(x: 128, y: 0, width: 256, height: 512)
+                }
+                return editor
+            }
+            func imageCommand(_ editor: StudioDocumentEditor, _ placement: StudioRasterPlacement, assetID: String = "image-fixture") -> StudioCommand {
+                .updateImagePlacement(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, placement: placement))
+            }
+            try test("image placement uses strict wire one transaction and original image identity") {
+                var editor = try imageEditor(); let before = editor.document
+                let placement = StudioRasterPlacement(x: 7, y: 15, width: 64, height: 128)
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageCommand(editor, placement)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                let context = StudioCommandContext(document: after).frames[0]
+                try require(context.imageAssetID == "image-fixture" && context.imageLayerID == after.activeLayerID && context.imagePlacement == placement,
+                    "Studio automation context lacks actual editable image identity/geometry")
+                try require(after.frames[0].rasterPlacement == placement, "Image placement did not change")
+                try require(after.frames[0].rasterAssetID == before.frames[0].rasterAssetID && after.frames[0].rasterLayerID == before.frames[0].rasterLayerID, "Image ownership changed")
+                try require(after.frames[0].elements == before.frames[0].elements && after.layers == before.layers && after.audioClips == before.audioClips, "Image positioning changed unrelated content")
+                try require(after.revision == before.revision + 1 && receipt.createdElementIDs.isEmpty && receipt.deletedElementIDs.isEmpty, "Incorrect edit receipt")
+                editor.undo(); try require(content(editor.document) == content(before), "Image Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Image Redo failed")
+                let redoSnapshot = editor.document
+                let unchanged = try StudioCommandExecutor.execute(request(editor, .apply([imageCommand(editor, placement)])), editor: &editor)
+                try require(unchanged.outcome == .unchanged && editor.document == redoSnapshot, "Unchanged image placement created history")
+                var object = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
+                var action = object["action"] as! [String: Any]; var commands = action["apply"] as! [[String: Any]]
+                var args = commands[0]["updateImagePlacement"] as! [String: Any]
+                var rect = args["placement"] as! [String: Any]; rect["shell"] = "not an instruction"; args["placement"] = rect
+                commands[0]["updateImagePlacement"] = args; action["apply"] = commands; object["action"] = action
+                do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Unknown nested image field accepted") }
+                catch StudioCommandError.malformed {}
+            }
+            try test("image positioning isolates duplicated frames and rolls back later batch failures") {
+                var editor = try imageEditor()
+                let firstID = editor.document.activeFrameID
+                try editor.duplicateFrame()
+                let before = editor.document, target = StudioRasterPlacement(x: 0, y: 0, width: 50, height: 100)
+                try require(before.frames.count == 2 && before.frames[0].rasterAssetID == before.frames[1].rasterAssetID, "Duplicate fixture did not retain shared original")
+                let valid = imageCommand(editor, target)
+                try rejected(request(editor, .apply([valid, imageCommand(editor, target, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([valid])), editor: &editor)
+                try require(editor.document.frames.first { $0.id == firstID } == before.frames.first { $0.id == firstID }, "Placement changed another frame sharing original bytes")
+                try require(editor.document.frames.first { $0.id == editor.document.activeFrameID }?.rasterPlacement == target, "Explicit frame was not positioned")
+            }
+            try test("invalid nonfinite outside and missing image placements reject atomically") {
+                var editor = try imageEditor()
+                for rect in [StudioRasterPlacement(x: -1, y: 0, width: 10, height: 10),
+                             .init(x: 0, y: 0, width: 0, height: 10), .init(x: 500, y: 0, width: 20, height: 10),
+                             .init(x: 0, y: 500, width: 10, height: 20), .init(x: .nan, y: 0, width: 10, height: 10),
+                             .init(x: 0, y: 0, width: .infinity, height: 10)] {
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                let valid = StudioRasterPlacement(x: 0, y: 0, width: 10, height: 10)
+                try rejected(request(editor, .apply([imageCommand(editor, valid, assetID: "wrong")])), editor: &editor, expected: .invalidReference)
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([imageCommand(editor, valid)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image placement respects locks visibility cancellation and stale revisions") {
+                let rect = StudioRasterPlacement(x: 0, y: 0, width: 64, height: 128)
+                for mode in ["full", "position", "alpha"] {
+                    var editor = try imageEditor(); try editor.change { $0.layers[0].lockMode = mode }
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                for hidden in [true, false] {
+                    var editor = try imageEditor(); try editor.change { if hidden { $0.layers[0].visible = false } else { $0.layers[0].opacity = 0 } }
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                var editor = try imageEditor(); let stale = request(editor, .apply([imageCommand(editor, rect)]))
+                try editor.change { $0.gridEnabled = true }
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+                for cancelAt in 1...5 {
+                    var probes = 0
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor, cancellation: {
+                        probes += 1; if probes == cancelAt { throw CancellationError() }
+                    })
+                }
+            }
             try test("layer naming is one actual metadata transaction with Unicode and reversible history") {
                 var editor = try fresh()
                 _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "named-ink")])])), editor: &editor)

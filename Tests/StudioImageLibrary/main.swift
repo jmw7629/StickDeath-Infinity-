@@ -84,6 +84,59 @@ private final class NetworkTrap: URLProtocol {
             try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Owned import scratch leaked")
             groups += 1; print("PASS " + name)
         }
+        try await test("image positioning changes real PNG pixels in one edit and survives source-independent cold reopen") {
+            let (editor, storage) = try await fixture(), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image Add failed")
+            editor.selectedTool = .move
+            let capture = editor.prepareImagePlacement()!, before = editor.document, oldPixels = try await exported(editor)
+            try require(editor.document == before, "Opening image positioning edited the document")
+            let target = StudioRasterPlacement(x: 10, y: 20, width: 40, height: 80)
+            try require(editor.placeImage(capture, at: target), "Placement Apply failed")
+            let placed = editor.document, pixels = try await exported(editor)
+            try require(placed.revision == before.revision + 1 && pixels != oldPixels, "Placement did not change actual pixels once")
+            let ink = (0..<(160 * 160)).filter { pixels[$0 * 4 + 3] > 128 }
+            try require(ink.count > 30 && ink.allSatisfy { (10..<50).contains($0 % 160) }, "Rendered image escaped requested horizontal placement")
+            try require(placed.frames[0].rasterAssetID == capture.assetID && placed.frames[0].rasterLayerID == capture.layerID, "Image identity changed")
+            try require(editor.originalImageSource(capture.assetID)?.originalData == original && editor.originalImageSource(capture.assetID)?.catalogueAttribution == provenance, "Placement lost original or rights")
+            editor.undo();try require(try await exported(editor) == oldPixels, "Image Undo did not restore real pixels")
+            editor.redo();try require(try await exported(editor) == pixels, "Image Redo did not restore real pixels")
+            let unchanged = editor.prepareImagePlacement()!, revision = editor.document.revision
+            try require(editor.placeImage(unchanged, at: target) && editor.document.revision == revision, "Unchanged placement made history")
+            try require(await editor.save(), "Positioned project save failed")
+            let reopened = StudioViewModel(storage: storage)
+            let stored = try storage.loadAnimation(id: placed.id)!
+            try require(await reopened.openProject(stored.metadata), "Cold reopen failed")
+            let reopenedPixels = try await exported(reopened)
+            try require(reopened.currentFrame.rasterPlacement == target && reopenedPixels == pixels, "Cold reopen lost geometry or actual pixels")
+            try require(reopened.originalImageSource(capture.assetID)?.originalData == original && reopened.originalImageSource(capture.assetID)?.catalogueAttribution == provenance, "Cold reopen lost original or rights")
+        }
+        try await test("image positioning rejects stale context locks tool changes cancellation and invalid bounds") {
+            let (editor, _) = try await fixture(), session = try await prepare(editor)
+            try require(session.apply(currentScope: scope), "Image Add failed")
+            editor.selectedTool = .move
+            let target = StudioRasterPlacement(x: 10, y: 20, width: 40, height: 80)
+            let capture = editor.prepareImagePlacement()!, before = editor.document, oldPixels = try await exported(editor)
+            try require(!editor.placeImage(capture, at: target, checkCancellation: { throw CancellationError() }), "Cancelled placement applied")
+            try require(!editor.placeImage(capture, at: .init(x: 159, y: 0, width: 20, height: 20)), "Outside placement applied")
+            editor.selectedTool = .brush
+            try require(editor.prepareImagePlacement() == nil && !editor.placeImage(capture, at: target), "Wrong tool accepted placement")
+            editor.selectedTool = .move
+            let rejectedPixels = try await exported(editor)
+            try require(editor.document == before && rejectedPixels == oldPixels, "Rejected placement changed content")
+            var probes = 0
+            try require(!editor.placeImage(capture, at: target, checkCancellation: {
+                probes += 1; if probes == 4 { editor.selectedTool = .brush }
+            }), "Late tool change accepted a stale image draft")
+            try require(editor.document == before, "Late stale rejection changed document")
+            editor.selectedTool = .move
+            editor.addLayer()
+            let edited = editor.document
+            try require(!editor.placeImage(capture, at: target) && editor.document == edited, "Stale image draft replaced intervening work")
+            let lock = StudioCommand.updateLayer(.init(layer: .id(capture.layerID), settings: .init(lock: .position)))
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id,
+                expectedRevision: editor.document.revision, action: .apply([lock])))
+            try require(editor.prepareImagePlacement() == nil, "Position-locked image exposed placement")
+        }
         try await test("all actual library thumbnails decode serially with a 48-image bounded cache") {
             let loader = StudioImageLibraryThumbnails()
             for image in catalogue.images {

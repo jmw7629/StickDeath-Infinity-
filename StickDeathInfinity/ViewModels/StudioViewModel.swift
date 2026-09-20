@@ -878,6 +878,47 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    struct ImagePlacementCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let assetID: String
+        let layerID: String
+        let original: StudioRasterPlacement
+        let fitted: StudioRasterPlacement
+        let canvasWidth: Int
+        let canvasHeight: Int
+    }
+    func prepareImagePlacement() -> ImagePlacementCapture? {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              let assetID = currentFrame.rasterAssetID, let original = currentFrame.rasterPlacement,
+              let source = originalImageSource(assetID),
+              let layer = layers.first(where: { $0.id == currentFrame.rasterLayerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
+        return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+            assetID: assetID, layerID: layer.id, original: original,
+            fitted: .aspectFit(imageWidth: source.normalizedWidth, imageHeight: source.normalizedHeight,
+                canvasWidth: document.width, canvasHeight: document.height),
+            canvasWidth: document.width, canvasHeight: document.height)
+    }
+    @discardableResult
+    func placeImage(_ capture: ImagePlacementCapture, at placement: StudioRasterPlacement,
+                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
+                    frame: .id(capture.frameID), assetID: capture.assetID, placement: placement))])),
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+                })
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
     struct MoveCapture: Equatable {
         let projectID: UUID
         let revision: Int

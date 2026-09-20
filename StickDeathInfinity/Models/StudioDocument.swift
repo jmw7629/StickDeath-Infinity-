@@ -417,6 +417,26 @@ struct StudioDocumentEditor {
         }
     }
     /// One reversible edit; original geometry and fill pixels are never cropped.
+    /// Placement edits retain the immutable image identity and original bytes.
+    /// Historical full-canvas raster records are deliberately not converted here.
+    mutating func updateImagePlacement(frameID: String, assetID: String,
+                                      placement: StudioRasterPlacement,
+                                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  value.frames[index].rasterAssetID == assetID,
+                  value.frames[index].rasterPlacement != nil else { throw StudioCommandError.invalidReference }
+            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+                throw StudioDocumentError.locked
+            }
+            try checkCancellation()
+            value.frames[index].rasterPlacement = placement
+            // change validates the full document before a single history commit.
+        }
+    }
+
     mutating func translateElements(frameID: String, ids: Set<String>, dx: Double, dy: Double,
                                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         guard !ids.isEmpty, ids.count <= 1024 else { throw StudioDocumentError.invalid("Select between 1 and 1,024 drawing elements before moving artwork.") }

@@ -20,8 +20,14 @@ final class StudioSmokeUITests: XCTestCase {
             XCTAssertTrue(rename.waitForExistence(timeout: 5))
             XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: rename).waitUntilFulfilled(timeout: 8))
             rename.tap()
-            let input = app.alerts.textFields["studio.layer.rename.input"]
-            XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap()
+            // The original iOS18.5 AX snapshot exposes the UIKit alert field
+            // by its placeholder, without SwiftUI's accessibility identifier.
+            let dialog = app.alerts.firstMatch
+            XCTAssertTrue(dialog.staticTexts["Rename layer"].waitForExistence(timeout: 5))
+            XCTAssertEqual(dialog.textFields.count, 1)
+            let input = dialog.textFields.firstMatch
+            XCTAssertEqual(input.placeholderValue, "Layer name")
+            XCTAssertTrue(input.isHittable); input.tap()
             return input
         }
         showLayers();app.staticTexts["Layer 1"].tap()
@@ -533,7 +539,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func createEditableTextFixture(_ content: String, app: XCUIApplication, chooseRed: Bool = true) throws -> (name: String, canvas: XCUIElement, frame: CGRect, pixels: Raster) {
+    private func createEditableTextFixture(_ content: String, app: XCUIApplication, chooseRed: Bool = true, keepTextSelected: Bool = false) throws -> (name: String, canvas: XCUIElement, frame: CGRect, pixels: Raster) {
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         try waitForStableCanvas(canvas)
@@ -553,12 +559,17 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.buttons["studio.text.new"].waitForExistence(timeout: 5))
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas, expected: frame)
-        // Clear selection outline before measuring actual letter pixels.
-        try selectToolbarTool("move", app: app)
-        app.buttons["studio.tool-settings.close"].tap()
-        try waitForStableCanvas(canvas, expected: frame)
-        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
-        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        if !keepTextSelected {
+            // Ordinary drawing fixtures use an undecorated canvas. The cold
+            // text-edit journey keeps the same text selection before/after
+            // each pixel comparison and on reopen, avoiding redundant trips
+            // across the toolbar before editing that already selected text.
+            try selectToolbarTool("move", app: app)
+            app.buttons["studio.tool-settings.close"].tap()
+            try waitForStableCanvas(canvas, expected: frame)
+            canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
         let original = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(exportInkMask(original).count, 25, "Text did not draw actual glyphs")
         return (name, canvas, frame, original)
@@ -607,10 +618,10 @@ final class StudioSmokeUITests: XCTestCase {
     func testEditableTextColdReopenAndEditableSource() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false)
+        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false, keepTextSelected: true)
         let name = fixture.name, frame = fixture.frame, canvas = fixture.canvas
         // Persist an actual edit to existing text, not only a newly created box.
-        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // Apply selected the new text. Edit that real selection directly.
         try selectToolbarTool("text", app: app)
         app.buttons["studio.text.edit"].tap()
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
@@ -619,9 +630,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(input.value as? String, "SDI!")
         app.buttons["studio.text.keyboard-dismiss"].tap()
         app.buttons["studio.text.apply"].tap(); app.buttons["studio.tool-settings.close"].tap()
-        try selectToolbarTool("move", app: app); app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas, expected: frame)
-        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         let edited = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(try changedPixelCount(fixture.pixels, edited), 4, "Text edit did not change saved glyphs")
@@ -631,13 +640,18 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
         let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
         try waitForStableCanvas(restored, expected: frame)
-        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4,
-                                "Cold reopen changed text glyphs")
-        capture(reopened, name: "editable-text-cold-reopened")
         try selectToolbarTool("move", app: reopened)
         reopened.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(restored, expected: frame)
         restored.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try selectToolbarTool("text", app: reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(restored, expected: frame)
+        // Match the same Text-tool selection decoration as both earlier
+        // captures; fixed text-box geometry keeps the outline unchanged.
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4,
+                                "Cold reopen changed text glyphs")
+        capture(reopened, name: "editable-text-cold-reopened")
         try selectToolbarTool("text", app: reopened)
         reopened.buttons["studio.text.edit"].tap()
         let restoredInput = reopened.descendants(matching: .any)["studio.text.content"].firstMatch
@@ -1570,6 +1584,80 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(reopenedCanvas.screenshot().image)), 4,
                                  "Relaunch lost the actual Spatter-created document")
         capture(reopenedApp, name: "spatter-motion-persisted-reopened")
+    }
+
+    @MainActor
+    func testImagePlacementCancelApplyUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try openImagePanel(app)
+        try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        func control(_ suffix: String) throws -> XCUIElement {
+            let button = app.buttons["studio.image-placement." + suffix]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            for _ in 0..<4 where !button.isHittable {
+                let scroll = popup.scrollViews.firstMatch
+                XCTAssertTrue(scroll.exists, "Image settings have no reachable popup scroll container")
+                scroll.swipeUp(velocity: .slow)
+            }
+            XCTAssertTrue(button.isHittable)
+            return button
+        }
+        try selectToolbarTool("move", app: app)
+        let open = try control("open")
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: open).waitUntilFulfilled(timeout: 8))
+        open.tap()
+        let width = app.textFields["studio.image-placement.width"]
+        XCTAssertTrue(width.waitForExistence(timeout: 5))
+        let originalWidth = try XCTUnwrap(Double(try XCTUnwrap(width.value as? String)))
+        try control("half").tap()
+        XCTAssertEqual(try XCTUnwrap(Double(try XCTUnwrap(width.value as? String))), originalWidth / 2, accuracy: 0.000001)
+        capture(app, name: "image-position-draft")
+        try control("cancel").tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Cancel changed image pixels")
+        try selectToolbarTool("move", app: app)
+        try control("open").tap(); try control("half").tap()
+        let x = app.textFields["studio.image-placement.x"]
+        XCTAssertTrue(x.waitForExistence(timeout: 5)); x.tap()
+        let existing = try XCTUnwrap(x.value as? String)
+        x.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: existing.count) + "0")
+        let done = app.buttons["studio.text.keyboard-dismiss"]
+        XCTAssertTrue(done.waitForExistence(timeout: 5)); done.tap()
+        XCTAssertEqual(x.value as? String, "0", "Image position field did not accept real keyboard input")
+        try control("apply").tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let placed = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, placed), 100, "Image size changed controls without changing real canvas pixels")
+        capture(app, name: "image-position-applied")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "One Undo did not restore image placement")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(placed, pixels(canvas.screenshot().image)), 4, "One Redo did not restore image placement")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(placed, pixels(restored.screenshot().image)), 4, "Cold reopen lost actual image placement pixels")
+        capture(reopened, name: "image-position-cold-reopened")
     }
 
     @MainActor

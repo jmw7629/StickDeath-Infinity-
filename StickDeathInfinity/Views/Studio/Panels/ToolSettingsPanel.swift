@@ -13,6 +13,13 @@ struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     var alignToBottom = false
     @State private var showBrushLibrary = false
+    @State private var imagePlacement: StudioViewModel.ImagePlacementCapture?
+    // The popup owns these fields so ViewThatFits switching to its scroll
+    // variant (including while the keyboard opens) cannot reset a draft.
+    @State private var imageX = ""
+    @State private var imageY = ""
+    @State private var imageWidth = ""
+    @State private var imageHeight = ""
     @FocusState private var textInputFocused: Bool
 
     static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
@@ -102,6 +109,8 @@ struct FloatingToolSettingsPanel: View {
         .accessibilityIdentifier("studio.tool-settings")
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
+        .onChange(of: vm.selectedTool) { _, _ in imagePlacement = nil }
+        .onDisappear { imagePlacement = nil }
         .toolbar {
             if textInputFocused {
                 ToolbarItemGroup(placement: .keyboard) {
@@ -332,13 +341,38 @@ struct FloatingToolSettingsPanel: View {
             
         // ── MOVE ──
         case .move:
+            if let capture = imagePlacement {
+                StudioImagePlacementControls(vm: vm, capture: capture, focused: $textInputFocused,
+                    x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
+                    textInputFocused = false; imagePlacement = nil
+                }
+            } else {
             VStack(alignment: .leading, spacing: 8) {
                 Text(vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
                      : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
-                     : "Move selects drawn artwork. Moving imported image placement is unfinished.")
+                     : "Drag drawn artwork, or choose Position image for the imported picture.")
                     .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
                     .accessibilityIdentifier("studio.selection.guidance")
+                if vm.currentFrame.rasterPlacement != nil {
+                    Button {
+                        guard let capture = vm.prepareImagePlacement() else { return }
+                        imageX = String(capture.original.x); imageY = String(capture.original.y)
+                        imageWidth = String(capture.original.width); imageHeight = String(capture.original.height)
+                        imagePlacement = capture
+                    } label: {
+                        Label("Position image", systemImage: "photo")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .background(Color.red.opacity(0.75)).cornerRadius(8)
+                    .accessibilityIdentifier("studio.image-placement.open")
+                    .disabled(vm.prepareImagePlacement() == nil)
+                    if vm.prepareImagePlacement() == nil {
+                        Text("Show the image layer and choose Free to position it. Finish any pending edit or save first.")
+                            .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
+                    }
+                }
                 Text("SELECTION MODE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.3))
@@ -418,6 +452,7 @@ struct FloatingToolSettingsPanel: View {
                     .font(.specialElite(9)).foregroundColor(.white.opacity(0.55))
             }
             
+            }
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
@@ -588,5 +623,78 @@ private struct ToolSettingsContentLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         subviews.first?.place(at: bounds.origin, anchor: .topLeading,
                              proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
+    }
+}
+
+
+/// Draft fields live only in the existing tool popup. Apply commits the same
+/// typed command available to Studio automation; dismissal never edits content.
+private struct StudioImagePlacementControls: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.ImagePlacementCapture
+    let dismiss: () -> Void
+    @FocusState.Binding private var fieldFocused: Bool
+    @Binding private var x: String
+    @Binding private var y: String
+    @Binding private var width: String
+    @Binding private var height: String
+
+    init(vm: StudioViewModel, capture: StudioViewModel.ImagePlacementCapture, focused: FocusState<Bool>.Binding,
+         x: Binding<String>, y: Binding<String>, width: Binding<String>, height: Binding<String>, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss; self._fieldFocused = focused
+        _x = x; _y = y; _width = width; _height = height
+    }
+    private var proposed: StudioRasterPlacement? {
+        guard let x = Double(x), let y = Double(y), let width = Double(width), let height = Double(height),
+              x.isFinite, y.isFinite, width.isFinite, height.isFinite,
+              x >= 0, y >= 0, width > 0, height > 0,
+              x + width <= Double(capture.canvasWidth) + 0.000001,
+              y + height <= Double(capture.canvasHeight) + 0.000001 else { return nil }
+        return .init(x: x, y: y, width: width, height: height)
+    }
+    private func set(_ value: StudioRasterPlacement) {
+        x = String(value.x); y = String(value.y); width = String(value.width); height = String(value.height)
+    }
+    private func field(_ name: String, _ value: Binding<String>) -> some View {
+        HStack {
+            Text(name).frame(width: 52, alignment: .leading)
+            TextField(name, text: value).keyboardType(.decimalPad).focused($fieldFocused)
+                .textFieldStyle(.roundedBorder).foregroundColor(.primary)
+                .accessibilityIdentifier("studio.image-placement." + name.lowercased())
+            Text("px").foregroundColor(.white.opacity(0.5))
+        }.font(.system(size: 12, design: .monospaced))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("IMAGE POSITION").font(.specialElite(12)).foregroundColor(.white)
+            field("X", $x); field("Y", $y); field("Width", $width); field("Height", $height)
+            HStack {
+                Button("Half size") {
+                    guard let p = proposed else { return }
+                    set(.init(x: p.x + p.width / 4, y: p.y + p.height / 4, width: p.width / 2, height: p.height / 2))
+                }.accessibilityIdentifier("studio.image-placement.half").disabled(proposed == nil)
+                Spacer()
+                Button("Fit canvas") { set(capture.fitted) }.accessibilityIdentifier("studio.image-placement.fit")
+            }.frame(minHeight: 44)
+            if proposed == nil {
+                Text("Use positive dimensions and keep the image inside the canvas.")
+                    .foregroundColor(.orange).font(.specialElite(10))
+            }
+            Text("Apply changes position and size in one Undo step. Originals stay intact. Rotation and image handles are unfinished.")
+                .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
+            HStack {
+                Button("Apply image") {
+                    guard let value = proposed else { return }
+                    if vm.placeImage(capture, at: value) { dismiss() }
+                }.accessibilityIdentifier("studio.image-placement.apply")
+                    .disabled(proposed == nil || vm.prepareImagePlacement() != capture)
+                Spacer()
+                Button("Cancel", action: dismiss).accessibilityIdentifier("studio.image-placement.cancel")
+            }.frame(minHeight: 44)
+            if vm.prepareImagePlacement() != capture {
+                Text("Studio changed. Cancel and open Position image again.")
+                    .font(.specialElite(10)).foregroundColor(.orange)
+            }
+        }.font(.specialElite(11)).foregroundColor(.white.opacity(0.85))
     }
 }
