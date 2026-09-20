@@ -1275,6 +1275,43 @@ final class StudioViewModel: ObservableObject {
         _ = try audioTracksForSave(candidate.document)
         editor = candidate; selectedAudioClip = clip; message = nil; scheduleSave()
     }
+    struct AudioDuplicationCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let clip: AudioClip
+    }
+    /// Capture the selected canonical clip, never an arbitrary or stale list row.
+    func prepareAudioDuplication() -> AudioDuplicationCapture? {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              let clip = selectedCurrentAudioClip, let assetID = clip.assetID,
+              let asset = audioTrack(forAssetID: assetID), asset.audioData?.isEmpty == false else { return nil }
+        return .init(projectID: document.id, revision: document.revision, clip: clip)
+    }
+    /// The UI and validated assistants use this same atomic, reversible edit.
+    /// Reuse managed source bytes; the new clip begins at the selected clip's end.
+    @discardableResult
+    func duplicateAudioClip(_ capture: AudioDuplicationCapture,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
+        try checkCancellation()
+        guard prepareAudioDuplication() == capture else {
+            throw StudioDocumentError.unavailable("Select the current audio clip again before duplicating it.")
+        }
+        let original = capture.clip
+        let duplicate = AudioClip(id: UUID().uuidString, soundName: original.soundName,
+            track: original.track, startTime: original.startTime + original.duration,
+            duration: original.duration, volume: original.volume, assetID: original.assetID,
+            sourceOffset: original.sourceOffset, isMuted: original.isMuted)
+        var candidate = editor
+        try candidate.change { value in value.audioClips.append(duplicate) }
+        try preflightRasterDocument(candidate.document)
+        _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard prepareAudioDuplication() == capture else {
+            throw StudioDocumentError.unavailable("The project changed while duplicating audio. Nothing was added.")
+        }
+        editor = candidate; selectedAudioClip = duplicate; message = nil; scheduleSave()
+        return duplicate.id
+    }
     func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int) throws {
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
               expectedRevision == document.revision, (1...4).contains(track) else {

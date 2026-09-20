@@ -633,7 +633,7 @@ struct ToolSettingsPanel: View {
 /// changes available height. Content measurement still fits short tool popups.
 private struct ToolSettingsContentHeight: PreferenceKey {
     static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 private struct ToolSettingsContentLayout<Content: View>: View {
     let maximumHeight: CGFloat
@@ -650,7 +650,10 @@ private struct ToolSettingsContentLayout<Content: View>: View {
         .scrollBounceBehavior(.basedOnSize)
         .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
         .onPreferenceChange(ToolSettingsContentHeight.self) { height in
-            if height.isFinite && height >= 0 { contentHeight = height }
+            // A transient/default zero preference is not the content's size.
+            // Accepting it collapses the viewport and prevents measurement from
+            // recovering. Keep the last positive size (or initial bound) instead.
+            if height.isFinite && height > 0 { contentHeight = height }
         }
     }
 }

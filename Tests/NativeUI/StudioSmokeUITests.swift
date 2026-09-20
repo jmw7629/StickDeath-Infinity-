@@ -1222,6 +1222,56 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testAudioClipDuplicateUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        func openAudio(_ target: XCUIApplication) {
+            let open = target.buttons["studio.audio.open"]
+            XCTAssertTrue(expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: open).waitUntilFulfilled(timeout: 8))
+            open.tap()
+        }
+        func clipCount(_ expected: String, in target: XCUIApplication) {
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", expected), evaluatedWith: target.staticTexts["studio.audio.clip-count"]).waitUntilFulfilled(timeout: 10))
+        }
+        openAudio(app)
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        clipCount("1 clips", in: app)
+        app.buttons["studio.audio.library.close"].tap()
+        let duplicate = app.buttons["studio.audio.duplicate"]
+        let scroll = app.scrollViews["studio.audio.compact.scroll"]
+        for _ in 0..<4 { if duplicate.exists && duplicate.isHittable { break }; scroll.swipeUp(velocity: .slow) }
+        XCTAssertTrue(duplicate.exists && duplicate.isHittable)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: duplicate).waitUntilFulfilled(timeout: 8)); duplicate.tap()
+        clipCount("2 clips", in: app)
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.25s"), "Duplicate did not begin at selected source end")
+        capture(app, name: "audio-duplicate-selected-after-source")
+        for _ in 0..<4 { if app.buttons["studio.audio.close"].isHittable { break }; scroll.swipeDown(velocity: .slow) }
+        app.buttons["studio.audio.close"].tap()
+        app.buttons["studio.undo"].tap();openAudio(app);clipCount("1 clips", in: app)
+        app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
+        openAudio(app);clipCount("2 clips", in: app)
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        // Two adjacent copies of the pinned0.2508125s source play through the
+        // actual mixed AVAudioPlayer clock, rather than a fabricated status.
+        XCTAssertTrue(app.staticTexts["00:00.50"].waitForExistence(timeout: 12))
+        app.buttons["studio.audio.close"].tap()
+        let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap();openAudio(reopened);clipCount("2 clips", in: reopened)
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        capture(reopened, name: "audio-duplicate-cold-reopened")
+    }
+
+    @MainActor
     func testBundledSoundLibraryMixAndOfflineReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

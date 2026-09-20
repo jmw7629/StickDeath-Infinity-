@@ -333,7 +333,8 @@ private struct StudioAudioWorkspace: View {
         }
     }
     private func clipInspector(_ clip: AudioClip) -> some View {
-        VStack(spacing: 6) {
+        let duplication = vm.prepareAudioDuplication()
+        return VStack(spacing: 6) {
             HStack {
                 Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
                 Button { apply(.mute(!clip.isMuted), clip: clip) } label: {
@@ -360,6 +361,18 @@ private struct StudioAudioWorkspace: View {
                 Button("− frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: max(1 / 48_000, clip.duration - 1 / Double(vm.fps))), clip: clip) }
                 Button("+ frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: clip.duration + 1 / Double(vm.fps)), clip: clip) }
             }.font(.caption2).foregroundColor(.sdRed)
+            HStack {
+                Button("Duplicate after") {
+                    guard let duplication else { return }
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    do { try vm.duplicateAudioClip(duplication) }
+                    catch { vm.message = error.localizedDescription }
+                }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .accessibilityLabel("Duplicate selected audio clip after its end")
+                    .accessibilityIdentifier("studio.audio.duplicate")
+                Spacer()
+            }
         }.padding(.horizontal, 12).padding(.bottom, 8)
             .background(Color.white.opacity(0.02))
     }

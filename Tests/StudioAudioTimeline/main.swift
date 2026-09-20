@@ -270,6 +270,79 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try check(!next.isPreparing && !next.actualPlayerIsPlaying, "new cancelled owner did not settle")
             try check(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "early cancellation leaked")
         }
+        func duplicationFixture() async throws -> StudioViewModel {
+            let local = StudioViewModel(storage: storage)
+            let made = await local.createProject(name: "Audio duplicate \(UUID())", width: 64, height: 64, fps: 8)
+            try check(made, "duplicate fixture create")
+            _ = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 3)
+            return local
+        }
+        try await test("duplicate reuses immutable bytes and preserves trim gain mute track with one Undo and cold reopen") {
+            let local = try await duplicationFixture();let selected = local.audioClips[0].id
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1, duration: 0.5))
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .place(start: 0.25, track: 3))
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .volume(0.5))
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .mute(true))
+            let before = local.document;let capture = local.prepareAudioDuplication()!
+            let copiedID = try local.duplicateAudioClip(capture)
+            let copied = local.audioClips[1]
+            try check(local.document.revision == before.revision + 1 && local.audioClips[0] == before.audioClips[0], "duplicate changed original")
+            try check(copiedID != selected && copied.id == copiedID && copied.startTime == 0.75 && copied.duration == 0.5 && copied.sourceOffset == 1 && copied.volume == 0.5 && copied.isMuted && copied.track == 3 && copied.assetID == imported.id, "copy lost clip settings")
+            try check(local.selectedCurrentAudioClip?.id == copiedID && local.projectAudioTracks.count == 1 && local.projectAudioTracks[0].audioData == imported.track.audioData, "selection or source duplication")
+            local.undo();try check(local.audioClips == before.audioClips, "one Undo did not restore original clips")
+            local.redo();try check(local.audioClips == before.audioClips + [copied], "Redo changed identity or timing")
+            let saved = await local.save();try check(saved, "duplicate save failed")
+            let reopened = StudioViewModel(storage: storage);await reopened.loadProjects()
+            let metadata = reopened.savedProjects.first { $0.id == local.document.id }!
+            let opened = await reopened.openProject(metadata);try check(opened, "duplicate cold reopen failed")
+            try check(reopened.audioClips == local.audioClips && reopened.projectAudioTracks.count == 1 && reopened.projectAudioTracks[0].audioData == imported.track.audioData, "cold reopen changed copied clips or source")
+        }
+        try await test("duplicated trimmed clips produce adjacent real stereo samples with correct gain and gaps") {
+            let local = try await duplicationFixture();let selected = local.audioClips[0].id
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1, duration: 0.5))
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .place(start: 0.25, track: 3))
+            try local.editSelectedAudioClip(selected, expectedRevision: local.document.revision, edit: .volume(0.5))
+            try local.duplicateAudioClip(local.prepareAudioDuplication()!)
+            let output = try await StudioAudioMixService().mix(document: local.document, retainedAudioTracks: local.projectAudioTracks, durationSeconds: 1.5, outputParent: scratch)
+            defer { try? output.cleanup() };let data = try decode(output)
+            try check(data[0].count == 72_000 && data[0][0..<12_000].allSatisfy { $0 == 0 } && data[0][60_000...].allSatisfy { $0 == 0 }, "duplicate changed duration/gaps")
+            for n in 12_000..<60_000 { try check(abs(data[0][n] - 0.125) < 0.0001 && abs(data[1][n] + 0.25) < 0.0001, "duplicate source offset or gain incorrect") }
+        }
+        try await test("duplicate rejects missing selection different project stale revision and active playback") {
+            let local = try await duplicationFixture();let capture = local.prepareAudioDuplication()!;let before = local.document
+            local.selectedAudioClip = nil
+            do { try local.duplicateAudioClip(capture);throw Failure(message: "unselected duplicate accepted") } catch is StudioDocumentError { }
+            local.selectedAudioClip = capture.clip
+            let wrongProject = StudioViewModel.AudioDuplicationCapture(projectID: UUID(), revision: capture.revision, clip: capture.clip)
+            do { try local.duplicateAudioClip(wrongProject);throw Failure(message: "wrong project duplicate accepted") } catch is StudioDocumentError { }
+            let stale = StudioViewModel.AudioDuplicationCapture(projectID: capture.projectID, revision: capture.revision - 1, clip: capture.clip)
+            do { try local.duplicateAudioClip(stale);throw Failure(message: "stale duplicate accepted") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0, playing: true)
+            do { try local.duplicateAudioClip(capture);throw Failure(message: "playing duplicate accepted") } catch is StudioDocumentError { }
+            local.stopPlayback();try check(local.document == before && local.projectAudioTracks.count == 1, "rejection mutated project")
+        }
+        try await test("cancelled duplicate leaves document history selection and original bytes unchanged") {
+            let local = try await duplicationFixture();let capture = local.prepareAudioDuplication()!;let before = local.document
+            for cancellationPoint in [1,2] {
+                var checks = 0
+                do { try local.duplicateAudioClip(capture, checkCancellation: { checks += 1;if checks == cancellationPoint { throw CancellationError() } });throw Failure(message: "cancelled duplicate accepted") } catch is CancellationError { }
+                try check(local.document == before && local.selectedCurrentAudioClip == capture.clip && local.projectAudioTracks[0].audioData == imported.track.audioData, "cancel changed document/selection/source")
+            }
+            local.undo();try check(local.audioClips.isEmpty, "cancel inserted a hidden history entry")
+        }
+        try await test("duplicate enforces actual clip-count and timeline placement bounds without mutation") {
+            let local = try await duplicationFixture();let original = local.audioClips[0]
+            local.audioClips = (0..<128).map { i in AudioClip(id: "bounded-\(i)", soundName: original.soundName, track: 3, startTime: 0, duration: original.duration, assetID: original.assetID) }
+            local.selectedAudioClip = local.audioClips[0];let full = local.document
+            do { try local.duplicateAudioClip(local.prepareAudioDuplication()!);throw Failure(message: "129th clip accepted") } catch is StudioDocumentError { }
+            try check(local.document == full, "limit failure changed project")
+            let edge = try await duplicationFixture();let clip = edge.audioClips[0]
+            try edge.editSelectedAudioClip(clip.id, expectedRevision: edge.document.revision, edit: .place(start: 1000, track: 3))
+            let before = edge.document
+            do { try edge.duplicateAudioClip(edge.prepareAudioDuplication()!);throw Failure(message: "duplicate beyond timeline bound accepted") } catch is StudioDocumentError { }
+            try check(edge.document == before, "placement rejection changed source")
+        }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }
 }
