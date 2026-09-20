@@ -1414,8 +1414,16 @@ final class StudioSmokeUITests: XCTestCase {
         let clipMute = app.buttons["studio.audio.clip-mute"]
         try reveal(clipMute, in: app, down: true); clipMute.tap()
         XCTAssertEqual(clipMute.label, "Unmute selected clip")
-        let clipVolume = app.sliders["studio.audio.volume"].value as? String
-        XCTAssertNotNil(clipVolume)
+        let clipSlider = app.sliders["studio.audio.volume"]
+        try reveal(clipSlider, in: app, down: true)
+        XCTAssertEqual(clipSlider.value as? String, "80 percent")
+        clipSlider.adjust(toNormalizedSliderPosition: 0.4)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value != %@", "80 percent"), evaluatedWith: clipSlider).waitUntilFulfilled(timeout: 8))
+        let clipVolume = try XCTUnwrap(clipSlider.value as? String)
+        let clipPercent = try XCTUnwrap(Int(clipVolume.components(separatedBy: " ")[0]))
+        XCTAssertTrue((35...45).contains(clipPercent), "Clip slider did not commit the requested region")
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-volume-value"].label, "\(clipPercent)%")
+        XCTAssertEqual(clipMute.label, "Unmute selected clip")
         let slider = try gain(app)
         XCTAssertEqual(slider.value as? String, "100 percent")
         slider.adjust(toNormalizedSliderPosition: 0.25)
@@ -2038,7 +2046,10 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(canvas, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Cancel removed actual image pixels")
         try requestDeletion();app.buttons["Delete image"].tap()
-        XCTAssertFalse(app.buttons["studio.image-delete.open"].exists, "Deleted picture still exposes Delete")
+        capture(app, name: "image-delete-after-confirmation")
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                                  evaluatedWith: app.buttons["studio.image-delete.open"]).waitUntilFulfilled(timeout: 5),
+                      "Deleted picture still exposes Delete")
         app.buttons["studio.tool-settings.close"].tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4, "Delete left picture pixels")

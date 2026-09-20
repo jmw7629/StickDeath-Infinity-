@@ -23,8 +23,6 @@ private struct StudioAudioWorkspace: View {
     @State private var catalogue: StudioSoundCatalogue?
     @State private var catalogueError: String?
     @State private var libraryTrack = 1
-    @State private var volume = 0.8
-    @State private var volumeRevision: Int?
     @State private var trimCapture: StudioViewModel.AudioTrimCapture?
     @State private var timelineZoom = 1.0
     private let background = Color(hex: "0D0D12")
@@ -44,7 +42,7 @@ private struct StudioAudioWorkspace: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(background)
         .onAppear {
-            showingLibrary = opensLibrary; volume = vm.selectedCurrentAudioClip?.volume ?? 0.8
+            showingLibrary = opensLibrary
         }
         .task {
             guard catalogue == nil else { return }
@@ -62,10 +60,9 @@ private struct StudioAudioWorkspace: View {
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback() }
         .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil }
         .onChange(of: vm.document.revision) { _, _ in
-            timeline.stop(); audio.stop(); volume = vm.selectedCurrentAudioClip?.volume ?? 0.8
+            timeline.stop(); audio.stop()
         }
         .onChange(of: vm.selectedCurrentAudioClip?.id) { _, _ in
-            volume = vm.selectedCurrentAudioClip?.volume ?? 0.8; volumeRevision = nil
             trimCapture = nil
         }
         .onChange(of: scenePhase) { _, phase in
@@ -398,16 +395,10 @@ private struct StudioAudioWorkspace: View {
                     Image(systemName: clip.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 44, height: 44)
                 }.accessibilityLabel(clip.isMuted ? "Unmute selected clip" : "Mute selected clip")
                     .accessibilityIdentifier("studio.audio.clip-mute")
-                Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
-                    if editing { timeline.stop(); audio.stop(); vm.stopPlayback(); volumeRevision = vm.document.revision }
-                    else if let revision = volumeRevision {
-                        do { try vm.editSelectedAudioClip(clip.id, expectedRevision: revision, edit: .volume(volume)) }
-                        catch { vm.message = error.localizedDescription }
-                        volumeRevision = nil
-                    }
-                }).tint(.sdRed).accessibilityIdentifier("studio.audio.volume")
-                    .accessibilityLabel("Selected clip volume")
-                Text("\(Int(volume * 100))%").font(.caption2).frame(width: 30)
+                StudioAudioClipVolumeControl(vm: vm, clip: clip) {
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                }
+                .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
                 Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); vm.deleteAudioClip(clip.id) }
                     .foregroundColor(.sdStudioActionText).font(.specialElite(11)).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.delete")
@@ -462,6 +453,55 @@ private struct StudioAudioWorkspace: View {
         timeline.stop(); audio.stop(); vm.stopPlayback()
         do { try vm.editSelectedAudioClip(clip.id, expectedRevision: vm.document.revision, edit: edit) }
         catch { vm.message = error.localizedDescription }
+    }
+}
+
+private struct StudioAudioClipVolumeControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let clip: AudioClip
+    let projectID: UUID
+    let revision: Int
+    let stopPlayback: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var volume: Double
+    @State private var capture: StudioViewModel.AudioClipVolumeCapture?
+
+    init(vm: StudioViewModel, clip: AudioClip, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.clip = clip; self.stopPlayback = stopPlayback
+        projectID = vm.document.id; revision = vm.document.revision
+        _volume = State(initialValue: clip.volume)
+    }
+    private func discardDraft() {
+        capture = nil
+        volume = vm.document.audioClips.first(where: { $0.id == clip.id })?.volume ?? clip.volume
+    }
+    var body: some View {
+        HStack {
+            Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
+                if editing {
+                    stopPlayback()
+                    guard let current = vm.prepareAudioClipVolume(),
+                          current.selection.projectID == projectID,
+                          current.selection.revision == revision,
+                          current.selection.clip == clip else { discardDraft(); return }
+                    capture = current
+                } else {
+                    defer { discardDraft() }
+                    guard let capture else { return }
+                    do { try vm.setAudioClipVolume(capture, volume: volume) }
+                    catch { vm.message = error.localizedDescription }
+                }
+            }).tint(.sdRed)
+                .disabled(vm.isSaving || vm.prepareAudioClipVolume() == nil)
+                .accessibilityIdentifier("studio.audio.volume")
+                .accessibilityLabel("Selected clip volume")
+                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.caption2).frame(width: 30)
+                .accessibilityIdentifier("studio.audio.clip-volume-value")
+        }
+        .onDisappear { discardDraft() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { discardDraft() } }
     }
 }
 

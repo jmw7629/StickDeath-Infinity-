@@ -4,7 +4,6 @@ import SwiftUI
 /// the splash lifetime; viewing the guide never records server-side consent.
 struct AppFlowView: View {
     @EnvironmentObject var authVM: AuthViewModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("sdi.guide.completed.v1") private var guideCompleted = false
 
     enum Screen { case splash, welcome, login, signup, onboarding, app }
@@ -38,7 +37,6 @@ struct AppFlowView: View {
                 MainTabView(initialTab: .studio)
             }
         }
-        .transition(.opacity)
         .onAppear(perform: finishRestorationIfReady)
         .onChange(of: authVM.state) { finishRestorationIfReady() }
     }
@@ -57,7 +55,11 @@ struct AppFlowView: View {
     }
 
     private func navigate(to destination: Screen) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+        // Route changes replace the interactive screen immediately. Decorative
+        // child animations must not retain an outgoing route's hit-test tree.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
             screen = destination
         }
     }

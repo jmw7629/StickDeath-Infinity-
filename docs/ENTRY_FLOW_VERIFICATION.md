@@ -51,4 +51,8 @@ Run 35511645436 at `e94698919ed3f17f5581cabe33663b4a6bc5e165` built the app and 
 
 Both Login and Sign Up now give the complete framed Back label an explicit rectangular hit area. Their decorative separator cannot intercept touches. Layout, account authorization and navigation actions are unchanged. The same journey now captures each account screen and asserts the Back control is hittable before the existing tap; no coordinates, skip, retry, or weakened navigation assertions substitute for the actual control.
 
-The correction needs the next complete native run. The preceding failure remains recorded and does not count as a passing entry-flow gate.
+Run 35516870053 at `3193d73c75ace4e5be9dc4f0cc36f1b371e7f1f0` showed that the hit-area correction alone was insufficient. The actual Login screenshot renders Back, but the unchanged hittability assertion still fails. That run executed all 44 journeys: 42 passed, two failed, zero skipped; the second failure concerns image-delete confirmation. Its full original evidence is preserved.
+
+The next correction replaces routes without a transition transaction and removes the whole-form opacity/offset entrance animation from Login and Sign Up. Back retains the same position and 44-point content shape with an explicit plain button style. This removes layered animated hit-test state while preserving each screen's final appearance and navigation actions. The animation interaction is a diagnosis to verify, not a claimed proven runtime cause. Decorative animations within Welcome and the guide remain governed by their own Reduce Motion behavior.
+
+The same native journey and hittability assertions must pass on the corrected source. No coordinate bypass, skipped navigation check or test retry is used. The preceding failures remain recorded and do not count as a passing entry-flow gate.

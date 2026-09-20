@@ -15,6 +15,7 @@ struct FloatingToolSettingsPanel: View {
     @State private var showBrushLibrary = false
     @State private var imagePlacement: StudioViewModel.ImagePlacementCapture?
     @State private var imageDeletion: StudioViewModel.ImagePlacementCapture?
+    @State private var showingImageDeletion = false
     // The popup owns both draft values and distinct field focus. Keyboard
     // and viewport changes must not recreate an interactive input.
     @State private var imageX = ""
@@ -106,13 +107,18 @@ struct FloatingToolSettingsPanel: View {
         .tint(.sdStudioActionText)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
-        .onChange(of: vm.selectedTool) { _, _ in imagePlacement = nil; imageDeletion = nil; imageFocusedField = nil }
-        .onDisappear { imagePlacement = nil; imageDeletion = nil; imageFocusedField = nil }
-        .confirmationDialog("Delete this frame's image?", isPresented: Binding(
-            get: { imageDeletion != nil }, set: { if !$0 { imageDeletion = nil } }),
+        .onChange(of: vm.selectedTool) { _, _ in
+            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+        }
+        .onDisappear {
+            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+        }
+        .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
             titleVisibility: .visible, presenting: imageDeletion) { capture in
-            Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture); imageDeletion = nil }
-            Button("Cancel", role: .cancel) { imageDeletion = nil }
+            // SwiftUI dismisses the dialog. Keep its immutable presenting data
+            // alive through action dispatch; the next request replaces it.
+            Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture) }
+            Button("Cancel", role: .cancel) { }
         } message: { _ in
             Text("Only this frame's picture will be removed. Its layer and drawings stay. Undo restores the picture.")
         }
@@ -382,7 +388,10 @@ struct FloatingToolSettingsPanel: View {
                     .background(Color.red.opacity(0.75)).cornerRadius(8)
                     .accessibilityIdentifier("studio.image-placement.open")
                     .disabled(vm.prepareImagePlacement() == nil)
-                    Button("Delete image…", role: .destructive) { imageDeletion = vm.prepareImagePlacement() }
+                    Button("Delete image…", role: .destructive) {
+                        guard let capture = vm.prepareImagePlacement() else { return }
+                        imageDeletion = capture; showingImageDeletion = true
+                    }
                         .font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
                         .accessibilityIdentifier("studio.image-delete.open")
                         .disabled(vm.prepareImagePlacement() == nil)

@@ -168,6 +168,133 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             do { try downgraded.validate(); throw Failure(message: "old schema accepted mute metadata") } catch is StudioDocumentError { }
             try check(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) == original, "historical input bytes altered")
         }
+        try await test("captured clip volume is one reversible edit and preserves source and track settings on cold reopen") {
+            let folder = root.appendingPathComponent("clip-gain-docs")
+            let store = DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder)
+            let local = StudioViewModel(storage: store)
+            let made = await local.createProject(name: "Clip gain", width: 64, height: 64, fps: 8)
+            try check(made, "create clip gain fixture")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 3)
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .mute(true))
+            try local.setAudioTrackMuted(3, muted: true, expectedRevision: local.document.revision)
+            guard let track = local.prepareAudioTrackVolume(3) else { throw Failure(message: "track capture") }
+            try local.setAudioTrackVolume(track, volume: 0.25)
+            guard let capture = local.prepareAudioClipVolume() else { throw Failure(message: "clip capture") }
+            let before = local.document
+            try local.setAudioClipVolume(capture, volume: 0.4)
+            var expected = capture.selection.clip; expected.volume = 0.4
+            try check(local.document.revision == before.revision + 1 && local.audioClips == [expected]
+                      && local.selectedCurrentAudioClip == expected, "clip gain changed identity/settings or made multiple edits")
+            try check(local.document.audioTrackVolume(3) == 0.25 && local.document.isAudioTrackMuted(3), "clip gain changed track state")
+            local.undo()
+            try check(local.audioClips == before.audioClips && local.document.audioTrackVolumes == before.audioTrackVolumes
+                      && local.document.mutedAudioTracks == before.mutedAudioTracks, "clip gain Undo")
+            local.redo(); try check(local.audioClips == [expected], "clip gain Redo")
+            let saved = await local.save(); try check(saved, "clip gain save")
+            let other = StudioViewModel(storage: store); await other.loadProjects()
+            guard let metadata = other.savedProjects.first(where: { $0.id == local.document.id }) else { throw Failure(message: "clip gain project absent") }
+            let opened = await other.openProject(metadata)
+            try check(opened && other.document == local.document, "clip gain cold reopen changed document")
+            try check(other.projectAudioTracks[0].audioData == imported.track.audioData, "clip gain rewrote source bytes")
+        }
+        try await test("clip gain rejects invalid stale foreign and cancelled edits without document or history mutation") {
+            let folder = root.appendingPathComponent("clip-gain-rejections")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder))
+            let made = await local.createProject(name: "Rejected clip gain", width: 64, height: 64, fps: 8)
+            try check(made, "create rejection fixture")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+            guard let capture = local.prepareAudioClipVolume() else { throw Failure(message: "clip capture") }
+            let before = local.document, undo = local.canUndo, redo = local.canRedo
+            for invalid in [-0.1, 1.1, Double.nan, Double.infinity] {
+                do { try local.setAudioClipVolume(capture, volume: invalid); throw Failure(message: "invalid clip gain accepted") }
+                catch is StudioDocumentError { }
+            }
+            var changed = capture.selection.clip; changed.volume = 0.3
+            let invalidCaptures: [StudioViewModel.AudioClipVolumeCapture] = [
+                .init(selection: .init(projectID: UUID(), revision: capture.selection.revision, clip: capture.selection.clip)),
+                .init(selection: .init(projectID: capture.selection.projectID, revision: capture.selection.revision + 1, clip: capture.selection.clip)),
+                .init(selection: .init(projectID: capture.selection.projectID, revision: capture.selection.revision, clip: changed))
+            ]
+            for invalid in invalidCaptures {
+                do { try local.setAudioClipVolume(invalid, volume: 0.5); throw Failure(message: "foreign/stale clip gain accepted") }
+                catch is StudioDocumentError { }
+            }
+            for cancellationAt in [1, 2] {
+                var calls = 0
+                do {
+                    try local.setAudioClipVolume(capture, volume: 0.5, checkCancellation: {
+                        calls += 1; if calls == cancellationAt { throw CancellationError() }
+                    }); throw Failure(message: "cancelled clip gain accepted")
+                } catch is CancellationError { }
+                try check(calls == cancellationAt, "missing clip gain cancellation boundary")
+            }
+            local.selectedAudioClip = nil
+            try check(local.prepareAudioClipVolume() == nil, "unselected gain available")
+            do { try local.setAudioClipVolume(capture, volume: 0.5); throw Failure(message: "unselected gain accepted") }
+            catch is StudioDocumentError { }
+            local.selectedAudioClip = capture.selection.clip
+            local.displayAudioPlaybackTime(0, playing: true)
+            try check(local.prepareAudioClipVolume() == nil, "playing gain available")
+            do { try local.setAudioClipVolume(capture, volume: 0.5); throw Failure(message: "playing gain accepted") }
+            catch is StudioDocumentError { }
+            local.setAudioClipVolume(clipID, volume: 0.5)
+            local.displayAudioPlaybackTime(0, playing: false)
+            try check(local.document == before && local.canUndo == undo && local.canRedo == redo
+                      && local.audioTrack(forAssetID: imported.id)?.audioData == imported.track.audioData,
+                      "rejected gain changed document/history/bytes")
+            await local.flush()
+        }
+        try await test("clip gain never overwrites an intervening edit or targets a newly selected clip") {
+            let folder = root.appendingPathComponent("clip-gain-late-context")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder))
+            let made = await local.createProject(name: "Late clip gain", width: 64, height: 64, fps: 8)
+            try check(made, "create late context fixture")
+            let first = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+            guard let duplication = local.prepareAudioDuplication() else { throw Failure(message: "duplicate capture") }
+            _ = try local.duplicateAudioClip(duplication)
+            guard let second = local.selectedCurrentAudioClip else { throw Failure(message: "second clip") }
+            local.selectedAudioClip = local.audioClips.first(where: { $0.id == first })
+            guard let capture = local.prepareAudioClipVolume() else { throw Failure(message: "capture") }
+            let before = local.document; var calls = 0
+            do {
+                try local.setAudioClipVolume(capture, volume: 0.1, checkCancellation: {
+                    calls += 1; if calls == 2 { local.selectedAudioClip = second }
+                }); throw Failure(message: "gain followed new selection")
+            } catch is StudioDocumentError { }
+            try check(calls == 2 && local.document == before && local.selectedCurrentAudioClip == second, "gain overwrote selected clip")
+            local.selectedAudioClip = capture.selection.clip; calls = 0
+            do {
+                try local.setAudioClipVolume(capture, volume: 0.1, checkCancellation: {
+                    calls += 1
+                    if calls == 2 { try local.editSelectedAudioClip(first, expectedRevision: local.document.revision, edit: .mute(true)) }
+                }); throw Failure(message: "gain overwrote newer edit")
+            } catch is StudioDocumentError { }
+            try check(calls == 2 && local.document.revision == before.revision + 1
+                      && local.audioClips.first(where: { $0.id == first })?.volume == capture.selection.clip.volume
+                      && local.audioClips.first(where: { $0.id == first })?.isMuted == true, "late gain lost mute or added history")
+            local.undo(); try check(local.audioClips == before.audioClips, "late rejection inserted history")
+            await local.flush()
+        }
+        try await test("unchanged clip gain preserves redo and legacy entry uses the validated gain command") {
+            let folder = root.appendingPathComponent("clip-gain-noop")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder))
+            let made = await local.createProject(name: "Clip gain history", width: 64, height: 64, fps: 8)
+            try check(made, "create history fixture")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+            local.setAudioClipVolume(clipID, volume: 0.25)
+            try check(local.selectedCurrentAudioClip?.volume == 0.25, "legacy entry failed")
+            local.undo(); local.selectedAudioClip = local.audioClips.first
+            guard let capture = local.prepareAudioClipVolume() else { throw Failure(message: "capture after Undo") }
+            let before = local.document
+            try local.setAudioClipVolume(capture, volume: capture.selection.clip.volume)
+            try check(local.document == before && local.canRedo, "no-op gain consumed redo")
+            local.redo(); try check(local.audioClips.first?.volume == 0.25, "redo lost clip gain")
+            await local.flush()
+        }
         try await test("track volume preserves clip gain and mute through undo redo save and cold reopen") {
             let folder = root.appendingPathComponent("track-volume-docs")
             let store = DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder)

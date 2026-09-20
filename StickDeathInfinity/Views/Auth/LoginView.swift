@@ -21,7 +21,6 @@ struct LoginView: View {
     @State private var password = ""
     @State private var showPassword = false
     @State private var showError = false
-    @State private var visible = false
 
     var body: some View {
         ZStack {
@@ -37,6 +36,7 @@ struct LoginView: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Back to Welcome")
                     .accessibilityIdentifier("auth.back")
                     Spacer()
@@ -207,11 +207,7 @@ struct LoginView: View {
                 }
             }
             .frame(maxWidth: 400)
-            .opacity(visible ? 1 : 0)
-            .offset(y: visible ? 0 : 20)
-            .animation(.easeOut(duration: 0.4), value: visible)
         }
-        .onAppear { visible = true }
     }
 }
 

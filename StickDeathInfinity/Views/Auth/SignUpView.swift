@@ -24,7 +24,6 @@ struct SignUpView: View {
     @State private var showPw = false
     @State private var showCpw = false
     @State private var showError = false
-    @State private var visible = false
 
     private var passwordsMatch: Bool { password == confirmPassword && !password.isEmpty }
     private var canSubmit: Bool {
@@ -45,6 +44,7 @@ struct SignUpView: View {
                             .frame(width: 44, height: 44)
                             .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityLabel("Back to Welcome")
                     .accessibilityIdentifier("auth.back")
                     Spacer()
@@ -229,10 +229,6 @@ struct SignUpView: View {
                 }
             }
             .frame(maxWidth: 400)
-            .opacity(visible ? 1 : 0)
-            .offset(y: visible ? 0 : 20)
-            .animation(.easeOut(duration: 0.4), value: visible)
         }
-        .onAppear { visible = true }
     }
 }

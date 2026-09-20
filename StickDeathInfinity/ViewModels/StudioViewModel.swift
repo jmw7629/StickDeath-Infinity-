@@ -1312,6 +1312,38 @@ final class StudioViewModel: ObservableObject {
         editor = candidate; selectedAudioClip = duplicate; message = nil; scheduleSave()
         return duplicate.id
     }
+    struct AudioClipVolumeCapture: Equatable {
+        let selection: AudioDuplicationCapture
+    }
+    func prepareAudioClipVolume() -> AudioClipVolumeCapture? {
+        prepareAudioDuplication().map { .init(selection: $0) }
+    }
+    /// A slider gesture belongs to one project, revision and selected source clip.
+    /// Validate both before preflight and before committing its single history entry.
+    func setAudioClipVolume(_ capture: AudioClipVolumeCapture, volume: Double,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard volume.isFinite, (0...1).contains(volume) else {
+            throw StudioDocumentError.invalid("Clip volume must be between 0% and 100%.")
+        }
+        guard prepareAudioClipVolume() == capture,
+              let index = document.audioClips.firstIndex(where: { $0.id == capture.selection.clip.id }) else {
+            throw StudioDocumentError.unavailable("The selected clip or project changed. Finish saving and stop playback before changing clip volume.")
+        }
+        guard capture.selection.clip.volume != volume else { return }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            value.audioClips[index].volume = volume
+        }
+        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard prepareAudioClipVolume() == capture else {
+            throw StudioDocumentError.unavailable("The project changed while setting clip volume. Nothing was changed.")
+        }
+        editor = candidate; selectedAudioClip = document.audioClips[index]
+        message = nil; scheduleSave()
+    }
     struct AudioTrimCapture: Equatable {
         let selection: AudioDuplicationCapture
     }
@@ -1482,12 +1514,9 @@ final class StudioViewModel: ObservableObject {
         }
     }
     func setAudioClipVolume(_ id: String, volume: Double) {
-        guard selectedCurrentAudioClip?.id == id else { return }
-        change { value in
-            guard let index = value.audioClips.firstIndex(where: { $0.id == id }) else { return }
-            value.audioClips[index].volume = volume
-        }
-        selectedAudioClip = document.audioClips.first { $0.id == id }
+        guard let capture = prepareAudioClipVolume(), capture.selection.clip.id == id else { return }
+        do { try setAudioClipVolume(capture, volume: volume) }
+        catch { message = error.localizedDescription }
     }
     func deleteAudioClip(_ id: String) {
         guard selectedCurrentAudioClip?.id == id else { return }
