@@ -522,6 +522,9 @@ enum StudioAudioClipEdit: Equatable {
 }
 
 enum StudioAudioTimelineGeometry {
+    /// One sample grid for editable clip boundaries and rendered audio.
+    static let sampleRate = 48_000.0
+
     static func snapped(_ time: Double, fps: Int, enabled: Bool) -> Double? {
         guard time.isFinite, (1...60).contains(fps), time >= 0, time <= 1000 else { return nil }
         return enabled ? (time * Double(fps)).rounded() / Double(fps) : time

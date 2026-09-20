@@ -9,7 +9,7 @@ import Darwin
 /// clip reads its canonical sourceOffset; muted clips contribute zero gain.
 /// Track numbers identify additive lanes. No limiter or normalization is applied.
 actor StudioAudioMixService {
-    static let sampleRate = 48_000.0
+    static let sampleRate = StudioAudioTimelineGeometry.sampleRate
     static let channels = 2
     struct Limits: Sendable {
         var maximumDuration = 120.0

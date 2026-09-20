@@ -1350,7 +1350,7 @@ final class StudioViewModel: ObservableObject {
     func prepareAudioSplit() -> AudioSplitCapture? {
         guard let selection = prepareAudioDuplication(), audioPlayheadTime.isFinite else { return nil }
         let original = selection.clip
-        let rate = StudioAudioMixService.sampleRate
+        let rate = StudioAudioTimelineGeometry.sampleRate
         let startFrame = (original.startTime * rate).rounded()
         let endFrame = ((original.startTime + original.duration) * rate).rounded()
         let cutFrame = (audioPlayheadTime * rate).rounded()
