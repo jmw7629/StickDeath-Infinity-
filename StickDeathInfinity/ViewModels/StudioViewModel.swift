@@ -978,6 +978,38 @@ final class StudioViewModel: ObservableObject {
     func setLayerColor(_ id: String, color: Color) {
         let hex = Self.hex(color); command { try $0.updateLayer(id) { $0.colorLabel = hex } }
     }
+    struct LayerDeleteCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let layerID: String
+        let name: String
+        let frameCount: Int
+    }
+    func canDeleteLayer(_ id: String) -> Bool {
+        isEditing && !isPlaying && !isSaving && activeStrokeID == nil &&
+        pendingBrushStroke == nil && textDraft == nil && document.activeLayerID == id &&
+        layers.count > 1 && layers.contains(where: { $0.id == id && !$0.isFullyLocked && $0.lockMode == "free" })
+    }
+    func prepareLayerDeletion(_ id: String) -> LayerDeleteCapture? {
+        guard canDeleteLayer(id), let layer = layers.first(where: { $0.id == id }) else { return nil }
+        let affected = document.frames.filter { frame in
+            frame.rasterLayerID == id || frame.elements.contains(where: { $0.layerID == id })
+        }.count
+        return .init(projectID: document.id, revision: document.revision, layerID: id,
+                     name: layer.name, frameCount: affected)
+    }
+    @discardableResult
+    func deleteLayer(_ capture: LayerDeleteCapture) -> Bool {
+        guard prepareLayerDeletion(capture.layerID) == capture else {
+            message = "Studio changed after the layer was selected. Select it again before deleting. Nothing was deleted."
+            return false
+        }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.deleteLayer(.id(capture.layerID))])))
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func duplicateLayer(_ id: String) { command { try $0.duplicateLayer(id) } }
     func moveLayerUp(_ id: String) { command { try $0.moveLayer(id, offset: -1) } }
     func moveLayerDown(_ id: String) { command { try $0.moveLayer(id, offset: 1) } }

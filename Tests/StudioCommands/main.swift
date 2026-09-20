@@ -45,6 +45,63 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            try test("explicit layer deletion is one multi-frame transaction with real receipt undo and redo") {
+                var editor = try fresh()
+                let keep = editor.document.activeLayerID, first = editor.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "keep-ink")])])), editor: &editor)
+                try editor.addLayer(); let target = editor.document.activeLayerID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "delete-ink")])])), editor: &editor)
+                try editor.addFrame(); let second = editor.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "delete-ink-2")])])), editor: &editor)
+                try editor.change { value in
+                    value.schemaVersion = max(value.schemaVersion, 3)
+                    value.frames[0].rasterAssetID = "retained-image"
+                    value.frames[0].rasterLayerID = target
+                    value.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 20, height: 20)
+                }
+                editor.selectedElementIDs = ["delete-ink-2"]
+                let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([.deleteLayer(.id(target))])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(after.layers.map(\.id) == [keep] && after.activeLayerID == keep, "Wrong remaining layer or active target")
+                try require(after.frames.map(\.id) == [first, second] && after.frames[0].elements.map(\.id) == ["keep-ink"] && after.frames[1].elements.isEmpty && after.frames.allSatisfy { $0.rasterAssetID == nil && $0.rasterLayerID == nil && $0.rasterPlacement == nil }, "Layer content survived or frames changed")
+                try require(after.audioClips == before.audioClips && after.revision == before.revision + 1, "Unrelated audio changed or deletion was not one transaction")
+                try require(receipt.deletedLayerIDs == [target] && Set(receipt.deletedElementIDs) == ["delete-ink", "delete-ink-2"], "Receipt fabricated layer/content result")
+                try require(editor.selectedElementIDs.isEmpty && editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.contains("retained-image"), "Stale selection or lost undo image")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo did not restore complete original document")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo changed deletion")
+            }
+            try test("layer delete rejects last missing locked and stale targets without changing history") {
+                var editor = try fresh()
+                try rejected(request(editor, .apply([.deleteLayer(.id(editor.document.activeLayerID))])), editor: &editor)
+                try editor.addLayer(); let target = editor.document.activeLayerID
+                try rejected(request(editor, .apply([.deleteLayer(.id("missing"))])), editor: &editor, expected: .invalidReference)
+                for mode in ["full", "position", "alpha"] {
+                    try editor.updateLayer(target) { $0.lockMode = mode; $0.locked = mode == "full" }
+                    try rejected(request(editor, .apply([.deleteLayer(.id(target))])), editor: &editor)
+                }
+                try editor.updateLayer(target) { $0.lockMode = "free"; $0.locked = false }
+                let stale = request(editor, .apply([.deleteLayer(.id(target))])); try editor.addLayer()
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+            }
+            try test("layer delete cancellation and a later failed batch command preserve original state") {
+                var editor = try fresh();try editor.addLayer();let target=editor.document.activeLayerID
+                var checks=0
+                try rejected(request(editor,.apply([.deleteLayer(.id(target))])),editor:&editor,cancellation:{
+                    checks += 1;if checks == 5 { throw CancellationError() }
+                })
+                try rejected(request(editor,.apply([.deleteLayer(.id(target)),.selectLayer(.id(target))])),editor:&editor,expected:.invalidReference)
+            }
+            try test("layer deletion requires an explicit strict wire reference") {
+                let editor=try fresh()
+                var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(request(editor,.undo))) as! [String:Any]
+                for body in [[:], ["all":true], ["id":editor.document.activeLayerID,"all":true]] as [[String:Any]] {
+                    object["action"]=["apply":[["deleteLayer":body]]]
+                    do { _=try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject:object));throw Failure(message:"Implicit or extra-field delete accepted") }
+                    catch is StudioCommandError { }
+                }
+            }
             try test("typed JSON roundtrip, strict unknown operation and schema rejection") {
                 let editor = try fresh()
                 let valid = request(editor, .apply([draw(editor, [stroke()])]))

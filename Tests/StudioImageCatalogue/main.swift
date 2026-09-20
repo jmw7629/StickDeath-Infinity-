@@ -13,9 +13,9 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   var groups=0
   func pass(_ name:String) { groups+=1;print("PASS "+name) }
   let catalogue=try StudioImageCatalogue(directory:source)
-  try require(catalogue.images.count==72 && catalogue.licenses.count==1,"Wrong real catalogue count")
+  try require(catalogue.images.count==207 && catalogue.licenses.count==3,"Wrong real catalogue count")
   for image in catalogue.images { let data=try catalogue.checkedPNG(image);try require(data.count==image.byteCount,"Wrong pinned bytes") }
-  pass("all 72 curated PNGs license provenance encoded and decoded pixel hashes verify")
+  pass("all 207 curated PNGs license provenance encoded and decoded pixel hashes verify")
   let loaded=try await StudioImageCatalogue.load(directory:source)
   try require(loaded.images==catalogue.images,"Background load changed entries")
   let cancelled=Task { try await StudioImageCatalogue.load(directory:root.appendingPathComponent("missing")) };cancelled.cancel()
@@ -23,10 +23,16 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   pass("asynchronous load preserves entries and cancellation precedes file access")
   let matches=catalogue.search("cloud hand",category:.scenery)
   try require(matches.count==2 && catalogue.search("NO-ASSET-MATCH").isEmpty,"Search returned wrong actual items")
-  try require(catalogue.search("",category:.effects).count==5,"Category filter")
+  try require(catalogue.search("",category:.effects).count==6,"Category filter")
   let safe=catalogue.search("",includeCartoonWeapons:false)
-  try require(safe.count<72 && safe.allSatisfy{$0.contentAdvisory == .none},"Advisory filter")
+  try require(safe.count==178 && safe.allSatisfy{$0.contentAdvisory == .none},"Advisory filter")
   pass("multi-term local search category and cartoon-weapon filter use curated metadata")
+  try require(catalogue.search("dragon top down",category:.props).map(\.id)==["kenney.scribble-dungeons.dragon"],"Dungeon tags lost")
+  try require(catalogue.search("smoke side view",category:.effects).map(\.id)==["kenney.scribble-platformer-expansion.smoke"],"Expansion tags lost")
+  try require(catalogue.search("sword",includeCartoonWeapons:false).isEmpty,"A new sword bypassed advisory filter")
+  try require(catalogue.images.filter{$0.licenseID=="kenney.scribble-platformer-expansion.cc0"}.count==59 &&
+              catalogue.images.filter{$0.licenseID=="kenney.scribble-dungeons.cc0"}.count==76,"Pack counts include excluded aliases")
+  pass("new packs retain specific search perspective tags weapon filtering and 135 unique curated originals")
   let manifest=copy.appendingPathComponent("catalogue.json")
   func reject(_ name:String,_ mutation:(inout [String:Any])->Void) throws {
    var obj=try JSONSerialization.jsonObject(with:original) as! [String:Any];mutation(&obj)
@@ -67,6 +73,6 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   try require(try Data(contentsOf:source.appendingPathComponent(item.filename))==bytes,"Original asset changed")
   try require(try Data(contentsOf:source.appendingPathComponent("catalogue.json"))==original,"Original manifest changed")
   pass("symlink manifest and corrupt license text fail with original source intact")
-  print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 72 original PNGs")
+  print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 207 original PNGs")
  }
 }

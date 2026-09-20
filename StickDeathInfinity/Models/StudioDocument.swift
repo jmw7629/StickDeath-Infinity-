@@ -592,6 +592,37 @@ struct StudioDocumentEditor {
         }
         selectedElementIDs.removeAll()
     }
+    /// An explicit layer target removes only its content across frames. Original
+    /// raster references remain in full-document Undo/Redo and clipboard history.
+    mutating func deleteLayer(_ id: String, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try change { value in
+            try checkCancellation()
+            guard let index = value.layers.firstIndex(where: { $0.id == id }) else {
+                throw StudioDocumentError.invalid("The selected layer is unavailable. Nothing was deleted.")
+            }
+            guard value.layers.count > 1 else {
+                throw StudioDocumentError.unavailable("The last layer cannot be deleted. Nothing changed.")
+            }
+            let layer = value.layers[index]
+            guard !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            for frame in value.frames.indices {
+                try checkCancellation()
+                value.frames[frame].elements.removeAll { $0.layerID == id }
+                if value.frames[frame].rasterLayerID == id {
+                    value.frames[frame].rasterAssetID = nil
+                    value.frames[frame].rasterLayerID = nil
+                    value.frames[frame].rasterPlacement = nil
+                }
+            }
+            value.layers.remove(at: index)
+            if value.activeLayerID == id {
+                value.activeLayerID = value.layers[min(index, value.layers.count - 1)].id
+            }
+            try checkCancellation()
+        }
+        let remaining = Set(document.frames.first { $0.id == document.activeFrameID }!.elements.map(\.id))
+        selectedElementIDs.formIntersection(remaining)
+    }
     mutating func addLayer() throws {
         try change { value in
             let layer = CanvasLayer(id: UUID().uuidString, name: "Layer \(value.layers.count + 1)")

@@ -111,7 +111,7 @@ enum StudioCommand: Codable {
 
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
-    case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
+    case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
@@ -131,6 +131,7 @@ enum StudioCommand: Codable {
         case "updateLayer": self = .updateLayer(try container.decode(UpdateLayer.self, forKey: key))
         case "moveLayer": self = .moveLayer(try container.decode(Move.self, forKey: key))
         case "selectLayer": self = .selectLayer(try container.decode(StudioCommandReference.self, forKey: key))
+        case "deleteLayer": self = .deleteLayer(try container.decode(StudioCommandReference.self, forKey: key))
         case "deleteElements": self = .deleteElements(try container.decode(DeleteElements.self, forKey: key))
         case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
         case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
@@ -157,6 +158,7 @@ enum StudioCommand: Codable {
         case .updateLayer(let value): try container.encode(value, forKey: StudioWireKey("updateLayer"))
         case .moveLayer(let value): try container.encode(value, forKey: StudioWireKey("moveLayer"))
         case .selectLayer(let value): try container.encode(value, forKey: StudioWireKey("selectLayer"))
+        case .deleteLayer(let value): try container.encode(value, forKey: StudioWireKey("deleteLayer"))
         case .deleteElements(let value): try container.encode(value, forKey: StudioWireKey("deleteElements"))
         case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
         case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
@@ -306,7 +308,7 @@ enum StudioCommandExecutor {
         for command in commands {
             guard let command = command as? [String: Any], command.count == 1, let kind = command.keys.first,
                   let body = command[kind] else { throw StudioCommandError.malformed }
-            if ["selectFrame", "selectLayer", "deleteFrame"].contains(kind) { try reference(body); continue }
+            if ["selectFrame", "selectLayer", "deleteFrame", "deleteLayer"].contains(kind) { try reference(body); continue }
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
@@ -529,6 +531,8 @@ enum StudioCommandExecutor {
             guard document.layers.indices.contains(index + value.direction.offset) else { throw StudioCommandError.cannotMove }
             try editor.moveLayer(id, offset: value.direction.offset)
         case .selectLayer(let reference): editor.selectLayer(try layer(reference))
+        case .deleteLayer(let reference):
+            try editor.deleteLayer(try layer(reference), checkCancellation: checkCancellation)
         case .copyElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,

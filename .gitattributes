@@ -1,3 +1,5 @@
-# Preserve this publisher license byte-for-byte, including original CRLF and trailing tabs.
-# Only this hash-verified third-party text is exempt from repository whitespace style.
+# Preserve these publisher licenses byte-for-byte, including original CRLF and trailing tabs.
+# Only these hash-verified third-party texts are exempt from repository whitespace style.
 StickDeathInfinity/Resources/StudioImages/2ac45344f3657a8dbac7360aeb53cfb0187cc24234979dcb0855b6e454c78973.txt -text -whitespace
+StickDeathInfinity/Resources/StudioImages/e95232e20a6cabd13b9211c3293e21c4022ab2068e5ec67d701462276e13617d.txt -text -whitespace
+StickDeathInfinity/Resources/StudioImages/55b8024d2d21d66460d00eebffaa7f6235b70c92be00a42f0de0e61ca675b5c2.txt -text -whitespace

@@ -1,6 +1,6 @@
 # Offline licensed image library
 
-This slice connects a curated 72-picture pilot to the existing native Add Picture surface. It is part of #173, #195 and #196; it does not complete the thousands-of-assets, download/favorites or multiple editable-image-object requirements.
+This slice connects a curated 207-picture library to the existing native Add Picture surface. It is part of #173, #195 and #196; it does not complete the thousands-of-assets, download/favorites or multiple editable-image-object requirements.
 
 ## Actual flow
 
@@ -12,28 +12,38 @@ Library browsing never edits, saves, uploads or contacts a provider. A serial ac
 
 ## Rights and device ownership
 
-The selected originals are from Kenney's [Scribble Platformer](https://kenney.nl/assets/scribble-platformer), distributed under [CC0](https://creativecommons.org/publicdomain/zero/1.0/). Original source-archive SHA-256 is `ca8d9ba8c8a646e3d83b8fa595630f48022e98a328e22d1762a36ffd142df35d`. The manifest retains stable IDs, author/source/license/attribution, safety metadata, encoded/pixel hashes, dimensions and byte counts. The original embedded license text is included by digest. Only reviewed PNGs are bundled; no private historical corpus, scripts, SWFs, logos, preview sheets or duplicate resolutions are distributed.
+The selected originals are from three Kenney packs, distributed under [CC0](https://creativecommons.org/publicdomain/zero/1.0/):
 
-Four scenery backgrounds, five effects, fourteen props and forty-nine scenery tiles are included. The 72 PNGs total 64,347 encoded bytes; the full decoded set is 1,313,536 RGBA bytes. This pilot does not imply that thousands of assets are installed. New packs require a real publisher/license/visual review before they enter trusted application input; a metadata validator cannot establish ownership by itself.
+| Source | Actual included PNGs | Original source archive SHA-256 |
+| --- | ---: | --- |
+| [Scribble Platformer](https://kenney.nl/assets/scribble-platformer) | 72 | `ca8d9ba8c8a646e3d83b8fa595630f48022e98a328e22d1762a36ffd142df35d` |
+| [Scribble Platformer Expansion](https://kenney.nl/assets/scribble-platformer-expansion) | 59 | `13e195ceae12d6ed0af610f00bca5792df6cb185f9671057b67f0eb79be097ee` |
+| [Scribble Dungeons](https://kenney.nl/assets/scribble-dungeons) | 76 | `d762ce74516d7384051739277a30f63bce26ec2c8aa98106bba6c9aa87258889` |
 
-The single digest-named publisher license is retained byte-for-byte, including its CRLF and trailing tabs. Its exact `.gitattributes` entry prevents newline conversion and excludes only that immutable third-party text from repository whitespace style. The catalogue still verifies all 571 bytes by SHA-256; application source and other files retain normal diff checks.
+The manifest retains stable IDs, author/source/license/attribution, safety metadata, encoded/pixel hashes, dimensions and byte counts. The three original embedded license texts are included by digest. Only reviewed PNGs are bundled; no private historical corpus, scripts, SWFs, logos, preview sheets or duplicate resolutions are distributed.
+
+There are 139 scenery pieces, 62 props and six effects. The 207 original PNGs total 192,884 encoded bytes; the full decoded set is 3,525,376 RGBA bytes. Thumbnails remain capped at 48 cache entries. Twenty-nine cartoon weapons/hazards have an explicit advisory and obey the library filter. Dungeon assets carry top-down tags; castle assets carry side-view tags. Source-specific titles and multi-term searches distinguish the packs.
+
+The expansion excludes one visually identical existing tile, colored round/rectangle characters, diagram arrows, and precomposed floor/object variants. Original encoded and Apple-decoded pixel digests are unique across all 207 entries. No alternate resolutions inflate the installed count. This remains short of the requested thousands; download packs, favorites and multiple editable image objects are separate unfinished work.
+
+The three digest-named publisher licenses remain byte-for-byte, including original line endings and tabs. Exact `.gitattributes` entries exempt only those immutable third-party texts from newline conversion/whitespace style. Each license's actual byte count and SHA-256 are mandatory. New packs still require publisher/license/visual review before trusted import; a metadata validator cannot establish ownership by itself.
 
 After Add, the project owns original image bytes, normalized pixels, fresh instance identity and optional catalogue attribution. Save/reopen no longer depends on the installed library. The stored optional attribution preserves asset ID, author, source/license URLs, attribution text, original-image digest and source-archive digest. Storage rejects malformed or mismatched records. Historical Files/Photos records without attribution still decode as nil. Ordinary project Undo/Redo and asset-retention rules remain authoritative.
 
 ## Checks
 
-- `Tests/StudioImageCatalogue`: actual 72 PNGs, licenses, unique IDs/encoded/pixel hashes, category/search/advisories, corrupt resources, symlinks/FIFOs/path bounds and cancellation.
-- `Tests/StudioImageLibrary`: actual previews/Add, one-step Undo/Redo, original/attribution retention, real PNG alpha and decoded-pixel equality, save/cold reopen after library removal, fresh instance identity, rejection of existing-picture replacement, stale/cancelled work, corrupt files, historical decoding and invalid provenance. The network trap must remain at zero.
+- `Tests/StudioImageCatalogue`: actual 207 PNGs, licenses, unique IDs/encoded/pixel hashes, category/search/advisories, corrupt resources, symlinks/FIFOs/path bounds and cancellation.
+- `Tests/StudioImageLibrary`: actual previews/Add, one-step Undo/Redo, original/attribution retention, real PNG alpha and decoded-pixel equality, save/cold reopen after library removal, fresh instance identity, rejection of existing-picture replacement, stale/cancelled work, corrupt files, historical decoding and invalid provenance. Both new source packs additionally exercise their own real Add/Undo/Redo/save/cold-reopen pixels and rights. The network trap must remain at zero.
 - Existing complete import-session, image integration, storage and model checks remain unchanged and mandatory.
-- Explicit Xcode source membership covers the catalogue, thumbnail actor and library view; the folder resource contains the exact original PNGs, manifest and license.
+- Explicit Xcode source membership covers the catalogue, thumbnail actor and library view; the folder resource contains the exact original PNGs, manifest and licenses.
 - `testLicensedImageLibraryUndoAndColdReopen` exercises the real native menu/library/search/preview/Add/Undo/Redo/save/relaunch flow and captures original screenshots. Defining or compiling this test is not proof it ran.
 
 Source-specific passed/failed/pending results belong in the current PR and delivery tracker. Local production checks, SDK typechecking, linked app compilation, actual Simulator journeys and independent review are separate gates. No merge or release completion is implied by this document.
 
 ## Native execution follow-up
 
-The preceding `c08033a` run built the app and passed every production stage, but its native job was cancelled at the 75-minute outer deadline. The preserved unfinished UI log reports 25 unambiguous passes, a Photos failure after its fixture command timed out, an Eraser timeout with a conflicting final pass line, one interrupted journey and four unstarted journeys. This is not a green native run.
+Source `214e06d` built the linked iOS app and passed every production stage. Its completed original Simulator result is **32 passed, one failed, zero skipped**. Photos import/Undo/save/reopen/PNG, picker cancellation, Eraser modes/history/reopen, Text editing and selection transforms passed. The single read-only Simulator readiness acknowledgement took 14.115 seconds and the single Photos fixture import 7.330 seconds; neither was retried. Both readiness and Eraser navigation corrections are now verified in that run.
 
-The next run keeps all functional assertions and the 180-second individual journey limit. Pencil cleanup in the Eraser test moves to when Pencil is already visible, avoiding the observed four rail drags after cold reopen. A single read-only command-readiness acknowledgement precedes the one unchanged 60-second Photos import. An unresponsive command channel remains a failed fixture gate; no import or test is retried or skipped. This readiness change is a mitigation awaiting actual native verification.
+The one failing journey stopped at the library preview: the earlier assertion measured red pixels in monochrome Pencil artwork. The original screenshot/recording shows the real decoded white/black preview. This change measures light artwork and dark contrast, retaining the actual subsequent Add/canvas/Undo/Redo/save/cold-reopen assertions. The new catalogue journey selects the actual 64-pixel Dungeon Dragon. Its runtime result is pending, not passed.
 
-The complete 33-journey suite has a finite 55-minute limit and the outer job 95 minutes, including roughly 30 minutes of observed production/build work, setup and evidence collection. The earlier 75-minute job interrupted the suite before it could reach its own bound. The larger outer budget preserves required failure evidence; it does not turn any assertion failure into a pass.
+Layer deletion adds a 34th native journey. The suite remains bounded at 55 minutes, each journey at 180 seconds and the outer native job at 95 minutes, including production compilation and original evidence preservation. No retries, skips or deadline increases are introduced. Full native runtime and independent review remain mandatory gates.

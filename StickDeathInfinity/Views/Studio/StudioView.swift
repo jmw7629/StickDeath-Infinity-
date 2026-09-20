@@ -264,6 +264,8 @@ struct StudioBottomBar: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+            .accessibilityIdentifier("studio.layers.open")
+            .accessibilityLabel("Layers")
         }
         .padding(.vertical, 8)
         .background(Color(hex: "0A0A10"))

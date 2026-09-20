@@ -56,10 +56,10 @@ private final class NetworkTrap: URLProtocol {
             try require(await editor.createProject(name: "Library fixture", width: 160, height: 160, fps: 12), "Actual create failed")
             return (editor, storage)
         }
-        func prepare(_ editor: StudioViewModel, _ selectedCatalogue: StudioImageCatalogue? = nil) async throws -> StudioImageImportSession {
+        func prepare(_ editor: StudioViewModel, _ selectedCatalogue: StudioImageCatalogue? = nil, selectedImage: StudioImageCatalogue.Image? = nil) async throws -> StudioImageImportSession {
             let session = StudioImageImportSession(scratchParent: scratch)
             guard let token = session.beginPicker(in: editor, scope: scope) else { throw Failure(message: "Capture failed") }
-            try require(session.receiveLibraryImage(item, from: selectedCatalogue ?? catalogue, token: token, currentScope: { scope }), "Library selection rejected")
+            try require(session.receiveLibraryImage(selectedImage ?? item, from: selectedCatalogue ?? catalogue, token: token, currentScope: { scope }), "Library selection rejected")
             await session.waitForCompletion()
             try require(session.status == .preview && session.previewImage != nil, "Real preview failed: \(session.notice ?? "nil")")
             return session
@@ -142,6 +142,70 @@ private final class NetworkTrap: URLProtocol {
                 "Stored original/attribution lost")
             try require(try await exported(reopened) == pixels, "Reopened actual PNG pixels changed")
         }
+
+        try await test("both new packs add real pixels undo save and cold reopen with their own original rights") {
+            for assetID in ["kenney.scribble-platformer-expansion.smoke", "kenney.scribble-dungeons.dragon"] {
+                guard let chosen = catalogue.images.first(where: { $0.id == assetID }) else {
+                    throw Failure(message: "New actual pack asset missing")
+                }
+                let bytes = try catalogue.checkedPNG(chosen), rights = try catalogue.attribution(for: chosen)
+                let (editor, storage) = try await fixture()
+                let session = try await prepare(editor, selectedImage: chosen)
+                try require(session.preview?.name == chosen.title && session.preview?.catalogueAttribution == rights,
+                            "New pack preview reused another item's metadata")
+                try require(session.apply(currentScope: scope), "New pack Add failed")
+                let id = session.appliedImage!.assetID, pixels = try await exported(editor)
+                try require(stride(from: 3, to: pixels.count, by: 4).contains(where: { pixels[$0] > 0 }),
+                            "New pack exported no artwork")
+                editor.undo(); try require(editor.currentFrame.rasterAssetID == nil && !editor.canUndo, "New pack Undo failed")
+                editor.redo(); try require(try await exported(editor) == pixels, "New pack Redo changed pixels")
+                try require(await editor.save(), "New pack save failed")
+                let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+                try require(await reopened.openProject(stored.metadata), "New pack cold reopen failed")
+                try require(reopened.originalImageSource(id)?.originalData == bytes &&
+                            reopened.originalImageSource(id)?.catalogueAttribution == rights,
+                            "New pack source or license confused with pilot")
+                try require(try await exported(reopened) == pixels, "New pack cold reopen changed PNG pixels")
+            }
+        }
+        try await test("confirmed image-layer delete retains actual originals for Undo and saves only the selected removal") {
+            let (editor,storage)=try await fixture(),session=try await prepare(editor)
+            try require(session.apply(currentScope:scope),"Image fixture Add failed")
+            let imageID=session.appliedImage!.assetID,layer=editor.currentFrame.rasterLayerID!
+            let rendered=try await exported(editor)
+            editor.selectLayer(layer)
+            guard let capture=editor.prepareLayerDeletion(layer) else { throw Failure(message:"Explicit layer capture unavailable") }
+            let before=editor.document
+            // Dismissing a confirmation invokes no edit or history operation.
+            try require(editor.document==before,"Preparing confirmation edited project")
+            try require(editor.deleteLayer(capture),"Confirmed image layer delete failed")
+            let cleared=try await exported(editor)
+            try require(cleared != rendered && editor.currentFrame.rasterAssetID == nil,"Actual layer pixels survived delete")
+            try require(editor.originalImageSource(imageID)?.originalData==original,"Undo source bytes were pruned")
+            editor.undo();try require(try await exported(editor)==rendered,"Undo did not restore real image pixels")
+            try require(editor.originalImageSource(imageID)?.catalogueAttribution==provenance,"Undo lost original rights")
+            editor.redo();try require(try await exported(editor)==cleared,"Redo altered clear pixels")
+            try require(await editor.save(),"Deleted layer actual save failed")
+            let stored=try storage.loadAnimation(id:editor.document.id)!,reopened=StudioViewModel(storage:storage)
+            try require(await reopened.openProject(stored.metadata),"Deletion cold reopen failed")
+            try require(reopened.currentFrame.rasterAssetID==nil && !reopened.layers.contains(where:{$0.id==layer}),"Deleted layer returned after cold reopen")
+            try require(try await exported(reopened)==cleared,"Cold reopen changed deletion output")
+        }
+        try await test("stale changed-selection locked and last-layer delete confirmations never mutate artwork") {
+            let (editor,_)=try await fixture()
+            try require(editor.prepareLayerDeletion(editor.document.activeLayerID)==nil,"Last layer can be armed")
+            let session=try await prepare(editor);try require(session.apply(currentScope:scope),"Fixture Add failed")
+            let layer=editor.currentFrame.rasterLayerID!,drawing=editor.document.activeLayerID
+            editor.selectLayer(layer)
+            let capture=editor.prepareLayerDeletion(layer)!
+            editor.selectLayer(drawing);let switched=editor.document
+            try require(!editor.deleteLayer(capture) && editor.document==switched,"Confirmation deleted after selection changed")
+            editor.selectLayer(layer);let recaptured=editor.prepareLayerDeletion(layer)!
+            editor.setLayerOpacity(layer,opacity:0.5);let changed=editor.document
+            try require(!editor.deleteLayer(recaptured) && editor.document==changed,"Stale confirmation deleted changed layer")
+            editor.setLayerLockMode(layer,mode:.full)
+            try require(editor.prepareLayerDeletion(layer)==nil,"Fully locked layer can be armed")
+        }
         try await test("same library asset on another frame gets a new editable identity") {
             let (editor, _) = try await fixture(), first = try await prepare(editor)
             try require(first.apply(currentScope: scope), "First Add failed")
@@ -208,6 +272,6 @@ private final class NetworkTrap: URLProtocol {
                 "Attribution escaped bounded snapshot cache accounting")
         }
         try require(NetworkTrap.count == 0, "Library attempted a network request")
-        print("STUDIO_IMAGE_LIBRARY_TESTS=PASS \(groups)/\(groups), 72 actual thumbnails, zero network requests")
+        print("STUDIO_IMAGE_LIBRARY_TESTS=PASS \(groups)/\(groups), 207 actual thumbnails, zero network requests")
     }
 }

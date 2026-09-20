@@ -7,6 +7,66 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testLayerDeleteConfirmationUndoAndColdReopen() throws {
+        let app=try launchGuestStudio()
+        defer { app.terminate();XCUIDevice.shared.orientation = .portrait }
+        let projectName=try createProjectIfLibraryIsShown(app)
+        let canvas=app.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame=canvas.frame,blank=try pixels(canvas.screenshot().image)
+        func openLayer(_ name:String) throws -> XCUIElement {
+            app.buttons["studio.layers.open"].tap()
+            let row=app.staticTexts[name].firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout:5));row.tap()
+            let deletion=app.buttons.matching(NSPredicate(format:"identifier BEGINSWITH %@","studio.layer.delete.")).firstMatch
+            XCTAssertTrue(deletion.waitForExistence(timeout:5))
+            let list=app.scrollViews["studio.layers.list"]
+            for _ in 0..<3 where !deletion.isHittable { list.swipeUp() }
+            return deletion
+        }
+        let last=try openLayer("Layer 1")
+        XCTAssertFalse(last.isEnabled,"Last layer exposed an enabled delete action")
+        app.buttons["studio.layers.close"].tap()
+        app.buttons["studio.layers.open"].tap()
+        app.buttons["studio.add-layer"].tap()
+        app.buttons["studio.layers.close"].tap()
+        let prepared=try preparePickerSourceStroke(app)
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let drawn=try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blank,drawn),100)
+        let deletion=try openLayer("Layer 2")
+        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"),evaluatedWith:deletion).waitUntilFulfilled(timeout:8))
+        deletion.tap()
+        XCTAssertTrue(app.buttons["Delete layer"].waitForExistence(timeout:5))
+        capture(app,name:"layer-delete-confirmation")
+        app.buttons["Cancel"].tap()
+        app.buttons["studio.layers.close"].tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn,pixels(canvas.screenshot().image)),4,"Cancel changed actual layer pixels")
+        try openLayer("Layer 2").tap()
+        app.buttons["Delete layer"].tap()
+        XCTAssertFalse(app.staticTexts["Layer 2"].exists)
+        app.buttons["studio.layers.close"].tap()
+        try waitForStableCanvas(canvas,expected:frame)
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank,pixels(canvas.screenshot().image)),4,"Confirmed layer delete left drawn pixels")
+        app.buttons["studio.undo"].tap();try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn,pixels(canvas.screenshot().image)),4,"One Undo did not restore deleted layer pixels")
+        capture(app,name:"layer-delete-undone")
+        app.buttons["studio.redo"].tap();try settlePickerCanvasAfterSave(app,canvas:canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank,pixels(canvas.screenshot().image)),4)
+        app.buttons["studio.back"].tap();app.terminate()
+        let reopened=try launchGuestStudio();defer { reopened.terminate() }
+        let project=reopened.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout:8));project.tap()
+        let restored=reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored,expected:frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank,pixels(restored.screenshot().image)),4,"Deleted layer returned after cold reopen")
+        capture(reopened,name:"layer-delete-cold-reopened")
+        _ = prepared
+    }
+
+    @MainActor
     func testRoomsReplaceMessagingWithoutClaimingConnectedServices() throws {
         let app = try launchGuestStudio()
         defer { app.terminate() }
@@ -1461,20 +1521,30 @@ final class StudioSmokeUITests: XCTestCase {
         try imageControl("studio.image.library", app: app).tap()
         let count = app.staticTexts["studio.image-library.count"]
         XCTAssertTrue(count.waitForExistence(timeout: 8))
-        XCTAssertEqual(count.label, "72 free pictures · available offline")
+        XCTAssertEqual(count.label, "207 free pictures · available offline")
         let search = app.textFields["studio.image-library.search"]
-        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("pencil\n")
-        let picture = app.buttons["studio.image-library.item.kenney.scribble-platformer.item_pencil"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("dragon\n")
+        let picture = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
         XCTAssertTrue(picture.waitForExistence(timeout: 5)); XCTAssertTrue(picture.isHittable)
         capture(app, name: "licensed-image-library-search")
         picture.tap()
         let preview = try imageControl("studio.image.preview", app: app)
-        XCTAssertGreaterThan(exportInkMask(try pixels(preview.screenshot().image)).count, 25, "Library preview has no actual artwork")
-        XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("64 × 128 pixels"))
+        let previewRaster = try pixels(preview.screenshot().image)
+        // These licensed PNGs are monochrome. The export fixture's red-only
+        // detector cannot measure their white fill and dark outlines.
+        let light = (0..<(previewRaster.width * previewRaster.height)).filter { pixel in
+            (0..<3).allSatisfy { previewRaster.bytes[pixel * 4 + $0] > 192 }
+        }.count
+        let dark = (0..<(previewRaster.width * previewRaster.height)).filter { pixel in
+            (0..<3).allSatisfy { previewRaster.bytes[pixel * 4 + $0] < 96 }
+        }.count
+        XCTAssertGreaterThan(light, 25, "Library preview has no actual light artwork")
+        XCTAssertGreaterThan(dark, 25, "Library preview lost its outline/background contrast")
+        XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("64 × 64 pixels"))
         XCTAssertTrue(app.staticTexts["studio.image.attribution"].label.contains("CC0-1.0"))
         try imageControl("studio.image.apply", app: app).tap()
         let receipt = try imageControl("studio.image.result", app: app)
-        XCTAssertTrue(receipt.label.hasPrefix("Added Pencil on a new image layer"))
+        XCTAssertTrue(receipt.label.hasPrefix("Added Dungeon Dragon on a new image layer"))
         try closeImagePanel(app)
         try waitForStableCanvas(canvas, expected: frame)
         try settlePickerCanvasAfterSave(app, canvas: canvas)
