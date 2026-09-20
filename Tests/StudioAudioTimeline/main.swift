@@ -92,12 +92,81 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             vm.undo(); try check(!vm.audioClips[0].isMuted, "mute undo")
             vm.redo(); try check(vm.audioClips[0].isMuted, "mute redo")
         }
-        try await test("track mute changes canonical clips in one transaction without erasing gain") {
-            let revision = vm.document.revision
-            try vm.setAudioTrackMuted(3, muted: false, expectedRevision: revision)
-            try check(vm.document.revision == revision + 1 && !vm.audioClips[0].isMuted && vm.audioClips[0].volume == 0.5, "track unmute")
-            vm.undo(); try check(vm.audioClips[0].isMuted, "track undo")
-            vm.redo(); try check(!vm.audioClips[0].isMuted, "track redo")
+        try await test("track mute toggle preserves a deliberately muted clip") {
+            let originalClips = vm.audioClips
+            try check(originalClips[0].isMuted, "fixture must contain an individually muted clip")
+            try vm.setAudioTrackMuted(3, muted: true, expectedRevision: vm.document.revision)
+            try vm.setAudioTrackMuted(3, muted: false, expectedRevision: vm.document.revision)
+            try check(vm.audioClips == originalClips, "Track mute/unmute overwrote the individual clip mute setting")
+        }
+
+        try await test("track mute has one reversible revision and survives real save/cold reopen without changing clips") {
+            let before = vm.document, clips = vm.audioClips
+            try vm.setAudioTrackMuted(3, muted: true, expectedRevision: before.revision)
+            try check(vm.document.revision == before.revision + 1 && vm.document.schemaVersion == 12 && vm.document.isAudioTrackMuted(3), "track state/revision")
+            try check(vm.audioClips == clips && vm.selectedCurrentAudioClip?.id == id, "track mute changed clip settings or selection")
+            vm.undo(); try check(!vm.document.isAudioTrackMuted(3) && vm.audioClips == clips, "track Undo")
+            vm.redo(); try check(vm.document.isAudioTrackMuted(3) && vm.audioClips == clips, "track Redo")
+            let saved = await vm.save(); try check(saved, "track mute save")
+            let other = StudioViewModel(storage: storage); await other.loadProjects()
+            guard let metadata = other.savedProjects.first(where: { $0.id == vm.document.id }) else { throw Failure(message: "muted project absent") }
+            let opened = await other.openProject(metadata)
+            try check(opened && other.document == vm.document && other.document.isAudioTrackMuted(3), "track state lost on cold reopen")
+            try check(other.audioClips == clips && other.projectAudioTracks[0].audioData == imported.track.audioData, "cold reopen changed clips/original bytes")
+            try vm.setAudioTrackMuted(3, muted: false, expectedRevision: vm.document.revision)
+            try check(vm.audioClips == clips && vm.audioClips[0].isMuted, "track unmute discarded individual mute")
+            // The next real PCM fixture needs an audible clip: explicitly unmute
+            // that clip rather than relying on a track action to overwrite it.
+            try vm.editSelectedAudioClip(id, expectedRevision: vm.document.revision, edit: .mute(false))
+        }
+        try await test("track mute invalid/stale/no-op and early/late cancellation preserve the complete document") {
+            let before = vm.document
+            for lane in [-1, 0, 5, Int.max] {
+                do { try vm.setAudioTrackMuted(lane, muted: true, expectedRevision: before.revision); throw Failure(message: "invalid track accepted") }
+                catch is StudioDocumentError { }
+            }
+            do { try vm.setAudioTrackMuted(3, muted: true, expectedRevision: before.revision - 1); throw Failure(message: "stale track accepted") }
+            catch is StudioDocumentError { }
+            try vm.setAudioTrackMuted(3, muted: false, expectedRevision: before.revision)
+            for cancellationAt in [1, 2] {
+                var calls = 0
+                do {
+                    try vm.setAudioTrackMuted(3, muted: true, expectedRevision: before.revision, checkCancellation: {
+                        calls += 1; if calls == cancellationAt { throw CancellationError() }
+                    })
+                    throw Failure(message: "cancelled track edit accepted")
+                } catch is CancellationError { }
+                try check(calls == cancellationAt && vm.document == before, "cancellation or no-op modified document")
+            }
+            try check(vm.document == before && vm.projectAudioTracks[0].audioData == imported.track.audioData, "rejected edit changed original")
+        }
+        try await test("empty-lane mute applies to newly attached clips and follows lane rather than clip identity") {
+            let localDocs = root.appendingPathComponent("empty-track-docs")
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: localDocs, cachesDirectory: localDocs))
+            let made = await local.createProject(name: "Muted empty track", width: 64, height: 64, fps: 8)
+            try check(made, "empty track create")
+            try local.setAudioTrackMuted(2, muted: true, expectedRevision: local.document.revision)
+            try check(local.audioClips.isEmpty && local.document.isAudioTrackMuted(2), "empty track mute")
+            let attached = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id, expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 2)
+            try check(local.audioClips[0].track == 2 && !local.audioClips[0].isMuted && local.document.isAudioTrackMuted(2), "new clip did not retain independent state")
+            try local.editSelectedAudioClip(attached, expectedRevision: local.document.revision, edit: .place(start: 0, track: 4))
+            try check(local.document.isAudioTrackMuted(2) && !local.document.isAudioTrackMuted(4) && !local.audioClips[0].isMuted, "move dragged track mute with clip")
+            await local.flush()
+        }
+        try await test("historical document decoding defaults to no track mute and rejects invalid newer metadata") {
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(vm.document)) as! [String: Any]
+            object.removeValue(forKey: "mutedAudioTracks"); object["schemaVersion"] = 4
+            let original = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            let old = try JSONDecoder().decode(StudioDocument.self, from: original); try old.validate()
+            try check(old.mutedAudioTracks == nil && !(1...4).contains(where: old.isAudioTrackMuted), "historical default")
+            try check(try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(old)) == old, "historical roundtrip")
+            for lanes in [[0], [5], [1, 1], [4, 1], [1, 2, 3, 4, 4]] {
+                var invalid = old; invalid.schemaVersion = 12; invalid.mutedAudioTracks = lanes
+                do { try invalid.validate(); throw Failure(message: "invalid mute metadata accepted") } catch is StudioDocumentError { }
+            }
+            var downgraded = old; downgraded.mutedAudioTracks = [3]
+            do { try downgraded.validate(); throw Failure(message: "old schema accepted mute metadata") } catch is StudioDocumentError { }
+            try check(try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) == original, "historical input bytes altered")
         }
         func decode(_ out: StudioAudioMixService.Output) throws -> [[Float]] {
             let file = try AVAudioFile(forReading: out.checkedURL())

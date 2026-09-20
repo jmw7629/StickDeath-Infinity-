@@ -318,8 +318,7 @@ private struct StudioAudioWorkspace: View {
                 VStack(spacing: 0) {
                     Color.clear.frame(width: 44, height: 26)
                     ForEach(1...4, id: \.self) { track in
-                        let clips = vm.audioClips.filter { $0.track == track }
-                        let muted = !clips.isEmpty && clips.allSatisfy(\.isMuted)
+                        let muted = vm.document.isAudioTrackMuted(track)
                         VStack(spacing: 0) {
                             Text("\(track)").font(.specialElite(10)).foregroundColor(.white.opacity(0.45))
                             Button {
@@ -329,8 +328,10 @@ private struct StudioAudioWorkspace: View {
                             } label: {
                                 Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                                     .font(.system(size: 12)).frame(width: 44, height: 44)
-                            }.disabled(clips.isEmpty)
+                            }.disabled(vm.isSaving)
                                 .accessibilityLabel(muted ? "Unmute track \(track)" : "Mute track \(track)")
+                                .accessibilityValue(muted ? "Muted" : "Audible")
+                                .accessibilityIdentifier("studio.audio.track-mute.\(track)")
                         }.frame(width: 44, height: rowHeight)
                     }
                 }.frame(width: 44, alignment: .top)
@@ -386,11 +387,17 @@ private struct StudioAudioWorkspace: View {
         let duplication = vm.prepareAudioDuplication()
         let split = vm.prepareAudioSplit()
         return VStack(spacing: 6) {
+            if vm.document.isAudioTrackMuted(clip.track) {
+                Text("Track \(clip.track) is muted")
+                    .font(.caption2).foregroundColor(.sdRed)
+                    .accessibilityIdentifier("studio.audio.selected-track-muted")
+            }
             HStack {
                 Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
                 Button { apply(.mute(!clip.isMuted), clip: clip) } label: {
                     Image(systemName: clip.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 44, height: 44)
                 }.accessibilityLabel(clip.isMuted ? "Unmute selected clip" : "Mute selected clip")
+                    .accessibilityIdentifier("studio.audio.clip-mute")
                 Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
                     if editing { timeline.stop(); audio.stop(); vm.stopPlayback(); volumeRevision = vm.document.revision }
                     else if let revision = volumeRevision {
@@ -541,10 +548,10 @@ private struct StudioAudioTimelineClip: View {
                 .contentShape(Rectangle()).onTapGesture { stop(); vm.selectedAudioClip = clip }
                 .gesture(moveGesture)
             if width >= 88 { handle(leading: false) }
-        }.background(Color.sdRed.opacity(clip.isMuted ? 0.05 : 0.16))
+        }.background(Color.sdRed.opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.05 : 0.16))
             .clipShape(RoundedRectangle(cornerRadius: radius))
             .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
-            .opacity(clip.isMuted ? 0.55 : 1)
+            .opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.55 : 1)
             .offset(x: translation.width)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("studio.audio.clip.\(clip.id)")

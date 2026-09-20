@@ -76,6 +76,35 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             do { _ = try out.checkedURLs(); throw TestError.failed("cleaned output returned") }
             catch StudioMixedMovieExportService.ExportError.outputUnavailable {}
         }
+        for busMuted in [true, false] {
+            try await run("real AAC respects track mute=\(busMuted) without reviving an individually muted clip") {
+                var candidate = document
+                candidate.schemaVersion = 12; candidate.mutedAudioTracks = busMuted ? [1] : []
+                let originalClips = candidate.audioClips
+                let p = try parent("track-mute")
+                let out = try await service.export(snapshot: .init(document: candidate, retainedAudioTracks: [track], rasterDataByID: [:]), outputParent: p)
+                let asset = AVURLAsset(url: try out.checkedURLs()[0])
+                let audio = try await asset.loadTracks(withMediaType: .audio), video = try await asset.loadTracks(withMediaType: .video)
+                try require(audio.count == 1 && video.count == 1, "muted export dropped actual media tracks")
+                try await verifyPixels(asset, track: video[0])
+                let samples = try await decodeAudio(asset, track: audio[0])
+                try require(samples.count == 96_000, "track mute changed the actual duration")
+                var error = [0.0, 0.0], silence: Float = 0
+                for n in 0..<48_000 { for c in 0..<2 {
+                    let actual = samples[n*2+c]
+                    if (16_000..<20_000).contains(n) {
+                        let expected = busMuted ? 0 : sin(Double(n - 12_000 + 5_904) * 2 * .pi * (c == 0 ? 480 : 960) / 48_000) * (c == 0 ? 0.125 : 0.075)
+                        error[c] += pow(Double(actual)-expected, 2)
+                    }
+                    if busMuted || n < 10_000 || n > 28_000 { silence = max(silence, abs(actual)) }
+                } }
+                let rmse = error.map { sqrt($0 / 4_000) }
+                print("ACTUAL_TRACK_MUTED=\(busMuted) AAC_RMSE=\(rmse) SILENCE_PEAK=\(silence)")
+                try require(rmse.allSatisfy { $0 < 0.008 } && silence < 0.0005, "track or clip mute changed decoded AAC samples")
+                try require(candidate.audioClips == originalClips && track.audioData == originalAudio, "export changed original mute or source")
+                try out.cleanup(); try empty(p)
+            }
+        }
         for phase in [StudioMixedMovieExportService.Phase.rendering, .mixing, .muxing, .verifying] {
             try await run("phase callback failure cleans all intermediate and final files: \(phase)") {
                 let p=try parent("callback")

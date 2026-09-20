@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...11
+    static let supportedSchemaVersions = 1...12
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -14,6 +14,9 @@ struct StudioDocument: Codable, Equatable {
     var activeFrameID: String
     var activeLayerID: String
     var audioClips: [AudioClip] = []
+    // Additive metadata: older documents decode with no muted tracks. Keep
+    // per-clip mute independent so a track toggle never destroys that choice.
+    var mutedAudioTracks: [Int]?
     var gridEnabled = false
     var onionEnabled = false
     var createdAt: Date
@@ -32,6 +35,7 @@ struct StudioDocument: Codable, Equatable {
     }
 
     var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
+    func isAudioTrackMuted(_ track: Int) -> Bool { mutedAudioTracks?.contains(track) == true }
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
@@ -130,6 +134,13 @@ struct StudioDocument: Codable, Equatable {
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                           point.timestamp.map(\.isFinite) ?? true else { throw StudioDocumentError.invalid("A drawing contains invalid coordinates.") }
                 }
+            }
+        }
+        if let mutedAudioTracks {
+            guard schemaVersion >= 12, mutedAudioTracks.count <= 4,
+                  mutedAudioTracks.allSatisfy({ (1...4).contains($0) }),
+                  mutedAudioTracks == Array(Set(mutedAudioTracks)).sorted() else {
+                throw StudioDocumentError.invalid("Audio track mute settings are invalid or need a newer project version.")
             }
         }
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }

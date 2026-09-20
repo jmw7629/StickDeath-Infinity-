@@ -150,7 +150,7 @@ actor StudioAudioMixService {
             }
             work += samples
             clips.append(.init(assetID: id, start: start, end: end, sourceStart: sourceStart,
-                               volume: clip.isMuted ? 0 : Float(clip.volume)))
+                               volume: clip.isMuted || document.isAudioTrackMuted(clip.track) ? 0 : Float(clip.volume)))
         }
         guard Set(clips.map(\.assetID)) == Set(trackMap.keys) else { throw MixError.unresolvedLegacyAudio }
         // Sort UUIDs for deterministic decode/progress ordering; clip summation

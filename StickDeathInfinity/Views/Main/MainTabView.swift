@@ -13,6 +13,10 @@ struct MainTabView: View {
     @EnvironmentObject var spatterVM: SpatterAIViewModel
     @ObservedObject private var studioVM = StudioViewModel.shared
 
+    init(initialTab: AppTab = .home) {
+        _activeTab = State(initialValue: initialTab)
+    }
+
     var body: some View {
         ZStack {
             Color.sdBackground.ignoresSafeArea()

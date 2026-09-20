@@ -1399,25 +1399,31 @@ final class StudioViewModel: ObservableObject {
         editor = candidate; selectedAudioClip = right; message = nil; scheduleSave()
         return right.id
     }
-    func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int) throws {
+    func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
               expectedRevision == document.revision, (1...4).contains(track) else {
             throw StudioDocumentError.unavailable("Stop playback before muting this track.")
         }
-        let ids = document.audioClips.filter { $0.track == track }.map(\.id)
-        guard !ids.isEmpty else { return }
-        guard document.audioClips.filter({ ids.contains($0.id) }).allSatisfy({ $0.assetID != nil }) else {
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
             throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
         }
-        guard document.audioClips.contains(where: { ids.contains($0.id) && $0.isMuted != muted }) else { return }
+        guard document.isAudioTrackMuted(track) != muted else { return }
+        let projectID = document.id
         var candidate = editor
         try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 4)
-            for index in value.audioClips.indices where ids.contains(value.audioClips[index].id) {
-                value.audioClips[index].isMuted = muted
-            }
+            value.schemaVersion = max(value.schemaVersion, 12)
+            var tracks = Set(value.mutedAudioTracks ?? [])
+            if muted { tracks.insert(track) } else { tracks.remove(track) }
+            value.mutedAudioTracks = tracks.sorted()
         }
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              document.id == projectID, document.revision == expectedRevision else {
+            throw StudioDocumentError.unavailable("The project changed while setting track mute. Nothing was changed.")
+        }
         editor = candidate
         selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
         message = nil; scheduleSave()

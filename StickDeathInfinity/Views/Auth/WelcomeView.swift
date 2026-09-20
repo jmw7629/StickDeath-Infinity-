@@ -1,165 +1,134 @@
-// ═══════════════════════════════════════════════════════════════════
-// WelcomeView — Welcome screen with feature highlights + auth buttons
-// Matches: src/pages/WelcomeView.tsx exactly
-// - Skull logo at top
-// - "STICKDEATH ∞" / "Create. Animate. Annihilate."
-// - 4 feature cards (Animation Studio, Messaging, Challenges, Spatter AI)
-// - Sign In (red gradient), Create Account (outlined), Continue as Guest
-// - Animated background circles (6 floating, blurred, slow drift)
-// ═══════════════════════════════════════════════════════════════════
-
 import SwiftUI
 
+/// Keeps the supplied skull, wordmark, feature rows and red action hierarchy.
+/// All entry actions remain reachable on compact and landscape displays.
 struct WelcomeView: View {
     let onSignIn: () -> Void
     let onCreateAccount: () -> Void
     let onGuest: () -> Void
+    let onGuide: () -> Void
+    let accountUnavailable: Bool
+    let isAuthenticated: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var backgroundDrift = false
+    @AppStorage("sdi.guide.completed.v1") private var guideCompleted = false
 
-    @State private var visible = false
-    @State private var bgOffset: Double = 0
-
-    private let features: [(icon: String, title: String, desc: String)] = [
-        ("🎨", "Animation Studio", "Full-featured drawing & rigging tools"),
-        ("🤝", "Rooms", "Invited Studio collaboration · coming next"),
-        ("🔥", "Challenges", "Weekly battles with the community"),
-        ("🧠", "Spatter AI", "Your creative AI assistant"),
+    private let features: [(icon: String, title: String, detail: String)] = [
+        ("pencil.and.outline", "Animation Studio", "Draw, layer, animate and export"),
+        ("square.stack.3d.up", "Rooms & War Room", "Collaboration and voting · not connected yet"),
+        ("waveform", "Sound Library", "Search, preview and mix licensed sounds"),
+        ("sparkles", "Spatter", "Local help and editable motion recipes"),
     ]
 
     var body: some View {
-        ZStack {
-            Color.sdBackground.ignoresSafeArea()
-
-            // Animated background circles
-            GeometryReader { geo in
-                ForEach(0..<6, id: \.self) { i in
-                    Circle()
-                        .fill(Color(hex: "C80000").opacity(0.04))
-                        .frame(width: 300, height: 300)
-                        .blur(radius: 40)
-                        .position(
-                            x: geo.size.width * (0.5 + sin(bgOffset + Double(i)) * 0.15),
-                            y: geo.size.height * (CGFloat(i) * 0.18 + cos(bgOffset + Double(i) * 0.7) * 0.08)
-                        )
-                }
-            }
-
-            VStack(spacing: 0) {
-                // Logo section
-                VStack(spacing: 0) {
-                    Text("☠️")
-                        .font(.system(size: 80))
-                        .padding(.top, 24)
-
-                    Text("STICKDEATH ∞")
-                        .font(.specialElite(28))
-                        .tracking(4)
-                        .foregroundColor(.sdTextPrimary)
-                        .sdRedGlow()
-                        .padding(.top, 16)
-
-                    Text("Create. Animate. Annihilate.")
-                        .font(.specialElite(15))
-                        .tracking(1)
-                        .foregroundColor(.sdTextSecondary)
-                        .padding(.top, 8)
-                }
-
-                Spacer()
-
-                // Feature highlights
-                VStack(spacing: 16) {
-                    ForEach(Array(features.enumerated()), id: \.offset) { index, feature in
-                        HStack(spacing: 16) {
-                            // Icon box
-                            Text(feature.icon)
-                                .font(.system(size: 20))
-                                .frame(width: 40, height: 40)
-                                .background(Color(hex: "C80000").opacity(0.15))
-                                .cornerRadius(10)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(feature.title)
-                                    .font(.specialElite(15))
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(.sdTextPrimary)
-
-                                Text(feature.desc)
-                                    .font(.system(size: 13))
-                                    .foregroundColor(.sdTextSecondary)
+        GeometryReader { geometry in
+            ZStack {
+                Color.sdBackground.ignoresSafeArea()
+                Circle()
+                    .fill(Color.sdRed.opacity(0.07))
+                    .frame(width: 300, height: 300)
+                    .blur(radius: 50)
+                    .offset(x: backgroundDrift ? 35 : -35, y: -80)
+                    .accessibilityHidden(true)
+                ScrollView {
+                    VStack(spacing: 24) {
+                        Spacer(minLength: 0)
+                        VStack(spacing: 12) {
+                            Text("☠️").font(.system(size: 72)).accessibilityHidden(true)
+                            Text("STICKDEATH ∞")
+                                .font(.specialElite(28))
+                                .tracking(3)
+                                .foregroundColor(.sdTextPrimary)
+                                .sdRedGlow()
+                                .multilineTextAlignment(.center)
+                                .minimumScaleFactor(0.75)
+                                .accessibilityAddTraits(.isHeader)
+                            Text("Create. Animate. Annihilate.")
+                                .font(.specialElite(15))
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                        }
+                        if accountUnavailable {
+                            Text("Sign-in is unavailable. Your local Studio is ready.")
+                                .font(.footnote)
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                                .accessibilityIdentifier("welcome.account-unavailable")
+                        }
+                        VStack(spacing: 16) {
+                            ForEach(features, id: \.title) { feature in
+                                HStack(spacing: 14) {
+                                    Image(systemName: feature.icon)
+                                        .font(.system(size: 20))
+                                        .foregroundColor(.sdRed)
+                                        .frame(width: 40, height: 40)
+                                        .background(Color.sdRed.opacity(0.12))
+                                        .cornerRadius(10)
+                                        .accessibilityHidden(true)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(feature.title)
+                                            .font(.specialElite(15))
+                                            .foregroundColor(.sdTextPrimary)
+                                        Text(feature.detail)
+                                            .font(.subheadline)
+                                            .foregroundColor(.sdTextSecondary)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .accessibilityElement(children: .combine)
                             }
-
-                            Spacer()
                         }
-                        .opacity(visible ? 1 : 0)
-                        .offset(x: visible ? 0 : 20)
-                        .animation(
-                            .easeOut(duration: 0.5).delay(0.2 + Double(index) * 0.1),
-                            value: visible
-                        )
-                    }
-                }
-                .padding(.horizontal, 32)
-
-                Spacer()
-
-                // Buttons
-                VStack(spacing: 12) {
-                    // Sign In — Red gradient
-                    Button(action: onSignIn) {
-                        HStack(spacing: 8) {
-                            Text("Sign In")
-                                .font(.specialElite(16))
-                                .fontWeight(.semibold)
-                                .tracking(1)
-                            Text("→")
-                                .font(.system(size: 18))
+                        .padding(.horizontal, 8)
+                        VStack(spacing: 12) {
+                            Button(action: onSignIn) {
+                                Label("Sign In", systemImage: "arrow.right")
+                                    .font(.specialElite(16))
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity, minHeight: 54)
+                                    .background(Color.sdPrimaryGradient)
+                                    .cornerRadius(14)
+                            }
+                            .accessibilityIdentifier("welcome.sign-in")
+                            Button(action: onCreateAccount) {
+                                Text("Create Account")
+                                    .font(.specialElite(16))
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity, minHeight: 54)
+                                    .background(Color.white.opacity(0.05))
+                                    .overlay(RoundedRectangle(cornerRadius: 14)
+                                        .stroke(Color.white.opacity(0.15), lineWidth: 1))
+                                    .cornerRadius(14)
+                            }
+                            .accessibilityIdentifier("welcome.create-account")
+                            Button(isAuthenticated ? "Open Studio" : "Continue as Guest", action: onGuest)
+                                .font(.specialElite(14))
+                                .foregroundColor(.sdTextSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("welcome.guest")
+                            Button(guideCompleted ? "Review Studio Guide" : "Studio Guide", action: onGuide)
+                                .font(.specialElite(14))
+                                .foregroundColor(.sdTextSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("welcome.guide")
                         }
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(Color.sdPrimaryGradient)
-                        .cornerRadius(14)
+                        Spacer(minLength: 0)
                     }
-
-                    // Create Account — Outlined
-                    Button(action: onCreateAccount) {
-                        Text("Create Account")
-                            .font(.specialElite(16))
-                            .fontWeight(.semibold)
-                            .tracking(1)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(Color.white.opacity(0.05))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                            )
-                            .cornerRadius(14)
-                    }
-
-                    // Continue as Guest
-                    Button(action: onGuest) {
-                        Text("Continue as Guest")
-                            .font(.specialElite(14))
-                            .foregroundColor(.sdTextSecondary)
-                            .padding(.vertical, 8)
-                    }
-                    .padding(.top, 4)
+                    .padding(24)
+                    .frame(maxWidth: 440)
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: geometry.size.height)
                 }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 16)
+                .accessibilityIdentifier("welcome.content")
             }
-            .frame(maxWidth: 400)
-            .opacity(visible ? 1 : 0)
-            .offset(y: visible ? 0 : 20)
-            .animation(.easeOut(duration: 0.6), value: visible)
         }
-        .onAppear {
-            visible = true
-            // Animate background circles
-            Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
-                bgOffset += 0.02
+        .buttonStyle(.plain)
+        .task(id: reduceMotion) {
+            backgroundDrift = false
+            guard !reduceMotion else { return }
+            // SwiftUI owns this animation. No repeating timer survives dismissal.
+            withAnimation(.easeInOut(duration: 12).repeatForever(autoreverses: true)) {
+                backgroundDrift = true
             }
         }
     }

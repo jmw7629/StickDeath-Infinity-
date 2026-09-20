@@ -44,6 +44,8 @@ struct SignUpView: View {
                             .foregroundColor(.white)
                             .frame(width: 44, height: 44)
                     }
+                    .accessibilityLabel("Back to Welcome")
+                    .accessibilityIdentifier("auth.back")
                     Spacer()
                 }
                 .padding(.horizontal, 16)

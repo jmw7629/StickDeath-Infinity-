@@ -80,6 +80,38 @@ private actor Barrier {
             let out = try await StudioAudioMixService().mix(document: document([clip(stereo,volume:0.25,track:1),clip(stereo,volume:0.5,track:4)]), retainedAudioTracks:[stereo],durationSeconds:0.1,outputParent:scratch)
             let pcm=try read(out);try near(pcm[1][0],0.225);try check(out.receipt.clipCount==2 && out.receipt.assetCount==1,"repeated asset");try out.cleanup()
         }
+        try await test("track mute silences only its lane with sample-exact gain and retained source identities") {
+            var doc = try document([clip(stereo, volume: 0.25, track: 1), clip(stereo, volume: 0.5, track: 4)])
+            doc.schemaVersion = 12; doc.mutedAudioTracks = [1]
+            let before = doc.audioClips
+            let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(out)
+            for n in 0..<4800 { try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000))*0.1); try near(pcm[1][n], Float(cos(Double(n)*2*Double.pi*960/48000))*0.15) }
+            try check(doc.audioClips == before && out.receipt.clipCount == 2 && out.receipt.assetCount == 1, "mute removed clips or assets")
+            try out.cleanup(); try empty()
+        }
+        try await test("unmuting a track never revives an individually muted clip in the real output") {
+            var silent = clip(stereo, volume: 1, track: 1); silent.isMuted = true
+            var doc = try document([silent, clip(stereo, volume: 0.25, track: 4)])
+            doc.schemaVersion = 12
+            for lanes in [[1], []] {
+                doc.mutedAudioTracks = lanes
+                let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+                let pcm = try read(out)
+                for n in 0..<4800 { try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000))*0.05); try near(pcm[1][n], Float(cos(Double(n)*2*Double.pi*960/48000))*0.075) }
+                try check(doc.audioClips[0].isMuted, "individual mute changed")
+                try out.cleanup(); try empty()
+            }
+        }
+        try await test("all-muted tracks render a valid silent file with every clip and original retained") {
+            var doc = try document([clip(stereo, track: 1), clip(stereo, track: 4)])
+            doc.schemaVersion = 12; doc.mutedAudioTracks = [1, 2, 3, 4]
+            let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(out)
+            try check(pcm.flatMap { $0 }.allSatisfy { $0 == 0 } && out.receipt.peakAbsoluteSample == 0 && out.receipt.clipCount == 2, "muted output was not real silence")
+            try check(doc.audioClips.allSatisfy { !$0.isMuted } && digest(stereo.audioData!) == originalHashes[0], "track silence rewrote source or clip mute")
+            try out.cleanup(); try empty()
+        }
         try await test("mono conversion duplicates both channels and real Apple resampling retains tone timing") {
             let out=try await StudioAudioMixService().mix(document:document([clip(mono)]),retainedAudioTracks:[mono],durationSeconds:0.1,outputParent:scratch)
             let pcm=try read(out);for n in 200..<4600 {try near(pcm[0][n],pcm[1][n]);try near(pcm[0][n],Float(sin(Double(n)*2*Double.pi*240/48000))*0.25,0.001)};try out.cleanup()

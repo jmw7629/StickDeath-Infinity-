@@ -7,6 +7,64 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testWelcomeGuideNavigationAndLocalCompletion() throws {
+        let app = try launchAtWelcome()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        XCTAssertTrue(app.staticTexts["welcome.account-unavailable"].exists,
+                      "Unconfigured account services must be disclosed")
+        capture(app, name: "welcome-reference-layout")
+        try tapWelcomeAction("welcome.sign-in", in: app)
+        XCTAssertTrue(app.staticTexts["Welcome Back"].waitForExistence(timeout: 5))
+        app.buttons["auth.back"].tap()
+        try tapWelcomeAction("welcome.create-account", in: app)
+        XCTAssertTrue(app.staticTexts["Join the Carnage"].waitForExistence(timeout: 5))
+        app.buttons["auth.back"].tap()
+        try tapWelcomeAction("welcome.guide", in: app)
+        XCTAssertTrue(app.staticTexts["onboarding.position"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["onboarding.position"].label, "1 of 5")
+        XCTAssertFalse(app.staticTexts["Join a community of 100,000+ artists"].exists)
+        capture(app, name: "onboarding-welcome")
+        app.buttons["onboarding.next"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.position"].label, "2 of 5")
+        app.buttons["onboarding.back"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.position"].label, "1 of 5")
+        app.buttons["onboarding.back"].tap()
+        XCTAssertTrue(app.buttons["welcome.guide"].waitForExistence(timeout: 5))
+        try tapWelcomeAction("welcome.guide", in: app)
+        app.buttons["onboarding.dot.2"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.position"].label, "3 of 5")
+        XCTAssertTrue(app.staticTexts["Planned next · not connected in this build"].exists)
+        capture(app, name: "onboarding-collaboration-status")
+        XCUIDevice.shared.orientation = .landscapeLeft
+        XCTAssertTrue(app.buttons["onboarding.next"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["onboarding.next"].isHittable)
+        XCTAssertTrue(app.buttons["onboarding.skip"].isHittable)
+        capture(app, name: "onboarding-landscape-controls")
+        XCUIDevice.shared.orientation = .portrait
+        app.buttons["onboarding.dot.4"].tap()
+        XCTAssertEqual(app.staticTexts["onboarding.position"].label, "5 of 5")
+        app.buttons["onboarding.next"].tap()
+        try waitForButton("Skip Tutorial", in: app).tap()
+        XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 5),
+                      "Open Studio routed to a different tab")
+        let name = try createProjectIfLibraryIsShown(app)
+        XCTAssertTrue(app.buttons["studio.back"].waitForExistence(timeout: 8))
+        app.buttons["studio.back"].tap()
+        app.terminate()
+        let reopened = try launchAtWelcome()
+        defer { reopened.terminate() }
+        let guide = reopened.buttons["welcome.guide"]
+        XCTAssertTrue(guide.waitForExistence(timeout: 5))
+        XCTAssertEqual(guide.label, "Review Studio Guide", "Guide completion did not survive relaunch")
+        try tapWelcomeAction("welcome.guide", in: reopened)
+        reopened.buttons["onboarding.skip"].tap()
+        try waitForButton("Skip Tutorial", in: reopened).tap()
+        try waitForButton("Studio", in: reopened).tap()
+        XCTAssertTrue(reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch.waitForExistence(timeout: 8), "Guide navigation lost the local project")
+        capture(reopened, name: "guide-completed-local-project-preserved")
+    }
+
+    @MainActor
     func testLayerRenameCancelUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -1306,6 +1364,73 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap();openAudio(reopened);clipCount("2 clips", in: reopened)
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         capture(reopened, name: "audio-duplicate-cold-reopened")
+    }
+
+    @MainActor
+    func testAudioTrackMutePreservesClipMuteUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        func reveal(_ identifier: String, in target: XCUIApplication, towardBottom: Bool) throws -> XCUIElement {
+            let button = target.buttons[identifier]
+            let scroll = target.scrollViews["studio.audio.compact.scroll"]
+            for _ in 0..<4 {
+                if button.exists && button.isHittable { break }
+                if towardBottom { scroll.swipeUp(velocity: .slow) }
+                else { scroll.swipeDown(velocity: .slow) }
+            }
+            XCTAssertTrue(button.exists && button.isHittable, "Audio control unavailable: \(identifier)")
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: button).waitUntilFulfilled(timeout: 8))
+            return button
+        }
+        func openAudio(_ target: XCUIApplication) throws {
+            let open = target.buttons["studio.audio.open"]
+            XCTAssertTrue(open.waitForExistence(timeout: 8) && open.isHittable); open.tap()
+        }
+        func checkBus(_ expected: String, in target: XCUIApplication) {
+            XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", expected), evaluatedWith: target.buttons["studio.audio.track-mute.1"]).waitUntilFulfilled(timeout: 8))
+        }
+        try openAudio(app)
+        app.buttons["studio.audio.library.open"].tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-count"].waitForExistence(timeout: 8))
+        XCTAssertEqual(app.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        app.buttons["studio.audio.library.close"].tap()
+        try reveal("studio.audio.clip-mute", in: app, towardBottom: true).tap()
+        XCTAssertEqual(app.buttons["studio.audio.clip-mute"].label, "Unmute selected clip")
+        try reveal("studio.audio.track-mute.1", in: app, towardBottom: false).tap(); checkBus("Muted", in: app)
+        try reveal("studio.audio.track-mute.1", in: app, towardBottom: false).tap(); checkBus("Audible", in: app)
+        _ = try reveal("studio.audio.clip-mute", in: app, towardBottom: true)
+        XCTAssertEqual(app.buttons["studio.audio.clip-mute"].label, "Unmute selected clip", "Track toggle destroyed the individual mute choice")
+        try reveal("studio.audio.close", in: app, towardBottom: false).tap()
+        app.buttons["studio.undo"].tap(); try openAudio(app); checkBus("Muted", in: app)
+        try reveal("studio.audio.close", in: app, towardBottom: false).tap()
+        app.buttons["studio.redo"].tap(); try openAudio(app); checkBus("Audible", in: app)
+        try reveal("studio.audio.track-mute.1", in: app, towardBottom: false).tap(); checkBus("Muted", in: app)
+        _ = try reveal("studio.audio.clip-mute", in: app, towardBottom: true)
+        XCTAssertEqual(app.buttons["studio.audio.clip-mute"].label, "Unmute selected clip")
+        XCTAssertEqual(app.staticTexts["studio.audio.selected-track-muted"].label, "Track 1 is muted")
+        capture(app, name: "audio-track-and-clip-muted-independently")
+        try reveal("studio.audio.close", in: app, towardBottom: false).tap()
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap(); try openAudio(reopened)
+        checkBus("Muted", in: reopened)
+        try reveal("studio.audio.clip-picker", in: reopened, towardBottom: false).tap()
+        let choose = reopened.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.select-clip.")).firstMatch
+        XCTAssertTrue(choose.waitForExistence(timeout: 5) && choose.isHittable); choose.tap()
+        _ = try reveal("studio.audio.clip-mute", in: reopened, towardBottom: true)
+        XCTAssertEqual(reopened.buttons["studio.audio.clip-mute"].label, "Unmute selected clip")
+        XCTAssertEqual(reopened.staticTexts["studio.audio.selected-track-muted"].label, "Track 1 is muted")
+        try reveal("studio.audio.track-mute.1", in: reopened, towardBottom: false).tap(); checkBus("Audible", in: reopened)
+        _ = try reveal("studio.audio.clip-mute", in: reopened, towardBottom: true)
+        XCTAssertEqual(reopened.buttons["studio.audio.clip-mute"].label, "Unmute selected clip", "Reopened track toggle revived a muted clip")
+        capture(reopened, name: "audio-track-unmuted-clip-stays-muted-after-cold-reopen")
     }
 
     @MainActor
@@ -3005,7 +3130,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func launchGuestStudio() throws -> XCUIApplication {
+    private func launchAtWelcome() throws -> XCUIApplication {
         let env = ProcessInfo.processInfo.environment
         XCTAssertEqual(env["SDI_SMOKE_OFFLINE_PREFLIGHT"], "1", "Run the built-app configuration preflight before launching")
         let source = try XCTUnwrap(env["SDI_SMOKE_SOURCE_COMMIT"])
@@ -3015,7 +3140,24 @@ final class StudioSmokeUITests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         capture(app, name: "launch-\(source.prefix(12))")
-        try waitForButton("Continue as Guest", in: app, timeout: 20).tap()
+        XCTAssertTrue(app.buttons["welcome.guest"].waitForExistence(timeout: 20))
+        return app
+    }
+
+    @MainActor
+    private func tapWelcomeAction(_ identifier: String, in app: XCUIApplication) throws {
+        let action = app.buttons[identifier]
+        XCTAssertTrue(action.waitForExistence(timeout: 5))
+        let content = app.scrollViews["welcome.content"]
+        for _ in 0..<3 where !action.isHittable { content.swipeUp() }
+        XCTAssertTrue(action.isHittable)
+        action.tap()
+    }
+
+    @MainActor
+    private func launchGuestStudio() throws -> XCUIApplication {
+        let app = try launchAtWelcome()
+        try tapWelcomeAction("welcome.guest", in: app)
         try waitForButton("Skip Tutorial", in: app).tap()
         try waitForButton("Studio", in: app).tap()
         return app
