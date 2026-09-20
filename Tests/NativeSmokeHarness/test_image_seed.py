@@ -138,7 +138,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(report['photoFixtureSeeded'])
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], 3300)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], 3900)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):

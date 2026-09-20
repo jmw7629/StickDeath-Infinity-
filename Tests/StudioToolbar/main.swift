@@ -92,6 +92,26 @@ import CoreGraphics
                 check(popup.height - 60 >= 44 && popup.width >= 200,"short popup clips zoom actions")
             }
         }
+        test("edge popup leaves the compact landscape canvas center available") {
+            for width in [CGFloat(780), 844, 1024] {
+                let bounds = CGRect(x: 0, y: 0, width: width, height: 221)
+                for dock in [StudioToolbarLayout.Dock.leading, .trailing] {
+                    var layout = StudioToolbarLayout(); layout.choose(dock, in: bounds)
+                    let rail = layout.placement(in: bounds, compactHeight: true)
+                    let popup = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: rail)
+                    let canvas = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: rail)
+                    let nearestEdge = dock == .leading
+                        ? abs(popup.minX - rail.frame.maxX - StudioToolbarLayout.margin)
+                        : abs(rail.frame.minX - popup.maxX - StudioToolbarLayout.margin)
+                    guard nearestEdge < 0.001,
+                          !popup.contains(CGPoint(x: canvas.midX, y: canvas.midY)) else {
+                        print("FAIL edge popup covers the compact canvas center instead of anchoring beside its rail")
+                        exit(1)
+                    }
+                    check(contained(popup, bounds) && !popup.intersects(rail.frame), "edge popup bounds")
+                }
+            }
+        }
         test("HIDE recovery area is excluded from toolbar placements") {
             let b=CGRect(x:0,y:44,width:390,height:540);var l=StudioToolbarLayout()
             for dock in [StudioToolbarLayout.Dock.leading,.trailing,.floating] {

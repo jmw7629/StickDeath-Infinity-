@@ -78,13 +78,13 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # All configured UI journeys retain their individual 180s allowance and
-    # this shared bounded suite deadline. A fixture failure never grants more time.
-    # c080 used 2526s before the outer job interrupted its 28th journey.
-    # The five unfinished journeys used 303.634s in the previous run; the
-    # image-library journey is additional. Reserve a finite 55-minute suite
-    # budget without changing 180-second per-journey limits or retrying tests.
-    test_timeout_seconds = 3300
+    # Run 35502963713 reached the old 3300-second suite deadline after 36
+    # completed journeys. Those plus prior measured durations for the remaining
+    # five already total 3350.804 seconds before runner/finalization overhead.
+    # Keep the individual 180-second cap, all 41 journeys and zero retries.
+    # Give the expanded suite a finite 65-minute budget within the existing
+    # 95-minute job. Timeout/failure codes still fail the mandatory native gate.
+    test_timeout_seconds = 3900
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)

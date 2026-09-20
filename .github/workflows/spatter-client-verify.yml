@@ -50,7 +50,7 @@ jobs:
     # c080's production/build work took 30 minutes and its 75-minute outer
     # deadline interrupted the UI suite before all journeys could complete.
     # Keep each journey at 180s; give the complete 41-journey suite a bounded
-    # 55 minutes plus setup and original evidence preservation. No retries.
+    # 65 minutes plus setup and original evidence preservation. No retries.
     timeout-minutes: 95
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

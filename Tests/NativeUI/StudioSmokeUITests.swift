@@ -286,6 +286,9 @@ final class StudioSmokeUITests: XCTestCase {
         }
         XCTAssertTrue(expectation(for: settled, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
                       "Landscape canvas geometry did not settle within the visible app")
+        let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+        XCTAssertTrue(popup.exists && app.buttons["studio.tool-settings.close"].isHittable)
+        XCTAssertFalse(popup.frame.intersects(canvas.frame), "Docked Hand popup covers the fitted portrait canvas in landscape")
         let landscapeCapture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         landscapeCapture.name = "studio-landscape"
         landscapeCapture.lifetime = .keepAlways
@@ -579,7 +582,7 @@ final class StudioSmokeUITests: XCTestCase {
     func testEditableTextCancelUndoAndEdit() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let fixture = try createEditableTextFixture("SDI", app: app)
+        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false)
         let canvas = fixture.canvas, frame = fixture.frame, original = fixture.pixels
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
         capture(app, name: "editable-text-original-glyphs")
@@ -600,7 +603,12 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(input.value as? String, "SDI!", "Text entry did not update the editable draft")
         app.buttons["studio.text.keyboard-dismiss"].tap()
         capture(app, name: "editable-text-typography-popup")
-        app.buttons["studio.text.apply"].tap(); app.buttons["studio.tool-settings.close"].tap()
+        app.buttons["studio.text.apply"].tap()
+        // Reset while the Text popup is already open. A later trip back across
+        // the rail consumed the original 180-second allowance after all edit
+        // assertions had passed. Reset changes tool defaults, not saved text.
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
         try selectToolbarTool("move", app: app)
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas, expected: frame)
@@ -609,9 +617,6 @@ final class StudioSmokeUITests: XCTestCase {
         let edited = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(try changedPixelCount(original, edited), 4, "Editing text did not change glyphs")
         capture(app, name: "editable-text-edited-glyphs")
-        try selectToolbarTool("text", app: app)
-        try resetToolPreferencesInPopup(app)
-        app.buttons["studio.tool-settings.close"].tap()
     }
 
     @MainActor
@@ -1249,7 +1254,39 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: duplicate).waitUntilFulfilled(timeout: 8)); duplicate.tap()
         clipCount("2 clips", in: app)
         XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.25s"), "Duplicate did not begin at selected source end")
+        let zoomIn = app.buttons["studio.audio.zoom-in"]
+        for _ in 0..<4 { if zoomIn.exists && zoomIn.isHittable { break }; scroll.swipeDown(velocity: .slow) }
+        XCTAssertTrue(zoomIn.exists && zoomIn.isHittable)
+        let clips = app.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.clip."))
+        func adjacentClipFrames() -> [CGRect] {
+            let frames = clips.allElementsBoundByIndex.map(\.frame).sorted { $0.minX < $1.minX }
+            XCTAssertEqual(frames.count, 2)
+            guard frames.count == 2 else { return frames }
+            XCTAssertGreaterThan(frames[0].width, 0)
+            XCTAssertLessThanOrEqual(frames[0].maxX, frames[1].minX + 1, "Short clip cards overlap their real timeline positions")
+            XCTAssertEqual(frames[0].maxX, frames[1].minX, accuracy: 1, "Adjacent equal-duration clips must meet at their actual boundary")
+            return frames
+        }
+        let originalFrames = adjacentClipFrames()
         capture(app, name: "audio-duplicate-selected-after-source")
+        zoomIn.tap();zoomIn.tap()
+        XCTAssertEqual(app.staticTexts["studio.audio.zoom-value"].label, "400%")
+        let zoomedFrames = adjacentClipFrames()
+        if originalFrames.count == 2 && zoomedFrames.count == 2 {
+            XCTAssertEqual(zoomedFrames[0].width, originalFrames[0].width * 4, accuracy: 2)
+        }
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.25s"), "Timeline zoom changed the saved clip timing")
+        capture(app, name: "audio-duplicate-timing-at-four-times-zoom")
+        app.buttons["studio.audio.zoom-out"].tap();app.buttons["studio.audio.zoom-out"].tap()
+        let firstID = clips.allElementsBoundByIndex.sorted { $0.frame.minX < $1.frame.minX }.first?.identifier
+        XCTAssertNotNil(firstID)
+        app.buttons["studio.audio.clip-picker"].tap()
+        if let firstID {
+            let choose = app.buttons[firstID.replacingOccurrences(of: "studio.audio.clip.", with: "studio.audio.select-clip.")]
+            XCTAssertTrue(choose.waitForExistence(timeout: 5) && choose.isHittable)
+            choose.tap()
+        }
+        XCTAssertTrue(app.staticTexts["studio.audio.clip-timing"].label.contains("Start 0.00s"), "Clip picker did not select the original short clip")
         for _ in 0..<4 { if app.buttons["studio.audio.close"].isHittable { break }; scroll.swipeDown(velocity: .slow) }
         app.buttons["studio.audio.close"].tap()
         app.buttons["studio.undo"].tap();openAudio(app);clipCount("1 clips", in: app)

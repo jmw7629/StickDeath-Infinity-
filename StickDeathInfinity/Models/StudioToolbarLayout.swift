@@ -85,7 +85,12 @@ struct StudioToolbarLayout: Equatable {
             } else { area.size.height = above }
         }
         let width = min(260, area.width), height = min(492, area.height)
-        return CGRect(x: area.midX - width / 2, y: area.minY, width: width, height: height)
+        // Keep an edge rail's popup adjacent to it. Centering in the free
+        // landscape area obscures the fitted portrait canvas unnecessarily.
+        let x = toolbar.vertical
+            ? (toolbar.dock == .trailing ? area.maxX - width : area.minX)
+            : area.midX - width / 2
+        return CGRect(x: x, y: area.minY, width: width, height: height)
     }
 
     /// Preserve the original clear canvas beneath the default top rail and

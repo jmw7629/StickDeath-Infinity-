@@ -26,6 +26,7 @@ private struct StudioAudioWorkspace: View {
     @State private var volume = 0.8
     @State private var volumeRevision: Int?
     @State private var trimCapture: StudioViewModel.AudioTrimCapture?
+    @State private var timelineZoom = 1.0
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -90,6 +91,7 @@ private struct StudioAudioWorkspace: View {
                     Text(notice).font(.caption2).foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
                 }
+                timelineControls
                 timelineGrid
                     .frame(height: 306, alignment: .top)
                 Spacer(minLength: 0)
@@ -271,9 +273,44 @@ private struct StudioAudioWorkspace: View {
             }
         }
     }
+    private var timelineControls: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(vm.audioClips.sorted {
+                    if $0.track != $1.track { return $0.track < $1.track }
+                    if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
+                    return $0.id < $1.id
+                }) { clip in
+                    Button("Track \(clip.track) · \(clip.soundName) · \(clock(clip.startTime))") {
+                        timeline.stop(); audio.stop(); vm.stopPlayback()
+                        vm.selectedAudioClip = clip
+                    }.accessibilityIdentifier("studio.audio.select-clip.\(clip.id)")
+                }
+            } label: {
+                Label("Clips", systemImage: "list.bullet").frame(minWidth: 68, minHeight: 44)
+            }.disabled(vm.audioClips.isEmpty)
+                .accessibilityLabel("Select audio clip")
+                .accessibilityIdentifier("studio.audio.clip-picker")
+            Spacer(minLength: 0)
+            Button { timelineZoom = max(0.5, timelineZoom / 2) } label: {
+                Image(systemName: "minus.magnifyingglass").frame(width: 44, height: 44)
+            }.disabled(timelineZoom <= 0.5)
+                .accessibilityLabel("Zoom audio timeline out")
+                .accessibilityIdentifier("studio.audio.zoom-out")
+            Text("\(Int(timelineZoom * 100))%")
+                .frame(minWidth: 42)
+                .accessibilityIdentifier("studio.audio.zoom-value")
+            Button { timelineZoom = min(8, timelineZoom * 2) } label: {
+                Image(systemName: "plus.magnifyingglass").frame(width: 44, height: 44)
+            }.disabled(timelineZoom >= 8)
+                .accessibilityLabel("Zoom audio timeline in")
+                .accessibilityIdentifier("studio.audio.zoom-in")
+        }.font(.specialElite(11)).foregroundColor(.white.opacity(0.75))
+            .padding(.horizontal, 12)
+    }
     private var timelineGrid: some View {
         GeometryReader { geometry in
-            let pps = 110.0
+            let pps = 110.0 * timelineZoom
             let length = max(5, min(1300, vm.audioDuration + 1))
             let width = max(geometry.size.width - 44, length * pps)
             let rowHeight = 70.0
@@ -329,7 +366,7 @@ private struct StudioAudioWorkspace: View {
                                 ForEach(vm.audioClips.filter { $0.track == track }) { clip in
                                     StudioAudioTimelineClip(vm: vm, clip: clip, pointsPerSecond: pps,
                                         stop: { timeline.stop(); audio.stop(); vm.stopPlayback() })
-                                        .frame(width: max(64, clip.duration * pps), height: 58)
+                                        .frame(width: clip.duration * pps, height: 58)
                                         .offset(x: clip.startTime * pps, y: 6)
                                 }
                             }.frame(height: rowHeight)
@@ -482,38 +519,53 @@ private struct StudioAudioTimelineClip: View {
     let stop: () -> Void
     @State private var revision: Int?
     @State private var captured: AudioClip?
+    @State private var capturedScale: Double?
     @GestureState private var translation: CGSize = .zero
     var body: some View {
+        let width = clip.duration * pointsPerSecond
+        let radius = min(14.0, width / 2)
         HStack(spacing: 0) {
-            handle(leading: true)
+            if width >= 88 { handle(leading: true) }
             VStack(alignment: .leading, spacing: 3) {
-                Text(clip.soundName).lineLimit(1).font(.specialElite(11))
-                Text(String(format: "%.2fs", clip.duration)).font(.system(size: 8)).foregroundColor(.white.opacity(0.4))
-            }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                if width >= 44 {
+                    Text(clip.soundName).lineLimit(1).font(.specialElite(11))
+                    Text(String(format: "%.2fs", clip.duration)).font(.system(size: 8)).foregroundColor(.white.opacity(0.4))
+                } else if width >= 12 {
+                    Image(systemName: "waveform").font(.system(size: 10))
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Color.clear
+                }
+            }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .clipped()
                 .contentShape(Rectangle()).onTapGesture { stop(); vm.selectedAudioClip = clip }
                 .gesture(moveGesture)
-            handle(leading: false)
-        }.background(Color.sdRed.opacity(clip.isMuted ? 0.05 : 0.16)).cornerRadius(14)
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
+            if width >= 88 { handle(leading: false) }
+        }.background(Color.sdRed.opacity(clip.isMuted ? 0.05 : 0.16))
+            .clipShape(RoundedRectangle(cornerRadius: radius))
+            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
             .opacity(clip.isMuted ? 0.55 : 1)
             .offset(x: translation.width)
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("studio.audio.clip.\(clip.id)")
+            .accessibilityLabel("\(clip.soundName), track \(clip.track), start \(clip.startTime.formatted()) seconds, duration \(clip.duration.formatted()) seconds")
+            .accessibilityAction(named: "Select clip") { stop(); vm.selectedAudioClip = clip }
             .onChange(of: translation) { old, new in
-                if new == .zero, old != .zero { revision = nil; captured = nil }
+                if new == .zero, old != .zero { revision = nil; captured = nil; capturedScale = nil }
             }
     }
     private func begin() {
         guard revision == nil else { return }
         stop(); vm.selectedAudioClip = clip; revision = vm.document.revision; captured = clip
+        capturedScale = pointsPerSecond
     }
     private var moveGesture: some Gesture {
         DragGesture(minimumDistance: 6)
             .updating($translation) { value, state, _ in state = value.translation }
             .onChanged { _ in begin() }
             .onEnded { value in
-                defer { revision = nil; captured = nil }
-                guard let revision, let captured,
+                defer { revision = nil; captured = nil; capturedScale = nil }
+                guard let revision, let captured, capturedScale == pointsPerSecond,
                       let time = StudioAudioTimelineGeometry.time(at: captured.startTime * pointsPerSecond + value.translation.width,
                         pointsPerSecond: pointsPerSecond, fps: vm.fps, snap: vm.snapEnabled) else { return }
                 let lane = min(4, max(1, captured.track + Int((value.translation.height / 70).rounded())))
@@ -527,8 +579,8 @@ private struct StudioAudioTimelineClip: View {
             .gesture(DragGesture(minimumDistance: 6)
                 .onChanged { _ in begin() }
                 .onEnded { value in
-                    defer { revision = nil; captured = nil }
-                    guard let revision, let captured else { return }
+                    defer { revision = nil; captured = nil; capturedScale = nil }
+                    guard let revision, let captured, capturedScale == pointsPerSecond else { return }
                     let delta = Double(value.translation.width) / pointsPerSecond
                     let raw = leading ? captured.sourceOffset + delta : captured.duration + delta
                     guard let changed = StudioAudioTimelineGeometry.snapped(max(0, raw), fps: vm.fps, enabled: vm.snapEnabled) else { return }
