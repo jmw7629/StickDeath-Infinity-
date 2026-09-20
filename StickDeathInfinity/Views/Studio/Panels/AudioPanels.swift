@@ -25,6 +25,7 @@ private struct StudioAudioWorkspace: View {
     @State private var libraryTrack = 1
     @State private var volume = 0.8
     @State private var volumeRevision: Int?
+    @State private var trimCapture: StudioViewModel.AudioTrimCapture?
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -58,12 +59,13 @@ private struct StudioAudioWorkspace: View {
             }
         }
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback() }
-        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close() }
+        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil }
         .onChange(of: vm.document.revision) { _, _ in
             timeline.stop(); audio.stop(); volume = vm.selectedCurrentAudioClip?.volume ?? 0.8
         }
         .onChange(of: vm.selectedCurrentAudioClip?.id) { _, _ in
             volume = vm.selectedCurrentAudioClip?.volume ?? 0.8; volumeRevision = nil
+            trimCapture = nil
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { audio.close(); timeline.close(); vm.stopPlayback() }
@@ -309,6 +311,17 @@ private struct StudioAudioWorkspace: View {
                             }
                         }.frame(height: 26).contentShape(Rectangle())
                             .gesture(SpatialTapGesture().onEnded { value in seek(Double(value.location.x) / pps) })
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Audio playhead")
+                            .accessibilityValue(clock(vm.audioPlayheadTime))
+                            .accessibilityIdentifier("studio.audio.playhead-ruler")
+                            .accessibilityAdjustableAction { direction in
+                                switch direction {
+                                case .increment: seek(vm.audioPlayheadTime + 1 / Double(vm.fps))
+                                case .decrement: seek(vm.audioPlayheadTime - 1 / Double(vm.fps))
+                                @unknown default: break
+                                }
+                            }
                         ForEach(1...4, id: \.self) { track in
                             ZStack(alignment: .topLeading) {
                                 Rectangle().fill(Color.white.opacity(track % 2 == 0 ? 0.018 : 0.008))
@@ -334,6 +347,7 @@ private struct StudioAudioWorkspace: View {
     }
     private func clipInspector(_ clip: AudioClip) -> some View {
         let duplication = vm.prepareAudioDuplication()
+        let split = vm.prepareAudioSplit()
         return VStack(spacing: 6) {
             HStack {
                 Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
@@ -371,7 +385,26 @@ private struct StudioAudioWorkspace: View {
                     .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
                     .accessibilityLabel("Duplicate selected audio clip after its end")
                     .accessibilityIdentifier("studio.audio.duplicate")
+                Button("Split at playhead") {
+                    guard let split else { return }
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    do { try vm.splitAudioClip(split) }
+                    catch { vm.message = error.localizedDescription }
+                }.disabled(split == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .accessibilityHint("Move the red playhead inside the selected clip first")
+                    .accessibilityIdentifier("studio.audio.split")
+                Button("Trim values") {
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    trimCapture = vm.prepareAudioTrim()
+                }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdRed).frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.audio.trim.open")
                 Spacer()
+            }
+            if let trimCapture {
+                StudioAudioNumericTrimEditor(vm: vm, capture: trimCapture) { self.trimCapture = nil }
+                    .id(trimCapture.selection.clip.id + ":" + String(trimCapture.selection.revision))
             }
         }.padding(.horizontal, 12).padding(.bottom, 8)
             .background(Color.white.opacity(0.02))
@@ -380,6 +413,65 @@ private struct StudioAudioWorkspace: View {
         timeline.stop(); audio.stop(); vm.stopPlayback()
         do { try vm.editSelectedAudioClip(clip.id, expectedRevision: vm.document.revision, edit: edit) }
         catch { vm.message = error.localizedDescription }
+    }
+}
+
+private struct StudioAudioNumericTrimEditor: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.AudioTrimCapture
+    let dismiss: () -> Void
+    @State private var source: String
+    @State private var duration: String
+    @State private var notice: String?
+    @FocusState private var focused: Field?
+    private enum Field: Hashable { case source, duration }
+
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioTrimCapture, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        _source = State(initialValue: String(capture.selection.clip.sourceOffset))
+        _duration = State(initialValue: String(capture.selection.clip.duration))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                input("Source start (sec)", text: $source, field: .source)
+                input("Duration (sec)", text: $duration, field: .duration)
+            }
+            if let notice {
+                Text(notice).font(.caption2).foregroundColor(.sdRed)
+                    .accessibilityIdentifier("studio.audio.trim.notice")
+            }
+            if vm.prepareAudioTrim() != capture {
+                Text("The clip changed. Cancel and reopen its trim values.").font(.caption2)
+            }
+            HStack {
+                Button("Cancel") { focused = nil; dismiss() }
+                    .accessibilityIdentifier("studio.audio.trim.cancel")
+                Spacer()
+                Button("Apply trim") {
+                    focused = nil
+                    guard let offset = StudioViewModel.audioTrimSeconds(source),
+                          let length = StudioViewModel.audioTrimSeconds(duration) else {
+                        notice = "Enter a valid number of seconds in both fields."; return
+                    }
+                    do {
+                        try vm.trimAudioClip(capture, sourceOffset: offset, duration: length)
+                        dismiss()
+                    } catch { notice = error.localizedDescription }
+                }.disabled(vm.prepareAudioTrim() != capture)
+                    .accessibilityIdentifier("studio.audio.trim.apply")
+            }.font(.specialElite(12)).foregroundColor(.sdRed).frame(minHeight: 44)
+        }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+    }
+    private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2).foregroundColor(.white.opacity(0.6))
+            TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.system(size: 14, design: .monospaced)).padding(10)
+                .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .accessibilityIdentifier(field == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration")
+        }.frame(maxWidth: .infinity)
     }
 }
 

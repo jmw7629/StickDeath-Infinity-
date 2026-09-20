@@ -1312,6 +1312,93 @@ final class StudioViewModel: ObservableObject {
         editor = candidate; selectedAudioClip = duplicate; message = nil; scheduleSave()
         return duplicate.id
     }
+    struct AudioTrimCapture: Equatable {
+        let selection: AudioDuplicationCapture
+    }
+    func prepareAudioTrim() -> AudioTrimCapture? {
+        prepareAudioDuplication().map { .init(selection: $0) }
+    }
+    /// Decimal keyboard input is local draft state until the captured clip is applied.
+    static func audioTrimSeconds(_ text: String, decimalSeparator: String = Locale.current.decimalSeparator ?? ".") -> Double? {
+        guard text.count <= 64 else { return nil }
+        var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if decimalSeparator == "," { value = value.replacingOccurrences(of: ",", with: ".") }
+        guard !value.isEmpty, value.unicodeScalars.allSatisfy({ "0123456789.eE+-".unicodeScalars.contains($0) }),
+              let seconds = Double(value), seconds.isFinite, seconds >= 0 else { return nil }
+        return seconds
+    }
+    func trimAudioClip(_ capture: AudioTrimCapture, sourceOffset: Double, duration: Double,
+                       checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard prepareAudioTrim() == capture else {
+            throw StudioDocumentError.unavailable("The selected clip changed. Reopen its trim values. Nothing was changed.")
+        }
+        try checkCancellation()
+        guard prepareAudioTrim() == capture else {
+            throw StudioDocumentError.unavailable("The project changed while trimming audio. Nothing was changed.")
+        }
+        try editSelectedAudioClip(capture.selection.clip.id, expectedRevision: capture.selection.revision,
+                                  edit: .trim(sourceOffset: sourceOffset, duration: duration))
+    }
+    struct AudioSplitCapture: Equatable {
+        let selection: AudioDuplicationCapture
+        let playhead: Double
+        let boundary: Double
+        let rightSourceOffset: Double
+    }
+    /// Snap the cut to the mixer's sample grid and preserve its source phase.
+    func prepareAudioSplit() -> AudioSplitCapture? {
+        guard let selection = prepareAudioDuplication(), audioPlayheadTime.isFinite else { return nil }
+        let original = selection.clip
+        let rate = StudioAudioMixService.sampleRate
+        let startFrame = (original.startTime * rate).rounded()
+        let endFrame = ((original.startTime + original.duration) * rate).rounded()
+        let cutFrame = (audioPlayheadTime * rate).rounded()
+        let boundary = cutFrame / rate
+        let left = boundary - original.startTime
+        let right = original.duration - left
+        let sourceOffset = ((original.sourceOffset * rate).rounded() + cutFrame - startFrame) / rate
+        guard boundary.isFinite, sourceOffset.isFinite,
+              cutFrame > startFrame, cutFrame < endFrame,
+              left >= 1 / rate, right >= 1 / rate else { return nil }
+        return .init(selection: selection, playhead: audioPlayheadTime,
+                     boundary: boundary, rightSourceOffset: sourceOffset)
+    }
+    /// Split metadata, never the managed original. Both halves remain editable.
+    @discardableResult
+    func splitAudioClip(_ capture: AudioSplitCapture,
+                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
+        try checkCancellation()
+        guard prepareAudioSplit() == capture else {
+            throw StudioDocumentError.unavailable("Select a current clip and place the playhead inside it before splitting.")
+        }
+        let original = capture.selection.clip
+        let leftDuration = capture.boundary - original.startTime
+        var left = original
+        left.duration = leftDuration
+        let right = AudioClip(id: UUID().uuidString, soundName: original.soundName,
+            track: original.track, startTime: capture.boundary,
+            duration: original.duration - leftDuration, volume: original.volume,
+            assetID: original.assetID, sourceOffset: capture.rightSourceOffset,
+            isMuted: original.isMuted)
+        var candidate = editor
+        try candidate.change { value in
+            guard let index = value.audioClips.firstIndex(where: { $0.id == original.id }) else {
+                throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
+            }
+            value.schemaVersion = max(value.schemaVersion, 4)
+            value.audioClips[index] = left
+            value.audioClips.insert(right, at: index + 1)
+        }
+        try preflightRasterDocument(candidate.document)
+        _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard prepareAudioSplit() == capture else {
+            throw StudioDocumentError.unavailable("The clip or playhead changed while splitting. Nothing was changed.")
+        }
+        editor = candidate; selectedAudioClip = right; message = nil; scheduleSave()
+        return right.id
+    }
     func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int) throws {
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
               expectedRevision == document.revision, (1...4).contains(track) else {

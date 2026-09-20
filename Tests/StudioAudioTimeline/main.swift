@@ -7,6 +7,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
 }
 @main @MainActor struct AudioTimelineTests {
     static func main() async throws {
+        setbuf(stdout, nil)
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-audio-timeline-\(UUID())")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -342,6 +343,183 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             let before = edge.document
             do { try edge.duplicateAudioClip(edge.prepareAudioDuplication()!);throw Failure(message: "duplicate beyond timeline bound accepted") } catch is StudioDocumentError { }
             try check(edge.document == before, "placement rejection changed source")
+        }
+        try await test("split preserves source metadata and left identity with one Undo and actual cold reopen") {
+            let local = try await duplicationFixture();let id = local.audioClips[0].id
+            try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1, duration: 0.5))
+            try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .place(start: 0.25, track: 3))
+            try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .volume(0.5))
+            try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .mute(true))
+            local.displayAudioPlaybackTime(0.5, playing: false)
+            let before = local.document;let capture = local.prepareAudioSplit()!
+            let rightID = try local.splitAudioClip(capture);let after = local.document
+            let left = local.audioClips[0], right = local.audioClips[1]
+            try check(left.id == id && right.id == rightID && rightID != id && left.duration == 0.25 && right.duration == 0.25 && right.startTime == 0.5 && right.sourceOffset == 1.25, "split identity/timing")
+            try check(left.sourceOffset == 1 && left.startTime == 0.25 && left.isMuted && right.isMuted && left.volume == 0.5 && right.volume == 0.5 && left.track == 3 && right.track == 3 && left.assetID == right.assetID, "split settings")
+            try check(after.revision == before.revision + 1 && local.selectedCurrentAudioClip?.id == rightID && local.projectAudioTracks.count == 1, "split transaction/source duplication")
+            local.undo();try check(local.audioClips == before.audioClips, "split Undo")
+            local.redo();try check(local.audioClips == after.audioClips, "split Redo identity")
+            let saved = await local.save();try check(saved, "split save")
+            let reopened = StudioViewModel(storage: storage);await reopened.loadProjects()
+            let opened = await reopened.openProject(reopened.savedProjects.first { $0.id == local.document.id }!)
+            try check(opened && reopened.audioClips == after.audioClips && reopened.projectAudioTracks.count == 1 && reopened.projectAudioTracks[0].audioData == imported.track.audioData, "split cold reopen/source bytes")
+        }
+        try await test("split at fractional sample phases preserves every real decoded stereo sample") {
+            let url = root.appendingPathComponent("split-ramp.wav")
+            let ramp = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 12_000)!;ramp.frameLength = 12_000
+            for n in 0..<12_000 {
+                ramp.floatChannelData![0][n] = Float(n % 977) / 1024
+                ramp.floatChannelData![1][n] = -Float(n % 631) / 1024
+            }
+            do { let file = try AVAudioFile(forWriting: url, settings: format.settings);try file.write(from: ramp) }
+            let sound = try await StudioAudioImportService.shared.importAudio(from: url, scratchParent: scratch) { _ in }
+            for cut in [0.147211, 0.156241, 0.189999] {
+                let local = StudioViewModel(storage: storage)
+                let made = await local.createProject(name: "Sample-phase split", width: 64, height: 64, fps: 8);try check(made, "phase project")
+                let id = try local.attachImportedAudio(sound.track, expectedProjectID: local.document.id, expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 2)
+                try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 0.020006, duration: 0.1))
+                try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .place(start: 0.100014, track: 2))
+                try local.editSelectedAudioClip(id, expectedRevision: local.document.revision, edit: .volume(0.75))
+                let before = try await StudioAudioMixService().mix(document: local.document, retainedAudioTracks: local.projectAudioTracks, durationSeconds: 0.25, outputParent: scratch)
+                defer { try? before.cleanup() };let expected = try decode(before)
+                local.displayAudioPlaybackTime(cut, playing: false)
+                let capture = local.prepareAudioSplit()!;try local.splitAudioClip(capture)
+                let after = try await StudioAudioMixService().mix(document: local.document, retainedAudioTracks: local.projectAudioTracks, durationSeconds: 0.25, outputParent: scratch)
+                defer { try? after.cleanup() };let actual = try decode(after)
+                try check(actual == expected, "split shifted, repeated or lost a decoded source sample at \(cut)")
+                try check(abs(capture.boundary - cut) <= 0.5 / 48_000 && local.projectAudioTracks[0].audioData == sound.track.audioData, "split quantization or original changed")
+            }
+        }
+        try await test("split rejects endpoints sub-sample fragments and nonfinite playheads without mutation") {
+            let local = try await duplicationFixture();let clip = local.audioClips[0];let before = local.document
+            for value in [Double.nan, .infinity, -1, clip.startTime, clip.startTime + clip.duration, clip.startTime + 0.25 / 48_000, clip.startTime + clip.duration - 0.25 / 48_000] {
+                local.audioPlayheadTime = value
+                try check(local.prepareAudioSplit() == nil, "invalid split boundary accepted")
+            }
+            try check(local.document == before && local.projectAudioTracks[0].audioData == imported.track.audioData, "invalid boundary changed source")
+        }
+        try await test("split rejects stale project selection revision playback and changed playhead") {
+            let local = try await duplicationFixture();local.displayAudioPlaybackTime(0.5, playing: false)
+            let capture = local.prepareAudioSplit()!;let before = local.document
+            local.selectedAudioClip = nil
+            do { try local.splitAudioClip(capture);throw Failure(message: "split without selection") } catch is StudioDocumentError { }
+            local.selectedAudioClip = capture.selection.clip
+            let wrong = StudioViewModel.AudioSplitCapture(selection: .init(projectID: UUID(), revision: capture.selection.revision, clip: capture.selection.clip), playhead: capture.playhead, boundary: capture.boundary, rightSourceOffset: capture.rightSourceOffset)
+            do { try local.splitAudioClip(wrong);throw Failure(message: "split wrong project") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0.75, playing: false)
+            do { try local.splitAudioClip(capture);throw Failure(message: "split moved playhead") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0.5, playing: true)
+            do { try local.splitAudioClip(capture);throw Failure(message: "split active playback") } catch is StudioDocumentError { }
+            local.stopPlayback();try check(local.document == before, "rejected split mutated project")
+            try local.editSelectedAudioClip(capture.selection.clip.id, expectedRevision: local.document.revision, edit: .volume(0.5))
+            let changed = local.document
+            do { try local.splitAudioClip(capture);throw Failure(message: "split stale revision") } catch is StudioDocumentError { }
+            try check(local.document == changed, "stale split changed existing edit")
+        }
+        try await test("split cancellation and late playhead changes preserve history and original bytes") {
+            let local = try await duplicationFixture();local.displayAudioPlaybackTime(0.5, playing: false)
+            let capture = local.prepareAudioSplit()!;let before = local.document
+            for point in [1,2] {
+                var calls = 0
+                do { try local.splitAudioClip(capture, checkCancellation: { calls += 1;if calls == point { throw CancellationError() } });throw Failure(message: "split ignored cancellation") } catch is CancellationError { }
+                try check(local.document == before && local.selectedCurrentAudioClip == capture.selection.clip, "cancelled split mutated state")
+            }
+            var calls = 0
+            do { try local.splitAudioClip(capture, checkCancellation: { calls += 1;if calls == 2 { local.audioPlayheadTime = 0.75 } });throw Failure(message: "late playhead accepted") } catch is StudioDocumentError { }
+            try check(local.document == before && local.projectAudioTracks[0].audioData == imported.track.audioData, "late split changed source")
+            local.undo();try check(local.audioClips.isEmpty, "cancelled split inserted a history entry")
+        }
+        try await test("split enforces the real 128-clip document limit without removing the original") {
+            let local = try await duplicationFixture();let original = local.audioClips[0]
+            local.audioClips = (0..<128).map { i in AudioClip(id: "split-limit-\(i)", soundName: original.soundName, track: 3, startTime: 0, duration: original.duration, assetID: original.assetID) }
+            local.selectedAudioClip = local.audioClips[0];local.displayAudioPlaybackTime(0.5, playing: false);let before = local.document
+            do { try local.splitAudioClip(local.prepareAudioSplit()!);throw Failure(message: "split over clip limit") } catch is StudioDocumentError { }
+            try check(local.document == before && local.audioClips[0].id == "split-limit-0", "limit rejection lost original")
+        }
+        try await test("split promotes existing trimmed-audio format atomically and Undo restores prior format") {
+            let local = try await duplicationFixture();let before = local.document
+            try check(before.schemaVersion == 1 && before.audioClips[0].sourceOffset == 0, "untrimmed input fixture")
+            local.displayAudioPlaybackTime(1, playing: false)
+            try local.splitAudioClip(local.prepareAudioSplit()!)
+            try check(local.document.schemaVersion == 4 && local.audioClips[1].sourceOffset == 1, "split did not preserve additive trim format")
+            let clips = local.audioClips
+            local.undo();try check(local.document.schemaVersion == before.schemaVersion && local.audioClips == before.audioClips, "split format change escaped Undo")
+            local.redo();let saved = await local.save();try check(saved, "format split save")
+            let reopened = StudioViewModel(storage: storage);await reopened.loadProjects()
+            let opened = await reopened.openProject(reopened.savedProjects.first { $0.id == local.document.id }!)
+            try check(opened && reopened.document.schemaVersion == 4 && reopened.audioClips == clips, "trim format lost on cold reopen")
+        }
+        try await test("numeric trim input accepts decimal locale and exact roundtrips but rejects invalid values") {
+            for value in [0.0, 0.125, 1 / 48_000.0, 299.987654321] {
+                try check(StudioViewModel.audioTrimSeconds(String(value), decimalSeparator: ".") == value, "numeric roundtrip")
+            }
+            try check(StudioViewModel.audioTrimSeconds(" 1,25 ", decimalSeparator: ",") == 1.25, "localized decimal")
+            for text in ["", " ", "NaN", "inf", "-1", "1e999", "1.2.3", "1,2.3", "1 000", String(repeating: "0", count: 65)] {
+                try check(StudioViewModel.audioTrimSeconds(text, decimalSeparator: ",") == nil, "invalid input accepted: \(text)")
+            }
+            try check(StudioViewModel.audioTrimSeconds("1,25", decimalSeparator: ".") == nil, "foreign separator silently treated as grouping")
+        }
+        try await test("numeric trim commits both fields once with actual mixed pixels-free samples and cold reopen") {
+            let local = try await duplicationFixture();let original = local.audioClips[0]
+            let capture = local.prepareAudioTrim()!;let before = local.document
+            try local.trimAudioClip(capture, sourceOffset: 1.25, duration: 0.5)
+            let clip = local.audioClips[0]
+            try check(local.document.revision == before.revision + 1 && clip.id == original.id && clip.sourceOffset == 1.25 && clip.duration == 0.5 && clip.startTime == original.startTime && clip.track == original.track && clip.volume == original.volume, "numeric trim identity/transaction")
+            let output = try await StudioAudioMixService().mix(document: local.document, retainedAudioTracks: local.projectAudioTracks, durationSeconds: 1, outputParent: scratch)
+            defer { try? output.cleanup() };let samples = try decode(output)
+            try check(samples[0][0..<24_000].allSatisfy { abs($0 - 0.2) < 0.0001 } && samples[1][0..<24_000].allSatisfy { abs($0 + 0.4) < 0.0001 } && samples[0][24_000...].allSatisfy { $0 == 0 }, "numeric source/duration did not reach actual mixer")
+            local.undo();try check(local.audioClips == before.audioClips && local.document.schemaVersion == before.schemaVersion, "one undo did not restore both trim values")
+            local.redo();try check(local.audioClips == [clip], "trim redo")
+            let saved = await local.save();try check(saved, "numeric save")
+            let reopened = StudioViewModel(storage: storage);await reopened.loadProjects()
+            let opened = await reopened.openProject(reopened.savedProjects.first { $0.id == local.document.id }!)
+            try check(opened && reopened.audioClips == [clip] && reopened.projectAudioTracks[0].audioData == imported.track.audioData, "numeric trim cold reopen or original bytes")
+        }
+        try await test("numeric trim invalid boundaries and unchanged values create no document or history edit") {
+            let local = try await duplicationFixture();let before = local.document;let capture = local.prepareAudioTrim()!
+            for (offset, duration) in [(Double.nan, 1.0), (0.0, Double.infinity), (-0.1, 1), (0, 0), (0, 0.5 / 48_000), (1.9, 0.2)] {
+                do { try local.trimAudioClip(capture, sourceOffset: offset, duration: duration);throw Failure(message: "invalid numeric trim accepted") } catch is StudioDocumentError { }
+                try check(local.document == before, "invalid trim changed document")
+            }
+            try local.trimAudioClip(capture, sourceOffset: before.audioClips[0].sourceOffset, duration: before.audioClips[0].duration)
+            try check(local.document == before, "unchanged values created revision")
+            local.undo();try check(local.audioClips.isEmpty, "no-op inserted history")
+        }
+        try await test("numeric trim rejects captured project revision selection and playback changes") {
+            let local = try await duplicationFixture();let capture = local.prepareAudioTrim()!
+            local.selectedAudioClip = nil;let before = local.document
+            do { try local.trimAudioClip(capture, sourceOffset: 1, duration: 0.5);throw Failure(message: "unselected trim") } catch is StudioDocumentError { }
+            try check(local.document == before, "unselected trim mutated")
+            local.selectedAudioClip = capture.selection.clip
+            local.displayAudioPlaybackTime(0, playing: true)
+            do { try local.trimAudioClip(capture, sourceOffset: 1, duration: 0.5);throw Failure(message: "playing trim") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0, playing: false)
+            try local.editSelectedAudioClip(capture.selection.clip.id, expectedRevision: local.document.revision, edit: .volume(0.4))
+            let changed = local.document
+            do { try local.trimAudioClip(capture, sourceOffset: 1, duration: 0.5);throw Failure(message: "stale trim") } catch is StudioDocumentError { }
+            try check(local.document == changed, "stale trim changed document")
+            let other = try await duplicationFixture();let otherBefore = other.document
+            do { try other.trimAudioClip(capture, sourceOffset: 1, duration: 0.5);throw Failure(message: "wrong-project trim") } catch is StudioDocumentError { }
+            try check(other.document == otherBefore, "wrong-project trim mutated")
+        }
+        try await test("numeric trim cancellation and late selection change preserve source and history") {
+            let local = try await duplicationFixture();let capture = local.prepareAudioTrim()!;let before = local.document
+            for point in [1, 2] {
+                var calls = 0
+                do { try local.trimAudioClip(capture, sourceOffset: 1, duration: 0.5, checkCancellation: { calls += 1;if calls == point { throw CancellationError() } });throw Failure(message: "trim ignored cancellation") } catch is CancellationError { }
+                try check(local.document == before, "cancelled trim changed document")
+            }
+            var calls = 0
+            do { try local.trimAudioClip(capture, sourceOffset: 1, duration: 0.5, checkCancellation: { calls += 1;if calls == 2 { local.selectedAudioClip = nil } });throw Failure(message: "late selection accepted") } catch is StudioDocumentError { }
+            try check(local.document == before && local.projectAudioTracks[0].audioData == imported.track.audioData, "late trim modified original")
+            local.undo();try check(local.audioClips.isEmpty, "cancelled trim inserted history")
+        }
+        try await test("opening and cancelling a numeric trim draft does not commit or enter history") {
+            let local = try await duplicationFixture();let before = local.document
+            let capture = local.prepareAudioTrim();try check(capture != nil && local.document == before, "opening trim changed document")
+            _ = StudioViewModel.audioTrimSeconds("0.25")
+            try check(local.document == before && local.projectAudioTracks[0].audioData == imported.track.audioData, "draft parsing changed original")
+            local.undo();try check(local.audioClips.isEmpty, "draft created history")
         }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }

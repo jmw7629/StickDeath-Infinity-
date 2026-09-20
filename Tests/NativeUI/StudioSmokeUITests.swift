@@ -1272,6 +1272,127 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testAudioNumericTrimCancelApplyUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        func openAudio() {
+            let open = app.buttons["studio.audio.open"]
+            XCTAssertTrue(open.waitForExistence(timeout: 8));open.tap()
+        }
+        let scroll = app.scrollViews["studio.audio.compact.scroll"]
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<4 { if element.exists && element.isHittable { break };scroll.swipeUp(velocity: .slow) }
+            XCTAssertTrue(element.exists && element.isHittable)
+        }
+        func replace(_ identifier: String, with text: String) {
+            let field = app.textFields[identifier];reveal(field);field.tap()
+            let previous = field.value as? String ?? ""
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + text)
+        }
+        func closeAudio() {
+            let close = app.buttons["studio.audio.close"]
+            for _ in 0..<4 { if close.exists && close.isHittable { break };scroll.swipeDown(velocity: .slow) }
+            XCTAssertTrue(close.isHittable);close.tap()
+        }
+        openAudio()
+        app.buttons["studio.audio.library.open"].tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5));search.tap();search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        app.buttons["studio.audio.library.close"].tap()
+        let timing = app.staticTexts["studio.audio.clip-timing"]
+        let before = timing.label
+        let openTrim = app.buttons["studio.audio.trim.open"];reveal(openTrim);openTrim.tap()
+        replace("studio.audio.trim.source", with: "10")
+        let apply = app.buttons["studio.audio.trim.apply"];reveal(apply);apply.tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.trim.notice"].waitForExistence(timeout: 5), "Out-of-source trim was not rejected")
+        XCTAssertEqual(timing.label, before, "Invalid draft changed clip timing")
+        let cancel = app.buttons["studio.audio.trim.cancel"];reveal(cancel);cancel.tap()
+        XCTAssertFalse(app.textFields["studio.audio.trim.source"].exists)
+        XCTAssertEqual(timing.label, before, "Cancel changed the original")
+        reveal(openTrim);openTrim.tap()
+        replace("studio.audio.trim.source", with: "0.05")
+        replace("studio.audio.trim.duration", with: "0.10")
+        reveal(apply);apply.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "Source 0.05s · 0.10s"), evaluatedWith: timing).waitUntilFulfilled(timeout: 8))
+        capture(app, name: "audio-numeric-trim-applied")
+        closeAudio();app.buttons["studio.undo"].tap();openAudio()
+        XCTAssertEqual(timing.label, before, "One Undo did not restore both fields")
+        closeAudio();app.buttons["studio.redo"].tap();openAudio()
+        XCTAssertTrue(timing.label.contains("Source 0.05s · 0.10s"))
+        closeAudio()
+        let save = app.buttons["studio.save"];save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap()
+        reopened.buttons["studio.audio.open"].tap()
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        let savedClip = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.clip.")).firstMatch
+        XCTAssertTrue(savedClip.waitForExistence(timeout: 8) && savedClip.isHittable)
+        savedClip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(reopened.staticTexts["studio.audio.clip-timing"].label.contains("Source 0.05s · 0.10s"), "Cold reopen lost the applied trim values")
+        capture(reopened, name: "audio-numeric-trim-cold-reopened")
+    }
+
+    @MainActor
+    func testAudioClipSplitUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        func openAudio(_ target: XCUIApplication) {
+            let open = target.buttons["studio.audio.open"]
+            XCTAssertTrue(expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: open).waitUntilFulfilled(timeout: 8))
+            open.tap()
+        }
+        func clipCount(_ expected: String, in target: XCUIApplication) {
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", expected), evaluatedWith: target.staticTexts["studio.audio.clip-count"]).waitUntilFulfilled(timeout: 10))
+        }
+        openAudio(app)
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5));library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5));search.tap();search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        clipCount("1 clips", in: app)
+        app.buttons["studio.audio.library.close"].tap()
+        let split = app.buttons["studio.audio.split"]
+        XCTAssertTrue(split.exists);XCTAssertFalse(split.isEnabled, "Clip start cannot be split into an empty fragment")
+        let ruler = app.descendants(matching: .any).matching(identifier: "studio.audio.playhead-ruler").firstMatch
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: ruler).waitUntilFulfilled(timeout: 8))
+        // Tap the real 110pt/sec timeline near the middle of the 0.2508125s sound.
+        ruler.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(dx: 13.75, dy: 13)).tap()
+        let scroll = app.scrollViews["studio.audio.compact.scroll"]
+        for _ in 0..<4 { if split.exists && split.isHittable { break };scroll.swipeUp(velocity: .slow) }
+        XCTAssertTrue(split.exists && split.isHittable)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: split).waitUntilFulfilled(timeout: 8));split.tap()
+        clipCount("2 clips", in: app)
+        let timing = app.staticTexts["studio.audio.clip-timing"].label
+        XCTAssertNotNil(timing.range(of: #"Start 0\.1[0-5]s · Source 0\.1[0-5]s · 0\.1[0-5]s"#, options: .regularExpression), "The right half did not retain the playhead/source position: \(timing)")
+        capture(app, name: "audio-split-right-half-selected")
+        for _ in 0..<4 { if app.buttons["studio.audio.close"].isHittable { break };scroll.swipeDown(velocity: .slow) }
+        app.buttons["studio.audio.close"].tap()
+        app.buttons["studio.undo"].tap();openAudio(app);clipCount("1 clips", in: app)
+        app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
+        openAudio(app);clipCount("2 clips", in: app)
+        let play = app.buttons["studio.audio.timelinePlay"]
+        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(app.staticTexts["00:00.25"].waitForExistence(timeout: 12), "Actual mixed player did not reach the unchanged clip end")
+        app.buttons["studio.audio.close"].tap()
+        let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap();openAudio(reopened);clipCount("2 clips", in: reopened)
+        XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        capture(reopened, name: "audio-split-cold-reopened")
+    }
+
+    @MainActor
     func testBundledSoundLibraryMixAndOfflineReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
