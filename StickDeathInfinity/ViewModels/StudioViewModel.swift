@@ -1000,6 +1000,23 @@ final class StudioViewModel: ObservableObject {
     }
 
     @discardableResult
+    func reflectImage(_ capture: ImagePlacementCapture, axis: StudioReflectionAxis,
+                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.reflectImage(.init(
+                    frame: .id(capture.frameID), assetID: capture.assetID, axis: axis))])),
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+                })
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
     func deleteImage(_ capture: ImagePlacementCapture,
                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {

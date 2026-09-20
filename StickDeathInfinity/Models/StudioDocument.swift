@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...14
+    static let supportedSchemaVersions = 1...15
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -74,6 +74,12 @@ struct StudioDocument: Codable, Equatable {
                       rect.x + rect.width <= Double(width) + 0.000001,
                       rect.y + rect.height <= Double(height) + 0.000001 else {
                     throw StudioDocumentError.invalid("An imported still has invalid placement or document version.")
+                }
+            }
+            if let reflection = frame.rasterReflection {
+                guard schemaVersion >= 15, frame.rasterPlacement != nil,
+                      reflection.horizontal || reflection.vertical else {
+                    throw StudioDocumentError.invalid("An imported image has invalid reflection metadata. The original has not changed.")
                 }
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
@@ -473,7 +479,7 @@ struct StudioDocumentEditor {
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
                              brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
             }
-            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement)
+            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -484,6 +490,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.text != nil }) { value.schemaVersion = max(value.schemaVersion, 10) }
             if elements.contains(where: { $0.transform != nil }) { value.schemaVersion = max(value.schemaVersion, 11) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
+            if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
         }
     }
     mutating func deleteFrame(_ id: String) throws {
@@ -521,6 +528,34 @@ struct StudioDocumentEditor {
             value.frames[index].rasterAssetID = nil
             value.frames[index].rasterLayerID = nil
             value.frames[index].rasterPlacement = nil
+            value.frames[index].rasterReflection = nil
+            try checkCancellation()
+        }
+    }
+
+    /// Toggle one explicit managed image around its own center, preserving the
+    /// placement, drawings, asset identity and immutable source data.
+    mutating func reflectImage(frameID: String, assetID: String, axis: StudioReflectionAxis,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  value.frames[index].rasterAssetID == assetID,
+                  value.frames[index].rasterPlacement != nil else {
+                throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
+            }
+            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+                throw StudioDocumentError.locked
+            }
+            try checkCancellation()
+            var reflection = value.frames[index].rasterReflection ?? StudioRasterReflection()
+            switch axis {
+            case .horizontal: reflection.horizontal.toggle()
+            case .vertical: reflection.vertical.toggle()
+            }
+            value.frames[index].rasterReflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            value.schemaVersion = max(value.schemaVersion, 15)
             try checkCancellation()
         }
     }
@@ -740,6 +775,7 @@ struct StudioDocumentEditor {
                     value.frames[frame].rasterAssetID = nil
                     value.frames[frame].rasterLayerID = nil
                     value.frames[frame].rasterPlacement = nil
+                    value.frames[frame].rasterReflection = nil
                 }
             }
             value.layers.remove(at: index)

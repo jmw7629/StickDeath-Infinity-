@@ -158,6 +158,105 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             func imageDeletion(_ editor: StudioDocumentEditor, assetID: String = "image-fixture") -> StudioCommand {
                 .deleteImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID))
             }
+            func flipImage(_ editor: StudioDocumentEditor, _ axis: StudioReflectionAxis = .horizontal,
+                           assetID: String = "image-fixture") -> StudioCommand {
+                .reflectImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, axis: axis))
+            }
+            try test("image reflection strict wire preserves placement and is one complete undo transaction") {
+                var editor = try imageEditor(); let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([flipImage(editor)])))
+                let result = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(after.schemaVersion == 15 && after.frames[0].rasterReflection == .init(horizontal: true), "Wrong reflection or schema")
+                var expected = before.frames[0]; expected.rasterReflection = .init(horizontal: true)
+                try require(after.frames == [expected] && after.layers == before.layers && after.audioClips == before.audioClips, "Reflection changed other content")
+                try require(after.revision == before.revision + 1 && result.outcome == .applied, "Not one revision")
+                try require(StudioCommandContext(document: after).frames[0].imageReflection == expected.rasterReflection, "Context omitted actual reflection")
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(after))
+                try decoded.validate(); try require(decoded == after, "Reflection roundtrip changed")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo lost original schema/content")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo lost reflection")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0].rasterReflection == .init(horizontal: true, vertical: true), "Vertical reset horizontal")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor), flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0].rasterReflection == nil, "Original orientation not canonical nil")
+                let unflipped = editor.document
+                let noop = try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor), flipImage(editor)])), editor: &editor)
+                try require(editor.document == unflipped && noop.outcome == .unchanged, "Cancelling flips created history")
+            }
+            try test("reflections reject foreign images legacy records invalid axes and unknown fields") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([flipImage(editor, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([flipImage(editor)])))) as! [String: Any]
+                for extra in [true, false] {
+                    var root = base; var action = root["action"] as! [String: Any]
+                    var commands = action["apply"] as! [[String: Any]]
+                    var fields = commands[0]["reflectImage"] as! [String: Any]
+                    if extra { fields["path"] = "/untrusted" } else { fields["axis"] = "diagonal" }
+                    commands[0]["reflectImage"] = fields; action["apply"] = commands; root["action"] = action
+                    var rejectedWire = false
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: root)) } catch { rejectedWire = true }
+                    try require(rejectedWire, "Invalid reflection wire accepted")
+                }
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor, expected: .invalidReference)
+                try require(editor.document.frames[0].rasterReflection == nil, "Historical original changed")
+            }
+            try test("image reflection lock visibility stale batch and every cancellation boundary are atomic") {
+                for mode in ["full", "position", "alpha", "hidden", "zero"] {
+                    var editor = try imageEditor()
+                    try editor.change { value in
+                        if mode == "hidden" { value.layers[0].visible = false }
+                        else if mode == "zero" { value.layers[0].opacity = 0 }
+                        else { value.layers[0].lockMode = mode }
+                    }
+                    try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor)
+                }
+                var probe = try imageEditor(), checkpoints = 0
+                let requestBefore = request(probe, .apply([flipImage(probe)]))
+                try StudioCommandExecutor.execute(requestBefore, editor: &probe, checkCancellation: { checkpoints += 1 })
+                try rejected(requestBefore, editor: &probe, expected: .staleRevision)
+                try require(checkpoints >= 5, "No staged cancellation")
+                for stop in 1...checkpoints {
+                    var editor = try imageEditor(), count = 0
+                    try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor, cancellation: {
+                        count += 1; if count == stop { throw CancellationError() }
+                    })
+                }
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([flipImage(editor), flipImage(editor, assetID: "missing")])), editor: &editor)
+            }
+            try test("reflected frame duplication clipboard and explicit deletion preserve independent orientations") {
+                var editor = try imageEditor()
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor)])), editor: &editor)
+                let original = editor.document.frames[0]
+                try editor.duplicateFrame()
+                try require(editor.document.frames[1].rasterReflection == original.rasterReflection, "Duplicate dropped reflection")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0] == original, "Flip mutated another frame sharing asset")
+                let beforeDelete = editor.document
+                try StudioCommandExecutor.execute(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                try require(editor.document.frames[1].rasterReflection == nil, "Image deletion left orphan reflection")
+                editor.undo(); try require(content(editor.document) == content(beforeDelete), "Delete undo dropped orientation")
+                try editor.addLayer()
+                let imageLayer = editor.document.frames[0].rasterLayerID!
+                try editor.deleteLayer(imageLayer)
+                try require(editor.document.frames.allSatisfy { $0.rasterReflection == nil }, "Layer delete left orphan reflections")
+            }
+            try test("historical image decoding stays unchanged and invalid reflection metadata rejects") {
+                let old = try imageEditor().document
+                let bytes = try JSONEncoder().encode(old), decoded = try JSONDecoder().decode(StudioDocument.self, from: bytes)
+                try require(decoded == old && decoded.schemaVersion == 3 && decoded.frames[0].rasterReflection == nil, "Historical image was migrated on read")
+                for variant in 0..<3 {
+                    var bad = old
+                    bad.frames[0].rasterReflection = .init(horizontal: true)
+                    if variant == 1 { bad.schemaVersion = 15; bad.frames[0].rasterPlacement = nil }
+                    if variant == 2 { bad.schemaVersion = 15; bad.frames[0].rasterReflection = .init() }
+                    var caught = false; do { try bad.validate() } catch { caught = true }
+                    try require(caught, "Invalid reflection document accepted")
+                }
+            }
+
             try test("explicit image deletion preserves drawings layers other frames and reversible history") {
                 var editor = try imageEditor()
                 _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "retained-drawing")])])), editor: &editor)

@@ -133,6 +133,22 @@ struct FloatingToolSettingsPanel: View {
         }
     }
     
+    private func imageFlipButton(_ title: String, axis: StudioReflectionAxis, id: String) -> some View {
+        Button {
+            guard let capture = vm.prepareImagePlacement() else { return }
+            _ = vm.reflectImage(capture, axis: axis)
+        } label: {
+            Text(title).font(.specialElite(11)).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundColor(.white)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("studio.image-flip." + id)
+        .accessibilityValue((axis == .horizontal ? vm.currentFrame.rasterReflection?.horizontal
+                             : vm.currentFrame.rasterReflection?.vertical) == true ? "Flipped" : "Original")
+        .disabled(vm.prepareImagePlacement() == nil)
+    }
+
     @ViewBuilder
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -388,6 +404,10 @@ struct FloatingToolSettingsPanel: View {
                     .background(Color.red.opacity(0.75)).cornerRadius(8)
                     .accessibilityIdentifier("studio.image-placement.open")
                     .disabled(vm.prepareImagePlacement() == nil)
+                    HStack(spacing: 8) {
+                        imageFlipButton("Flip image H", axis: .horizontal, id: "horizontal")
+                        imageFlipButton("Flip image V", axis: .vertical, id: "vertical")
+                    }
                     Button("Delete image…", role: .destructive) {
                         guard let capture = vm.prepareImagePlacement() else { return }
                         imageDeletion = capture; showingImageDeletion = true

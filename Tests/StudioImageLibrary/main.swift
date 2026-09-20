@@ -64,10 +64,10 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .preview && session.previewImage != nil, "Real preview failed: \(session.notice ?? "nil")")
             return session
         }
-        func exported(_ editor: StudioViewModel) async throws -> Data {
+        func exported(_ editor: StudioViewModel, frameIndex: Int = 0) async throws -> Data {
             let output = try await StudioExportService().export(document: editor.document, format: .pngSequence,
                 outputParent: root, background: .transparent, rasterData: { editor.rasterData($0) })
-            let bytes = try Data(contentsOf: output.imageURLs[0])
+            let bytes = try Data(contentsOf: output.imageURLs[frameIndex])
             guard let input = CGImageSourceCreateWithData(bytes as CFData, nil),
                   let image = CGImageSourceCreateImageAtIndex(input, 0, nil), image.width == 160, image.height == 160,
                   let bitmap = CGContext(data: nil, width: 160, height: 160, bitsPerComponent: 8, bytesPerRow: 640,
@@ -93,6 +93,93 @@ private final class NetworkTrap: URLProtocol {
             guard let capture = editor.beginImageMove(at: .init(x: 30, y: 60)) else { throw Failure(message: "Image hit did not capture") }
             return (editor, storage, capture)
         }
+        try await test("image flips reflect actual PNG pixels about the placed center and preserve alpha originals rights and cold reopen") {
+            let (editor, storage, capture) = try await imageMoveFixture()
+            let before = editor.document, pixelsBefore = try await exported(editor)
+            func mirrored(_ actual: Data, _ expected: Data, horizontal: Bool, vertical: Bool) throws {
+                var differences = 0, ink = 0
+                for y in 0..<160 { for x in 0..<160 {
+                    let inImage = (10..<50).contains(x) && (20..<100).contains(y)
+                    let sx = inImage && horizontal ? 59 - x : x
+                    let sy = inImage && vertical ? 119 - y : y
+                    for channel in 0..<4 {
+                        let a = Int(actual[(y*160+x)*4+channel]), b = Int(expected[(sy*160+sx)*4+channel])
+                        if abs(a-b) > 2 { differences += 1 }
+                    }
+                    if actual[(y*160+x)*4+3] > 128 { ink += 1 }
+                } }
+                try require(ink > 30 && differences == 0, "PNG reflection is not about the placed center: \(differences) channels")
+            }
+            try require(editor.reflectImage(capture.placement, axis: .horizontal), "Actual horizontal edit failed")
+            let horizontal = try await exported(editor), after = editor.document
+            try require(horizontal != pixelsBefore && after.frames[0].rasterPlacement == before.frames[0].rasterPlacement, "Flip changed only a label or moved the image")
+            try mirrored(horizontal, pixelsBefore, horizontal: true, vertical: false)
+            editor.undo(); try require((try await exported(editor)) == pixelsBefore, "One Undo failed")
+            editor.redo(); try require((try await exported(editor)) == horizontal, "One Redo failed")
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .vertical), "Vertical edit failed")
+            let both = try await exported(editor)
+            try mirrored(both, pixelsBefore, horizontal: true, vertical: true)
+            try require(await editor.save(), "Reflected project did not save")
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Cold reopen failed")
+            try require((try await exported(reopened)) == both && reopened.currentFrame.rasterReflection == .init(horizontal: true, vertical: true), "Reopened pixels/orientation differ")
+            let source = reopened.originalImageSource(capture.placement.assetID)
+            try require(source?.originalData == original && source?.catalogueAttribution == provenance, "Reflection modified source or attribution")
+            editor.selectedTool = .move
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .horizontal), "Restoring horizontal failed")
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .vertical), "Restoring vertical failed")
+            let restoredPixels = try await exported(editor)
+            try require(editor.currentFrame.rasterReflection == nil && restoredPixels == pixelsBefore, "Two flips per axis did not restore original pixels")
+        }
+        try await test("image reflections preserve separately drawn pixels and frame copies") {
+            let (editor, _, capture) = try await imageMoveFixture()
+            let layer = editor.document.activeLayerID, frame = editor.document.activeFrameID
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id,
+                expectedRevision: editor.document.revision, action: .apply([.draw(.init(frame: .id(frame), layer: .id(layer), strokes: [
+                    .init(id: "reflection-drawing", tool: .rectangle, points: [.init(x: 110, y: 110), .init(x: 145, y: 140)],
+                          color: "#FF0000", width: 3, opacity: 1)
+                ]))])))
+            let before = try await exported(editor), documentBefore = editor.document
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .horizontal), "Reflect with artwork failed")
+            let after = try await exported(editor)
+            for y in 105..<150 { for x in 105..<150 { for c in 0..<4 {
+                try require(before[(y*160+x)*4+c] == after[(y*160+x)*4+c], "Image transform leaked into drawing context")
+            } } }
+            try require(editor.document.frames[0].elements == documentBefore.frames[0].elements, "Flip changed editable strokes")
+            editor.copyFrame(); editor.pasteFrame()
+            try require(editor.currentFrame.rasterReflection == .init(horizontal: true), "Frame clipboard lost reflection")
+            try require((try await exported(editor, frameIndex: editor.currentFrameIndex)) == after && editor.originalImageSource(capture.placement.assetID)?.originalData == original, "Frame paste changed rendered pixels or original")
+        }
+        try await test("image reflections cancel at every live boundary without history and reject stale tool playback and locks") {
+            let (probe, _, capture) = try await imageMoveFixture(); var checkpoints = 0
+            try require(probe.reflectImage(capture.placement, axis: .horizontal, checkCancellation: { checkpoints += 1 }), "Probe failed")
+            try require(checkpoints >= 5, "No live cancellation checks")
+            for stop in 1...checkpoints {
+                let (editor, _, active) = try await imageMoveFixture(), before = editor.document
+                var count = 0
+                try require(!editor.reflectImage(active.placement, axis: .vertical, checkCancellation: {
+                    count += 1; if count == stop { throw CancellationError() }
+                }) && editor.document == before, "Cancelled live reflection committed at \(stop)")
+                editor.undo(); try require(editor.currentFrame.rasterPlacement == active.placement.fitted, "Cancellation added history")
+            }
+            let (editor, _, active) = try await imageMoveFixture()
+            editor.selectedTool = .brush
+            try require(!editor.reflectImage(active.placement, axis: .horizontal), "Wrong tool accepted reflection")
+            editor.selectedTool = .move
+            try require(editor.placeImage(editor.prepareImagePlacement()!, at: .init(x: 0, y: 0, width: 50, height: 80)), "Stale fixture failed")
+            let unchanged = editor.document
+            try require(!editor.reflectImage(active.placement, axis: .vertical) && editor.document == unchanged, "Stale reflection changed image")
+            editor.duplicateFrame()
+            let playingBefore = editor.document, pending = editor.prepareImagePlacement()!
+            editor.togglePlayback()
+            try require(editor.isPlaying, "Two-frame playback fixture did not start")
+            try require(!editor.reflectImage(pending, axis: .horizontal) && editor.document == playingBefore, "Playback accepted image edit")
+            editor.stopPlayback()
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id,
+                expectedRevision: editor.document.revision, action: .apply([.updateLayer(.init(layer: .id(active.placement.layerID), settings: .init(lock: .position)))])))
+            try require(editor.prepareImagePlacement() == nil && !editor.reflectImage(pending, axis: .horizontal), "Locked image exposed reflection")
+        }
+
         try await test("canvas image drag previews without edits then changes real PNG in one reversible persisted command") {
             let (editor, storage, capture) = try await imageMoveFixture()
             let before = editor.document, beforePixels = try await exported(editor)

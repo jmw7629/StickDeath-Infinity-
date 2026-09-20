@@ -411,6 +411,14 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     var rasterLayerID: String? = nil
     /// Version 3 managed still placement. Nil keeps historical full-canvas stretch.
     var rasterPlacement: StudioRasterPlacement? = nil
+    /// Version 15: nondestructive reflections around the placed image center.
+    /// Nil preserves historical image orientation and original encoded bytes.
+    var rasterReflection: StudioRasterReflection? = nil
+}
+
+struct StudioRasterReflection: Codable, Equatable {
+    var horizontal = false
+    var vertical = false
 }
 
 struct StudioRasterPlacement: Codable, Equatable {

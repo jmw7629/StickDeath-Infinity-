@@ -93,7 +93,16 @@ struct StudioFrameRenderer {
                             width: placement.width / canvasSize.width * size.width,
                             height: placement.height / canvasSize.height * size.height)
                     } else { rect = CGRect(origin: .zero, size: size) }
-                    local.draw(Image(decorative: image.image, scale: 1), in: rect)
+                    // Isolate the transform from drawing elements on this layer.
+                    // Reflect in viewport coordinates about the placed center;
+                    // canvas, thumbnails and every export share these pixels.
+                    var picture = local
+                    if let reflection = frame.rasterReflection {
+                        picture.translateBy(x: rect.midX, y: rect.midY)
+                        picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                        picture.translateBy(x: -rect.midX, y: -rect.midY)
+                    }
+                    picture.draw(Image(decorative: image.image, scale: 1), in: rect)
                 }
                 for element in frame.elements where element.layerID == layer.id {
                     var elementContext = local
