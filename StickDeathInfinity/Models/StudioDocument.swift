@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...13
+    static let supportedSchemaVersions = 1...14
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -159,6 +159,12 @@ struct StudioDocument: Codable, Equatable {
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
+            if let envelope = clip.fadeEnvelope {
+                guard schemaVersion >= 14, clip.assetID != nil else {
+                    throw StudioDocumentError.invalid("Audio fades require managed audio and project version14.")
+                }
+                try envelope.validate()
+            }
             guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
                   (clip.sourceOffset + clip.duration).isFinite,
                   (clip.sourceOffset == 0 && !clip.isMuted) || schemaVersion >= 4 else {

@@ -830,6 +830,126 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try check(local.document == before && local.projectAudioTracks[0].audioData == imported.track.audioData, "draft parsing changed original")
             local.undo();try check(local.audioClips.isEmpty, "draft created history")
         }
+        func fadeFixture(_ name: String) async throws -> (StudioViewModel, String, DeviceStorageManager) {
+            let folder = root.appendingPathComponent(name)
+            let store = DeviceStorageManager(documentsDirectory: folder, cachesDirectory: folder)
+            let local = StudioViewModel(storage: store)
+            let made = await local.createProject(name: name, width: 64, height: 64, fps: 8)
+            try check(made, "fade fixture create")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+            try local.editSelectedAudioClip(clipID, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1, duration: 1))
+            return (local, clipID, store)
+        }
+        try await test("fades use one reversible edit and real saved archive retains envelope source and original bytes") {
+            let (local, clipID, store) = try await fadeFixture("fade-history")
+            let before = local.document
+            guard let captured = local.prepareAudioFades() else { throw Failure(message: "fade capture") }
+            try local.setAudioFades(captured, fadeIn: 0.25, fadeOut: 0.375)
+            let envelope = AudioFadeEnvelope(sourceStartFrame: 48_000, frameCount: 48_000, fadeInFrames: 12_000, fadeOutFrames: 18_000)
+            try check(local.audioClips[0].fadeEnvelope == envelope && local.document.schemaVersion == 14
+                && local.document.revision == before.revision + 1 && local.selectedCurrentAudioClip?.id == clipID, "fade edit metadata/history")
+            local.undo(); try check(local.audioClips == before.audioClips, "fade Undo")
+            local.redo(); try check(local.audioClips[0].fadeEnvelope == envelope, "fade Redo")
+            let saved = await local.save(); try check(saved, "fade save")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            guard let metadata = cold.savedProjects.first(where: { $0.id == local.document.id }) else { throw Failure(message: "saved fade project absent") }
+            let opened = await cold.openProject(metadata)
+            try check(opened && cold.document == local.document && cold.audioClips[0].fadeEnvelope == envelope, "cold fade archive changed")
+            try check(cold.audioTrack(forAssetID: imported.id)?.audioData == imported.track.audioData, "fade changed original sound bytes")
+            await cold.flush(); await local.flush()
+        }
+        try await test("fade reset preserves redo for no-op and clears only the selected envelope in one Undo") {
+            let (local, _, _) = try await fadeFixture("fade-clear")
+            try local.setAudioFades(local.prepareAudioFades()!, fadeIn: 0.25, fadeOut: 0.25)
+            let envelope = local.audioClips[0].fadeEnvelope
+            local.undo(); local.selectedAudioClip = local.audioClips[0]
+            let before = local.document
+            try local.setAudioFades(local.prepareAudioFades()!, fadeIn: 0, fadeOut: 0)
+            try check(local.document == before && local.canRedo, "no-op fades consumed Redo")
+            local.redo(); local.selectedAudioClip = local.audioClips[0]
+            let restored = local.audioClips[0]
+            try local.setAudioFades(local.prepareAudioFades()!, fadeIn: 0, fadeOut: 0)
+            try check(local.audioClips[0].fadeEnvelope == nil && local.audioClips[0].volume == restored.volume, "reset changed volume or kept fade")
+            local.undo(); try check(local.audioClips[0].fadeEnvelope == envelope, "reset Undo lost envelope")
+            await local.flush()
+        }
+        try await test("invalid stale foreign busy and early or late cancelled fade commands preserve project and history") {
+            let (local, _, _) = try await fadeFixture("fade-rejection")
+            let captured = local.prepareAudioFades()!, before = local.document
+            for (incoming, outgoing) in [(-0.1,0.0),(Double.nan,0.1),(0.1,Double.infinity),(0.8,0.3),(1.01,0.0)] {
+                do { try local.setAudioFades(captured, fadeIn: incoming, fadeOut: outgoing); throw Failure(message: "invalid fade accepted") }
+                catch is AudioFadeEnvelope.Failure { }
+                try check(local.document == before, "invalid fade mutated")
+            }
+            for point in 1...2 {
+                var calls = 0
+                do { try local.setAudioFades(captured, fadeIn: 0.1, fadeOut: 0.1) { calls += 1; if calls == point { throw CancellationError() } }; throw Failure(message: "fade cancellation ignored") }
+                catch is CancellationError { }
+                try check(calls == point && local.document == before, "cancelled fade mutated")
+            }
+            let foreign = StudioViewModel.AudioFadeCapture(selection: .init(projectID: UUID(), revision: captured.selection.revision, clip: captured.selection.clip))
+            do { try local.setAudioFades(foreign, fadeIn: 0.1, fadeOut: 0.1); throw Failure(message: "foreign fade accepted") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0, playing: true)
+            try check(local.prepareAudioFades() == nil, "playing fade capture accepted")
+            do { try local.setAudioFades(captured, fadeIn: 0.1, fadeOut: 0.1); throw Failure(message: "busy fade accepted") } catch is StudioDocumentError { }
+            local.displayAudioPlaybackTime(0, playing: false)
+            local.selectedAudioClip = nil
+            do { try local.setAudioFades(captured, fadeIn: 0.1, fadeOut: 0.1); throw Failure(message: "unselected fade accepted") } catch is StudioDocumentError { }
+            try check(local.document == before, "rejected fade mutated")
+            await local.flush()
+        }
+        try await test("late fade validation never overwrites a newly selected clip or intervening mute edit") {
+            let (local, first, _) = try await fadeFixture("fade-late-context")
+            _ = try local.duplicateAudioClip(local.prepareAudioDuplication()!)
+            let second = local.selectedCurrentAudioClip!
+            local.selectedAudioClip = local.audioClips.first(where: { $0.id == first })
+            let captured = local.prepareAudioFades()!, before = local.document
+            var calls = 0
+            do { try local.setAudioFades(captured, fadeIn: 0.1, fadeOut: 0.1) { calls += 1; if calls == 2 { local.selectedAudioClip = second } }; throw Failure(message: "fade followed new selection") } catch is StudioDocumentError { }
+            try check(calls == 2 && local.document == before && local.selectedCurrentAudioClip == second, "late fade overwrote selection")
+            local.selectedAudioClip = captured.selection.clip; calls = 0
+            do { try local.setAudioFades(captured, fadeIn: 0.1, fadeOut: 0.1) {
+                calls += 1
+                if calls == 2 { try local.editSelectedAudioClip(first, expectedRevision: local.document.revision, edit: .mute(true)) }
+            }; throw Failure(message: "fade overwrote intervening edit") } catch is StudioDocumentError { }
+            try check(local.document.revision == before.revision + 1 && local.audioClips[0].isMuted
+                && local.audioClips.allSatisfy { $0.fadeEnvelope == nil }, "late fade lost independent edit")
+            local.undo(); try check(local.audioClips == before.audioClips, "late fade inserted history")
+            await local.flush()
+        }
+        try await test("actual production split trim duplicate and move preserve source fade phase and cold reopen") {
+            let (local, first, store) = try await fadeFixture("fade-derived-clips")
+            try local.setAudioFades(local.prepareAudioFades()!, fadeIn: 0.25, fadeOut: 0.25)
+            let envelope = local.audioClips[0].fadeEnvelope
+            _ = try local.duplicateAudioClip(local.prepareAudioDuplication()!)
+            try check(local.audioClips.count == 2 && local.audioClips.allSatisfy { $0.fadeEnvelope == envelope }, "duplicate lost fades")
+            local.selectedAudioClip = local.audioClips.first(where: { $0.id == first }); local.audioPlayheadTime = 0.125
+            guard let split = local.prepareAudioSplit() else { throw Failure(message: "fade split capture") }
+            let rightID = try local.splitAudioClip(split)
+            try check(local.audioClips.count == 3 && local.audioClips.allSatisfy { $0.fadeEnvelope == envelope }, "split restarted envelope")
+            try local.editSelectedAudioClip(rightID, expectedRevision: local.document.revision, edit: .trim(sourceOffset: 1.25, duration: 0.5))
+            try local.editSelectedAudioClip(rightID, expectedRevision: local.document.revision, edit: .place(start: 0.25, track: 4))
+            try check(local.selectedCurrentAudioClip?.fadeEnvelope == envelope && local.audioClips[1].sourceOffset == 1.25, "trim or lane move changed envelope")
+            let saved = await local.save(); try check(saved, "derived fades save")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            let opened = await cold.openProject(cold.savedProjects.first(where: { $0.id == local.document.id })!)
+            try check(opened && cold.document == local.document && cold.projectAudioTracks.first?.audioData == imported.track.audioData, "derived envelope or bytes lost on reopen")
+            await cold.flush(); await local.flush()
+        }
+        try await test("historical audio and full documents remain unchanged when fade metadata is absent") {
+            let clip = AudioClip(id: "historical-fade-default", soundName: "Existing sound", track: 1, startTime: 0, duration: 1, assetID: imported.id)
+            var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(clip)) as! [String: Any]
+            object.removeValue(forKey: "fadeEnvelope")
+            let bytes = try JSONSerialization.data(withJSONObject: object)
+            let historical = try JSONDecoder().decode(AudioClip.self, from: bytes)
+            try check(historical == clip && historical.fadeEnvelope == nil, "absent envelope altered old clip")
+            var old = try StudioDocument.new(name: "Historical fades", width: 64, height: 64, fps: 8); old.audioClips = [historical]
+            let archive = try JSONEncoder().encode(old), restored = try JSONDecoder().decode(StudioDocument.self, from: archive)
+            try restored.validate(); try check(restored == old && restored.schemaVersion == 1, "decode rewrote historical document")
+            var invalid = old; invalid.audioClips[0].fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 48_000, fadeInFrames: 100, fadeOutFrames: 100)
+            do { try invalid.validate(); throw Failure(message: "old schema accepted fades") } catch is StudioDocumentError { }
+        }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }
 }

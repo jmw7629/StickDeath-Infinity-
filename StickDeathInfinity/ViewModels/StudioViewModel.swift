@@ -1235,6 +1235,12 @@ final class StudioViewModel: ObservableObject {
                   asset.duration > 0, clip.sourceOffset + clip.duration <= asset.duration + 0.001 else {
                 throw StudioDocumentError.invalid("An imported audio asset is missing or has inconsistent timing. No save was made.")
             }
+            if let envelope = clip.fadeEnvelope {
+                try envelope.validate()
+                guard envelope.sourceStartFrame + envelope.frameCount <= Int((asset.duration * StudioAudioTimelineGeometry.sampleRate).rounded()) else {
+                    throw StudioDocumentError.invalid("The audio fade exceeds its original source. No save was made.")
+                }
+            }
         }
         return tracks
     }
@@ -1300,7 +1306,7 @@ final class StudioViewModel: ObservableObject {
         let duplicate = AudioClip(id: UUID().uuidString, soundName: original.soundName,
             track: original.track, startTime: original.startTime + original.duration,
             duration: original.duration, volume: original.volume, assetID: original.assetID,
-            sourceOffset: original.sourceOffset, isMuted: original.isMuted)
+            sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
         var candidate = editor
         try candidate.change { value in value.audioClips.append(duplicate) }
         try preflightRasterDocument(candidate.document)
@@ -1314,6 +1320,46 @@ final class StudioViewModel: ObservableObject {
     }
     struct AudioClipVolumeCapture: Equatable {
         let selection: AudioDuplicationCapture
+    }
+    struct AudioFadeCapture: Equatable {
+        let selection: AudioDuplicationCapture
+    }
+    func prepareAudioFades() -> AudioFadeCapture? {
+        prepareAudioDuplication().map { .init(selection: $0) }
+    }
+    /// Apply/reset one immutable envelope in one reversible document command.
+    func setAudioFades(_ capture: AudioFadeCapture, fadeIn: Double, fadeOut: Double,
+                       checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard prepareAudioFades() == capture else {
+            throw StudioDocumentError.unavailable("The selected clip or project changed. Reopen its fade options.")
+        }
+        let clip = capture.selection.clip, rate = StudioAudioTimelineGeometry.sampleRate
+        guard fadeIn.isFinite, fadeOut.isFinite, fadeIn >= 0, fadeOut >= 0,
+              fadeIn <= clip.duration, fadeOut <= clip.duration, fadeIn + fadeOut <= clip.duration else {
+            throw AudioFadeEnvelope.Failure.invalid
+        }
+        let start = Int((clip.sourceOffset * rate).rounded())
+        let count = Int(((clip.startTime + clip.duration) * rate).rounded() - (clip.startTime * rate).rounded())
+        let incoming = Int((fadeIn * rate).rounded()), outgoing = Int((fadeOut * rate).rounded())
+        let envelope: AudioFadeEnvelope? = incoming == 0 && outgoing == 0 ? nil : .init(
+            sourceStartFrame: start, frameCount: count, fadeInFrames: incoming, fadeOutFrames: outgoing)
+        try envelope?.validate()
+        guard clip.fadeEnvelope != envelope else { return }
+        guard let index = document.audioClips.firstIndex(where: { $0.id == clip.id }) else {
+            throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
+        }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 14)
+            value.audioClips[index].fadeEnvelope = envelope
+        }
+        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
+        try checkCancellation()
+        guard prepareAudioFades() == capture else {
+            throw StudioDocumentError.unavailable("The project changed while setting fades. Nothing was changed.")
+        }
+        editor = candidate; selectedAudioClip = document.audioClips[index]; message = nil; scheduleSave()
     }
     func prepareAudioClipVolume() -> AudioClipVolumeCapture? {
         prepareAudioDuplication().map { .init(selection: $0) }
@@ -1412,7 +1458,7 @@ final class StudioViewModel: ObservableObject {
             track: original.track, startTime: capture.boundary,
             duration: original.duration - leftDuration, volume: original.volume,
             assetID: original.assetID, sourceOffset: capture.rightSourceOffset,
-            isMuted: original.isMuted)
+            isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
         var candidate = editor
         try candidate.change { value in
             guard let index = value.audioClips.firstIndex(where: { $0.id == original.id }) else {

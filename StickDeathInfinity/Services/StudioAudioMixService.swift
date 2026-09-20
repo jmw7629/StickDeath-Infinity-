@@ -107,6 +107,7 @@ actor StudioAudioMixService {
         let end: Int
         let sourceStart: Int
         let volume: Float
+        let fadeEnvelope: AudioFadeEnvelope?
     }
     private func perform(document: StudioDocument, tracks: [AudioTrack], duration: Double,
                          parent: URL, limits: Limits,
@@ -149,9 +150,15 @@ actor StudioAudioMixService {
                 throw MixError.invalidTimeline
             }
             work += samples
+            if let envelope = clip.fadeEnvelope {
+                guard envelope.sourceStartFrame + envelope.frameCount <= Int((trackMap[id]!.duration * Self.sampleRate).rounded()) else {
+                    throw MixError.invalidTimeline
+                }
+            }
             clips.append(.init(assetID: id, start: start, end: end, sourceStart: sourceStart,
                                volume: clip.isMuted || document.isAudioTrackMuted(clip.track) ? 0
-                                   : Float(clip.volume * document.audioTrackVolume(clip.track))))
+                                   : Float(clip.volume * document.audioTrackVolume(clip.track)),
+                               fadeEnvelope: clip.fadeEnvelope))
         }
         guard Set(clips.map(\.assetID)) == Set(trackMap.keys) else { throw MixError.unresolvedLegacyAudio }
         // Sort UUIDs for deterministic decode/progress ordering; clip summation
@@ -182,8 +189,9 @@ actor StudioAudioMixService {
                         let source = assets[clip.assetID]!
                         for frame in first..<end {
                             let src = (clip.sourceStart + frame - clip.start) * 2, dst = (frame - offset) * 2
-                            buffer[dst] += source[src] * clip.volume
-                            buffer[dst + 1] += source[src + 1] * clip.volume
+                            let gain = clip.volume * Float(clip.fadeEnvelope?.gain(atSourceFrame: clip.sourceStart + frame - clip.start) ?? 1)
+                            buffer[dst] += source[src] * gain
+                            buffer[dst + 1] += source[src + 1] * gain
                         }
                     }
                     for sample in buffer {

@@ -491,15 +491,19 @@ struct AudioClip: Codable, Identifiable, Equatable {
     /// Source time is independent of placement on the animation timeline.
     var sourceOffset: Double = 0
     var isMuted: Bool = false
+    /// Sample-aligned source envelope; trimming/splitting preserves its phase.
+    var fadeEnvelope: AudioFadeEnvelope? = nil
 
     enum CodingKeys: String, CodingKey {
-        case id, soundName, track, startTime, duration, volume, assetID, sourceOffset, isMuted
+        case id, soundName, track, startTime, duration, volume, assetID, sourceOffset, isMuted, fadeEnvelope
     }
     init(id: String, soundName: String, track: Int, startTime: Double, duration: Double,
-         volume: Double = 0.8, assetID: UUID? = nil, sourceOffset: Double = 0, isMuted: Bool = false) {
+         volume: Double = 0.8, assetID: UUID? = nil, sourceOffset: Double = 0, isMuted: Bool = false,
+         fadeEnvelope: AudioFadeEnvelope? = nil) {
         self.id = id; self.soundName = soundName; self.track = track; self.startTime = startTime
         self.duration = duration; self.volume = volume; self.assetID = assetID
         self.sourceOffset = sourceOffset; self.isMuted = isMuted
+        self.fadeEnvelope = fadeEnvelope
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -510,6 +514,39 @@ struct AudioClip: Codable, Identifiable, Equatable {
         assetID = try c.decodeIfPresent(UUID.self, forKey: .assetID)
         sourceOffset = try c.decodeIfPresent(Double.self, forKey: .sourceOffset) ?? 0
         isMuted = try c.decodeIfPresent(Bool.self, forKey: .isMuted) ?? false
+        fadeEnvelope = try c.decodeIfPresent(AudioFadeEnvelope.self, forKey: .fadeEnvelope)
+    }
+}
+
+/// Linear fade-in/out on the mixer's 48 kHz source grid. Envelope phase stays
+/// attached to original audio through trim, split, duplicate and timeline moves.
+/// Reapplying fades establishes a new envelope for the currently selected clip.
+struct AudioFadeEnvelope: Codable, Equatable, Sendable {
+    let sourceStartFrame: Int
+    let frameCount: Int
+    let fadeInFrames: Int
+    let fadeOutFrames: Int
+    enum Failure: Error, LocalizedError {
+        case invalid
+        var errorDescription: String? { "Audio fades must fit within the selected clip and contain finite nonnegative durations." }
+    }
+    func validate() throws {
+        let maximumFrames = 14_400_000 // Same 300-second source limit at48kHz.
+        guard (0...maximumFrames).contains(sourceStartFrame), (1...maximumFrames).contains(frameCount),
+              sourceStartFrame <= maximumFrames - frameCount,
+              (0...frameCount).contains(fadeInFrames), (0...frameCount).contains(fadeOutFrames),
+              fadeInFrames <= frameCount - fadeOutFrames,
+              fadeInFrames > 0 || fadeOutFrames > 0 else { throw Failure.invalid }
+    }
+    /// Call only after document validation. The edge gain holds when a trim
+    /// reveals source outside the original fade range; it never restarts a fade.
+    func gain(atSourceFrame frame: Int) -> Double {
+        if frame < sourceStartFrame { return fadeInFrames == 0 ? 1 : 0 }
+        if frame >= sourceStartFrame + frameCount { return fadeOutFrames == 0 ? 1 : 0 }
+        let relative = frame - sourceStartFrame
+        let incoming = fadeInFrames == 0 ? 1 : min(1, Double(relative) / Double(fadeInFrames))
+        let outgoing = fadeOutFrames == 0 ? 1 : min(1, Double(frameCount - 1 - relative) / Double(fadeOutFrames))
+        return min(incoming, outgoing)
     }
 }
 

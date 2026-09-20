@@ -67,6 +67,89 @@ private actor Barrier {
         }
         let mono = try fixture(rate: 24000, channels: 1, format: "caf") { n,_ in Float(sin(Double(n)*2*Double.pi*240/24000))*0.25 }
         let originalHashes = [digest(stereo.audioData!), digest(mono.audioData!)]
+        try await test("linear fades change actual stereo samples including both zero endpoints and multiply clip and track gain") {
+            var selected = clip(stereo, start: 0.025, volume: 0.5, track: 2)
+            selected.fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 1200, fadeOutFrames: 1600)
+            var doc = try document([selected]); doc.schemaVersion = 14; doc.audioTrackVolumes = [1, 0.25, 1, 1]
+            let before = doc
+            let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.15, outputParent: scratch)
+            let pcm = try read(out)
+            for n in 0..<4800 {
+                let gain = Float(min(1, min(Double(n) / 1200, Double(4799 - n) / 1600))) * 0.125
+                try near(pcm[0][1200+n], Float(sin(Double(n)*2*Double.pi*480/48000))*0.2*gain)
+                try near(pcm[1][1200+n], Float(cos(Double(n)*2*Double.pi*960/48000))*0.3*gain)
+            }
+            try check(pcm[1][1200] == 0 && pcm[1][5999] == 0, "fade endpoints are not silent")
+            try check(pcm[0][0..<1200].allSatisfy { $0 == 0 } && pcm[0][6000...].allSatisfy { $0 == 0 }, "fade changed silent gaps")
+            try check(doc == before, "mix altered editable envelope")
+            try out.cleanup(); try empty()
+        }
+        try await test("source anchored fades retain exact samples through split trim duplicate and timeline placement") {
+            var original = clip(stereo)
+            original.fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 1200, fadeOutFrames: 1600)
+            var originalDoc = try document([original]); originalDoc.schemaVersion = 14
+            let full = try await StudioAudioMixService().mix(document: originalDoc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let expected = try read(full); try full.cleanup()
+            var left = original; left.duration = 0.0125
+            var right = AudioClip(id: UUID().uuidString, soundName: original.soundName, track: 1, startTime: 0.0125,
+                duration: 0.0875, volume: original.volume, assetID: stereo.id, sourceOffset: 0.0125, fadeEnvelope: original.fadeEnvelope)
+            var split = try document([left, right]); split.schemaVersion = 14
+            let splitOut = try await StudioAudioMixService().mix(document: split, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            try check(try read(splitOut) == expected, "split restarted or changed the fade ramp")
+            try splitOut.cleanup()
+            right.startTime = 0.025; right.sourceOffset = 0.00625; right.duration = 0.075
+            var trimmed = try document([right]); trimmed.schemaVersion = 14
+            let trimOut = try await StudioAudioMixService().mix(document: trimmed, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(trimOut)
+            for c in 0..<2 { for n in 0..<3600 { try near(pcm[c][1200+n], expected[c][300+n]) } }
+            try trimOut.cleanup()
+            var copy = original; copy.startTime = 0.1
+            // Duplicate identity is new; envelope and immutable asset are shared.
+            copy = AudioClip(id: UUID().uuidString, soundName: copy.soundName, track: copy.track, startTime: copy.startTime,
+                duration: copy.duration, volume: copy.volume, assetID: copy.assetID, fadeEnvelope: copy.fadeEnvelope)
+            var duplicated = try document([original, copy]); duplicated.schemaVersion = 14
+            let duplicateOut = try await StudioAudioMixService().mix(document: duplicated, retainedAudioTracks: [stereo], durationSeconds: 0.2, outputParent: scratch)
+            let repeated = try read(duplicateOut)
+            for c in 0..<2 { try check(Array(repeated[c][0..<4800]) == expected[c] && Array(repeated[c][4800..<9600]) == expected[c], "duplicate lost fade phase") }
+            try duplicateOut.cleanup(); try empty()
+        }
+        try await test("fades cannot bypass clip mute track mute or zero volume and reset restores original samples") {
+            for mode in 0..<4 {
+                var selected = clip(stereo); selected.fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 1000, fadeOutFrames: 1000)
+                if mode == 0 { selected.isMuted = true }
+                if mode == 3 { selected.fadeEnvelope = nil }
+                var doc = try document([selected]); doc.schemaVersion = 14
+                if mode == 1 { doc.mutedAudioTracks = [1] }
+                if mode == 2 { doc.audioTrackVolumes = [0, 1, 1, 1] }
+                let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+                let pcm = try read(out)
+                if mode == 3 { try near(pcm[1][0], 0.3) }
+                else { try check(pcm.flatMap { $0 }.allSatisfy { $0 == 0 }, "fades bypassed silence") }
+                try out.cleanup()
+            }
+            try empty()
+        }
+        try await test("malformed downgraded and out-of-source envelopes reject before output and preserve originals") {
+            let bad: [AudioFadeEnvelope] = [
+                .init(sourceStartFrame: -1, frameCount: 4800, fadeInFrames: 1, fadeOutFrames: 0),
+                .init(sourceStartFrame: 0, frameCount: 0, fadeInFrames: 1, fadeOutFrames: 0),
+                .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: -1, fadeOutFrames: 0),
+                .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 3000, fadeOutFrames: 3000),
+                .init(sourceStartFrame: Int.max, frameCount: 4800, fadeInFrames: 1, fadeOutFrames: 0),
+                .init(sourceStartFrame: 0, frameCount: Int.max, fadeInFrames: 1, fadeOutFrames: 0),
+                .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 0, fadeOutFrames: 0),
+                .init(sourceStartFrame: 1, frameCount: 4800, fadeInFrames: 100, fadeOutFrames: 0)]
+            for envelope in bad {
+                var selected = clip(stereo); selected.fadeEnvelope = envelope
+                var doc = try document([selected]); doc.schemaVersion = 14
+                try await rejects { _ = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch) }
+                try empty()
+            }
+            var selected = clip(stereo); selected.fadeEnvelope = .init(sourceStartFrame: 0, frameCount: 4800, fadeInFrames: 100, fadeOutFrames: 0)
+            var old = try document([selected]); old.schemaVersion = 13
+            try await rejects { _ = try await StudioAudioMixService().mix(document: old, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch) }
+            try empty()
+        }
         try await test("sample-exact stereo timing, volume once, real CAF decode and source snapshot receipt") {
             let doc = try document([clip(stereo, start: 0.05, volume: 0.5)])
             let out = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [stereo], durationSeconds: 0.2, outputParent: scratch)

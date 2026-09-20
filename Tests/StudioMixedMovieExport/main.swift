@@ -136,6 +136,35 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 try out.cleanup(); try empty(p)
             }
         }
+        try await run("actual decoded AAC follows source-anchored fades with original video pixels and timing") {
+            var candidate = document; candidate.schemaVersion = 14; candidate.audioTrackVolumes = [0.5, 1, 1, 1]
+            candidate.audioClips[0].fadeEnvelope = .init(sourceStartFrame: 5904, frameCount: 12_000, fadeInFrames: 4000, fadeOutFrames: 4000)
+            let before = candidate, p = try parent("fade-export")
+            let out = try await service.export(snapshot: .init(document: candidate, retainedAudioTracks: [track], rasterDataByID: [:]), outputParent: p)
+            let asset = AVURLAsset(url: try out.checkedURLs()[0])
+            let audio = try await asset.loadTracks(withMediaType: .audio), video = try await asset.loadTracks(withMediaType: .video)
+            try require(audio.count == 1 && video.count == 1, "fade export omitted media")
+            try await verifyPixels(asset, track: video[0])
+            let samples = try await decodeAudio(asset, track: audio[0]); try require(samples.count == 96_000, "fade changed AAC duration")
+            var error = [0.0, 0.0], silence: Float = 0
+            for n in 0..<48_000 { for c in 0..<2 {
+                let actual = samples[n*2+c]
+                if (12_200..<23_800).contains(n) {
+                    let relative = n - 12_000
+                    let envelope = min(1, min(Double(relative) / 4000, Double(11_999-relative) / 4000))
+                    let expected = sin(Double(relative + 5904) * 2 * .pi * (c == 0 ? 480 : 960) / 48_000)
+                        * (c == 0 ? 0.125 : 0.075) * 0.5 * envelope
+                    error[c] += pow(Double(actual) - expected, 2)
+                }
+                if n < 10_000 || n > 28_000 { silence = max(silence, abs(actual)) }
+            } }
+            let rmse = error.map { sqrt($0 / 11_600) }
+            print("ACTUAL_FADE_AAC_RMSE=\(rmse) SILENCE_PEAK=\(silence)")
+            try require(rmse.allSatisfy { $0 < 0.003 } && silence < 0.0005, "AAC did not apply the fade envelope")
+            try require(candidate == before && track.audioData == originalAudio, "fade export changed source document or bytes")
+            try require(fm.contentsOfDirectory(atPath: p.path).count == 1, "fade export leaked intermediates")
+            try out.cleanup(); try empty(p)
+        }
         for phase in [StudioMixedMovieExportService.Phase.rendering, .mixing, .muxing, .verifying] {
             try await run("phase callback failure cleans all intermediate and final files: \(phase)") {
                 let p=try parent("callback")

@@ -24,6 +24,7 @@ private struct StudioAudioWorkspace: View {
     @State private var catalogueError: String?
     @State private var libraryTrack = 1
     @State private var trimCapture: StudioViewModel.AudioTrimCapture?
+    @State private var fadeCapture: StudioViewModel.AudioFadeCapture?
     @State private var timelineZoom = 1.0
     private let background = Color(hex: "0D0D12")
 
@@ -57,16 +58,16 @@ private struct StudioAudioWorkspace: View {
                 if !Task.isCancelled { catalogueError = error.localizedDescription }
             }
         }
-        .onDisappear { audio.close(); timeline.close(); vm.stopPlayback() }
-        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil }
+        .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
+        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil }
         .onChange(of: vm.document.revision) { _, _ in
             timeline.stop(); audio.stop()
         }
         .onChange(of: vm.selectedCurrentAudioClip?.id) { _, _ in
-            trimCapture = nil
+            trimCapture = nil; fadeCapture = nil
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { audio.close(); timeline.close(); vm.stopPlayback() }
+            if phase != .active { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
         }
     }
     private func workspace(height: CGFloat) -> some View {
@@ -436,11 +437,29 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityIdentifier("studio.audio.split")
                 Button("Trim values") {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
+                    fadeCapture = nil
                     trimCapture = vm.prepareAudioTrim()
                 }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
                     .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.trim.open")
                 Spacer()
+            }
+            HStack {
+                Button {
+                    timeline.stop(); audio.stop(); vm.stopPlayback(); trimCapture = nil
+                    fadeCapture = vm.prepareAudioFades()
+                } label: { Text("Fade in / out").frame(minHeight: 44) }
+                    .disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(12)).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.fades.open")
+                Spacer()
+                Text(clip.fadeEnvelope == nil ? "No fades" : "Source fades on")
+                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.audio.fades.status")
+            }
+            if let fadeCapture {
+                StudioAudioFadeEditor(vm: vm, capture: fadeCapture) { self.fadeCapture = nil }
+                    .id(fadeCapture.selection.clip.id + ":" + String(fadeCapture.selection.revision))
             }
             if let trimCapture {
                 StudioAudioNumericTrimEditor(vm: vm, capture: trimCapture) { self.trimCapture = nil }
@@ -539,6 +558,66 @@ private struct StudioAudioTrackVolumeControl: View {
                 .font(.caption2).frame(width: 38, alignment: .trailing)
                 .accessibilityIdentifier("studio.audio.track-volume-value.\(track)")
         }.frame(minHeight: 44)
+    }
+}
+
+private struct StudioAudioFadeEditor: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.AudioFadeCapture
+    let dismiss: () -> Void
+    @State private var incoming: String
+    @State private var outgoing: String
+    @State private var notice: String?
+    @FocusState private var focused: Field?
+    private enum Field: Hashable { case incoming, outgoing }
+
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioFadeCapture, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        let envelope = capture.selection.clip.fadeEnvelope, rate = StudioAudioTimelineGeometry.sampleRate
+        _incoming = State(initialValue: String(Double(envelope?.fadeInFrames ?? 0) / rate))
+        _outgoing = State(initialValue: String(Double(envelope?.fadeOutFrames ?? 0) / rate))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                input("Fade in (sec)", text: $incoming, field: .incoming)
+                input("Fade out (sec)", text: $outgoing, field: .outgoing)
+            }
+            Text("Fades follow the source through Trim and Split. Apply resets them to this clip.")
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            if let notice { Text(notice).font(.caption2).accessibilityIdentifier("studio.audio.fades.notice") }
+            if vm.prepareAudioFades() != capture {
+                Text("The clip changed. Cancel and reopen its fade options.").font(.caption2)
+            }
+            HStack {
+                Button { focused = nil; dismiss() } label: { Text("Cancel").frame(minHeight: 44) }
+                    .accessibilityIdentifier("studio.audio.fades.cancel")
+                Button { incoming = "0"; outgoing = "0"; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
+                    .accessibilityIdentifier("studio.audio.fades.clear")
+                Spacer()
+                Button {
+                    focused = nil
+                    guard let fadeIn = StudioViewModel.audioTrimSeconds(incoming),
+                          let fadeOut = StudioViewModel.audioTrimSeconds(outgoing) else {
+                        notice = "Enter a valid number of seconds in both fields."; return
+                    }
+                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut); dismiss() }
+                    catch { notice = error.localizedDescription }
+                } label: { Text("Apply fades").frame(minHeight: 44) }
+                    .disabled(vm.prepareAudioFades() != capture)
+                    .accessibilityIdentifier("studio.audio.fades.apply")
+            }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+        }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+    }
+    private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.system(size: 14, design: .monospaced)).padding(10).frame(minHeight: 44)
+                .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .accessibilityIdentifier(field == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out")
+        }.frame(maxWidth: .infinity)
     }
 }
 

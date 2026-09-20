@@ -1379,6 +1379,12 @@ final class StudioSmokeUITests: XCTestCase {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
+        // Run35521875012 tapped Audio at y709.66 during new-project keyboard
+        // dismissal; its settled center was y817.05. Wait on real keyboard and
+        // canvas geometry before the single normal accessibility tap.
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                                  evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5))
+        try waitForStableCanvas(app.descendants(matching: .any)["studio.canvas"].firstMatch)
         func reveal(_ element: XCUIElement, in target: XCUIApplication, down: Bool) throws {
             let scroll = target.scrollViews["studio.audio.compact.scroll"]
             for _ in 0..<4 {
@@ -1404,7 +1410,10 @@ final class StudioSmokeUITests: XCTestCase {
             let slider = target.sliders["studio.audio.track-volume.1"]
             try reveal(slider, in: target, down: true); return slider
         }
-        app.buttons["studio.audio.open"].tap(); app.buttons["studio.audio.library.open"].tap()
+        let audio = app.buttons["studio.audio.open"]
+        XCTAssertTrue(audio.exists && audio.isHittable); audio.tap()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5) && library.isHittable); library.tap()
         let search = app.textFields["studio.audio.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Wood Cracking 02\n")
         try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
@@ -1518,6 +1527,79 @@ final class StudioSmokeUITests: XCTestCase {
         _ = try reveal("studio.audio.clip-mute", in: reopened, towardBottom: true)
         XCTAssertEqual(reopened.buttons["studio.audio.clip-mute"].label, "Unmute selected clip", "Reopened track toggle revived a muted clip")
         capture(reopened, name: "audio-track-unmuted-clip-stays-muted-after-cold-reopen")
+    }
+
+    @MainActor
+    func testAudioFadesCancelApplyUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        // Run35521875012 tapped Audio at y709.66 during new-project keyboard
+        // dismissal; its settled center was y817.05. Wait on real keyboard and
+        // canvas geometry before the single normal accessibility tap.
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
+                                  evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5))
+        try waitForStableCanvas(app.descendants(matching: .any)["studio.canvas"].firstMatch)
+        let scroll = app.scrollViews["studio.audio.compact.scroll"]
+        func reveal(_ element: XCUIElement) {
+            for _ in 0..<4 { if element.exists && element.isHittable { break };scroll.swipeUp(velocity: .slow) }
+            XCTAssertTrue(element.exists && element.isHittable)
+        }
+        func replace(_ identifier: String, with text: String) {
+            let field = app.textFields[identifier];reveal(field);field.tap()
+            let previous = field.value as? String ?? ""
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + text)
+        }
+        func openAudio() { app.buttons["studio.audio.open"].tap() }
+        func closeAudio() {
+            let close = app.buttons["studio.audio.close"]
+            for _ in 0..<4 { if close.exists && close.isHittable { break };scroll.swipeDown(velocity: .slow) }
+            XCTAssertTrue(close.isHittable);close.tap()
+        }
+        openAudio()
+        let library = app.buttons["studio.audio.library.open"]
+        XCTAssertTrue(library.waitForExistence(timeout: 5) && library.isHittable); library.tap()
+        let search = app.textFields["studio.audio.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5));search.tap();search.typeText("Wood Cracking 02\n")
+        try audioLibraryButton("studio.audio.catalogue.add.3b7a688684cf8d75a180aa50edd9f51e159635cb25432e82d3f32d9d173299e1", app: app).tap()
+        app.buttons["studio.audio.library.close"].tap()
+        let status = app.staticTexts["studio.audio.fades.status"]
+        let open = app.buttons["studio.audio.fades.open"];reveal(open);open.tap()
+        replace("studio.audio.fades.in", with: "10")
+        let apply = app.buttons["studio.audio.fades.apply"];reveal(apply);apply.tap()
+        XCTAssertTrue(app.staticTexts["studio.audio.fades.notice"].waitForExistence(timeout: 5))
+        XCTAssertEqual(status.label, "No fades", "Invalid fade changed the clip")
+        let cancel = app.buttons["studio.audio.fades.cancel"];reveal(cancel);cancel.tap()
+        XCTAssertFalse(app.textFields["studio.audio.fades.in"].exists)
+        XCTAssertEqual(status.label, "No fades", "Cancel applied a draft")
+        reveal(open);open.tap()
+        replace("studio.audio.fades.in", with: "0.05")
+        replace("studio.audio.fades.out", with: "0.10")
+        reveal(apply);apply.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Source fades on"), evaluatedWith: status).waitUntilFulfilled(timeout: 8))
+        capture(app, name: "audio-fades-applied")
+        closeAudio();app.buttons["studio.undo"].tap();openAudio()
+        XCTAssertEqual(status.label, "No fades", "One Undo did not restore both fades")
+        closeAudio();app.buttons["studio.redo"].tap();openAudio()
+        XCTAssertEqual(status.label, "Source fades on")
+        closeAudio();let save = app.buttons["studio.save"];save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.terminate()
+        let reopened = try launchGuestStudio();defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8));project.tap()
+        reopened.buttons["studio.audio.open"].tap()
+        XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
+        let savedClip = reopened.descendants(matching: .any).matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.audio.clip.")).firstMatch
+        XCTAssertTrue(savedClip.waitForExistence(timeout: 8) && savedClip.isHittable)
+        savedClip.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        let reopen = reopened.buttons["studio.audio.fades.open"]
+        let savedScroll = reopened.scrollViews["studio.audio.compact.scroll"]
+        for _ in 0..<4 { if reopen.exists && reopen.isHittable { break };savedScroll.swipeUp(velocity: .slow) }
+        XCTAssertTrue(reopen.isHittable);reopen.tap()
+        XCTAssertEqual(reopened.textFields["studio.audio.fades.in"].value as? String, "0.05")
+        XCTAssertEqual(reopened.textFields["studio.audio.fades.out"].value as? String, "0.1")
+        capture(reopened, name: "audio-fades-cold-reopened")
     }
 
     @MainActor
