@@ -58,7 +58,7 @@ class Evidence:
 
     def write(self, name, data):
         allowed = {'SDI-generated-image-fixture.png', 'image-seed-start.json',
-                   'image-seed-command.json', 'image-seed-diagnostics.json',
+                   'image-seed-command.json', 'image-seed-diagnostics.json', 'image-seed-readiness.json',
                    'image-seed-setup.png', 'image-fixture.json'}
         if name not in allowed or len(data) > EVIDENCE_BYTES - self.written:
             raise ValueError('Evidence name or total byte budget exceeded')

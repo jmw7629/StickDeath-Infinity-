@@ -61,7 +61,7 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False):
         calls = self.calls
 
         def inventory(cmd, **kw):
@@ -99,6 +99,8 @@ class Harness(unittest.TestCase):
         argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID]
         def bounded(cmd, *args, **kw):
             calls.append(tuple(cmd))
+            if readiness_failure and cmd[:3] == ['xcrun', 'simctl', 'spawn']:
+                return Result(-9, True, 120)
             if seed_failure and cmd[:3] == ['xcrun', 'simctl', 'addmedia']:
                 return Result(-9, True, 60)
             return Result(0, False, 0)
@@ -136,7 +138,16 @@ class Harness(unittest.TestCase):
         self.assertFalse(report['photoFixtureSeeded'])
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], 2700)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], 3300)
+        self.assertFalse((self.out / 'image-fixture.json').exists())
+
+    def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
+        self.assertEqual(self.recording(readiness_failure=True), 4)
+        self.assertEqual(sum(c[:3] == ('xcrun', 'simctl', 'spawn') for c in self.calls), 1)
+        self.assertFalse(any(c[:3] == ('xcrun', 'simctl', 'addmedia') for c in self.calls))
+        self.assertEqual(sum(c[:2] == ('xcodebuild', 'test-without-building') for c in self.calls), 1)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['photoFixtureSeeded'])
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_real_ui_failure_is_retained_alongside_photo_fixture_failure(self):

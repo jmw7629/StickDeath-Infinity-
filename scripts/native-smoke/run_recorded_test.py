@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-from seed_image_fixture import seed_verified_fixture
+from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
 
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
@@ -60,6 +60,7 @@ def main() -> int:
     # Keep the actual addmedia success and its own timeout as the seeding gate.
     fixture_error = None
     try:
+        wait_for_command_readiness(args.udid, output)
         seed_verified_fixture(args.udid, output)
     except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
         # The isolated target/boot/offline-app gates already passed. A Photos
@@ -79,10 +80,11 @@ def main() -> int:
     test_process_exit = None
     # All configured UI journeys retain their individual 180s allowance and
     # this shared bounded suite deadline. A fixture failure never grants more time.
-    # Run 35462554349 completed 23 journeys in 1781s. The remaining five
-    # used 303.452s on the prior green head, before the new text journey.
-    # Allow bounded completion/collection headroom; do not retry failed tests.
-    test_timeout_seconds = 2700
+    # c080 used 2526s before the outer job interrupted its 28th journey.
+    # The five unfinished journeys used 303.634s in the previous run; the
+    # image-library journey is additional. Reserve a finite 55-minute suite
+    # budget without changing 180-second per-journey limits or retrying tests.
+    test_timeout_seconds = 3300
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)

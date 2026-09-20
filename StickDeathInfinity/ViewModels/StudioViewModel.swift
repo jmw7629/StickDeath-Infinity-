@@ -1146,7 +1146,8 @@ final class StudioViewModel: ObservableObject {
         guard retainedRasterFrames[assetID] == nil else { throw StudioDocumentError.invalid("This image identity is already owned by the project.") }
         let source = StoredImageSource(id: imported.id, name: imported.name, container: imported.container.rawValue,
             originalData: imported.originalData, originalWidth: imported.originalWidth, originalHeight: imported.originalHeight,
-            originalOrientation: imported.originalOrientation, normalizedWidth: imported.width, normalizedHeight: imported.height)
+            originalOrientation: imported.originalOrientation, normalizedWidth: imported.width, normalizedHeight: imported.height,
+            catalogueAttribution: imported.catalogueAttribution)
         try StudioRasterImage.validate(source: source, normalized: imported.normalizedPNG)
         let record = StoredAnimationFrame(imageData: imported.normalizedPNG, layerData: nil, sourceImage: source)
         let imageLayer = CanvasLayer(id: UUID().uuidString, name: String(("Image: " + imported.name).prefix(120)))

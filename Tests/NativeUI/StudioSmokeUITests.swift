@@ -348,6 +348,13 @@ final class StudioSmokeUITests: XCTestCase {
         let original = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(exportInkMask(original).count, 60)
 
+        // Restore Pencil while its button is already visible. Doing this after
+        // cold reopen required four remote rail drags and consumed 25 seconds
+        // of the 180-second Eraser journey in run 35475037181.
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
+
         try pickerRailControl("studio.tool.eraser", app: app, forward: true).tap()
         let hard = app.buttons["studio.eraser.mode.hard"], soft = app.buttons["studio.eraser.mode.soft"]
         XCTAssertTrue(hard.waitForExistence(timeout: 5) && hard.isHittable && soft.isHittable)
@@ -399,9 +406,6 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.sliders["studio.setting.strength"].value as? String, capturedStrength)
         try resetToolPreferencesInPopup(reopened)
         XCTAssertEqual(reopened.buttons["studio.eraser.mode.hard"].value as? String, "Selected")
-        reopened.buttons["studio.tool-settings.close"].tap()
-        try pickerRailControl("studio.tool.pencil", app: reopened, forward: false).tap()
-        try resetToolPreferencesInPopup(reopened)
         reopened.buttons["studio.tool-settings.close"].tap()
     }
 
@@ -1443,6 +1447,54 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(reopenedCanvas.screenshot().image)), 4,
                                  "Relaunch lost the actual Spatter-created document")
         capture(reopenedApp, name: "spatter-motion-persisted-reopened")
+    }
+
+    @MainActor
+    func testLicensedImageLibraryUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame, before = try pixels(canvas.screenshot().image)
+        try openImagePanel(app)
+        try imageControl("studio.image.library", app: app).tap()
+        let count = app.staticTexts["studio.image-library.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 8))
+        XCTAssertEqual(count.label, "72 free pictures · available offline")
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("pencil\n")
+        let picture = app.buttons["studio.image-library.item.kenney.scribble-platformer.item_pencil"]
+        XCTAssertTrue(picture.waitForExistence(timeout: 5)); XCTAssertTrue(picture.isHittable)
+        capture(app, name: "licensed-image-library-search")
+        picture.tap()
+        let preview = try imageControl("studio.image.preview", app: app)
+        XCTAssertGreaterThan(exportInkMask(try pixels(preview.screenshot().image)).count, 25, "Library preview has no actual artwork")
+        XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("64 × 128 pixels"))
+        XCTAssertTrue(app.staticTexts["studio.image.attribution"].label.contains("CC0-1.0"))
+        try imageControl("studio.image.apply", app: app).tap()
+        let receipt = try imageControl("studio.image.result", app: app)
+        XCTAssertTrue(receipt.label.hasPrefix("Added Pencil on a new image layer"))
+        try closeImagePanel(app)
+        try waitForStableCanvas(canvas, expected: frame)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let edited = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(before, edited), 100, "Library Add did not change actual canvas pixels")
+        capture(app, name: "licensed-image-library-added")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled, "Library Add needs more than one Undo")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4,
+                                "Cold reopen changed actual library artwork")
+        capture(reopened, name: "licensed-image-library-cold-reopened")
     }
 
     @MainActor

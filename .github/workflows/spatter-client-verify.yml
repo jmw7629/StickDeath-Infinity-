@@ -47,12 +47,11 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
   native-ios-build:
     runs-on: macos-15
-    # The bounded 32-journey UI suite allows 45 minutes after production/build checks.
-    # Based on preserved run 35462554349 plus the prior remaining-test timings.
-    # Keep 180-second journey limits; never retry or suppress a failed assertion.
-    # Checks/builds precede the suite; reserve bounded time to preserve original
-    # xcresult, summary and recording after the UI process exits.
-    timeout-minutes: 75
+    # c080's production/build work took 30 minutes and its 75-minute outer
+    # deadline interrupted the UI suite before all journeys could complete.
+    # Keep each journey at 180s; give the complete 33-journey suite a bounded
+    # 55 minutes plus setup and original evidence preservation. No retries.
+    timeout-minutes: 95
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -624,6 +623,15 @@ jobs:
             Tests/StudioSoundCatalogue/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests"
           "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds
+      - name: Verify licensed image catalogue and every original PNG
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            Tests/StudioImageCatalogue/main.swift \
+            -o "$RUNNER_TEMP/sdi-image-catalogue-tests"
+          "$RUNNER_TEMP/sdi-image-catalogue-tests" StickDeathInfinity/Resources/StudioImages
       - name: Verify real photo decoding, orientation and cancellation
         shell: bash
         run: |
@@ -696,9 +704,37 @@ jobs:
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
             StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
             StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             Tests/StudioImageImportSession/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-session-tests"
           "$RUNNER_TEMP/sdi-studio-image-session-tests"
+      - name: Verify library previews rights history persistence actual PNG and bounded thumbnails
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
+            StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            StickDeathInfinity/Services/StudioImageLibraryThumbnails.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            Tests/StudioImageLibrary/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-library-tests"
+          "$RUNNER_TEMP/sdi-studio-image-library-tests" StickDeathInfinity/Resources/StudioImages
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |

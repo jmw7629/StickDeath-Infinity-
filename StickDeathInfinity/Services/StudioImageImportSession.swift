@@ -23,6 +23,7 @@ final class StudioImageImportSession: ObservableObject {
         let originalByteCount: Int
         let normalizedByteCount: Int
         let container: StudioImageImportService.Container
+        let catalogueAttribution: [String: String]?
     }
     struct AppliedImage {
         let assetID: String
@@ -62,7 +63,10 @@ final class StudioImageImportSession: ObservableObject {
         let frameID: String
         let layerID: String
     }
-    private enum Source { case file(URL), photo(NSItemProvider) }
+    private enum Source {
+        case file(URL), photo(NSItemProvider)
+        case library(StudioImageCatalogue, StudioImageCatalogue.Image)
+    }
     private enum SessionError: LocalizedError {
         case unavailable, contextChanged, accountChanged, inactive, ineligible, previewUnavailable
         var errorDescription: String? {
@@ -130,6 +134,11 @@ final class StudioImageImportSession: ObservableObject {
     func receivePhoto(_ provider: NSItemProvider, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
         start(.photo(provider), token: token, currentScope: currentScope)
     }
+    @discardableResult
+    func receiveLibraryImage(_ image: StudioImageCatalogue.Image, from catalogue: StudioImageCatalogue,
+                             token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.library(catalogue, image), token: token, currentScope: currentScope)
+    }
     private func start(_ source: Source, token id: UUID, currentScope: @escaping ScopeProvider) -> Bool {
         guard !isClosed, !isWorking, status == .picking, token == id else { return false }
         do { try requireCurrent(id, scope: currentScope(), requireForeground: false) }
@@ -149,6 +158,8 @@ final class StudioImageImportSession: ObservableObject {
                 try await self.checkpoint()
                 try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                 let url: URL, name: String?
+                var expectedLibraryBytes: Data?
+                var attribution: [String: String]?
                 switch source {
                 case .file(let selected): url = selected; name = nil
                 case .photo(let provider):
@@ -156,10 +167,26 @@ final class StudioImageImportSession: ObservableObject {
                     owned = handle
                     try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                     url = try handle.url(); name = handle.displayName
+                case .library(let catalogue, let image):
+                    let verification = Task.detached(priority: .userInitiated) {
+                        try Task.checkCancellation()
+                        return try catalogue.checkedPNG(image)
+                    }
+                    expectedLibraryBytes = try await withTaskCancellationHandler {
+                        let bytes = try await verification.value
+                        try Task.checkCancellation(); return bytes
+                    } onCancel: { verification.cancel() }
+                    try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
+                    url = try catalogue.sourceURL(for: image); name = image.title
+                    attribution = try catalogue.attribution(for: image)
                 }
                 self.status = .decoding
-                let result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
+                var result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
                     await self?.updateProgress(progress, token: id)
+                }
+                if let expectedLibraryBytes {
+                    guard result.originalData == expectedLibraryBytes else { throw StudioImageCatalogue.CatalogueError.invalid }
+                    result.catalogueAttribution = attribution
                 }
                 // A provider URL is never exposed to the UI. Its owned copy stays
                 // alive throughout decode and is cleaned before publishing preview.
@@ -171,7 +198,8 @@ final class StudioImageImportSession: ObservableObject {
                 self.preview = Preview(name: result.name, width: result.width, height: result.height,
                     originalWidth: result.originalWidth, originalHeight: result.originalHeight,
                     originalOrientation: result.originalOrientation, originalByteCount: result.originalData.count,
-                    normalizedByteCount: result.normalizedPNG.count, container: result.container)
+                    normalizedByteCount: result.normalizedPNG.count, container: result.container,
+                    catalogueAttribution: result.catalogueAttribution)
                 self.previewImage = thumbnail; self.status = .preview
                 self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
             } catch {
