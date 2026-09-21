@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...15
+    static let supportedSchemaVersions = 1...16
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -74,6 +74,11 @@ struct StudioDocument: Codable, Equatable {
                       rect.x + rect.width <= Double(width) + 0.000001,
                       rect.y + rect.height <= Double(height) + 0.000001 else {
                     throw StudioDocumentError.invalid("An imported still has invalid placement or document version.")
+                }
+            }
+            if let turns = frame.rasterQuarterTurns {
+                guard schemaVersion >= 16, frame.rasterPlacement != nil, (1...3).contains(turns) else {
+                    throw StudioDocumentError.invalid("An imported image has invalid rotation metadata. The original has not changed.")
                 }
             }
             if let reflection = frame.rasterReflection {
@@ -479,7 +484,7 @@ struct StudioDocumentEditor {
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
                              brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
             }
-            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection)
+            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -491,6 +496,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.transform != nil }) { value.schemaVersion = max(value.schemaVersion, 11) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
             if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
+            if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
         }
     }
     mutating func deleteFrame(_ id: String) throws {
@@ -529,6 +535,7 @@ struct StudioDocumentEditor {
             value.frames[index].rasterLayerID = nil
             value.frames[index].rasterPlacement = nil
             value.frames[index].rasterReflection = nil
+            value.frames[index].rasterQuarterTurns = nil
             try checkCancellation()
         }
     }
@@ -556,6 +563,44 @@ struct StudioDocumentEditor {
             }
             value.frames[index].rasterReflection = reflection.horizontal || reflection.vertical ? reflection : nil
             value.schemaVersion = max(value.schemaVersion, 15)
+            try checkCancellation()
+        }
+    }
+
+    /// A real quarter turn preserves image scale and source bytes. Rotate about
+    /// the placed center, then shift only as needed to keep the whole image in
+    /// the canvas. Oversized results reject instead of silently shrinking/cropping.
+    mutating func rotateImage(frameID: String, assetID: String, direction: StudioImageQuarterTurn,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  value.frames[index].rasterAssetID == assetID,
+                  let placement = value.frames[index].rasterPlacement else {
+                throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
+            }
+            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+                throw StudioDocumentError.locked
+            }
+            guard placement.height <= Double(value.width), placement.width <= Double(value.height) else {
+                throw StudioDocumentError.invalid("This rotated image would be larger than the canvas. Make it smaller with Position image, then rotate again. Nothing changed.")
+            }
+            try checkCancellation()
+            let previousTurns: Int = value.frames[index].rasterQuarterTurns ?? 0
+            let turns: Int = (previousTurns + direction.offset + 4) % 4
+            value.frames[index].rasterQuarterTurns = turns == 0 ? nil : turns
+            let centerX: Double = placement.x + placement.width / 2
+            let centerY: Double = placement.y + placement.height / 2
+            let x: Double = min(max(0, centerX - placement.height / 2), Double(value.width) - placement.height)
+            let y: Double = min(max(0, centerY - placement.width / 2), Double(value.height) - placement.width)
+            value.frames[index].rasterPlacement = StudioRasterPlacement(x: x, y: y, width: placement.height, height: placement.width)
+            // H/V flips are relative to canvas axes. A quarter turn carries the
+            // existing reflection with the picture instead of changing its look.
+            if let reflection = value.frames[index].rasterReflection {
+                value.frames[index].rasterReflection = .init(horizontal: reflection.vertical, vertical: reflection.horizontal)
+            }
+            value.schemaVersion = max(value.schemaVersion, 16)
             try checkCancellation()
         }
     }
@@ -776,6 +821,7 @@ struct StudioDocumentEditor {
                     value.frames[frame].rasterLayerID = nil
                     value.frames[frame].rasterPlacement = nil
                     value.frames[frame].rasterReflection = nil
+                    value.frames[frame].rasterQuarterTurns = nil
                 }
             }
             value.layers.remove(at: index)

@@ -2235,6 +2235,70 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testImageQuarterTurnsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        func control(_ id: String) throws -> XCUIElement {
+            let button = app.buttons[id]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            for _ in 0..<4 where !button.isHittable {
+                let scroll = popup.scrollViews.firstMatch
+                XCTAssertTrue(scroll.exists); scroll.swipeUp(velocity: .slow)
+            }
+            XCTAssertTrue(button.isHittable)
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: button).waitUntilFulfilled(timeout: 8))
+            return button
+        }
+        try selectToolbarTool("move", app: app)
+        try control("studio.image-placement.open").tap()
+        try control("studio.image-placement.half").tap()
+        try control("studio.image-placement.apply").tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        func turn(_ direction: String, degrees: Int) throws {
+            try selectToolbarTool("move", app: app)
+            let button = try control("studio.image-rotate." + direction)
+            button.tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "\(degrees) degrees clockwise"), evaluatedWith: button).waitUntilFulfilled(timeout: 5))
+            capture(app, name: "image-quarter-turn-\(degrees)-control")
+            app.buttons["studio.tool-settings.close"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
+        try turn("counterclockwise", degrees: 270)
+        XCTAssertGreaterThan(try changedPixelCount(original, pixels(canvas.screenshot().image)), 100, "Left rotation changed no actual pixels")
+        try turn("clockwise", degrees: 0)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Right turn did not reverse left turn")
+        try turn("clockwise", degrees: 90)
+        let rotated = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, rotated), 100, "Right rotation changed no actual pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "One Undo failed")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(canvas.screenshot().image)), 4, "One Redo failed")
+        capture(app, name: "image-quarter-turn-applied")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(restored.screenshot().image)), 4, "Cold reopen lost rotated pixels")
+        capture(reopened, name: "image-quarter-turn-cold-reopened")
+    }
+
+    @MainActor
     func testImageFlipsUndoAndColdReopen() throws {
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)

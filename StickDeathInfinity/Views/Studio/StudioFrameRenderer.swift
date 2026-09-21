@@ -97,12 +97,27 @@ struct StudioFrameRenderer {
                     // Reflect in viewport coordinates about the placed center;
                     // canvas, thumbnails and every export share these pixels.
                     var picture = local
+                    if let turns = frame.rasterQuarterTurns, let placement = frame.rasterPlacement {
+                        // Rotate in document coordinates. Conjugating viewport
+                        // scale keeps thumbnails/non-square views geometrically correct.
+                        picture.translateBy(x: rect.midX, y: rect.midY)
+                        picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
+                        if let reflection = frame.rasterReflection {
+                            picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                        }
+                        picture.rotate(by: .degrees(Double(turns) * 90))
+                        let width = turns % 2 == 0 ? placement.width : placement.height
+                        let height = turns % 2 == 0 ? placement.height : placement.width
+                        picture.draw(Image(decorative: image.image, scale: 1),
+                            in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
+                    } else {
                     if let reflection = frame.rasterReflection {
                         picture.translateBy(x: rect.midX, y: rect.midY)
                         picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                         picture.translateBy(x: -rect.midX, y: -rect.midY)
                     }
                     picture.draw(Image(decorative: image.image, scale: 1), in: rect)
+                    }
                 }
                 for element in frame.elements where element.layerID == layer.id {
                     var elementContext = local

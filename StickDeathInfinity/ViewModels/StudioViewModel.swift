@@ -978,7 +978,9 @@ final class StudioViewModel: ObservableObject {
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             assetID: assetID, layerID: layer.id, original: original,
-            fitted: .aspectFit(imageWidth: source.normalizedWidth, imageHeight: source.normalizedHeight,
+            fitted: .aspectFit(
+                imageWidth: (currentFrame.rasterQuarterTurns ?? 0) % 2 == 0 ? source.normalizedWidth : source.normalizedHeight,
+                imageHeight: (currentFrame.rasterQuarterTurns ?? 0) % 2 == 0 ? source.normalizedHeight : source.normalizedWidth,
                 canvasWidth: document.width, canvasHeight: document.height),
             canvasWidth: document.width, canvasHeight: document.height)
     }
@@ -991,6 +993,23 @@ final class StudioViewModel: ObservableObject {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
                     frame: .id(capture.frameID), assetID: capture.assetID, placement: placement))])),
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+                })
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func rotateImage(_ capture: ImagePlacementCapture, direction: StudioImageQuarterTurn,
+                     checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.rotateImage(.init(
+                    frame: .id(capture.frameID), assetID: capture.assetID, direction: direction))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }

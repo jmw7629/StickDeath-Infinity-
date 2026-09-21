@@ -414,6 +414,14 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     /// Version 15: nondestructive reflections around the placed image center.
     /// Nil preserves historical image orientation and original encoded bytes.
     var rasterReflection: StudioRasterReflection? = nil
+    /// Version 16: clockwise quarter turns, 1...3. Placement is the visible
+    /// axis-aligned bounding box; nil keeps the original orientation.
+    var rasterQuarterTurns: Int? = nil
+}
+
+enum StudioImageQuarterTurn: String, Codable {
+    case clockwise, counterclockwise
+    var offset: Int { self == .clockwise ? 1 : -1 }
 }
 
 struct StudioRasterReflection: Codable, Equatable {

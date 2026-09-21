@@ -133,6 +133,21 @@ struct FloatingToolSettingsPanel: View {
         }
     }
     
+    private func imageRotateButton(_ title: String, direction: StudioImageQuarterTurn) -> some View {
+        Button {
+            guard let capture = vm.prepareImagePlacement() else { return }
+            _ = vm.rotateImage(capture, direction: direction)
+        } label: {
+            Text(title).font(.specialElite(11)).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundColor(.white)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("studio.image-rotate." + direction.rawValue)
+        .accessibilityValue("\((vm.currentFrame.rasterQuarterTurns ?? 0) * 90) degrees clockwise")
+        .disabled(vm.prepareImagePlacement() == nil)
+    }
+
     private func imageFlipButton(_ title: String, axis: StudioReflectionAxis, id: String) -> some View {
         Button {
             guard let capture = vm.prepareImagePlacement() else { return }
@@ -407,6 +422,10 @@ struct FloatingToolSettingsPanel: View {
                     HStack(spacing: 8) {
                         imageFlipButton("Flip image H", axis: .horizontal, id: "horizontal")
                         imageFlipButton("Flip image V", axis: .vertical, id: "vertical")
+                    }
+                    HStack(spacing: 8) {
+                        imageRotateButton("Rotate left 90°", direction: .counterclockwise)
+                        imageRotateButton("Rotate right 90°", direction: .clockwise)
                     }
                     Button("Delete image…", role: .destructive) {
                         guard let capture = vm.prepareImagePlacement() else { return }

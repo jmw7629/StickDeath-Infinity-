@@ -107,6 +107,7 @@ enum StudioCommand: Codable {
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
+    struct RotateImage: Codable { let frame: StudioCommandReference; let assetID: String; let direction: StudioImageQuarterTurn }
     struct ReflectImage: Codable { let frame: StudioCommandReference; let assetID: String; let axis: StudioReflectionAxis }
     struct DeleteImage: Codable { let frame: StudioCommandReference; let assetID: String }
     struct UpdateImagePlacement: Codable {
@@ -122,13 +123,14 @@ enum StudioCommand: Codable {
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
-    case reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
+    case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
         case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
+        case "rotateImage": self = .rotateImage(try container.decode(RotateImage.self, forKey: key))
         case "reflectImage": self = .reflectImage(try container.decode(ReflectImage.self, forKey: key))
         case "deleteImage": self = .deleteImage(try container.decode(DeleteImage.self, forKey: key))
         case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
@@ -160,6 +162,7 @@ enum StudioCommand: Codable {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
         case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
+        case .rotateImage(let value): try container.encode(value, forKey: StudioWireKey("rotateImage"))
         case .reflectImage(let value): try container.encode(value, forKey: StudioWireKey("reflectImage"))
         case .deleteImage(let value): try container.encode(value, forKey: StudioWireKey("deleteImage"))
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
@@ -249,6 +252,7 @@ struct StudioCommandContext {
         let imageLayerID: String?
         let imagePlacement: StudioRasterPlacement?
         let imageReflection: StudioRasterReflection?
+        let imageQuarterTurns: Int?
     }
     let projectID: UUID
     let revision: Int
@@ -273,7 +277,7 @@ struct StudioCommandContext {
             hasOriginalRecord: $0.rasterAssetID != nil,
             imageAssetID: $0.rasterPlacement == nil ? nil : $0.rasterAssetID,
             imageLayerID: $0.rasterPlacement == nil ? nil : $0.rasterLayerID,
-            imagePlacement: $0.rasterPlacement, imageReflection: $0.rasterReflection) }
+            imagePlacement: $0.rasterPlacement, imageReflection: $0.rasterReflection, imageQuarterTurns: $0.rasterQuarterTurns) }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
     }
@@ -320,6 +324,7 @@ enum StudioCommandExecutor {
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
             "updateAudioClip": ["clipID", "settings"],
+            "rotateImage": ["frame", "assetID", "direction"],
             "reflectImage": ["frame", "assetID", "axis"],
             "deleteImage": ["frame", "assetID"],
             "updateImagePlacement": ["frame", "assetID", "placement"],
@@ -624,6 +629,14 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
                                      checkCancellation: checkCancellation)
+        case .rotateImage(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.rotateImage(frameID: id, assetID: value.assetID, direction: value.direction,
+                checkCancellation: checkCancellation)
         case .reflectImage(let value):
             let id = try frame(value.frame)
             guard let selected = editor.document.frames.first(where: { $0.id == id }),

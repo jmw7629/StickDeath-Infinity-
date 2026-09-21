@@ -32,5 +32,6 @@ locks, playback, stale context and historical decoding. A native UI journey
 imports the licensed Dragon, uses both popup controls, checks changed canvas
 pixels, Undo/Redo and cold reopen. UI compilation is not simulator execution.
 
-Multiple managed image objects per frame, crop, rotation, resize handles and an
-image-specific clipboard remain separate unfinished work in issue #196.
+Managed [quarter turns](STUDIO_IMAGE_ROTATION.md) preserve these reflections.
+Multiple managed image objects per frame, crop, arbitrary-angle rotation, resize
+handles and an image-specific clipboard remain unfinished work in issue #196.

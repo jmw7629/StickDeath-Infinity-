@@ -93,6 +93,115 @@ private final class NetworkTrap: URLProtocol {
             guard let capture = editor.beginImageMove(at: .init(x: 30, y: 60)) else { throw Failure(message: "Image hit did not capture") }
             return (editor, storage, capture)
         }
+        func rotationFixture() async throws -> (StudioViewModel, DeviceStorageManager) {
+            let (editor, storage, _) = try await imageMoveFixture()
+            try require(editor.placeImage(editor.prepareImagePlacement()!, at: .init(x: 60, y: 40, width: 40, height: 80)), "Centered rotation fixture failed")
+            return (editor, storage)
+        }
+        func clockwisePixels(_ actual: Data, _ original: Data) throws {
+            var differences = 0, ink = 0
+            for y in 0..<160 { for x in 0..<160 {
+                for channel in 0..<4 {
+                    let a = Int(actual[(y*160+x)*4+channel]), b = Int(original[((159-x)*160+y)*4+channel])
+                    if abs(a-b) > 2 { differences += 1 }
+                }
+                if actual[(y*160+x)*4+3] > 128 { ink += 1 }
+            } }
+            try require(ink > 30 && differences == 0, "Actual PNG pixels are not a clockwise quarter turn: \(differences) channels")
+        }
+        try await test("image rotation changes actual exported RGBA and cold reopened pixels with original bytes intact") {
+            let (editor, storage) = try await rotationFixture(); let before = editor.document
+            let originalPixels = try await exported(editor), capture = editor.prepareImagePlacement()!
+            try require(editor.rotateImage(capture, direction: .clockwise), "Actual rotation failed")
+            let rotated = try await exported(editor), after = editor.document
+            try clockwisePixels(rotated, originalPixels)
+            try require(after.frames[0].rasterPlacement == .init(x: 40, y: 60, width: 80, height: 40), "Rotated bounding box incorrect")
+            editor.undo(); try require((try await exported(editor)) == originalPixels && editor.currentFrame.rasterQuarterTurns == nil, "Undo pixels changed")
+            editor.redo(); try require((try await exported(editor)) == rotated, "Redo pixels differ")
+            try require(await editor.save(), "Save rotated project failed")
+            let stored = try storage.loadAnimation(id: before.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Actual cold reopen failed")
+            try require((try await exported(reopened)) == rotated && reopened.currentFrame.rasterQuarterTurns == 1, "Persisted rotation/pixels lost")
+            let source = reopened.originalImageSource(capture.assetID)
+            try require(source?.originalData == original && source?.catalogueAttribution == provenance, "Rotation mutated immutable source or rights")
+            for _ in 0..<3 { try require(editor.rotateImage(editor.prepareImagePlacement()!, direction: .clockwise), "Repeated quarter turn failed") }
+            let restoredPixels = try await exported(editor)
+            try require(editor.currentFrame.rasterQuarterTurns == nil && restoredPixels == originalPixels, "Four turns failed to restore exact PNG")
+        }
+        try await test("image rotation carries prior flips correctly and preserves frame clipboard and independent drawings") {
+            let (editor, _) = try await rotationFixture()
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .horizontal), "Flip fixture failed")
+            let flipped = try await exported(editor)
+            try require(editor.rotateImage(editor.prepareImagePlacement()!, direction: .clockwise), "Rotating flipped picture failed")
+            let rotated = try await exported(editor); try clockwisePixels(rotated, flipped)
+            try require(editor.currentFrame.rasterReflection == .init(vertical: true), "Canvas-axis reflection did not rotate")
+            editor.copyFrame(); editor.pasteFrame()
+            try require(editor.currentFrame.rasterQuarterTurns == 1 && editor.currentFrame.rasterReflection == .init(vertical: true), "Frame paste lost orientation")
+            try require((try await exported(editor, frameIndex: editor.currentFrameIndex)) == rotated, "Pasted frame pixels changed")
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id,
+                expectedRevision: editor.document.revision, action: .apply([.draw(.init(frame: .id(editor.currentFrame.id), layer: .id(editor.document.activeLayerID), strokes: [
+                    .init(id: "rotation-independent-drawing", tool: .rectangle, points: [.init(x: 125, y: 125), .init(x: 150, y: 150)],
+                          color: "#FF0000", width: 3, opacity: 1)]))])))
+            let withDrawing = try await exported(editor, frameIndex: editor.currentFrameIndex)
+            try require(editor.rotateImage(editor.prepareImagePlacement()!, direction: .counterclockwise), "Counterclockwise with drawing failed")
+            let result = try await exported(editor, frameIndex: editor.currentFrameIndex)
+            for y in 120..<155 { for x in 120..<155 {
+                let index = (y*160+x)*4
+                try require(result[index..<index+4] == withDrawing[index..<index+4], "Rotation changed a drawing on the same layer")
+            } }
+        }
+        try await test("rotated image fit and canvas dragging use visible bounds and retain orientation") {
+            let (editor, _) = try await rotationFixture()
+            try require(editor.rotateImage(editor.prepareImagePlacement()!, direction: .clockwise), "Rotation fixture failed")
+            let source = editor.originalImageSource(editor.currentFrame.rasterAssetID!)!
+            let capture = editor.prepareImagePlacement()!
+            let expectedFit = StudioRasterPlacement.aspectFit(imageWidth: source.normalizedHeight,
+                imageHeight: source.normalizedWidth, canvasWidth: 160, canvasHeight: 160)
+            try require(capture.fitted == expectedFit, "Fit ignored rotated aspect ratio")
+            try require(editor.setImageCanvasMove(true), "Image targeting failed")
+            // Inside new wide bounds, outside the pre-rotation narrow rectangle.
+            guard let move = editor.beginImageMove(at: .init(x: 45, y: 70)) else { throw Failure(message: "Rotated image hit used old bounds") }
+            let before = editor.document
+            let originalPixels = try await exported(editor)
+            try require(editor.finishImageMove(move, delta: .init(width: 10, height: 20)), "Rotated image did not move")
+            let movedPixels = try await exported(editor)
+            let expectedPlacement = StudioRasterPlacement(x: 50, y: 80, width: 80, height: 40)
+            try require(editor.currentFrame.rasterQuarterTurns == 1, "Drag changed orientation")
+            try require(editor.currentFrame.rasterPlacement == expectedPlacement, "Drag used wrong bounds")
+            for y in 0..<140 { for x in 0..<150 { for channel in 0..<4 {
+                let sourceIndex: Int = (y * 160 + x) * 4 + channel
+                let targetIndex: Int = ((y + 20) * 160 + x + 10) * 4 + channel
+                try require(movedPixels[targetIndex] == originalPixels[sourceIndex], "Dragging rotated image altered its pixels")
+            } } }
+            editor.undo(); let restoredPixels = try await exported(editor)
+            try require(editor.currentFrame == before.frames[0] && restoredPixels == originalPixels, "Undo rotated drag failed")
+        }
+        try await test("rotation cancels at every live boundary and rejects stale tool playback and lock context") {
+            let (probe, _) = try await rotationFixture(); var checkpoints = 0
+            try require(probe.rotateImage(probe.prepareImagePlacement()!, direction: .clockwise, checkCancellation: { checkpoints += 1 }), "Probe failed")
+            for stop in 1...checkpoints {
+                let (editor, _) = try await rotationFixture(), before = editor.document; var calls = 0
+                try require(!editor.rotateImage(editor.prepareImagePlacement()!, direction: .counterclockwise, checkCancellation: {
+                    calls += 1; if calls == stop { throw CancellationError() }
+                }) && editor.document == before, "Cancelled rotation committed at \(stop)")
+                editor.undo(); try require(editor.currentFrame.rasterPlacement == .init(x: 10, y: 20, width: 40, height: 80), "Cancellation added undo history")
+            }
+            let (editor, _) = try await rotationFixture(), capture = editor.prepareImagePlacement()!
+            editor.selectedTool = .brush
+            try require(!editor.rotateImage(capture, direction: .clockwise), "Wrong tool rotated image")
+            editor.selectedTool = .move
+            try require(editor.reflectImage(editor.prepareImagePlacement()!, axis: .vertical), "Stale fixture failed")
+            let before = editor.document
+            try require(!editor.rotateImage(capture, direction: .clockwise) && editor.document == before, "Stale rotation changed content")
+            editor.duplicateFrame(); let pending = editor.prepareImagePlacement()!, playingBefore = editor.document
+            editor.togglePlayback(); try require(editor.isPlaying, "Two-frame playback did not start")
+            try require(!editor.rotateImage(pending, direction: .clockwise) && editor.document == playingBefore, "Playback rotated image")
+            editor.stopPlayback()
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id,
+                expectedRevision: editor.document.revision, action: .apply([.updateLayer(.init(layer: .id(pending.layerID), settings: .init(lock: .position)))])))
+            try require(editor.prepareImagePlacement() == nil && !editor.rotateImage(pending, direction: .clockwise), "Locked image exposed rotation")
+        }
+
         try await test("image flips reflect actual PNG pixels about the placed center and preserve alpha originals rights and cold reopen") {
             let (editor, storage, capture) = try await imageMoveFixture()
             let before = editor.document, pixelsBefore = try await exported(editor)

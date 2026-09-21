@@ -158,6 +158,113 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             func imageDeletion(_ editor: StudioDocumentEditor, assetID: String = "image-fixture") -> StudioCommand {
                 .deleteImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID))
             }
+            func rotateImage(_ editor: StudioDocumentEditor, _ direction: StudioImageQuarterTurn = .clockwise,
+                             assetID: String = "image-fixture") -> StudioCommand {
+                .rotateImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, direction: direction))
+            }
+            try test("image quarter turns use strict commands preserve source and reverse full placement history") {
+                var editor = try imageEditor(); let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([rotateImage(editor)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(receipt.outcome == .applied && after.revision == before.revision + 1, "Rotation not one transaction")
+                var frame = before.frames[0]; frame.rasterPlacement = .init(x: 0, y: 128, width: 512, height: 256); frame.rasterQuarterTurns = 1
+                try require(after.schemaVersion == 16 && after.frames == [frame] && after.layers == before.layers, "Rotation changed unrelated content or bounding box")
+                try require(StudioCommandContext(document: after).frames[0].imageQuarterTurns == 1, "Spatter context omitted rotation")
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(after))
+                try decoded.validate(); try require(decoded == after, "Rotation encoding changed")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo failed")
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor, .counterclockwise)])), editor: &editor)
+                try require(editor.document.frames == before.frames, "Reverse turn did not restore image")
+                let original = editor.document
+                let noop = try StudioCommandExecutor.execute(request(editor, .apply(Array(repeating: rotateImage(editor), count: 4))), editor: &editor)
+                try require(editor.document == original && noop.outcome == .unchanged, "Four centered quarter turns added history")
+            }
+            try test("rotation rejects invalid wire foreign and historical pictures and clamps only fitting results") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([rotateImage(editor, assetID: "other")])), editor: &editor, expected: .invalidReference)
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([rotateImage(editor)])))) as! [String: Any]
+                for variant in 0..<4 {
+                    var root = base; var action = root["action"] as! [String: Any]; var commands = action["apply"] as! [[String: Any]]
+                    var fields = commands[0]["rotateImage"] as! [String: Any]
+                    if variant == 0 { fields["direction"] = "arbitrary" }
+                    if variant == 1 { fields["degrees"] = 45 }
+                    if variant == 2 { fields["direction"] = 1 }
+                    if variant == 3 { fields.removeValue(forKey: "assetID") }
+                    commands[0]["rotateImage"] = fields; action["apply"] = commands; root["action"] = action
+                    var caught = false; do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: root)) } catch { caught = true }
+                    try require(caught, "Malformed rotation accepted")
+                }
+                try editor.change { $0.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 100, height: 200) }
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try require(editor.document.frames[0].rasterPlacement == .init(x: 0, y: 50, width: 200, height: 100), "Edge rotation cropped or shrank")
+                editor = try imageEditor()
+                try editor.change { $0.width = 384 }
+                try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("rotation locks visibility stale batches and every cancellation preserve content and history") {
+                for mode in ["full", "position", "alpha", "hidden", "zero"] {
+                    var editor = try imageEditor()
+                    try editor.change { value in
+                        if mode == "hidden" { value.layers[0].visible = false }
+                        else if mode == "zero" { value.layers[0].opacity = 0 }
+                        else { value.layers[0].lockMode = mode }
+                    }
+                    try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                }
+                var probe = try imageEditor(), checkpoints = 0
+                let before = request(probe, .apply([rotateImage(probe)]))
+                try StudioCommandExecutor.execute(before, editor: &probe, checkCancellation: { checkpoints += 1 })
+                try rejected(before, editor: &probe, expected: .staleRevision)
+                try require(checkpoints >= 5, "No bounded cancellation")
+                for stop in 1...checkpoints {
+                    var editor = try imageEditor(), calls = 0
+                    try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor, cancellation: {
+                        calls += 1; if calls == stop { throw CancellationError() }
+                    })
+                }
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([rotateImage(editor), rotateImage(editor, assetID: "missing")])), editor: &editor)
+            }
+            try test("rotation and canvas flips compose and frame copy delete retain independent metadata") {
+                var editor = try imageEditor()
+                try editor.reflectImage(frameID: editor.document.activeFrameID, assetID: "image-fixture", axis: .horizontal)
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                let original = editor.document.frames[0]
+                try require(original.rasterReflection == .init(vertical: true), "Quarter turn did not carry reflection")
+                try editor.duplicateFrame()
+                try require(editor.document.frames[1].rasterQuarterTurns == 1, "Frame duplicate lost rotation")
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try require(editor.document.frames[0] == original && editor.document.frames[1].rasterQuarterTurns == 2, "Shared source rotated other frame")
+                let beforeDelete = editor.document
+                try StudioCommandExecutor.execute(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                try require(editor.document.frames[1].rasterQuarterTurns == nil, "Image delete left orientation")
+                editor.undo(); try require(content(editor.document) == content(beforeDelete), "Delete Undo dropped orientation")
+                try editor.addLayer()
+                try editor.deleteLayer(original.rasterLayerID!)
+                try require(editor.document.frames.allSatisfy { $0.rasterQuarterTurns == nil }, "Layer delete left rotation")
+            }
+            try test("historical decoding stays untouched and invalid rotation schemas reject") {
+                let original = try imageEditor().document
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(original))
+                try require(decoded == original && decoded.frames[0].rasterQuarterTurns == nil, "Old project migrated on read")
+                for variant in 0..<7 {
+                    var bad = original; bad.schemaVersion = 16; bad.frames[0].rasterQuarterTurns = 1
+                    if variant == 0 { bad.schemaVersion = 15 }
+                    if variant == 1 { bad.frames[0].rasterPlacement = nil }
+                    if variant == 2 { bad.frames[0].rasterQuarterTurns = 0 }
+                    if variant == 3 { bad.frames[0].rasterQuarterTurns = -1 }
+                    if variant == 4 { bad.frames[0].rasterQuarterTurns = 4 }
+                    if variant == 5 { bad.frames[0].rasterQuarterTurns = Int.max }
+                    if variant == 6 { bad.frames[0].rasterAssetID = nil }
+                    var caught = false; do { try bad.validate() } catch { caught = true }
+                    try require(caught, "Invalid rotation metadata accepted")
+                }
+            }
+
             func flipImage(_ editor: StudioDocumentEditor, _ axis: StudioReflectionAxis = .horizontal,
                            assetID: String = "image-fixture") -> StudioCommand {
                 .reflectImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, axis: axis))
