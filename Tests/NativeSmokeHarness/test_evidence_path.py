@@ -21,12 +21,13 @@ class EvidencePath(unittest.TestCase):
             tools = root / 'controlled-tools'
             tools.mkdir()
             selector = tools / 'python3'
-            selector.write_text('#!/bin/bash\nexec /bin/sleep 30\n')
+            selector.write_text('#!/bin/bash\n: > "$SDI_SELECTOR_READY"\nexec /bin/sleep 30\n')
             selector.chmod(0o700)
             runner = root / 'runner'
             runner.mkdir()
             output = root / 'github-output'
             output.touch()
+            ready = root / 'selector-ready'
             empty_config = root / 'empty-git-config'
             empty_config.touch()
             environment = dict(os.environ, GIT_CONFIG_GLOBAL=str(empty_config),
@@ -43,17 +44,20 @@ class EvidencePath(unittest.TestCase):
                 'commit', '-qm', 'Controlled cancellation fixture')
             environment.update(PATH=str(tools) + os.pathsep + os.defpath,
                                RUNNER_TEMP=str(runner), GITHUB_ACTIONS='true',
-                               GITHUB_OUTPUT=str(output),
+                               GITHUB_OUTPUT=str(output), SDI_SELECTOR_READY=str(ready),
                                SDI_SMOKE_SIMULATOR_UDID='controlled-selector-never-completes')
             process = subprocess.Popen(['/bin/bash', str(script)], cwd=checkout,
                                        env=environment, start_new_session=True,
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             try:
                 deadline = time.monotonic() + 3
-                while not output.read_text() and process.poll() is None and time.monotonic() < deadline:
+                # Wait for the controlled child to exist before signalling its group.
+                # The evidence path is published earlier, before this child starts.
+                while not (output.read_text() and ready.exists()) and process.poll() is None and time.monotonic() < deadline:
                     time.sleep(0.02)
                 published_before_cancellation = output.read_text()
                 self.assertIsNone(process.poll(), 'The controlled child must still be running')
+                self.assertTrue(ready.exists(), 'The blocked selector must have started')
             finally:
                 if process.poll() is None:
                     os.killpg(process.pid, signal.SIGTERM)

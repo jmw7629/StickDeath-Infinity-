@@ -45,13 +45,11 @@ jobs:
         run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
       - name: Verify retired messaging and calls cannot enter the native target
         run: python3 scripts/verify_retired_communications.py
-  native-ios-build:
+  native-production-tests:
     runs-on: macos-15
-    # c080's production/build work took 30 minutes and its 75-minute outer
-    # deadline interrupted the UI suite before all journeys could complete.
-    # Keep each journey at 180s; give the complete native UI suite a bounded
-    # 65 minutes plus setup and original evidence preservation. No retries.
-    timeout-minutes: 95
+    # The standalone production suites took 21 minutes on run 35579052983.
+    # Keep this work ahead of the app/UI job without concurrent Mac runners.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -1086,6 +1084,27 @@ jobs:
             Tests/StudioGIFPanel/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
           "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
+  native-ios-build:
+    needs: native-production-tests
+    # Always report this required gate, including a failed/cancelled dependency.
+    if: ${{ always() }}
+    runs-on: macos-15
+    # The measured 48 journeys exceed 65 minutes before runner overhead.
+    # Reserve 75 minutes for the whole UI suite plus build/setup/preservation.
+    # Individual journeys remain capped at 180 seconds, with no retries/skips.
+    timeout-minutes: 95
+    steps:
+      - name: Require successful production verification
+        shell: bash
+        env:
+          SDI_PRODUCTION_RESULT: ${{ needs.native-production-tests.result }}
+        run: |
+          set -euo pipefail
+          test "$SDI_PRODUCTION_RESULT" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |

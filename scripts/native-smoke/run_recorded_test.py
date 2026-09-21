@@ -78,13 +78,13 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Run 35502963713 reached the old 3300-second suite deadline after 36
-    # completed journeys. Those plus prior measured durations for the remaining
-    # five already total 3350.804 seconds before runner/finalization overhead.
-    # Keep the individual 180-second cap, all native journeys and zero retries.
-    # Give the expanded suite a finite 65-minute budget within the existing
-    # 95-minute job. Timeout/failure codes still fail the mandatory native gate.
-    test_timeout_seconds = 3900
+    # Run 35579052983 completed 43 journeys in 3732.904 seconds. Those plus
+    # prior measured durations for the remaining five total 4006.245 seconds,
+    # already beyond the old 3900-second deadline before runner overhead.
+    # Production suites now run in a preceding bounded job. Give all UI journeys
+    # a finite 75-minute window inside the unchanged 95-minute app/UI job.
+    # Individual 180-second limits, zero retries and mandatory failures remain.
+    test_timeout_seconds = 4500
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)

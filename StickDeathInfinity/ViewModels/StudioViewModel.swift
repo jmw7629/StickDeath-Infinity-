@@ -69,10 +69,8 @@ final class StudioViewModel: ObservableObject {
     var currentFrameIndex: Int {
         get { playbackFrameIndex ?? (frames.firstIndex { $0.id == document.activeFrameID } ?? 0) }
         set {
-            guard allowDocumentEditDuringInput() else { return }
             guard frames.indices.contains(newValue) else { return }
-            stopPlayback()
-            if editor.selectFrame(frames[newValue].id) { imageMoveTarget = nil; scheduleSave() }
+            selectFrame(frames[newValue].id)
         }
     }
     var currentLayerIndex: Int {
@@ -628,6 +626,22 @@ final class StudioViewModel: ObservableObject {
     private func change(_ operation: (inout StudioDocument) throws -> Void) { command { try $0.change(operation) } }
     func addFrame() { stopPlayback(); command { try $0.addFrame() } }
     func duplicateFrame() { stopPlayback(); command { try $0.duplicateFrame() } }
+    /// Timeline actions retain identity even when their visible position changes.
+    func selectFrame(_ id: String) {
+        guard allowDocumentEditDuringInput(), frames.contains(where: { $0.id == id }) else { return }
+        stopPlayback()
+        if editor.selectFrame(id) { imageMoveTarget = nil; scheduleSave() }
+    }
+    /// The typed executor stages source selection and duplication together.
+    /// One Undo therefore restores the selection from before the context menu.
+    func duplicateFrame(_ id: String) {
+        stopPlayback()
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision,
+                action: .apply([.duplicateFrame(.init(source: .id(id), result: "duplicate"))])))
+        } catch { message = error.localizedDescription }
+    }
     func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func pasteClipboard() {

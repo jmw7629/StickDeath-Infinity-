@@ -16,6 +16,8 @@ class Harness(unittest.TestCase):
         self.out = self.root / 'evidence'
         self.out.mkdir()
         self.calls = []
+        self.waits = []
+        self.signals = []
         self.env = patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'RUNNER_TEMP': str(self.root)})
         self.env.start()
 
@@ -61,8 +63,10 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False):
         calls = self.calls
+        waits = self.waits
+        signals = self.signals
 
         def inventory(cmd, **kw):
             calls.append(tuple(cmd))
@@ -85,11 +89,16 @@ class Harness(unittest.TestCase):
                 return self.returncode
 
             def wait(self, timeout=None):
-                self.returncode = test_exit if self.is_test else 0
+                waits.append((self.is_test, timeout))
+                if self.is_test and test_timeout and self.returncode is None:
+                    raise subprocess.TimeoutExpired('owned-test-child', timeout)
+                if self.returncode is None:
+                    self.returncode = test_exit if self.is_test else 0
                 return self.returncode
 
             def send_signal(self, s):
-                self.returncode = 0
+                signals.append((self.is_test, s))
+                self.returncode = -s if self.is_test else 0
 
             def terminate(self):
                 self.returncode = 0
@@ -138,7 +147,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(report['photoFixtureSeeded'])
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], 3900)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], 4500)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
@@ -155,6 +164,19 @@ class Harness(unittest.TestCase):
         report = json.loads((self.out / 'recording-status.json').read_text())
         self.assertEqual(report['uiTestExitCode'], 65)
         self.assertFalse(report['photoFixtureSeeded'])
+
+    def test_suite_deadline_fails_without_retry_and_finalizes_owned_children(self):
+        self.assertEqual(self.recording(test_timeout=True), 124)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertEqual(report['uiTestExitCode'], 124)
+        self.assertEqual(report['uiProcessExitCode'], -rec.signal.SIGINT)
+        self.assertEqual(report['recordingExitCode'], 0)
+        self.assertIsNone(report['recordingError'])
+        self.assertEqual(self.waits[0], (True, 4500))
+        self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in v or 'only-testing' in v for v in tests[0]))
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

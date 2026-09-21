@@ -40,15 +40,15 @@ struct StudioTimeline: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
-                        ForEach(vm.frames.indices, id: \.self) { i in
-                            Button(action: { vm.currentFrameIndex = i }) {
+                        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
+                            Button(action: { vm.selectFrame(frame.id) }) {
                                 ZStack(alignment: .bottomTrailing) {
                                     // Mini canvas render
                                     RoundedRectangle(cornerRadius: 4)
                                         .fill(Color.white)
                                         .frame(width: 36, height: 36)
 
-                                    StudioFrameThumbnail(vm: vm, frame: vm.frames[i])
+                                    StudioFrameThumbnail(vm: vm, frame: frame)
                                     .frame(width: 36, height: 36)
                                     .clipShape(RoundedRectangle(cornerRadius: 4))
 
@@ -65,19 +65,28 @@ struct StudioTimeline: View {
                                                 lineWidth: vm.currentFrameIndex == i ? 2 : 1)
                                 )
                             }
-                            .id(i)
+                            .id(frame.id)
+                            .accessibilityLabel("Frame \(i + 1)")
+                            .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
+                            .accessibilityIdentifier("studio.frame." + frame.id)
                             .contextMenu {
-                                Button("Duplicate frame") { vm.currentFrameIndex = i; vm.duplicateFrame() }
-                                Button("Move earlier") { vm.moveFrame(vm.frames[i].id, offset: -1) }
-                                Button("Move later") { vm.moveFrame(vm.frames[i].id, offset: 1) }
-                                Button("Delete this frame", role: .destructive) { vm.deleteFrame(vm.frames[i].id) }
+                                Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frame-menu.duplicate")
+                                Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
+                                    .disabled(i == 0)
+                                    .accessibilityIdentifier("studio.frame-menu.earlier")
+                                Button("Move later") { vm.moveFrame(frame.id, offset: 1) }
+                                    .disabled(i == vm.frames.count - 1)
+                                    .accessibilityIdentifier("studio.frame-menu.later")
+                                Button("Delete this frame", role: .destructive) { vm.deleteFrame(frame.id) }
                                     .disabled(vm.frames.count <= 1)
+                                    .accessibilityIdentifier("studio.frame-menu.delete")
                             }
                         }
                     }
                 }
-                .onChange(of: vm.currentFrameIndex) { newIndex in
-                    withAnimation { proxy.scrollTo(newIndex, anchor: .center) }
+                .onChange(of: [vm.currentFrame.id, String(vm.currentFrameIndex)]) { _ in
+                    withAnimation { proxy.scrollTo(vm.currentFrame.id, anchor: .center) }
                 }
             }
 

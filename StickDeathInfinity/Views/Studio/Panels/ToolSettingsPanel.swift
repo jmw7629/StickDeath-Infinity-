@@ -495,9 +495,13 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(action.contains("Copy") && vm.selectedElementIDs.isEmpty)
+                        .disabled(action.contains("Lock") || (action.contains("Copy") && vm.selectedElementIDs.isEmpty))
+                        .accessibilityHint(action.contains("Lock") ? "Selection locking is unavailable. Open Layers to choose a layer lock." : "")
                     }
                 }
+                Text("Selection locking is unavailable. Open Layers to choose a layer lock.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.selection.lock-unavailable")
                 Divider().background(Color.white.opacity(0.08))
                 Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 SettingsSlider(label: "Scale", value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
@@ -524,7 +528,7 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enclose whole drawings, then choose Move to drag them. Image placement and legacy text selection are unfinished.")
+                Text("Enclose whole drawings, then choose Move to drag them. To position an imported image, choose Move image on canvas or Position image. Lasso selection of images and legacy text is unfinished.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text("\(vm.selectedElementIDs.count) drawings selected")
                     .font(.specialElite(11)).foregroundColor(.sdStudioActionText)
@@ -763,7 +767,7 @@ private struct StudioImagePlacementControls: View {
                 Text("Use positive dimensions and keep the image inside the canvas.")
                     .foregroundColor(.orange).font(.specialElite(10))
             }
-            Text("Apply changes position and size in one Undo step. Originals stay intact. Rotation and image handles are unfinished.")
+            Text("Apply changes position and size in one Undo step. Originals stay intact. Use Move options to rotate by 90°. Arbitrary-angle rotation and image handles are unfinished.")
                 .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             HStack {
                 Button("Apply image") {

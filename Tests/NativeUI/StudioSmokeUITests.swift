@@ -7,6 +7,82 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testFrameContextIdentityDuplicateUndoReorderAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app), canvas = prepared.canvas
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let canvasFrame = canvas.frame, drawn = try pixels(canvas.screenshot().image)
+        func thumbnails(_ target: XCUIApplication) -> XCUIElementQuery {
+            target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
+        }
+        func contextAction(_ frameID: String, _ action: String) throws {
+            let frame = app.buttons[frameID]
+            XCTAssertTrue(frame.waitForExistence(timeout: 5) && frame.isHittable)
+            frame.press(forDuration: 0.7)
+            let control = app.buttons["studio.frame-menu." + action]
+            XCTAssertTrue(control.waitForExistence(timeout: 5) && control.isHittable && control.isEnabled)
+            control.tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
+        XCTAssertEqual(thumbnails(app).count, 1)
+        let originalID = thumbnails(app).firstMatch.identifier
+        XCTAssertEqual(app.buttons[originalID].value as? String, "Selected")
+        app.buttons["studio.add-frame"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(thumbnails(app).count, 2)
+        let blankID = thumbnails(app).allElementsBoundByIndex.first { $0.identifier != originalID }!.identifier
+        XCTAssertEqual(app.buttons[blankID].value as? String, "Selected")
+        let blank = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(drawn, blank), 50)
+        try contextAction(originalID, "duplicate")
+        XCTAssertEqual(thumbnails(app).count, 3)
+        let copyID = thumbnails(app).allElementsBoundByIndex.first {
+            $0.identifier != originalID && $0.identifier != blankID
+        }!.identifier
+        XCTAssertEqual(app.buttons[copyID].label, "Frame 2")
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(thumbnails(app).count, 2)
+        XCTAssertFalse(app.buttons[copyID].exists)
+        XCTAssertEqual(app.buttons[blankID].value as? String, "Selected", "Undo must restore selection from before the context menu")
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        try contextAction(copyID, "earlier")
+        XCTAssertEqual(app.buttons[copyID].label, "Frame 1")
+        XCTAssertEqual(app.buttons[originalID].label, "Frame 2")
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        capture(app, name: "frame-stable-identity-reordered")
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(app.buttons[copyID].label, "Frame 2")
+        try contextAction(originalID, "delete")
+        XCTAssertFalse(app.buttons[originalID].exists)
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertTrue(app.buttons[originalID].exists)
+        let retainedIDs = Set(thumbnails(app).allElementsBoundByIndex.map(\.identifier))
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: canvasFrame)
+        XCTAssertEqual(Set(thumbnails(reopened).allElementsBoundByIndex.map(\.identifier)), retainedIDs)
+        XCTAssertEqual(reopened.buttons[copyID].value as? String, "Selected")
+        XCTAssertEqual(reopened.buttons[copyID].label, "Frame 2")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(restored.screenshot().image)), 4)
+        capture(reopened, name: "frame-identities-order-selection-cold-reopened")
+    }
+
+    @MainActor
     func testWelcomeGuideNavigationAndLocalCompletion() throws {
         let app = try launchAtWelcome()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -429,6 +505,10 @@ final class StudioSmokeUITests: XCTestCase {
         canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.4)).tap()
         try selectToolbarTool("move",app:app)
         let copy = app.buttons["studio.selection.copy"]
+        let selectionLock = app.buttons["studio.selection.lock"]
+        XCTAssertTrue(selectionLock.waitForExistence(timeout: 5))
+        XCTAssertFalse(selectionLock.isEnabled, "Unimplemented selection locking must be explicitly unavailable")
+        XCTAssertTrue(app.staticTexts["studio.selection.lock-unavailable"].exists)
         XCTAssertTrue(copy.isHittable && copy.isEnabled); copy.tap()
         app.buttons["studio.tool-settings.close"].tap()
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Copy must not dirty the saved document")
@@ -2066,6 +2146,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(example.waitForExistence(timeout: 5) && example.isHittable); example.tap()
         let input = try localMotionControl("spatter.motion.input", app: app)
         XCTAssertEqual(input.value as? String, "Set selected audio clip volume to 40%.")
+        let guidance = try localMotionControl("spatter.local-edit.guidance", app: app, scrollUp: false)
+        XCTAssertTrue(guidance.label.contains("Volume uses 0–100%"))
+        XCTAssertTrue(guidance.label.contains("Fade durations use seconds"))
+        XCTAssertFalse(guidance.label.contains("canvas percentages"))
+        capture(app, name: "spatter-audio-contextual-guidance")
         try localMotionControl("spatter.motion.apply", app: app).tap()
         let receipt = try localMotionControl("spatter.motion.result", app: app)
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
@@ -2108,6 +2193,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(open.waitForExistence(timeout: 8)); open.tap()
         let motion = app.buttons["spatter.studio.local-motion"]
         XCTAssertTrue(motion.waitForExistence(timeout: 8)); XCTAssertTrue(motion.isHittable); motion.tap()
+        let guidance = try localMotionControl("spatter.local-edit.guidance", app: app)
+        XCTAssertTrue(guidance.label.contains("Positions use canvas percentages"))
+        XCTAssertFalse(guidance.label.contains("Fade durations"))
         let instruction = "Append 5 frames of a blue outlined circle moving from (30%, 40%) to (70%, 60%), radius 6%, line width 12 px."
         let input = try localMotionControl("spatter.motion.input", app: app)
         input.tap(); input.typeText(instruction)
