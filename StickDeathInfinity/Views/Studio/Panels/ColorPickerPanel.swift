@@ -44,6 +44,7 @@ struct ColorPickerPanel: View {
                 Text(vm.strokeColorHex.uppercased())
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.7))
+                    .accessibilityIdentifier("studio.color.current")
 
                 Spacer()
             }
@@ -64,6 +65,8 @@ struct ColorPickerPanel: View {
                                     .stroke(vm.strokeColorHex == hex ? Color.white : Color.white.opacity(0.1), lineWidth: vm.strokeColorHex == hex ? 2 : 1)
                             )
                     }
+                    .accessibilityLabel("Color " + hex)
+                    .accessibilityIdentifier("studio.color.preset." + hex)
                 }
             }
             .padding(.horizontal, 16)

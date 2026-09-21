@@ -47,7 +47,35 @@ def main() -> None:
                 for d in devices if d["udid"] == args.udid and d.get("isAvailable") and d["state"] == "Booted"]
     if len(selected) != 1:
         raise ValueError("Use the explicit available booted iOS test simulator")
+    wait_for_command_readiness(args.udid, output)
     seed_verified_fixture(args.udid, output)
+
+
+def wait_for_command_readiness(udid: str, output: pathlib.Path) -> None:
+    """One read-only process-launch acknowledgement after native bootstatus.
+
+    c080's bootstatus finished, but addmedia and all three diagnostic simctl
+    commands produced no output before their limits. Probe the explicit owned
+    device once before importing media; never retry the import or treat an
+    unavailable command channel as successful fixture setup.
+    """
+    evidence = Evidence(udid, output)
+    try:
+        started = time.monotonic()
+        command = ["xcrun", "simctl", "spawn", udid, "launchctl", "list"]
+        result = run_bounded(command, started + 121, work_deadline=started + 120)
+        evidence.json('image-seed-readiness.json', {
+            'simulatorUDID': udid, 'stage': 'command-readiness',
+            'timeoutSeconds': 120, 'attempts': 1, 'readOnly': True,
+            'result': result_projection(result)})
+        if result.spawn_error:
+            raise OSError('The simulator readiness command could not be started')
+        if result.timed_out:
+            raise subprocess.TimeoutExpired(command, 120)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command)
+    finally:
+        evidence.close()
 
 
 def seed_verified_fixture(udid: str, output: pathlib.Path) -> None:

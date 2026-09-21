@@ -2,13 +2,35 @@
 
 Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
+## Current owner scope (2026-09-19)
+
+- Studio is the first delivery priority. Keep its existing layout, snapping primary toolbar and sole dismissible options popup.
+- Remove all user-to-user messaging, text chat, voice calling and video calling. Spatter remains the Studio assistant. These directions supersede every older requirement to retain messenger/calls, including historical brain packs and the handoff.
+- Rooms are invitation-based collaboration on explicitly shared Studio projects. Forwardable room invites use a revocable, expiring token/code, never an account auth token. Both creators must agree; possession of a code alone must not expose a private project. No chat, camera, microphone, whole-device screen sharing or call billing.
+- War Room is a contest between submitted videos, with viewers choosing their favorite. Use genuine moderated submissions and authenticated, abuse-resistant votes. Badges and win/loss display are optional; hide them by default. Never invent scores, matches, viewers or achievements.
+- Official-channel YouTube publishing and social marketing require creator permission, asset/contributor rights and moderation before execution. Saving, opening or exporting a private draft never authorizes an upload. Use separate, clearly disclosed permissions for channel publication and marketing reuse, with revocation/cancellation handling. Add a small watercolor SDI mark at bottom right on the approved channel rendition; retain the editable original.
+- Removing chat does not eliminate privacy, IP or moderation responsibilities. Do not promise zero legal risk. See docs/PRODUCT_SCOPE_2026_09_19.md for the release contract.
+- The owner subsequently resumed uninterrupted single-agent delivery. Reuse the existing continuation mechanism and current coordinator lock; do not restart old dispatchers or other workers.
+- The full remaining delivery contract is GitHub issue #116 and its linked acceptance tasks. Keep a dependency-ordered queue of 50–100 next items while substantive work remains, deduplicate discoveries and close only with evidence. Do not manufacture work after completion.
+- Every Spatter-generated video requires the owner's approval of the exact render in the admin command center before feed, channel or social release. Daily generation produces private drafts until approval; revisions invalidate approval.
+- Support Apple, Google, GitHub and Microsoft identity with secure session restoration. Admin roles are server-authorized; provision owner credentials privately with MFA, never from a password embedded in source or an issue.
+- The requested monthly price points are USD 4.99 and USD 9.99. Annual amounts and entitlements require explicit configuration; reuse the existing Stripe account after verification and implement compliant native purchasing. No live charges as tests or new paid services.
+- Editable projects and originals remain on-device. Keep only essential identity, access, vote, consent, billing and job metadata server-side; temporary media has bounded retention and is deleted only after verified publication or documented expiry. Never delete the user's only original.
+
+## Continuing implementation directions (2026-09-12, amended above)
+
+- Use one implementation agent to preserve tokens. Do not spawn, resume or delegate specialists unless the owner changes that direction. Existing independent foundation reviews keep their original scope; self-review does not become independent approval.
+- Keep the original Studio layout and white floating primary toolbar, including vertical snapping at either canvas edge. Remove the secondary right toolbar. Tool settings use the single existing dismissible options popup; Hand/Zoom/Fit belong there too.
+- Audio follows the owner's supplied library/timeline screenshots and uses actual licensed free sounds, measured waveforms and real rendered output. Connected features remaining in the September 19 scope must show truthful unavailable states until verified.
+- Continue safe implementation and verification without another continue prompt. Preserve the current exact-head CI outcome before advancing the workstream; do not merge failed or unreviewed changes.
+
 ## Current ownership (2026-09-08)
 
-- Codex coordinates implementation, bounded specialist work, tests and independent exact-head review.
-- Continue the existing PR #111 recovery workstream while appropriate; do not start competing recovery branches.
+- Codex coordinates implementation and tests as a single agent. Required independent review remains a separate gate and must not be relabelled self-review.
+- Continue the current PR #115 workstream after verifying its actual head; do not start competing recovery branches.
 - The owner authorizes eligible squash merges only after required checks pass and independent review, plus isolated safe review deployments. A web companion does not prove native compilation.
 - Use a single coordinator lock and disjoint file ownership. Preserve dirty work, historical projects, private references and other projects.
-- Native SwiftUI Studio is first priority. Community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope.
+- Native SwiftUI Studio is first priority. Community, collaboration, calendar, challenges, publishing and profile remain in scope, subject to the September 19 changes above. Messaging and calls are removed.
 - Do not restart the former dispatcher or the separate STICKDEATH_BYTE/animation/G2 program.
 - These directions supersede the legacy executor roles and bridge-only commit/deployment restrictions below for owner-directed Codex work. All security, IP, preservation and truthful evidence gates remain applicable.
 

@@ -3,6 +3,7 @@
 # app package checkouts and one verified fresh CI phone on an installed runtime.
 set -euo pipefail
 : "${RUNNER_TEMP:?Run on the approved ephemeral macOS CI runner}"
+: "${GITHUB_OUTPUT:?Run as a GitHub Actions step}"
 : "${SDI_SMOKE_SIMULATOR_UDID:?Create and verify one fresh CI simulator}"
 [[ "${GITHUB_ACTIONS:-}" == "true" ]] || { echo 'CI runner required'; exit 2; }
 git diff --quiet HEAD -- || { echo 'Commit tracked changes before recording evidence'; exit 2; }
@@ -13,6 +14,9 @@ sdi_derived="$RUNNER_TEMP/sdi-native-build"
 sdi_package_cache="$sdi_derived/SourcePackages"
 sdi_results="$sdi_run/StudioSmoke.xcresult"
 printf '%s\n' "$sdi_run" > "$RUNNER_TEMP/sdi-native-smoke-artifact-path.txt"
+# Register the owned directory before any child can be interrupted. The upload
+# step must retain partial logs even if the runner never reaches normal cleanup.
+printf 'artifact_path=%s\n' "$sdi_run" >> "$GITHUB_OUTPUT"
 trap 'echo "Native smoke evidence: $sdi_run"' EXIT
 python3 "$sdi_script_dir/select_simulator.py" --copy-marker "$sdi_run" \
   --expected-udid "$SDI_SMOKE_SIMULATOR_UDID" --source "$sdi_commit"

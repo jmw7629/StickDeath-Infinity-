@@ -93,7 +93,31 @@ struct StudioFrameRenderer {
                             width: placement.width / canvasSize.width * size.width,
                             height: placement.height / canvasSize.height * size.height)
                     } else { rect = CGRect(origin: .zero, size: size) }
-                    local.draw(Image(decorative: image.image, scale: 1), in: rect)
+                    // Isolate the transform from drawing elements on this layer.
+                    // Reflect in viewport coordinates about the placed center;
+                    // canvas, thumbnails and every export share these pixels.
+                    var picture = local
+                    if let turns = frame.rasterQuarterTurns, let placement = frame.rasterPlacement {
+                        // Rotate in document coordinates. Conjugating viewport
+                        // scale keeps thumbnails/non-square views geometrically correct.
+                        picture.translateBy(x: rect.midX, y: rect.midY)
+                        picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
+                        if let reflection = frame.rasterReflection {
+                            picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                        }
+                        picture.rotate(by: .degrees(Double(turns) * 90))
+                        let width = turns % 2 == 0 ? placement.width : placement.height
+                        let height = turns % 2 == 0 ? placement.height : placement.width
+                        picture.draw(Image(decorative: image.image, scale: 1),
+                            in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
+                    } else {
+                    if let reflection = frame.rasterReflection {
+                        picture.translateBy(x: rect.midX, y: rect.midY)
+                        picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                        picture.translateBy(x: -rect.midX, y: -rect.midY)
+                    }
+                    picture.draw(Image(decorative: image.image, scale: 1), in: rect)
+                    }
                 }
                 for element in frame.elements where element.layerID == layer.id {
                     var elementContext = local
@@ -129,6 +153,142 @@ struct StudioFrameRenderer {
         let scaleX = size.width / canvasSize.width
         let scaleY = size.height / canvasSize.height
         let color = Color(hex: element.color)
+        if element.eraser != nil || element.text != nil || element.transform != nil { context.clip(to: Path(CGRect(origin: .zero, size: size))) }
+        if let t = element.transform {
+            try t.validate()
+            // Conjugate by the viewport scale; rotation remains correct even
+            // when the destination aspect ratio differs from document pixels.
+            context.concatenate(CGAffineTransform(a:t.a,b:t.b*scaleY/scaleX,c:t.c*scaleX/scaleY,
+                                                  d:t.d,tx:t.tx*scaleX,ty:t.ty*scaleY))
+        }
+        if let translation = element.translation {
+            try translation.validate()
+            context.translateBy(x: translation.x * scaleX, y: translation.y * scaleY)
+        }
+        if let reflection = element.reflection {
+            try reflection.validate()
+            context.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+        }
+
+        if let text = element.text, let origin = element.points.first {
+            try text.validate(element: element)
+            let style = text.style
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            context.translateBy(x: origin.x + style.boxWidth / 2, y: origin.y + style.boxHeight / 2)
+            context.rotate(by: .degrees(style.rotation))
+            let box = CGRect(x: -style.boxWidth/2, y: -style.boxHeight/2, width: style.boxWidth, height: style.boxHeight)
+            context.clip(to: Path(box))
+            let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
+            var font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            if style.italic { font = font.italic() }
+            // Resolve each actual shaped line using the same font engine used
+            // to draw it. Alignment applies per wrapped line, not just to the
+            // bounding box. No UI-only View modifiers or estimated glyph widths.
+            func resolve(_ value: String) -> GraphicsContext.ResolvedText {
+                context.resolve(Text(value).font(font).foregroundColor(color))
+            }
+            let unlimited = CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            let lineHeight = max(1, ceil(resolve("Ag").measure(in: unlimited).height))
+            var y = box.minY
+            for paragraph in text.paragraphs {
+                guard y < box.maxY else { break }
+                let characters = Array(paragraph)
+                if characters.isEmpty { y += lineHeight; continue }
+                var start = 0
+                while start < characters.count && y < box.maxY {
+                    var low = start + 1, high = characters.count, end = start + 1
+                    while low <= high {
+                        let candidate = (low + high) / 2
+                        let measured = resolve(String(characters[start..<candidate])).measure(in: unlimited).width
+                        if measured <= style.boxWidth { end = candidate; low = candidate + 1 }
+                        else { high = candidate - 1 }
+                    }
+                    if end < characters.count, let space = (start..<end).last(where: { characters[$0].isWhitespace }), space > start {
+                        end = space + 1
+                    }
+                    let value = String(characters[start..<end])
+                    let line = resolve(value), width = line.measure(in: unlimited).width
+                    let x = box.minX + (style.alignment == .right ? style.boxWidth-width : style.alignment == .center ? (style.boxWidth-width)/2 : 0)
+                    context.draw(line, at: CGPoint(x: x, y: y), anchor: .topLeading)
+                    y += lineHeight; start = end
+                }
+            }
+            return
+        }
+
+        if let eraser = element.eraser {
+            try eraser.validate(element: element)
+            guard element.opacity > 0 else { return }
+            // One opaque mask, then one destination-out composite. Crossing a
+            // stroke over itself cannot multiply its captured strength.
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            context.blendMode = .destinationOut
+            context.drawLayer { mask in
+                mask.opacity = 1; mask.blendMode = .normal
+                if eraser.mode == .soft { mask.addFilter(.blur(radius: element.width * 0.2)) }
+                let first = element.points[0]
+                if element.points.count == 1 {
+                    mask.fill(Path(ellipseIn: CGRect(x: first.x - element.width / 2,
+                        y: first.y - element.width / 2, width: element.width, height: element.width)), with: .color(.black))
+                } else {
+                    var path = Path(); path.move(to: CGPoint(x: first.x, y: first.y))
+                    for point in element.points.dropFirst() { path.addLine(to: CGPoint(x: point.x, y: point.y)) }
+                    let outline = path.strokedPath(StrokeStyle(lineWidth: element.width, lineCap: .round, lineJoin: .round))
+                    mask.fill(outline,
+                        with: .color(.black), style: FillStyle(eoFill: false))
+                }
+            }
+            return
+        }
+
+        if let mask = element.fillMask {
+            try mask.validate()
+            guard element.tool == .fill, element.brush == nil, element.shape == nil,
+                  CGFloat(mask.width) == canvasSize.width, CGFloat(mask.height) == canvasSize.height else {
+                throw StudioFillMask.Failure.invalid
+            }
+            // Coverage is already antialiased by the bounded region operation.
+            // Group equal coverage so adjacent scanlines do not create seams.
+            var paths: [UInt8: Path] = [:]
+            for span in mask.spans {
+                paths[span.alpha, default: Path()].addRect(CGRect(x: span.start, y: span.row,
+                    width: span.end - span.start, height: 1))
+            }
+            context.scaleBy(x: scaleX, y: scaleY)
+            for alpha in paths.keys.sorted() {
+                var coverage = context
+                coverage.opacity = element.opacity * Double(alpha) / 255
+                coverage.fill(paths[alpha]!, with: .color(color), style: FillStyle(antialiased: false))
+            }
+            return
+        }
+
+        if let shape = element.shape {
+            try shape.validate(tool: element.tool)
+            guard element.brush == nil else { throw StudioShapeDescriptor.Failure.invalid }
+            guard element.points.count >= 2 else { return }
+            let first = element.points[0], last = element.points[1]
+            let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
+                width: abs(last.x - first.x), height: abs(last.y - first.y))
+            let path: Path
+            if element.tool == .circle { path = Path(ellipseIn: rect) }
+            else {
+                let radius = min(CGFloat(shape.cornerRadius), min(rect.width, rect.height) / 2)
+                path = Path(roundedRect: rect, cornerRadius: radius)
+            }
+            context.scaleBy(x: scaleX, y: scaleY)
+            context.opacity = element.opacity
+            // Apply element opacity once to the whole shape, including the
+            // overlap between its fill and stroke. Layer opacity stays outside.
+            context.drawLayer { drawing in
+                drawing.opacity = 1
+                if let fill = shape.fillColor { drawing.fill(path, with: .color(Color(hex: fill))) }
+                drawing.stroke(path, with: .color(color), lineWidth: element.width)
+            }
+            return
+        }
 
         if element.brush != nil {
             guard let brush else { throw StudioDocumentError.invalid("A prepared brush is missing.") }

@@ -98,7 +98,18 @@ private func rejects(_ action: () throws -> Void) throws {
         do { try await run() } catch { print("STUDIO_IMAGE_INTEGRATION_TESTS=FAIL \(error)"); exit(1) }
     }
     static func run() async throws {
-        let root = fm.temporaryDirectory.appendingPathComponent("sdi-image-integration-" + UUID().uuidString)
+        // Large, real snapshot fixtures may use an explicitly supplied scratch
+        // volume. Foundation can ignore TMPDIR on macOS. CI keeps its default.
+        var scratchParent = fm.temporaryDirectory
+        if let path = ProcessInfo.processInfo.environment["SDI_IMAGE_TEST_SCRATCH_DIRECTORY"] {
+            try require(path.hasPrefix("/"), "Image test scratch must be an absolute directory")
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            let values = try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            try require(values.isDirectory == true && values.isSymbolicLink != true,
+                        "Image test scratch must be an existing directory, not a symbolic link")
+            scratchParent = directory
+        }
+        let root = scratchParent.appendingPathComponent("sdi-image-integration-" + UUID().uuidString)
         try fm.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? fm.removeItem(at: root) }
         let original = try png(), image = try await imported(original, in: root)

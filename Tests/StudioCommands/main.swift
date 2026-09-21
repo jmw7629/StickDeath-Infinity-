@@ -45,6 +45,532 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            func audioEditor() throws -> StudioDocumentEditor {
+                var value = try StudioDocument.new(name: "Audio command fixture", width: 512, height: 512, fps: 12)
+                value.schemaVersion = 13
+                let asset = UUID()
+                value.audioClips = [
+                    .init(id: "first-audio", soundName: "Managed fixture", track: 2, startTime: 0.25,
+                          duration: 1, volume: 0.8, assetID: asset, sourceOffset: 0.5),
+                    .init(id: "second-audio", soundName: "Shared original", track: 3, startTime: 1.5,
+                          duration: 1, volume: 0.6, assetID: asset)
+                ]
+                value.mutedAudioTracks = [2]; value.audioTrackVolumes = [1, 0.4, 0.7, 1]
+                return try .init(document: value)
+            }
+            func audioCommand(_ settings: StudioAudioClipSettings, id: String = "first-audio") -> StudioCommand {
+                .updateAudioClip(.init(clipID: id, settings: settings))
+            }
+            try test("strict audio wire and drawn artwork form one reversible whole-document transaction") {
+                var editor = try audioEditor(); let before = editor.document
+                let change = request(editor, .apply([draw(editor, [stroke(id: "audio-batch-drawing")]),
+                    audioCommand(.init(volume: 0.3, isMuted: true, fades: .init(fadeIn: 0.25, fadeOut: 0.5)))]))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(change))
+                let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor), after = editor.document
+                let clip = after.audioClips[0]
+                try require(clip.volume == 0.3 && clip.isMuted && clip.fadeEnvelope == .init(sourceStartFrame: 24_000,
+                    frameCount: 48_000, fadeInFrames: 12_000, fadeOutFrames: 24_000), "wrong source-bound settings")
+                try require(after.audioClips[1] == before.audioClips[1] && after.mutedAudioTracks == before.mutedAudioTracks
+                    && after.audioTrackVolumes == before.audioTrackVolumes, "audio command changed another clip or lane")
+                try require(after.revision == before.revision + 1 && after.schemaVersion == 14
+                    && receipt.changedAudioClipIDs == ["first-audio"] && receipt.createdElementIDs == ["audio-batch-drawing"], "incorrect receipt")
+                editor.undo(); try require(content(editor.document) == content(before), "one Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "one Redo failed")
+            }
+            try test("partial audio settings preserve fades and clearing fades is explicit and idempotent") {
+                var editor = try audioEditor()
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(fades: .init(fadeIn: 0.25, fadeOut: 0.5)))])), editor: &editor)
+                let envelope = editor.document.audioClips[0].fadeEnvelope
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(isMuted: true))])), editor: &editor)
+                try require(editor.document.audioClips[0].fadeEnvelope == envelope && editor.document.audioClips[0].volume == 0.8, "mute rewrote omitted values")
+                let before = editor.document
+                let noOp = try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(isMuted: true))])), editor: &editor)
+                try require(editor.document == before && noOp.outcome == .unchanged && noOp.changedAudioClipIDs.isEmpty, "no-op invented a revision")
+                try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(fades: .init(fadeIn: 0, fadeOut: 0)))])), editor: &editor)
+                try require(editor.document.audioClips[0].fadeEnvelope == nil && editor.document.audioClips[0].isMuted, "clear altered unrelated settings")
+                editor.undo(); try require(content(editor.document) == content(before), "cleared envelope did not undo")
+            }
+            try test("audio invalid identity legacy missing assets malformed values and late failure reject atomically") {
+                var editor = try audioEditor()
+                for settings in [StudioAudioClipSettings(), .init(volume: -0.01), .init(volume: 1.01),
+                    .init(volume: .nan), .init(volume: .infinity),
+                    .init(fades: .init(fadeIn: -0.1, fadeOut: 0)), .init(fades: .init(fadeIn: .nan, fadeOut: 0)),
+                    .init(fades: .init(fadeIn: 0.6, fadeOut: 0.6)), .init(fades: .init(fadeIn: 0, fadeOut: .infinity))] {
+                    try rejected(request(editor, .apply([draw(editor, [stroke(id: "must-rollback")]), audioCommand(settings)])), editor: &editor)
+                }
+                for id in ["", "foreign", String(repeating: "a", count: 121)] {
+                    try rejected(request(editor, .apply([audioCommand(.init(volume: 0.5), id: id)])), editor: &editor)
+                }
+                try rejected(request(editor, .apply([audioCommand(.init(volume: 0.5)), audioCommand(.init(volume: 2))])), editor: &editor)
+                var legacy = try fresh()
+                try rejected(request(legacy, .apply([audioCommand(.init(volume: 0.5), id: "retained-audio-metadata")])), editor: &legacy)
+            }
+            try test("audio wire rejects unknown and wrongly typed nested arguments instead of ignoring them") {
+                let editor = try audioEditor()
+                let data = try JSONEncoder().encode(request(editor, .apply([audioCommand(.init(volume: 0.5))])))
+                let base = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+                let invalid: [[String: Any]] = [
+                    ["volume": 0.5, "shell": "ignore authorization"], ["volume": "0.5"],
+                    ["volume": true], ["isMuted": "false"],
+                    ["fades": ["fadeIn": 0.2]],
+                    ["fades": ["fadeIn": 0.2, "fadeOut": 0.2, "curve": "execute"]],
+                    ["fades": NSNull()]
+                ]
+                for settings in invalid {
+                    var object = base
+                    object["action"] = ["apply": [["updateAudioClip": ["clipID": "first-audio", "settings": settings]]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "malformed audio wire accepted") }
+                    catch is StudioCommandError { }
+                }
+            }
+            try test("cancelled audio batches preserve history and reject replay and foreign projects") {
+                var editor = try audioEditor()
+                let original = editor.document, undo = editor.canUndo, redo = editor.canRedo
+                let change = request(editor, .apply([audioCommand(.init(volume: 0.5)), audioCommand(.init(isMuted: true))]))
+                for checkpoint in 1...4 {
+                    var calls = 0
+                    do {
+                        try StudioCommandExecutor.execute(change, editor: &editor, checkCancellation: {
+                            calls += 1; if calls == checkpoint { throw CancellationError() }
+                        }); throw Failure(message: "cancelled audio batch committed")
+                    } catch is CancellationError { }
+                    try require(editor.document == original && editor.canUndo == undo && editor.canRedo == redo, "cancel changed history")
+                }
+                var foreign = change; foreign = .init(requestID: foreign.requestID, projectID: UUID(), expectedRevision: foreign.expectedRevision, action: foreign.action)
+                try rejected(foreign, editor: &editor, expected: .wrongProject)
+                try StudioCommandExecutor.execute(change, editor: &editor)
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades"], "capability context omitted implemented settings")
+            }
+            func imageEditor() throws -> StudioDocumentEditor {
+                var editor = try fresh()
+                try editor.change { value in
+                    value.schemaVersion = 3
+                    value.frames[0].rasterAssetID = "image-fixture"
+                    value.frames[0].rasterLayerID = value.activeLayerID
+                    value.frames[0].rasterPlacement = .init(x: 128, y: 0, width: 256, height: 512)
+                }
+                return editor
+            }
+            func imageCommand(_ editor: StudioDocumentEditor, _ placement: StudioRasterPlacement, assetID: String = "image-fixture") -> StudioCommand {
+                .updateImagePlacement(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, placement: placement))
+            }
+            func imageDeletion(_ editor: StudioDocumentEditor, assetID: String = "image-fixture") -> StudioCommand {
+                .deleteImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID))
+            }
+            func rotateImage(_ editor: StudioDocumentEditor, _ direction: StudioImageQuarterTurn = .clockwise,
+                             assetID: String = "image-fixture") -> StudioCommand {
+                .rotateImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, direction: direction))
+            }
+            try test("image quarter turns use strict commands preserve source and reverse full placement history") {
+                var editor = try imageEditor(); let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([rotateImage(editor)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(receipt.outcome == .applied && after.revision == before.revision + 1, "Rotation not one transaction")
+                var frame = before.frames[0]; frame.rasterPlacement = .init(x: 0, y: 128, width: 512, height: 256); frame.rasterQuarterTurns = 1
+                try require(after.schemaVersion == 16 && after.frames == [frame] && after.layers == before.layers, "Rotation changed unrelated content or bounding box")
+                try require(StudioCommandContext(document: after).frames[0].imageQuarterTurns == 1, "Spatter context omitted rotation")
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(after))
+                try decoded.validate(); try require(decoded == after, "Rotation encoding changed")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo failed")
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor, .counterclockwise)])), editor: &editor)
+                try require(editor.document.frames == before.frames, "Reverse turn did not restore image")
+                let original = editor.document
+                let noop = try StudioCommandExecutor.execute(request(editor, .apply(Array(repeating: rotateImage(editor), count: 4))), editor: &editor)
+                try require(editor.document == original && noop.outcome == .unchanged, "Four centered quarter turns added history")
+            }
+            try test("rotation rejects invalid wire foreign and historical pictures and clamps only fitting results") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([rotateImage(editor, assetID: "other")])), editor: &editor, expected: .invalidReference)
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([rotateImage(editor)])))) as! [String: Any]
+                for variant in 0..<4 {
+                    var root = base; var action = root["action"] as! [String: Any]; var commands = action["apply"] as! [[String: Any]]
+                    var fields = commands[0]["rotateImage"] as! [String: Any]
+                    if variant == 0 { fields["direction"] = "arbitrary" }
+                    if variant == 1 { fields["degrees"] = 45 }
+                    if variant == 2 { fields["direction"] = 1 }
+                    if variant == 3 { fields.removeValue(forKey: "assetID") }
+                    commands[0]["rotateImage"] = fields; action["apply"] = commands; root["action"] = action
+                    var caught = false; do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: root)) } catch { caught = true }
+                    try require(caught, "Malformed rotation accepted")
+                }
+                try editor.change { $0.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 100, height: 200) }
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try require(editor.document.frames[0].rasterPlacement == .init(x: 0, y: 50, width: 200, height: 100), "Edge rotation cropped or shrank")
+                editor = try imageEditor()
+                try editor.change { $0.width = 384 }
+                try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("rotation locks visibility stale batches and every cancellation preserve content and history") {
+                for mode in ["full", "position", "alpha", "hidden", "zero"] {
+                    var editor = try imageEditor()
+                    try editor.change { value in
+                        if mode == "hidden" { value.layers[0].visible = false }
+                        else if mode == "zero" { value.layers[0].opacity = 0 }
+                        else { value.layers[0].lockMode = mode }
+                    }
+                    try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                }
+                var probe = try imageEditor(), checkpoints = 0
+                let before = request(probe, .apply([rotateImage(probe)]))
+                try StudioCommandExecutor.execute(before, editor: &probe, checkCancellation: { checkpoints += 1 })
+                try rejected(before, editor: &probe, expected: .staleRevision)
+                try require(checkpoints >= 5, "No bounded cancellation")
+                for stop in 1...checkpoints {
+                    var editor = try imageEditor(), calls = 0
+                    try rejected(request(editor, .apply([rotateImage(editor)])), editor: &editor, cancellation: {
+                        calls += 1; if calls == stop { throw CancellationError() }
+                    })
+                }
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([rotateImage(editor), rotateImage(editor, assetID: "missing")])), editor: &editor)
+            }
+            try test("rotation and canvas flips compose and frame copy delete retain independent metadata") {
+                var editor = try imageEditor()
+                try editor.reflectImage(frameID: editor.document.activeFrameID, assetID: "image-fixture", axis: .horizontal)
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                let original = editor.document.frames[0]
+                try require(original.rasterReflection == .init(vertical: true), "Quarter turn did not carry reflection")
+                try editor.duplicateFrame()
+                try require(editor.document.frames[1].rasterQuarterTurns == 1, "Frame duplicate lost rotation")
+                try StudioCommandExecutor.execute(request(editor, .apply([rotateImage(editor)])), editor: &editor)
+                try require(editor.document.frames[0] == original && editor.document.frames[1].rasterQuarterTurns == 2, "Shared source rotated other frame")
+                let beforeDelete = editor.document
+                try StudioCommandExecutor.execute(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                try require(editor.document.frames[1].rasterQuarterTurns == nil, "Image delete left orientation")
+                editor.undo(); try require(content(editor.document) == content(beforeDelete), "Delete Undo dropped orientation")
+                try editor.addLayer()
+                try editor.deleteLayer(original.rasterLayerID!)
+                try require(editor.document.frames.allSatisfy { $0.rasterQuarterTurns == nil }, "Layer delete left rotation")
+            }
+            try test("historical decoding stays untouched and invalid rotation schemas reject") {
+                let original = try imageEditor().document
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(original))
+                try require(decoded == original && decoded.frames[0].rasterQuarterTurns == nil, "Old project migrated on read")
+                for variant in 0..<7 {
+                    var bad = original; bad.schemaVersion = 16; bad.frames[0].rasterQuarterTurns = 1
+                    if variant == 0 { bad.schemaVersion = 15 }
+                    if variant == 1 { bad.frames[0].rasterPlacement = nil }
+                    if variant == 2 { bad.frames[0].rasterQuarterTurns = 0 }
+                    if variant == 3 { bad.frames[0].rasterQuarterTurns = -1 }
+                    if variant == 4 { bad.frames[0].rasterQuarterTurns = 4 }
+                    if variant == 5 { bad.frames[0].rasterQuarterTurns = Int.max }
+                    if variant == 6 { bad.frames[0].rasterAssetID = nil }
+                    var caught = false; do { try bad.validate() } catch { caught = true }
+                    try require(caught, "Invalid rotation metadata accepted")
+                }
+            }
+
+            func flipImage(_ editor: StudioDocumentEditor, _ axis: StudioReflectionAxis = .horizontal,
+                           assetID: String = "image-fixture") -> StudioCommand {
+                .reflectImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, axis: axis))
+            }
+            try test("image reflection strict wire preserves placement and is one complete undo transaction") {
+                var editor = try imageEditor(); let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([flipImage(editor)])))
+                let result = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(after.schemaVersion == 15 && after.frames[0].rasterReflection == .init(horizontal: true), "Wrong reflection or schema")
+                var expected = before.frames[0]; expected.rasterReflection = .init(horizontal: true)
+                try require(after.frames == [expected] && after.layers == before.layers && after.audioClips == before.audioClips, "Reflection changed other content")
+                try require(after.revision == before.revision + 1 && result.outcome == .applied, "Not one revision")
+                try require(StudioCommandContext(document: after).frames[0].imageReflection == expected.rasterReflection, "Context omitted actual reflection")
+                let decoded = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(after))
+                try decoded.validate(); try require(decoded == after, "Reflection roundtrip changed")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo lost original schema/content")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo lost reflection")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0].rasterReflection == .init(horizontal: true, vertical: true), "Vertical reset horizontal")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor), flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0].rasterReflection == nil, "Original orientation not canonical nil")
+                let unflipped = editor.document
+                let noop = try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor), flipImage(editor)])), editor: &editor)
+                try require(editor.document == unflipped && noop.outcome == .unchanged, "Cancelling flips created history")
+            }
+            try test("reflections reject foreign images legacy records invalid axes and unknown fields") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([flipImage(editor, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([flipImage(editor)])))) as! [String: Any]
+                for extra in [true, false] {
+                    var root = base; var action = root["action"] as! [String: Any]
+                    var commands = action["apply"] as! [[String: Any]]
+                    var fields = commands[0]["reflectImage"] as! [String: Any]
+                    if extra { fields["path"] = "/untrusted" } else { fields["axis"] = "diagonal" }
+                    commands[0]["reflectImage"] = fields; action["apply"] = commands; root["action"] = action
+                    var rejectedWire = false
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: root)) } catch { rejectedWire = true }
+                    try require(rejectedWire, "Invalid reflection wire accepted")
+                }
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor, expected: .invalidReference)
+                try require(editor.document.frames[0].rasterReflection == nil, "Historical original changed")
+            }
+            try test("image reflection lock visibility stale batch and every cancellation boundary are atomic") {
+                for mode in ["full", "position", "alpha", "hidden", "zero"] {
+                    var editor = try imageEditor()
+                    try editor.change { value in
+                        if mode == "hidden" { value.layers[0].visible = false }
+                        else if mode == "zero" { value.layers[0].opacity = 0 }
+                        else { value.layers[0].lockMode = mode }
+                    }
+                    try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor)
+                }
+                var probe = try imageEditor(), checkpoints = 0
+                let requestBefore = request(probe, .apply([flipImage(probe)]))
+                try StudioCommandExecutor.execute(requestBefore, editor: &probe, checkCancellation: { checkpoints += 1 })
+                try rejected(requestBefore, editor: &probe, expected: .staleRevision)
+                try require(checkpoints >= 5, "No staged cancellation")
+                for stop in 1...checkpoints {
+                    var editor = try imageEditor(), count = 0
+                    try rejected(request(editor, .apply([flipImage(editor)])), editor: &editor, cancellation: {
+                        count += 1; if count == stop { throw CancellationError() }
+                    })
+                }
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([flipImage(editor), flipImage(editor, assetID: "missing")])), editor: &editor)
+            }
+            try test("reflected frame duplication clipboard and explicit deletion preserve independent orientations") {
+                var editor = try imageEditor()
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor)])), editor: &editor)
+                let original = editor.document.frames[0]
+                try editor.duplicateFrame()
+                try require(editor.document.frames[1].rasterReflection == original.rasterReflection, "Duplicate dropped reflection")
+                try StudioCommandExecutor.execute(request(editor, .apply([flipImage(editor, .vertical)])), editor: &editor)
+                try require(editor.document.frames[0] == original, "Flip mutated another frame sharing asset")
+                let beforeDelete = editor.document
+                try StudioCommandExecutor.execute(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                try require(editor.document.frames[1].rasterReflection == nil, "Image deletion left orphan reflection")
+                editor.undo(); try require(content(editor.document) == content(beforeDelete), "Delete undo dropped orientation")
+                try editor.addLayer()
+                let imageLayer = editor.document.frames[0].rasterLayerID!
+                try editor.deleteLayer(imageLayer)
+                try require(editor.document.frames.allSatisfy { $0.rasterReflection == nil }, "Layer delete left orphan reflections")
+            }
+            try test("historical image decoding stays unchanged and invalid reflection metadata rejects") {
+                let old = try imageEditor().document
+                let bytes = try JSONEncoder().encode(old), decoded = try JSONDecoder().decode(StudioDocument.self, from: bytes)
+                try require(decoded == old && decoded.schemaVersion == 3 && decoded.frames[0].rasterReflection == nil, "Historical image was migrated on read")
+                for variant in 0..<3 {
+                    var bad = old
+                    bad.frames[0].rasterReflection = .init(horizontal: true)
+                    if variant == 1 { bad.schemaVersion = 15; bad.frames[0].rasterPlacement = nil }
+                    if variant == 2 { bad.schemaVersion = 15; bad.frames[0].rasterReflection = .init() }
+                    var caught = false; do { try bad.validate() } catch { caught = true }
+                    try require(caught, "Invalid reflection document accepted")
+                }
+            }
+
+            try test("explicit image deletion preserves drawings layers other frames and reversible history") {
+                var editor = try imageEditor()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "retained-drawing")])])), editor: &editor)
+                try editor.duplicateFrame()
+                let before = editor.document, selected = before.activeFrameID
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageDeletion(editor)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document, frame = after.frames.first { $0.id == selected }!
+                try require(frame.rasterAssetID == nil && frame.rasterLayerID == nil && frame.rasterPlacement == nil, "Image reference remains")
+                try require(frame.elements == before.frames.first { $0.id == selected }!.elements && after.layers == before.layers && after.audioClips == before.audioClips, "Delete changed drawings layers or audio")
+                try require(after.frames.filter { $0.id != selected } == before.frames.filter { $0.id != selected }, "Delete changed another frame sharing the original")
+                try require(after.activeFrameID == before.activeFrameID && after.activeLayerID == before.activeLayerID, "Delete changed editor selection")
+                try require(after.revision == before.revision + 1 && receipt.outcome == .applied && receipt.deletedElementIDs.isEmpty && receipt.deletedLayerIDs.isEmpty, "Wrong deletion receipt")
+                editor.undo();try require(content(editor.document) == content(before), "One Undo did not restore complete original")
+                editor.redo();try require(content(editor.document) == content(after), "One Redo did not restore image deletion")
+                try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image deletion strict wire explicit identity historical protection and batch rollback") {
+                var editor = try imageEditor()
+                try rejected(request(editor, .apply([imageDeletion(editor, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                try rejected(request(editor, .apply([.deleteImage(.init(frame: .id("foreign"), assetID: "image-fixture"))])), editor: &editor)
+                try rejected(request(editor, .apply([imageDeletion(editor), imageCommand(editor, .init(x: 0, y: 0, width: 50, height: 50))])), editor: &editor)
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageDeletion(editor)])))
+                var object = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
+                var action = object["action"] as! [String: Any], commands = action["apply"] as! [[String: Any]]
+                var arguments = commands[0]["deleteImage"] as! [String: Any];arguments["deleteAll"] = true
+                commands[0]["deleteImage"] = arguments;action["apply"] = commands;object["action"] = action
+                do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object));throw Failure(message: "Unknown deletion field accepted") }
+                catch StudioCommandError.malformed { }
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image deletion respects every lock hidden layers and stale revisions") {
+                for mode in ["full", "position", "alpha"] {
+                    var editor = try imageEditor();try editor.change { $0.layers[0].lockMode = mode }
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                }
+                for hidden in [true, false] {
+                    var editor = try imageEditor();try editor.change { if hidden { $0.layers[0].visible = false } else { $0.layers[0].opacity = 0 } }
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor)
+                }
+                var editor = try imageEditor();let stale = request(editor, .apply([imageDeletion(editor)]))
+                try editor.change { $0.gridEnabled = true }
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+            }
+            try test("image deletion cancellation at every observed production checkpoint is atomic") {
+                var probe = try imageEditor(), total = 0
+                _ = try StudioCommandExecutor.execute(request(probe, .apply([imageDeletion(probe)])), editor: &probe, checkCancellation: { total += 1 })
+                try require(total >= 5, "Expected staged cancellation checks absent")
+                for cancelAt in 1...total {
+                    var editor = try imageEditor(), count = 0
+                    try rejected(request(editor, .apply([imageDeletion(editor)])), editor: &editor, cancellation: {
+                        count += 1;if count == cancelAt { throw CancellationError() }
+                    })
+                }
+            }
+            try test("image placement uses strict wire one transaction and original image identity") {
+                var editor = try imageEditor(); let before = editor.document
+                let placement = StudioRasterPlacement(x: 7, y: 15, width: 64, height: 128)
+                let wire = try JSONEncoder().encode(request(editor, .apply([imageCommand(editor, placement)])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                let context = StudioCommandContext(document: after).frames[0]
+                try require(context.imageAssetID == "image-fixture" && context.imageLayerID == after.activeLayerID && context.imagePlacement == placement,
+                    "Studio automation context lacks actual editable image identity/geometry")
+                try require(after.frames[0].rasterPlacement == placement, "Image placement did not change")
+                try require(after.frames[0].rasterAssetID == before.frames[0].rasterAssetID && after.frames[0].rasterLayerID == before.frames[0].rasterLayerID, "Image ownership changed")
+                try require(after.frames[0].elements == before.frames[0].elements && after.layers == before.layers && after.audioClips == before.audioClips, "Image positioning changed unrelated content")
+                try require(after.revision == before.revision + 1 && receipt.createdElementIDs.isEmpty && receipt.deletedElementIDs.isEmpty, "Incorrect edit receipt")
+                editor.undo(); try require(content(editor.document) == content(before), "Image Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Image Redo failed")
+                let redoSnapshot = editor.document
+                let unchanged = try StudioCommandExecutor.execute(request(editor, .apply([imageCommand(editor, placement)])), editor: &editor)
+                try require(unchanged.outcome == .unchanged && editor.document == redoSnapshot, "Unchanged image placement created history")
+                var object = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
+                var action = object["action"] as! [String: Any]; var commands = action["apply"] as! [[String: Any]]
+                var args = commands[0]["updateImagePlacement"] as! [String: Any]
+                var rect = args["placement"] as! [String: Any]; rect["shell"] = "not an instruction"; args["placement"] = rect
+                commands[0]["updateImagePlacement"] = args; action["apply"] = commands; object["action"] = action
+                do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Unknown nested image field accepted") }
+                catch StudioCommandError.malformed {}
+            }
+            try test("image positioning isolates duplicated frames and rolls back later batch failures") {
+                var editor = try imageEditor()
+                let firstID = editor.document.activeFrameID
+                try editor.duplicateFrame()
+                let before = editor.document, target = StudioRasterPlacement(x: 0, y: 0, width: 50, height: 100)
+                try require(before.frames.count == 2 && before.frames[0].rasterAssetID == before.frames[1].rasterAssetID, "Duplicate fixture did not retain shared original")
+                let valid = imageCommand(editor, target)
+                try rejected(request(editor, .apply([valid, imageCommand(editor, target, assetID: "foreign")])), editor: &editor, expected: .invalidReference)
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([valid])), editor: &editor)
+                try require(editor.document.frames.first { $0.id == firstID } == before.frames.first { $0.id == firstID }, "Placement changed another frame sharing original bytes")
+                try require(editor.document.frames.first { $0.id == editor.document.activeFrameID }?.rasterPlacement == target, "Explicit frame was not positioned")
+            }
+            try test("invalid nonfinite outside and missing image placements reject atomically") {
+                var editor = try imageEditor()
+                for rect in [StudioRasterPlacement(x: -1, y: 0, width: 10, height: 10),
+                             .init(x: 0, y: 0, width: 0, height: 10), .init(x: 500, y: 0, width: 20, height: 10),
+                             .init(x: 0, y: 500, width: 10, height: 20), .init(x: .nan, y: 0, width: 10, height: 10),
+                             .init(x: 0, y: 0, width: .infinity, height: 10)] {
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                let valid = StudioRasterPlacement(x: 0, y: 0, width: 10, height: 10)
+                try rejected(request(editor, .apply([imageCommand(editor, valid, assetID: "wrong")])), editor: &editor, expected: .invalidReference)
+                try editor.change { $0.frames[0].rasterPlacement = nil }
+                try rejected(request(editor, .apply([imageCommand(editor, valid)])), editor: &editor, expected: .invalidReference)
+            }
+            try test("image placement respects locks visibility cancellation and stale revisions") {
+                let rect = StudioRasterPlacement(x: 0, y: 0, width: 64, height: 128)
+                for mode in ["full", "position", "alpha"] {
+                    var editor = try imageEditor(); try editor.change { $0.layers[0].lockMode = mode }
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                for hidden in [true, false] {
+                    var editor = try imageEditor(); try editor.change { if hidden { $0.layers[0].visible = false } else { $0.layers[0].opacity = 0 } }
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor)
+                }
+                var editor = try imageEditor(); let stale = request(editor, .apply([imageCommand(editor, rect)]))
+                try editor.change { $0.gridEnabled = true }
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+                for cancelAt in 1...5 {
+                    var probes = 0
+                    try rejected(request(editor, .apply([imageCommand(editor, rect)])), editor: &editor, cancellation: {
+                        probes += 1; if probes == cancelAt { throw CancellationError() }
+                    })
+                }
+            }
+            try test("layer naming is one actual metadata transaction with Unicode and reversible history") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "named-ink")])])), editor: &editor)
+                let id = editor.document.activeLayerID, before = editor.document
+                let rename = request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: "Hero 💀 é")))]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(rename)), editor: &editor)
+                let after = editor.document
+                try require(after.layers[0].id == id && after.layers[0].name == "Hero 💀 é", "Rename lost identity or Unicode")
+                try require(after.frames == before.frames && after.audioClips == before.audioClips, "Rename changed artwork or audio")
+                try require(after.revision == before.revision + 1 && receipt.createdLayerIDs.isEmpty && receipt.deletedLayerIDs.isEmpty, "Rename invented layer creation/deletion")
+                editor.undo();try require(content(editor.document) == content(before), "Rename Undo changed original content")
+                editor.redo();try require(content(editor.document) == content(after), "Rename Redo changed content")
+            }
+            try test("invalid layer names reject the whole command without metadata or history changes") {
+                var editor = try fresh();let id = editor.document.activeLayerID
+                for name in ["", "   ", String(repeating: "a", count: 121), "Hero\nInk", "Hero\tInk", "Hero\u{0000}", "e" + String(repeating: "\u{0301}", count: 3000)] {
+                    try rejected(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: name)))])), editor: &editor, expected: .invalidSettings)
+                }
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: String(repeating: "a", count: 120))))])), editor: &editor)
+                let before = editor.document
+                let receipt = try StudioCommandExecutor.execute(request(editor, .apply([.updateLayer(.init(layer: .id(id), settings: .init(name: before.layers[0].name)))])), editor: &editor)
+                try require(receipt.outcome == .unchanged && editor.document == before, "Unchanged name created an edit")
+            }
+            try test("explicit layer deletion is one multi-frame transaction with real receipt undo and redo") {
+                var editor = try fresh()
+                let keep = editor.document.activeLayerID, first = editor.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "keep-ink")])])), editor: &editor)
+                try editor.addLayer(); let target = editor.document.activeLayerID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "delete-ink")])])), editor: &editor)
+                try editor.addFrame(); let second = editor.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "delete-ink-2")])])), editor: &editor)
+                try editor.change { value in
+                    value.schemaVersion = max(value.schemaVersion, 3)
+                    value.frames[0].rasterAssetID = "retained-image"
+                    value.frames[0].rasterLayerID = target
+                    value.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 20, height: 20)
+                }
+                editor.selectedElementIDs = ["delete-ink-2"]
+                let before = editor.document
+                let wire = try JSONEncoder().encode(request(editor, .apply([.deleteLayer(.id(target))])))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(wire), editor: &editor)
+                let after = editor.document
+                try require(after.layers.map(\.id) == [keep] && after.activeLayerID == keep, "Wrong remaining layer or active target")
+                try require(after.frames.map(\.id) == [first, second] && after.frames[0].elements.map(\.id) == ["keep-ink"] && after.frames[1].elements.isEmpty && after.frames.allSatisfy { $0.rasterAssetID == nil && $0.rasterLayerID == nil && $0.rasterPlacement == nil }, "Layer content survived or frames changed")
+                try require(after.audioClips == before.audioClips && after.revision == before.revision + 1, "Unrelated audio changed or deletion was not one transaction")
+                try require(receipt.deletedLayerIDs == [target] && Set(receipt.deletedElementIDs) == ["delete-ink", "delete-ink-2"], "Receipt fabricated layer/content result")
+                try require(editor.selectedElementIDs.isEmpty && editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.contains("retained-image"), "Stale selection or lost undo image")
+                editor.undo(); try require(content(editor.document) == content(before), "Undo did not restore complete original document")
+                editor.redo(); try require(content(editor.document) == content(after), "Redo changed deletion")
+            }
+            try test("layer delete rejects last missing locked and stale targets without changing history") {
+                var editor = try fresh()
+                try rejected(request(editor, .apply([.deleteLayer(.id(editor.document.activeLayerID))])), editor: &editor)
+                try editor.addLayer(); let target = editor.document.activeLayerID
+                try rejected(request(editor, .apply([.deleteLayer(.id("missing"))])), editor: &editor, expected: .invalidReference)
+                for mode in ["full", "position", "alpha"] {
+                    try editor.updateLayer(target) { $0.lockMode = mode; $0.locked = mode == "full" }
+                    try rejected(request(editor, .apply([.deleteLayer(.id(target))])), editor: &editor)
+                }
+                try editor.updateLayer(target) { $0.lockMode = "free"; $0.locked = false }
+                let stale = request(editor, .apply([.deleteLayer(.id(target))])); try editor.addLayer()
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+            }
+            try test("layer delete cancellation and a later failed batch command preserve original state") {
+                var editor = try fresh();try editor.addLayer();let target=editor.document.activeLayerID
+                var checks=0
+                try rejected(request(editor,.apply([.deleteLayer(.id(target))])),editor:&editor,cancellation:{
+                    checks += 1;if checks == 5 { throw CancellationError() }
+                })
+                try rejected(request(editor,.apply([.deleteLayer(.id(target)),.selectLayer(.id(target))])),editor:&editor,expected:.invalidReference)
+            }
+            try test("layer deletion requires an explicit strict wire reference") {
+                let editor=try fresh()
+                var object=try JSONSerialization.jsonObject(with:JSONEncoder().encode(request(editor,.undo))) as! [String:Any]
+                for body in [[:], ["all":true], ["id":editor.document.activeLayerID,"all":true]] as [[String:Any]] {
+                    object["action"]=["apply":[["deleteLayer":body]]]
+                    do { _=try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject:object));throw Failure(message:"Implicit or extra-field delete accepted") }
+                    catch is StudioCommandError { }
+                }
+            }
             try test("typed JSON roundtrip, strict unknown operation and schema rejection") {
                 let editor = try fresh()
                 let valid = request(editor, .apply([draw(editor, [stroke()])]))
@@ -171,7 +697,8 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     stroke(points: [.init(x: 1, y: 1, pressure: 2)]), stroke(points: []),
                     stroke(tool: .rectangle, points: [.init(x: 1, y: 1)])]
                 for value in invalid { var editor = try fresh(); try rejected(request(editor, .apply([draw(editor, [value])])), editor: &editor, expected: .invalidGeometry) }
-                for tool in [DrawingTool.fill, .text, .smudge, .blur, .calligraphy] {
+                var textEditor = try fresh(); try rejected(request(textEditor, .apply([draw(textEditor, [stroke(tool: .text)])])), editor: &textEditor, expected: .invalidSettings)
+                for tool in [DrawingTool.fill, .smudge, .blur, .calligraphy] {
                     var editor = try fresh(); try rejected(request(editor, .apply([draw(editor, [stroke(tool: tool)])])), editor: &editor, expected: .unsupportedTool)
                 }
             }

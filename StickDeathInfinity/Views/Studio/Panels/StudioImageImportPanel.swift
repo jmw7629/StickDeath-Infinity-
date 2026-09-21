@@ -14,6 +14,7 @@ struct StudioImageImportPanel: View {
     @State private var isVisible = false
     @State private var filesRequest: StudioImagePickerRequest?
     @State private var photosRequest: StudioImagePickerRequest?
+    @State private var libraryRequest: StudioImagePickerRequest?
 
     private var scope: StudioImageImportSession.Scope {
         .init(isStudioVisible: isVisible && vm.isEditing && vm.activePanel == .addImage,
@@ -48,6 +49,12 @@ struct StudioImageImportPanel: View {
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil)
                     .accessibilityIdentifier("studio.image.files")
+                    AddImageOption(icon: "square.grid.2x2.fill", title: "Image Library", subtitle: "Free offline scenery, props and effects") {
+                        guard let token = session.beginPicker(in: vm, scope: scope) else { return }
+                        refreshScope(); libraryRequest = .init(id: token)
+                    }
+                    .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || libraryRequest != nil)
+                    .accessibilityIdentifier("studio.image.library")
                     if session.isWorking {
                         ProgressView(session.progressText ?? "Preparing the selected picture…")
                             .tint(.red).foregroundColor(.white)
@@ -65,6 +72,11 @@ struct StudioImageImportPanel: View {
                                 .accessibilityIdentifier("studio.image.preview")
                         }
                         Text(preview.name).font(.specialElite(15)).foregroundColor(.white)
+                        if let attribution = preview.catalogueAttribution {
+                            Text("\(attribution["author"] ?? "") · \(attribution["license"] ?? "")")
+                                .font(.caption).foregroundColor(.white.opacity(0.7))
+                                .accessibilityIdentifier("studio.image.attribution")
+                        }
                         Text("\(preview.width) × \(preview.height) pixels · orientation corrected")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                             .accessibilityIdentifier("studio.image.dimensions")
@@ -136,6 +148,22 @@ struct StudioImageImportPanel: View {
                 if photosRequest?.id == request.id { photosRequest = nil }
             }
         }
+        .sheet(item: $libraryRequest) { request in
+            StudioImageLibraryView { catalogue, image in
+                guard libraryRequest?.id == request.id else { return }
+                libraryRequest = nil
+                let holder = scopeHolder
+                _ = session.receiveLibraryImage(image, from: catalogue, token: request.id, currentScope: { holder.value })
+            } onClose: {
+                session.pickerCancelled(token: request.id)
+                if libraryRequest?.id == request.id { libraryRequest = nil }
+            }
+            .id(request.id)
+            .onDisappear {
+                session.pickerCancelled(token: request.id)
+                if libraryRequest?.id == request.id { libraryRequest = nil }
+            }
+        }
         .onAppear { isVisible = true; refreshScope() }
         .onDisappear {
             isVisible = false; refreshScope(); session.close()
@@ -146,7 +174,7 @@ struct StudioImageImportPanel: View {
             refreshScope()
         }
         .onChange(of: authVM.userId) {
-            refreshScope(); session.close(); filesRequest = nil; photosRequest = nil
+            refreshScope(); session.close(); filesRequest = nil; photosRequest = nil; libraryRequest = nil
             if vm.activePanel == .addImage { vm.activePanel = .none }
         }
         .onChange(of: vm.document.id) { refreshScope() }

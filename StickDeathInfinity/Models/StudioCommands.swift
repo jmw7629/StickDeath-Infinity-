@@ -5,7 +5,7 @@ import Foundation
 enum StudioCommandError: LocalizedError, Equatable {
     case malformed, unsupportedCommand, unsupportedTool, unsupportedCapability
     case wrongProject, staleRevision, limitExceeded, invalidReference, invalidGeometry
-    case invalidSettings, missingSelection, cannotDeleteLastFrame, cannotMove, noHistory
+    case invalidSettings, missingSelection, cannotDeleteLastFrame, cannotMove, noHistory, staleClipboard
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +23,7 @@ enum StudioCommandError: LocalizedError, Equatable {
         case .cannotDeleteLastFrame: return "The last frame cannot be deleted. Nothing changed."
         case .cannotMove: return "The requested item cannot move in that direction. Nothing changed."
         case .noHistory: return "There is no matching undo or redo history. Nothing changed."
+        case .staleClipboard: return "The copied artwork changed. Refresh the clipboard context before pasting. Nothing changed."
         }
     }
 }
@@ -71,6 +72,9 @@ struct StudioCommandStroke: Codable {
     let color: String
     let width: Double
     let opacity: Double
+    var shape: StudioShapeDescriptor? = nil
+    var eraser: StudioEraserDescriptor? = nil
+    var text: StudioTextDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
@@ -97,16 +101,41 @@ enum StudioCommand: Codable {
     struct AddLayer: Codable { let name: String; let result: String }
     struct UpdateLayer: Codable { let layer: StudioCommandReference; let settings: StudioCommandLayerSettings }
     struct DeleteElements: Codable { let frame: StudioCommandReference; let elementIDs: [String] }
+    struct TranslateElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let dx: Double; let dy: Double }
+    struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
+    struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
+    struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
+    struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
+    struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
+    struct RotateImage: Codable { let frame: StudioCommandReference; let assetID: String; let direction: StudioImageQuarterTurn }
+    struct ReflectImage: Codable { let frame: StudioCommandReference; let assetID: String; let axis: StudioReflectionAxis }
+    struct DeleteImage: Codable { let frame: StudioCommandReference; let assetID: String }
+    struct UpdateImagePlacement: Codable {
+        let frame: StudioCommandReference
+        let assetID: String
+        let placement: StudioRasterPlacement
+    }
+    struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
+    case updateAudioClip(UpdateAudioClip)
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
-    case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference)
-    case deleteElements(DeleteElements), canvasOptions(CanvasOptions)
+    case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
+    case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
+    case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
+    case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
+        case "rotateImage": self = .rotateImage(try container.decode(RotateImage.self, forKey: key))
+        case "reflectImage": self = .reflectImage(try container.decode(ReflectImage.self, forKey: key))
+        case "deleteImage": self = .deleteImage(try container.decode(DeleteImage.self, forKey: key))
+        case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
+        case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
+        case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
         case "addFrame": self = .addFrame(try container.decode(AddFrame.self, forKey: key))
         case "duplicateFrame": self = .duplicateFrame(try container.decode(Duplicate.self, forKey: key))
@@ -118,7 +147,13 @@ enum StudioCommand: Codable {
         case "updateLayer": self = .updateLayer(try container.decode(UpdateLayer.self, forKey: key))
         case "moveLayer": self = .moveLayer(try container.decode(Move.self, forKey: key))
         case "selectLayer": self = .selectLayer(try container.decode(StudioCommandReference.self, forKey: key))
+        case "deleteLayer": self = .deleteLayer(try container.decode(StudioCommandReference.self, forKey: key))
         case "deleteElements": self = .deleteElements(try container.decode(DeleteElements.self, forKey: key))
+        case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
+        case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
+        case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
+        case "copyElements": self = .copyElements(try container.decode(DeleteElements.self, forKey: key))
+        case "pasteElements": self = .pasteElements(try container.decode(PasteElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
         default: throw StudioCommandError.unsupportedCommand
         }
@@ -126,6 +161,13 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
+        case .rotateImage(let value): try container.encode(value, forKey: StudioWireKey("rotateImage"))
+        case .reflectImage(let value): try container.encode(value, forKey: StudioWireKey("reflectImage"))
+        case .deleteImage(let value): try container.encode(value, forKey: StudioWireKey("deleteImage"))
+        case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
+        case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
+        case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .draw(let value): try container.encode(value, forKey: StudioWireKey("draw"))
         case .addFrame(let value): try container.encode(value, forKey: StudioWireKey("addFrame"))
         case .duplicateFrame(let value): try container.encode(value, forKey: StudioWireKey("duplicateFrame"))
@@ -137,7 +179,13 @@ enum StudioCommand: Codable {
         case .updateLayer(let value): try container.encode(value, forKey: StudioWireKey("updateLayer"))
         case .moveLayer(let value): try container.encode(value, forKey: StudioWireKey("moveLayer"))
         case .selectLayer(let value): try container.encode(value, forKey: StudioWireKey("selectLayer"))
+        case .deleteLayer(let value): try container.encode(value, forKey: StudioWireKey("deleteLayer"))
         case .deleteElements(let value): try container.encode(value, forKey: StudioWireKey("deleteElements"))
+        case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
+        case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
+        case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
+        case .copyElements(let value): try container.encode(value, forKey: StudioWireKey("copyElements"))
+        case .pasteElements(let value): try container.encode(value, forKey: StudioWireKey("pasteElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
         }
     }
@@ -188,12 +236,24 @@ struct StudioCommandReceipt {
     let deletedLayerIDs: [String]
     let createdElementIDs: [String]
     let deletedElementIDs: [String]
+    let changedAudioClipIDs: [String]
+    let clipboardElementCount: Int
+    let clipboardID: String?
 }
 
-/// Actual editable context only. Audio assets and export are unavailable to this
-/// bounded interface; this snapshot does not imply the rest of the app lacks them.
+/// Actual editable context only. Existing managed clip settings are supported;
+/// audio asset import, rendering and export remain separate bounded interfaces.
 struct StudioCommandContext {
-    struct Frame { let id: String; let elementCount: Int; let hasOriginalRecord: Bool }
+    struct Frame {
+        let id: String
+        let elementCount: Int
+        let hasOriginalRecord: Bool
+        let imageAssetID: String?
+        let imageLayerID: String?
+        let imagePlacement: StudioRasterPlacement?
+        let imageReflection: StudioRasterReflection?
+        let imageQuarterTurns: Int?
+    }
     let projectID: UUID
     let revision: Int
     let name: String
@@ -205,6 +265,7 @@ struct StudioCommandContext {
     let frames: [Frame]
     let layers: [CanvasLayer]
     let editableAudioClips: [AudioClip]
+    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades"]
     let supportedTools: [DrawingTool]
     let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
 
@@ -212,7 +273,11 @@ struct StudioCommandContext {
         projectID = document.id; revision = document.revision; name = document.name
         width = document.width; height = document.height; fps = document.fps
         activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
-        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count, hasOriginalRecord: $0.rasterAssetID != nil) }
+        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count,
+            hasOriginalRecord: $0.rasterAssetID != nil,
+            imageAssetID: $0.rasterPlacement == nil ? nil : $0.rasterAssetID,
+            imageLayerID: $0.rasterPlacement == nil ? nil : $0.rasterLayerID,
+            imagePlacement: $0.rasterPlacement, imageReflection: $0.rasterReflection, imageQuarterTurns: $0.rasterQuarterTurns) }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
     }
@@ -226,7 +291,7 @@ enum StudioCommandExecutor {
     static let maximumInputPoints = 16_384
     static let maximumGeneratedElements = 1024
     static let maximumGeneratedPoints = 65_536
-    static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle]
+    static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
 
     static func decode(_ data: Data) throws -> StudioCommandRequest {
         guard data.count <= maximumRequestBytes else { throw StudioCommandError.limitExceeded }
@@ -258,29 +323,64 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "updateAudioClip": ["clipID", "settings"],
+            "rotateImage": ["frame", "assetID", "direction"],
+            "reflectImage": ["frame", "assetID", "axis"],
+            "deleteImage": ["frame", "assetID"],
+            "updateImagePlacement": ["frame", "assetID", "placement"],
+            "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
+            "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
             "duplicateFrame": ["source", "result"], "duplicateLayer": ["source", "result"],
             "moveFrame": ["target", "direction"], "moveLayer": ["target", "direction"],
             "addLayer": ["name", "result"], "updateLayer": ["layer", "settings"],
+            "translateElements": ["frame", "elementIDs", "dx", "dy"],
+            "orderElements": ["frame", "elementIDs", "direction"],
+            "reflectElements": ["frame", "elementIDs", "axis"],
+            "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
         ]
+        func textDescriptor(_ value: Any) throws {
+            let fields = try object(value, keys: ["version", "content", "style"])
+            guard let style = fields["style"] else { throw StudioCommandError.malformed }
+            _ = try object(style, keys: ["font", "size", "alignment", "bold", "italic", "boxWidth", "boxHeight", "rotation"])
+        }
         var inputPoints = 0, strokes = 0
         for command in commands {
             guard let command = command as? [String: Any], command.count == 1, let kind = command.keys.first,
                   let body = command[kind] else { throw StudioCommandError.malformed }
-            if ["selectFrame", "selectLayer", "deleteFrame"].contains(kind) { try reference(body); continue }
+            if ["selectFrame", "selectLayer", "deleteFrame", "deleteLayer"].contains(kind) { try reference(body); continue }
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
+            if kind == "updateAudioClip" {
+                guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
+                let values = try object(settings, keys: ["volume", "isMuted", "fades"])
+                if let fades = values["fades"] {
+                    _ = try object(fades, keys: ["fadeIn", "fadeOut"])
+                }
+            }
+            if kind == "updateImagePlacement" {
+                guard let placement = fields["placement"] else { throw StudioCommandError.malformed }
+                _ = try object(placement, keys: ["x", "y", "width", "height"])
+            }
             if kind == "updateLayer" {
                 guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
                 _ = try object(settings, keys: ["name", "visible", "opacity", "lock", "blend", "glowEnabled", "glowColor"])
             }
+            if kind == "updateText" { guard let text = fields["text"] else { throw StudioCommandError.malformed }; try textDescriptor(text) }
             if kind == "draw" {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser", "text"])
+                    if let text = stroke["text"] { try textDescriptor(text) }
+                    if let eraser = stroke["eraser"] {
+                        _ = try object(eraser, keys: ["version", "mode"])
+                    }
+                    if let shape = stroke["shape"] {
+                        _ = try object(shape, keys: ["version", "fillColor", "cornerRadius"])
+                    }
                     guard let points = stroke["points"] as? [Any] else { throw StudioCommandError.malformed }
                     guard points.count <= maximumPointsPerStroke, points.count <= maximumInputPoints - inputPoints else { throw StudioCommandError.limitExceeded }
                     inputPoints += points.count
@@ -301,6 +401,7 @@ enum StudioCommandExecutor {
                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandReceipt {
         try checkCancellation()
         let original = editor.document
+        let originalClipboardVersion = editor.clipboardVersion
         try checkPreconditions(request, document: original)
         var candidate = editor
         var created: [String: StudioCommandReceipt.Identity] = [:]
@@ -318,8 +419,10 @@ enum StudioCommandExecutor {
             var result = candidate.document
             result.revision = original.revision; result.modifiedAt = original.modifiedAt
             try result.validate()
+            let stagedClipboard = candidate
             candidate = editor
             try candidate.change { $0 = result }
+            try candidate.adoptClipboard(from: stagedClipboard)
             if candidate.document != original { candidate.selectedElementIDs.removeAll() }
             outcome = candidate.document == original ? .unchanged : .applied
         case .undo:
@@ -332,7 +435,10 @@ enum StudioCommandExecutor {
         try candidate.document.validate()
         try checkCancellation()
         try checkPreconditions(request, document: editor.document)
-        let receipt = receipt(request, original: original, final: candidate.document, created: created, outcome: outcome)
+        guard editor.clipboardVersion == originalClipboardVersion else { throw StudioCommandError.staleClipboard }
+        let receipt = receipt(request, original: original, final: candidate.document, created: created, outcome: outcome,
+                              clipboardElementCount: candidate.clipboardElementCount,
+                              clipboardID: candidate.clipboardElementCount > 0 ? candidate.clipboardVersion.uuidString : nil)
         editor = candidate
         return receipt
     }
@@ -385,8 +491,9 @@ enum StudioCommandExecutor {
             (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
         }
     }
-    private static func validName(_ value: String) -> Bool {
-        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.count <= 120
+    static func isValidLayerName(_ value: String) -> Bool {
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && value.count <= 120 &&
+        value.utf8.count <= 4096 && value.rangeOfCharacter(from: .controlCharacters) == nil
     }
     private static func apply(_ command: StudioCommand, editor: inout StudioDocumentEditor,
                               created: inout [String: StudioCommandReceipt.Identity], budget: inout Budget,
@@ -395,12 +502,15 @@ enum StudioCommandExecutor {
         func frame(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .frame, document: document, created: created) }
         func layer(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .layer, document: document, created: created) }
         switch command {
+        case .updateAudioClip(let value):
+            try editor.updateAudioClip(value.clipID, settings: value.settings)
         case .draw(let draw):
             let frameID = try frame(draw.frame), layerID = try layer(draw.layer)
             guard !draw.strokes.isEmpty, draw.strokes.count <= maximumStrokes - budget.strokes else { throw StudioCommandError.limitExceeded }
             budget.strokes += draw.strokes.count
             for stroke in draw.strokes {
                 try checkCancellation()
+                guard stroke.tool != .text || stroke.text != nil else { throw StudioCommandError.invalidSettings }
                 guard supportedTools.contains(stroke.tool) else { throw StudioCommandError.unsupportedTool }
                 guard !stroke.id.isEmpty, stroke.id.count <= 128, validColor(stroke.color),
                       stroke.width.isFinite, (0.1...1024).contains(stroke.width),
@@ -415,11 +525,18 @@ enum StudioCommandExecutor {
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                           point.timestamp.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw StudioCommandError.invalidGeometry }
                 }
+                if let shape = stroke.shape {
+                    do { try shape.validate(tool: stroke.tool) }
+                    catch { throw StudioCommandError.invalidSettings }
+                }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape, eraser: stroke.eraser, text: stroke.text)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }
+        case .updateText(let value):
+            try editor.updateText(frameID: frame(value.frame), elementID: value.elementID,
+                text: value.text, color: value.color, opacity: value.opacity)
         case .addFrame(let value):
             let after = try frame(value.after); try validateAlias(value.result, created: created)
             editor.selectFrame(after); try editor.addFrame()
@@ -440,7 +557,7 @@ enum StudioCommandExecutor {
         case .selectFrame(let reference): editor.selectFrame(try frame(reference))
         case .addLayer(let value):
             try validateAlias(value.result, created: created)
-            guard validName(value.name) else { throw StudioCommandError.invalidSettings }
+            guard isValidLayerName(value.name) else { throw StudioCommandError.invalidSettings }
             try editor.addLayer()
             let id = editor.document.activeLayerID
             try editor.updateLayer(id) { $0.name = value.name }
@@ -452,7 +569,7 @@ enum StudioCommandExecutor {
             created[value.result] = .init(kind: .layer, id: editor.document.activeLayerID)
         case .updateLayer(let value):
             let id = try layer(value.layer), settings = value.settings
-            guard settings.name.map(validName) ?? true,
+            guard settings.name.map(isValidLayerName) ?? true,
                   settings.opacity.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                   settings.glowColor.map(validColor) ?? true else { throw StudioCommandError.invalidSettings }
             try editor.updateLayer(id) { target in
@@ -469,6 +586,19 @@ enum StudioCommandExecutor {
             guard document.layers.indices.contains(index + value.direction.offset) else { throw StudioCommandError.cannotMove }
             try editor.moveLayer(id, offset: value.direction.offset)
         case .selectLayer(let reference): editor.selectLayer(try layer(reference))
+        case .deleteLayer(let reference):
+            try editor.deleteLayer(try layer(reference), checkCancellation: checkCancellation)
+        case .copyElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.copyElements(frameID: id, ids: Set(value.elementIDs), checkCancellation: checkCancellation)
+        case .pasteElements(let value):
+            let frameID = try frame(value.frame), layerID = try layer(value.layer)
+            guard value.clipboardID == editor.clipboardVersion.uuidString else { throw StudioCommandError.staleClipboard }
+            guard let elements = editor.clipboardElements else { throw StudioCommandError.invalidReference }
+            try budget.generate(elements)
+            try editor.pasteElements(frameID: frameID, layerID: layerID, checkCancellation: checkCancellation)
         case .deleteElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
@@ -476,6 +606,60 @@ enum StudioCommandExecutor {
             let existing = Set(document.frames.first { $0.id == id }!.elements.map(\.id))
             guard Set(value.elementIDs).isSubset(of: existing) else { throw StudioCommandError.invalidReference }
             editor.selectFrame(id); editor.selectedElementIDs = Set(value.elementIDs); try editor.deleteSelected()
+        case .translateElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.translateElements(frameID: id, ids: Set(value.elementIDs), dx: value.dx, dy: value.dy,
+                                         checkCancellation: checkCancellation)
+        case .transformElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.transformElements(frameID:id,ids:Set(value.elementIDs),scaleX:value.scaleX,scaleY:value.scaleY,
+                                         rotation:value.rotation,checkCancellation:checkCancellation)
+        case .reflectElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.reflectElements(frameID: id, ids: Set(value.elementIDs), axis: value.axis, checkCancellation: checkCancellation)
+        case .orderElements(let value):
+            let id = try frame(value.frame)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
+                                     checkCancellation: checkCancellation)
+        case .rotateImage(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.rotateImage(frameID: id, assetID: value.assetID, direction: value.direction,
+                checkCancellation: checkCancellation)
+        case .reflectImage(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.reflectImage(frameID: id, assetID: value.assetID, axis: value.axis,
+                checkCancellation: checkCancellation)
+        case .deleteImage(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.deleteImage(frameID: id, assetID: value.assetID, checkCancellation: checkCancellation)
+        case .updateImagePlacement(let value):
+            let id = try frame(value.frame)
+            guard let selected = editor.document.frames.first(where: { $0.id == id }),
+                  selected.rasterAssetID == value.assetID, selected.rasterPlacement != nil else {
+                throw StudioCommandError.invalidReference
+            }
+            try editor.updateImagePlacement(frameID: id, assetID: value.assetID,
+                placement: value.placement, checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil else { throw StudioCommandError.invalidSettings }
             try editor.change {
@@ -485,7 +669,8 @@ enum StudioCommandExecutor {
         }
     }
     private static func receipt(_ request: StudioCommandRequest, original: StudioDocument, final: StudioDocument,
-                                created: [String: StudioCommandReceipt.Identity], outcome: StudioCommandReceipt.Outcome) -> StudioCommandReceipt {
+                                created: [String: StudioCommandReceipt.Identity], outcome: StudioCommandReceipt.Outcome,
+                                clipboardElementCount: Int, clipboardID: String?) -> StudioCommandReceipt {
         func added(_ old: [String], _ new: [String]) -> [String] { let existing = Set(old); return new.filter { !existing.contains($0) } }
         let oldFrames = original.frames.map(\.id), newFrames = final.frames.map(\.id)
         let oldLayers = original.layers.map(\.id), newLayers = final.layers.map(\.id)
@@ -497,6 +682,12 @@ enum StudioCommandExecutor {
             revision: final.revision, outcome: outcome, created: survivingResults,
             createdFrameIDs: added(oldFrames, newFrames), deletedFrameIDs: added(newFrames, oldFrames),
             createdLayerIDs: added(oldLayers, newLayers), deletedLayerIDs: added(newLayers, oldLayers),
-            createdElementIDs: added(oldElements, newElements), deletedElementIDs: added(newElements, oldElements))
+            createdElementIDs: added(oldElements, newElements), deletedElementIDs: added(newElements, oldElements),
+            changedAudioClipIDs: final.audioClips.filter { clip in
+                original.audioClips.first(where: { $0.id == clip.id }) != clip
+            }.map(\.id) + original.audioClips.filter { clip in
+                !final.audioClips.contains(where: { $0.id == clip.id })
+            }.map(\.id),
+            clipboardElementCount: clipboardElementCount, clipboardID: clipboardID)
     }
 }

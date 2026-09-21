@@ -11,7 +11,21 @@ import SwiftUI
 
 struct FloatingToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    var alignToBottom = false
     @State private var showBrushLibrary = false
+    @State private var imagePlacement: StudioViewModel.ImagePlacementCapture?
+    @State private var imageDeletion: StudioViewModel.ImagePlacementCapture?
+    @State private var showingImageDeletion = false
+    // The popup owns both draft values and distinct field focus. Keyboard
+    // and viewport changes must not recreate an interactive input.
+    @State private var imageX = ""
+    @State private var imageY = ""
+    @State private var imageWidth = ""
+    @State private var imageHeight = ""
+    @FocusState private var textInputFocused: Bool
+    @FocusState private var imageFocusedField: StudioImagePlacementField?
+
+    static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -24,9 +38,10 @@ struct FloatingToolSettingsPanel: View {
     
     var body: some View {
         GeometryReader { available in
+        let compact = available.size.height < 180
         VStack(alignment: .leading, spacing: 0) {
             if let def = toolDef {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: compact ? 4 : 10) {
                     // Header: icon + name + X close
                     HStack {
                         Image(systemName: def.icon)
@@ -36,42 +51,48 @@ struct FloatingToolSettingsPanel: View {
                             .font(.system(size: 14, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.8))
                         Spacer()
-                        Button(action: { vm.activePanel = .none }) {
+                        Button(action: { textInputFocused = false; imageFocusedField = nil; vm.activePanel = .none }) {
                             Text("✕")
                                 .font(.system(size: 14))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundColor(.sdStudioSecondaryText)
+                                .frame(width: 44, height: 44)
+                                .contentShape(Rectangle())
                         }
                         .accessibilityLabel("Close tool settings")
                         .accessibilityIdentifier("studio.tool-settings.close")
                     }
                     
-                    Divider().background(Color.white.opacity(0.08))
+                    if !compact { Divider().background(Color.white.opacity(0.08)) }
                     
                     // Tool-specific content
-                    ScrollView {
-                        toolSettingsContent(def)
+                    // Short controls use their natural height. Longer libraries
+                    // scroll inside the same bounded popup instead of covering
+                    // empty canvas with an oversized scroll viewport.
+                    ToolSettingsContentLayout(maximumHeight: max(0, min(360, available.size.height - (compact ? 60 : 132)))) {
+                        toolSettingsContent(def, compactHeight: compact)
                     }
-                    .frame(maxHeight: max(70, min(360, available.size.height - 100)))
                     
-                    // Shortcut
+                    // The short landscape popup keeps the actual operation controls reachable.
+                    if available.size.height >= 180 {
                     HStack(spacing: 4) {
                         Text("Shortcut:")
                             .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.3))
+                            .foregroundColor(.sdStudioSecondaryText)
                         Text(def.shortcut)
                             .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.4))
+                            .foregroundColor(.sdStudioSecondaryText)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
                             .background(Color.white.opacity(0.08))
                             .cornerRadius(4)
                     }
                     .padding(.top, 4)
+                    }
                 }
-                .padding(12)
+                .padding(compact ? 6 : 12)
             }
         }
-        .frame(width: 260)
+        .frame(width: min(260, available.size.width))
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(Color(hex: "1A1A24").opacity(0.98))
@@ -81,13 +102,87 @@ struct FloatingToolSettingsPanel: View {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
         )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.top, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("studio.tool-settings")
+        .tint(.sdStudioActionText)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
+        }
+        .onChange(of: vm.selectedTool) { _, _ in
+            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+        }
+        .onDisappear {
+            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+        }
+        .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
+            titleVisibility: .visible, presenting: imageDeletion) { capture in
+            // SwiftUI dismisses the dialog. Keep its immutable presenting data
+            // alive through action dispatch; the next request replaces it.
+            Button("Delete image", role: .destructive) { _ = vm.deleteImage(capture) }
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text("Only this frame's picture will be removed. Its layer and drawings stay. Undo restores the picture.")
+        }
+        .toolbar {
+            if textInputFocused || imageFocusedField != nil {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done typing") { textInputFocused = false; imageFocusedField = nil }
+                        .accessibilityIdentifier("studio.text.keyboard-dismiss")
+                }
+            }
         }
     }
     
+    private func imageRotateButton(_ title: String, direction: StudioImageQuarterTurn) -> some View {
+        Button {
+            guard let capture = vm.prepareImagePlacement() else { return }
+            _ = vm.rotateImage(capture, direction: direction)
+        } label: {
+            Text(title).font(.specialElite(11)).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundColor(.white)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("studio.image-rotate." + direction.rawValue)
+        .accessibilityValue("\((vm.currentFrame.rasterQuarterTurns ?? 0) * 90) degrees clockwise")
+        .disabled(vm.prepareImagePlacement() == nil)
+    }
+
+    private func imageFlipButton(_ title: String, axis: StudioReflectionAxis, id: String) -> some View {
+        Button {
+            guard let capture = vm.prepareImagePlacement() else { return }
+            _ = vm.reflectImage(capture, axis: axis)
+        } label: {
+            Text(title).font(.specialElite(11)).frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).foregroundColor(.white)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityIdentifier("studio.image-flip." + id)
+        .accessibilityValue((axis == .horizontal ? vm.currentFrame.rasterReflection?.horizontal
+                             : vm.currentFrame.rasterReflection?.vertical) == true ? "Flipped" : "Original")
+        .disabled(vm.prepareImagePlacement() == nil)
+    }
+
     @ViewBuilder
-    func toolSettingsContent(_ def: ToolDef) -> some View {
+    func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            toolSpecificSettings(def, compactHeight: compactHeight)
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text].contains(def.tool) {
+                Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.sdStudioSecondaryText)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.tool-settings.reset")
+            }
+            if let warning = vm.toolPreferencesWarning {
+                Text(warning).font(.system(size: 9)).foregroundColor(.orange)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func toolSpecificSettings(_ def: ToolDef, compactHeight: Bool) -> some View {
         switch def.tool {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
@@ -119,11 +214,11 @@ struct FloatingToolSettingsPanel: View {
                 if vm.brushFamily == .gradient {
                     ColorPicker("End Color", selection: $vm.brushGradientEndColor, supportsOpacity: false)
                         .font(.specialElite(11)).foregroundColor(.white)
-                    Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                    Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 SettingsToggle(label: "Pressure Sensitivity", isOn: .constant(false), accent: .red).disabled(true)
                 Text("Pressure input is unavailable in this build. Size and measured stroke timing work with touch; saved pressure data remains supported.")
-                    .font(.system(size: 9)).foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
             }
             
         // ── FILL TOOL (GREEN THEME) ──
@@ -133,118 +228,118 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
                 SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "", accent: .yellow)
+                    .disabled(!vm.fillContiguous)
+                    .opacity(vm.fillContiguous ? 1 : 0.4)
                 
                 // Toggle buttons (green themed)
                 VStack(spacing: 4) {
                     FillToggleButton(label: vm.fillContiguous ? "🔗 Contiguous" : "🌐 All Similar",
                                      isOn: $vm.fillContiguous, accent: .green)
+                        .accessibilityIdentifier("studio.fill.contiguous")
                     FillToggleButton(label: vm.fillAntiAlias ? "✓ Anti-Alias" : "✕ No Anti-Alias",
                                      isOn: $vm.fillAntiAlias, accent: .green)
+                        .accessibilityIdentifier("studio.fill.antialias")
                     FillToggleButton(label: vm.fillSampleAll ? "👁 Sample All Layers" : "📄 Current Layer Only",
                                      isOn: $vm.fillSampleAll, accent: .green)
+                        .accessibilityIdentifier("studio.fill.sample-all")
                 }
             }
             
         // ── ERASER (ORANGE THEME) ──
         case .eraser:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...150, unit: "px", accent: accentColor)
                 
                 Text("ERASER TYPE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
                 HStack(spacing: 4) {
-                    ForEach(["◼ Hard", "◐ Soft"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
+                    ForEach(StudioEraserMode.allCases, id: \.self) { mode in
+                        Button { vm.eraserMode = mode } label: {
+                            Text(mode == .hard ? "◼ Hard" : "◐ Soft")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("Hard") ? accentColor : .white.opacity(0.5))
+                                .foregroundColor(vm.eraserMode == mode ? accentColor : .sdStudioSecondaryText)
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .frame(minHeight: 44)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("Hard") ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
+                                        .fill(vm.eraserMode == mode ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("Hard") ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(vm.eraserMode == mode ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
+                        .accessibilityIdentifier("studio.eraser.mode." + mode.rawValue)
+                        .accessibilityValue(vm.eraserMode == mode ? "Selected" : "Not selected")
                     }
                 }
                 
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Text("Erases this layer. Soft adds a feathered edge. Deselect artwork before erasing.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
             }
             
         // ── SMUDGE (PURPLE THEME) ──
         case .smudge:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Strength", value: .constant(50.0), range: 0...100, unit: "%", accent: accentColor)
+                Text("Smudge is not available yet.")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .accessibilityIdentifier("studio.smudge.unavailable")
+                Text("Color dragging is still being integrated. Selecting this tool leaves your artwork unchanged.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.sdStudioSecondaryText)
             }
             
-        // ── TEXT (MAGENTA THEME) ──
+        // Editable text lives in the same dismissible tool popup.
         case .text:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Font Size", value: .constant(24.0), range: 8...120, unit: "px", accent: accentColor)
-                
-                Text("ALIGNMENT")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                HStack(spacing: 4) {
-                    ForEach(["◁ Left", "☰ Center", "▷ Right"], id: \.self) { align in
-                        Button(action: {}) {
-                            Text(align)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(align.contains("Left") ? accentColor : .white.opacity(0.5))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(align.contains("Left") ? accentColor.opacity(0.2) : Color.white.opacity(0.05))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(align.contains("Left") ? accentColor.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
-                                )
-                        }
-                    }
+                if vm.textDraft == nil {
+                    HStack {
+                        Button("New text") { if vm.beginTextEditing() { textInputFocused = true } }
+                            .accessibilityIdentifier("studio.text.new")
+                        Button("Edit selected") { if vm.beginTextEditing(selected: true) { textInputFocused = true } }
+                            .accessibilityIdentifier("studio.text.edit")
+                    }.frame(minHeight: 44)
+                    Text("New text starts at canvas center. Use Move to select and position a text box, then Edit selected.")
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                } else {
+                    TextField("Enter text", text: $vm.textInput, axis: .vertical)
+                        .lineLimit(2...4).textFieldStyle(.roundedBorder)
+                        .focused($textInputFocused).accessibilityIdentifier("studio.text.content")
+                    HStack {
+                        Button("Apply") { if vm.applyTextEditing() { textInputFocused = false } }
+                            .accessibilityIdentifier("studio.text.apply")
+                        Button("Cancel") { textInputFocused = false; vm.cancelTextEditing() }
+                            .accessibilityIdentifier("studio.text.cancel")
+                        Button("Done typing") { textInputFocused = false }
+                            .accessibilityIdentifier("studio.text.keyboard-done")
+                    }.frame(minHeight: 44)
                 }
-                
-                Text("STYLE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                HStack(spacing: 4) {
-                    Button(action: {}) {
-                        Text("B Bold")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 1))
-                    }
-                    Button(action: {}) {
-                        Text("I Italic")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.5))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.05)))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 1))
-                    }
-                }
-                
+                Picker("Font", selection: $vm.textStyle.font) {
+                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                }.accessibilityIdentifier("studio.text.font")
+                SettingsSlider(label: "Font Size", value: $vm.textStyle.size, range: 8...240, unit: "px", accent: accentColor)
+                Picker("Alignment", selection: $vm.textStyle.alignment) {
+                    ForEach(StudioTextAlignment.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.text.alignment")
+                HStack {
+                    Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
+                    Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
+                }.font(.specialElite(10))
+                ColorPicker("Text color", selection: $vm.strokeColor, supportsOpacity: true)
+                    .accessibilityIdentifier("studio.text.color")
+                SettingsSlider(label: "Box Width", value: $vm.textStyle.boxWidth, range: 16...4096, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Box Height", value: $vm.textStyle.boxHeight, range: 16...4096, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Rotation", value: $vm.textStyle.rotation, range: -180...180, unit: "°", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Text("Text stays editable. Content outside its box is clipped; enlarge the box to reveal it. Apply commits one undo step; Cancel leaves the artwork unchanged.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
-            
+
         // ── LINE ──
         case .line:
             VStack(alignment: .leading, spacing: 8) {
@@ -252,7 +347,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 Text("Drag to draw line · Tap endpoint to connect")
                     .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.25))
+                    .foregroundColor(.sdStudioSecondaryText)
             }
             
         // ── RECTANGLE / CIRCLE ──
@@ -263,47 +358,112 @@ struct FloatingToolSettingsPanel: View {
                 
                 Text("FILL")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
+                Button { vm.shapeFilled.toggle() } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 4)
-                        .fill(vm.strokeColor)
+                        .fill(vm.shapeFilled ? vm.strokeColor : Color.clear)
                         .frame(width: 28, height: 28)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2), lineWidth: 1))
-                    Text("No fill")
+                    Text(vm.shapeFilled ? "Solid fill" : "No fill")
                         .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.3))
+                        .foregroundColor(.white.opacity(0.8))
+                    Spacer()
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Shape fill")
+                .accessibilityValue(vm.shapeFilled ? "Solid" : "None")
+                .accessibilityIdentifier("studio.shape.fill")
                 
                 if def.tool == .rectangle {
-                    SettingsSlider(label: "Corner Radius", value: .constant(0.0), range: 0...50, unit: "px", accent: .orange)
+                    SettingsSlider(label: "Corner Radius", value: $vm.shapeCornerRadius, range: 0...50, unit: "px", accent: .orange)
                 }
             }
             
         // ── MOVE ──
         case .move:
+            if let capture = imagePlacement {
+                StudioImagePlacementControls(vm: vm, capture: capture, focused: $imageFocusedField,
+                    x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
+                    imageFocusedField = nil; imagePlacement = nil
+                }
+            } else {
             VStack(alignment: .leading, spacing: 8) {
+                Text(vm.isMovingImageOnCanvas ? "Drag inside the image to move it. It stays inside the canvas. Use Position image to make it smaller first if it fills the canvas." : vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
+                     : vm.currentFrame.rasterAssetID == nil
+                     ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
+                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture.")
+                    .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.selection.guidance")
+                if vm.currentFrame.rasterPlacement != nil {
+                    Button(vm.isMovingImageOnCanvas ? "Move drawings" : "Move image on canvas") {
+                        _ = vm.setImageCanvasMove(!vm.isMovingImageOnCanvas)
+                    }
+                    .font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
+                    .foregroundColor(vm.isMovingImageOnCanvas ? .sdStudioActionText : .white)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("studio.image-move.target")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Image" : "Drawings")
+                    .disabled(!vm.isMovingImageOnCanvas && vm.prepareImagePlacement() == nil)
+                    Button {
+                        guard let capture = vm.prepareImagePlacement() else { return }
+                        imageX = String(capture.original.x); imageY = String(capture.original.y)
+                        imageWidth = String(capture.original.width); imageHeight = String(capture.original.height)
+                        imagePlacement = capture
+                    } label: {
+                        Label("Position image", systemImage: "photo")
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .background(Color.red.opacity(0.75)).cornerRadius(8)
+                    .accessibilityIdentifier("studio.image-placement.open")
+                    .disabled(vm.prepareImagePlacement() == nil)
+                    HStack(spacing: 8) {
+                        imageFlipButton("Flip image H", axis: .horizontal, id: "horizontal")
+                        imageFlipButton("Flip image V", axis: .vertical, id: "vertical")
+                    }
+                    HStack(spacing: 8) {
+                        imageRotateButton("Rotate left 90°", direction: .counterclockwise)
+                        imageRotateButton("Rotate right 90°", direction: .clockwise)
+                    }
+                    Button("Delete image…", role: .destructive) {
+                        guard let capture = vm.prepareImagePlacement() else { return }
+                        imageDeletion = capture; showingImageDeletion = true
+                    }
+                        .font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.image-delete.open")
+                        .disabled(vm.prepareImagePlacement() == nil)
+                    if vm.prepareImagePlacement() == nil {
+                        Text("Show the image layer and choose Free to edit it. Finish any pending edit or save first.")
+                            .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                    }
+                }
+                if !vm.isMovingImageOnCanvas {
                 Text("SELECTION MODE")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
                 HStack(spacing: 4) {
-                    ForEach(["⬜ New", "➕ Add", "➖ Sub"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
+                    ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
+                        Button(action: { vm.selectionMode = mode }) {
+                            Text(mode.label)
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("New") ? .red : .white.opacity(0.5))
+                                .foregroundColor(vm.selectionMode == mode ? .sdStudioActionText : .sdStudioSecondaryText)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 8)
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("New") ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
+                                        .fill(vm.selectionMode == mode ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
                                 )
                                 .overlay(
                                     RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("New") ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
+                                        .stroke(vm.selectionMode == mode ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
                     }
@@ -311,65 +471,140 @@ struct FloatingToolSettingsPanel: View {
                 
                 Text("ACTIONS")
                     .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
+                    .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Clear"], id: \.self) { action in
-                        Button(action: {}) {
+                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Deselect"], id: \.self) { action in
+                        Button(action: {
+                            if action.contains("Copy") { _ = vm.copySelected() }
+                            else if action.contains("Delete") { vm.deleteSelected() }
+                            else if action.contains("Deselect") { vm.clearElementSelection() }
+                            else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
+                            else if action.contains("Flip V") { _ = vm.reflectSelected(axis: .vertical) }
+                            else if action.contains("Fwd") { _ = vm.orderSelected(forward: true) }
+                            else if action.contains("Back") { _ = vm.orderSelected(forward: false) }
+                            else { vm.message = "This selection action is unfinished. The artwork has not changed." }
+                        }) {
                             VStack(spacing: 2) {
                                 Text(String(action.prefix(2)))
                                     .font(.system(size: 12))
                                 Text(String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces))
                                     .font(.system(size: 7, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.4))
+                                    .foregroundColor(.sdStudioSecondaryText)
                             }
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
                             .background(Color.white.opacity(0.05))
                             .cornerRadius(8)
                         }
+                        .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
+                        .disabled(action.contains("Lock") || (action.contains("Copy") && vm.selectedElementIDs.isEmpty))
+                        .accessibilityHint(action.contains("Lock") ? "Selection locking is unavailable. Open Layers to choose a layer lock." : "")
                     }
+                }
+                Text("Selection locking is unavailable. Open Layers to choose a layer lock.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.selection.lock-unavailable")
+                Divider().background(Color.white.opacity(0.08))
+                Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                SettingsSlider(label: "Scale", value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
+                SettingsSlider(label: "Angle", value: $vm.selectionRotationDegrees, range: -180...180, unit: "°", accent: .red)
+                HStack {
+                    Button(action: { _ = vm.transformSelected() }) {
+                        Text("Apply transform").frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(.white).background(Color.red.opacity(0.8)).cornerRadius(8)
+                    }
+                    .accessibilityIdentifier("studio.selection.transform-apply")
+                    .disabled(vm.selectedElementIDs.isEmpty)
+                    Button(action: { vm.resetSelectionTransform() }) {
+                        Text("Reset values").frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(.white.opacity(0.8)).background(Color.white.opacity(0.08)).cornerRadius(8)
+                    }
+                    .accessibilityIdentifier("studio.selection.transform-reset")
+                }.font(.specialElite(10))
+                Text("Drag the canvas corner handles to resize or the red handle to rotate. These sliders offer the same group transform. Apply makes one undo step; Reset only clears these controls.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 }
             }
             
+            }
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("LASSO MODE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
-                    ForEach(["✏️ Freehand", "⬡ Polygon", "🧲 Magnetic", "✨ Smart"], id: \.self) { mode in
-                        Button(action: {}) {
-                            Text(mode)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(mode.contains("Free") ? .cyan : .white.opacity(0.5))
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(mode.contains("Free") ? Color.cyan.opacity(0.2) : Color.white.opacity(0.05))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .stroke(mode.contains("Free") ? Color.cyan.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
-                                )
-                        }
+                Text("Enclose whole drawings, then choose Move to drag them. To position an imported image, choose Move image on canvas or Position image. Lasso selection of images and legacy text is unfinished.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                Text("\(vm.selectedElementIDs.count) drawings selected")
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.selection.count")
+                HStack(spacing: 4) {
+                    ForEach(StudioAreaSelectionKind.allCases, id: \.self) { kind in
+                        Button(kind.label) { vm.areaSelectionKind = kind }
+                            .font(.specialElite(10)).frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(vm.areaSelectionKind == kind ? .sdStudioActionText : .sdStudioSecondaryText)
+                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityIdentifier("studio.selection.kind." + kind.rawValue)
+                            .accessibilityAddTraits(vm.areaSelectionKind == kind ? .isSelected : [])
                     }
                 }
-                
-                SettingsSlider(label: "Feather", value: .constant(0.0), range: 0...20, unit: "px", accent: .cyan)
-                SettingsSlider(label: "Smoothness", value: .constant(3.0), range: 0...10, unit: "", accent: .cyan)
+                HStack(spacing: 4) {
+                    ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
+                        Button(mode.label) { vm.selectionMode = mode }
+                            .font(.specialElite(10)).frame(maxWidth: .infinity, minHeight: 44)
+                            .foregroundColor(vm.selectionMode == mode ? .sdStudioActionText : .sdStudioSecondaryText)
+                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+                            .accessibilityIdentifier("studio.selection.mode." + mode.rawValue)
+                    }
+                }
+                if vm.areaSelectionKind == .freehand {
+                    SettingsSlider(label: "Smoothness", value: $vm.areaSelectionSmoothing, range: 0...10, unit: "px", accent: .red)
+                }
+                HStack(spacing: 4) {
+                    Button("Copy") { _ = vm.copySelected() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.copy")
+                    Button("Delete") { vm.deleteSelected() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.delete")
+                    Button("Deselect") { vm.clearElementSelection() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.lasso.deselect")
+                }.font(.specialElite(11)).frame(minHeight: 44)
+                    .disabled(vm.selectedElementIDs.isEmpty)
+                Text("Polygon, Magnetic, Smart and feathered pixel selection are unavailable.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
-            
+
+        case .hand, .zoom:
+            VStack(alignment: .leading, spacing: 8) {
+                if !compactHeight {
+                Text("Zoom: \(Int((vm.canvasScale * 100).rounded()))%")
+                    .font(.specialElite(12)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.tool-settings.zoom-value")
+                }
+                HStack(spacing: 8) {
+                    zoomControl("minus", "Zoom out", "zoom-out") { vm.zoomOut() }
+                    zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
+                    zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
+                }
+            }
         default:
             EmptyView()
         }
     }
     
+    private func zoomControl(_ icon: String, _ label: String, _ identifier: String,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 14))
+                Text(label).font(.specialElite(9))
+            }.frame(maxWidth: .infinity, minHeight: 44)
+                .foregroundColor(.white)
+                .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        }.accessibilityLabel(label).accessibilityIdentifier("studio.tool-settings." + identifier)
+    }
+
     var opacityBinding: Binding<Double> {
         Binding(
             get: { vm.toolOpacity * 100 },
@@ -390,7 +625,7 @@ struct SettingsSlider: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("\(label): \(Int(value))\(unit)")
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.sdStudioSecondaryText)
             
             Slider(value: $value, in: range)
                 .tint(accent)
@@ -411,7 +646,7 @@ struct SettingsToggle: View {
         HStack {
             Text(label)
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.white.opacity(0.4))
+                .foregroundColor(.sdStudioSecondaryText)
             Spacer()
             Toggle("", isOn: $isOn)
                 .labelsHidden()
@@ -430,7 +665,7 @@ struct FillToggleButton: View {
         Button(action: { isOn.toggle() }) {
             Text(label)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(isOn ? accent : .white.opacity(0.5))
+                .foregroundColor(isOn ? accent : .sdStudioSecondaryText)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .background(
@@ -449,4 +684,108 @@ struct FillToggleButton: View {
 struct ToolSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     var body: some View { FloatingToolSettingsPanel(vm: vm) }
+}
+
+/// One persistent scroll container keeps focused fields alive as the keyboard
+/// changes available height. Content measurement still fits short tool popups.
+private struct ToolSettingsContentHeight: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+private struct ToolSettingsContentLayout<Content: View>: View {
+    let maximumHeight: CGFloat
+    @ViewBuilder let content: () -> Content
+    @State private var contentHeight: CGFloat?
+
+    var body: some View {
+        ScrollView {
+            content().fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geometry in
+                    Color.clear.preference(key: ToolSettingsContentHeight.self, value: geometry.size.height)
+                })
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
+        .onPreferenceChange(ToolSettingsContentHeight.self) { height in
+            // A transient/default zero preference is not the content's size.
+            // Accepting it collapses the viewport and prevents measurement from
+            // recovering. Keep the last positive size (or initial bound) instead.
+            if height.isFinite && height > 0 { contentHeight = height }
+        }
+    }
+}
+
+private enum StudioImagePlacementField: String { case x, y, width, height }
+
+/// Draft fields live only in the existing tool popup. Apply commits the same
+/// typed command available to Studio automation; dismissal never edits content.
+private struct StudioImagePlacementControls: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.ImagePlacementCapture
+    let dismiss: () -> Void
+    @FocusState.Binding private var fieldFocused: StudioImagePlacementField?
+    @Binding private var x: String
+    @Binding private var y: String
+    @Binding private var width: String
+    @Binding private var height: String
+
+    init(vm: StudioViewModel, capture: StudioViewModel.ImagePlacementCapture, focused: FocusState<StudioImagePlacementField?>.Binding,
+         x: Binding<String>, y: Binding<String>, width: Binding<String>, height: Binding<String>, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss; self._fieldFocused = focused
+        _x = x; _y = y; _width = width; _height = height
+    }
+    private var proposed: StudioRasterPlacement? {
+        guard let x = Double(x), let y = Double(y), let width = Double(width), let height = Double(height),
+              x.isFinite, y.isFinite, width.isFinite, height.isFinite,
+              x >= 0, y >= 0, width > 0, height > 0,
+              x + width <= Double(capture.canvasWidth) + 0.000001,
+              y + height <= Double(capture.canvasHeight) + 0.000001 else { return nil }
+        return .init(x: x, y: y, width: width, height: height)
+    }
+    private func set(_ value: StudioRasterPlacement) {
+        x = String(value.x); y = String(value.y); width = String(value.width); height = String(value.height)
+    }
+    private func field(_ name: String, _ value: Binding<String>, focus: StudioImagePlacementField) -> some View {
+        HStack {
+            Text(name).frame(width: 52, alignment: .leading)
+            TextField(name, text: value).keyboardType(.decimalPad).focused($fieldFocused, equals: focus)
+                .textFieldStyle(.roundedBorder).foregroundColor(.primary)
+                .accessibilityIdentifier("studio.image-placement." + name.lowercased())
+            Text("px").foregroundColor(.sdStudioSecondaryText)
+        }.font(.system(size: 12, design: .monospaced))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("IMAGE POSITION").font(.specialElite(12)).foregroundColor(.white)
+            field("X", $x, focus: .x); field("Y", $y, focus: .y)
+            field("Width", $width, focus: .width); field("Height", $height, focus: .height)
+            HStack {
+                Button("Half size") {
+                    guard let p = proposed else { return }
+                    set(.init(x: p.x + p.width / 4, y: p.y + p.height / 4, width: p.width / 2, height: p.height / 2))
+                }.accessibilityIdentifier("studio.image-placement.half").disabled(proposed == nil)
+                Spacer()
+                Button("Fit canvas") { set(capture.fitted) }.accessibilityIdentifier("studio.image-placement.fit")
+            }.frame(minHeight: 44)
+            if proposed == nil {
+                Text("Use positive dimensions and keep the image inside the canvas.")
+                    .foregroundColor(.orange).font(.specialElite(10))
+            }
+            Text("Apply changes position and size in one Undo step. Originals stay intact. Use Move options to rotate by 90°. Arbitrary-angle rotation and image handles are unfinished.")
+                .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            HStack {
+                Button("Apply image") {
+                    guard let value = proposed else { return }
+                    if vm.placeImage(capture, at: value) { dismiss() }
+                }.accessibilityIdentifier("studio.image-placement.apply")
+                    .disabled(proposed == nil || vm.prepareImagePlacement() != capture)
+                Spacer()
+                Button("Cancel", action: dismiss).accessibilityIdentifier("studio.image-placement.cancel")
+            }.frame(minHeight: 44)
+            if vm.prepareImagePlacement() != capture {
+                Text("Studio changed. Cancel and open Position image again.")
+                    .font(.specialElite(10)).foregroundColor(.orange)
+            }
+        }.font(.specialElite(11)).foregroundColor(.white.opacity(0.85))
+    }
 }

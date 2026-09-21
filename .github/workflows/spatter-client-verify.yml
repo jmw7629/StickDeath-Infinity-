@@ -43,9 +43,13 @@ jobs:
         run: python3 scripts/verify_spatter_client.py
       - name: Verify simulator fixture orchestration guards (mocked subprocesses)
         run: python3 -m unittest discover -s Tests/NativeSmokeHarness -p 'test_*.py' -v
-  native-ios-build:
+      - name: Verify retired messaging and calls cannot enter the native target
+        run: python3 scripts/verify_retired_communications.py
+  native-production-tests:
     runs-on: macos-15
-    timeout-minutes: 50
+    # The standalone production suites took 21 minutes on run 35579052983.
+    # Keep this work ahead of the app/UI job without concurrent Mac runners.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -97,6 +101,316 @@ jobs:
             Tests/StudioDocument/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-document-tests"
           "$RUNNER_TEMP/sdi-studio-document-tests"
+      - name: Verify production floating toolbar geometry and contextual dismissal
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/StudioToolbarLayout.swift \
+            Tests/StudioToolbar/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-toolbar-tests"
+          "$RUNNER_TEMP/sdi-studio-toolbar-tests"
+      - name: Verify actual SwiftUI popup content never collapses
+        run: python3 Tests/StudioPopupLayout/verify_layout.py --output-directory "$RUNNER_TEMP/studio-popup-layout"
+
+      - name: Verify actual shape fill radius history and exported pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioShapeSettings/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-shape-settings-tests"
+          "$RUNNER_TEMP/sdi-shape-settings-tests"
+      - name: Verify real selection translation pixels commands history and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionMove/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-move-tests"
+          "$RUNNER_TEMP/sdi-selection-move-tests"
+      - name: Verify editable selection reflections pixels history persistence and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionFlip/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-flip-tests"
+          "$RUNNER_TEMP/sdi-selection-flip-tests"
+      - name: Verify real selection scale rotation pixels gestures persistence and exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionTransform/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-transform-tests"
+          "$RUNNER_TEMP/sdi-selection-transform-tests"
+      - name: Verify real selection clipboard identity pixels history persistence and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionClipboard/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-clipboard-tests"
+          "$RUNNER_TEMP/sdi-selection-clipboard-tests"
+      - name: Verify real rectangle and freehand selection cancellation history persistence and pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioAreaSelection/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-area-selection-tests"
+          "$RUNNER_TEMP/sdi-area-selection-tests"
+      - name: Verify independent persisted tool settings and actual rendered stroke pixels
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioToolPreferences/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-tool-preferences-tests"
+          "$RUNNER_TEMP/sdi-tool-preferences-tests"
+      - name: Verify real eraser modes strength layer isolation history persistence and exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioEraser/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-eraser-tests"
+          "$RUNNER_TEMP/sdi-eraser-tests"
+      - name: Verify actual editable text typography pixels commands history and device persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioText/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-text-tests"
+          "$RUNNER_TEMP/sdi-text-tests"
+      - name: Verify actual selection stacking pixels cancellation history and saved exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioSelectionOrdering/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-selection-order-tests"
+          "$RUNNER_TEMP/sdi-selection-order-tests"
+      - name: Verify bounded fill regions cancellation and real artwork exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioFill/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Services/StudioFillSession.swift \
+            -o "$RUNNER_TEMP/sdi-fill-tests"
+          "$RUNNER_TEMP/sdi-fill-tests"
+      - name: Verify fill tolerance gaps expansion and coverage limits
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
+            Tests/StudioFillRegion/main.swift \
+            -o "$RUNNER_TEMP/sdi-fill-region-tests"
+          "$RUNNER_TEMP/sdi-fill-region-tests"
       - name: Verify deterministic native brush geometry and actual pixels
         shell: bash
         run: |
@@ -247,6 +561,78 @@ jobs:
             Tests/StudioAudioIntegration/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
           "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
+      - name: Verify production StudioAudioTimeline
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioTimelineSession.swift \
+            Tests/StudioAudioTimeline/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioTimeline-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioTimeline-tests"
+      - name: Verify production StudioAudioMix
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            Tests/StudioAudioMix/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioMix-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioMix-tests"
+      - name: Verify production StudioSoundCatalogue
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioTimelineSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
+            Tests/StudioSoundCatalogue/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests"
+          "$RUNNER_TEMP/sdi-StudioSoundCatalogue-tests" StickDeathInfinity/Resources/StudioSounds
+      - name: Verify licensed image catalogue and every original PNG
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            Tests/StudioImageCatalogue/main.swift \
+            -o "$RUNNER_TEMP/sdi-image-catalogue-tests"
+          "$RUNNER_TEMP/sdi-image-catalogue-tests" StickDeathInfinity/Resources/StudioImages
       - name: Verify real photo decoding, orientation and cancellation
         shell: bash
         run: |
@@ -319,9 +705,37 @@ jobs:
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
             StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
             StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             Tests/StudioImageImportSession/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-session-tests"
           "$RUNNER_TEMP/sdi-studio-image-session-tests"
+      - name: Verify library previews rights history persistence actual PNG and bounded thumbnails
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
+            StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            StickDeathInfinity/Services/StudioImageLibraryThumbnails.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            Tests/StudioImageLibrary/main.swift \
+            -o "$RUNNER_TEMP/sdi-studio-image-library-tests"
+          "$RUNNER_TEMP/sdi-studio-image-library-tests" StickDeathInfinity/Resources/StudioImages
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |
@@ -381,9 +795,34 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
             Tests/SpatterStudioEditSession/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
           "$RUNNER_TEMP/sdi-spatter-edit-session-tests"
+      - name: Verify real artwork color sampling and gesture context
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioColorSampling/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            -o "$RUNNER_TEMP/sdi-color-sampling-tests"
+          "$RUNNER_TEMP/sdi-color-sampling-tests"
       - name: Verify actual MP4 timing pixels cancellation and output ownership
         shell: bash
         run: |
@@ -404,9 +843,66 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             Tests/StudioMovieExport/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioMovieExport-tests"
           "$RUNNER_TEMP/sdi-StudioMovieExport-tests"
+      - name: Verify same-capture H.264 AAC timing pixels and ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            Tests/StudioAudioVideoMux/main.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            -o "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+          "$RUNNER_TEMP/sdi-StudioAudioVideoMux-tests"
+      - name: Verify mixed MP4 phases cancellation source trim and final cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            Tests/StudioMixedMovieExport/main.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            -o "$RUNNER_TEMP/sdi-StudioMixedMovieExport-tests"
+          "$RUNNER_TEMP/sdi-StudioMixedMovieExport-tests"
       - name: Verify immutable MP4 sessions stale context and consumer cleanup
         shell: bash
         run: |
@@ -427,10 +923,45 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             Tests/StudioMovieSession/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioMovieSession-tests"
           "$RUNNER_TEMP/sdi-StudioMovieSession-tests"
+      - name: Verify actual MP4 preview decoding audio seeking and consumer lifetime
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMoviePreviewState.swift \
+            Tests/StudioMoviePreview/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioMoviePreview-tests"
+          "$RUNNER_TEMP/sdi-StudioMoviePreview-tests"
       - name: Verify MP4 panel state and completion-owned share lifetime
         shell: bash
         run: |
@@ -451,12 +982,130 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
             StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
             Tests/StudioMoviePanel/main.swift \
             StickDeathInfinity/Services/StudioMoviePanelState.swift \
             StickDeathInfinity/Services/StudioMovieShareLifetime.swift \
             -o "$RUNNER_TEMP/sdi-StudioMoviePanel-tests"
           "$RUNNER_TEMP/sdi-StudioMoviePanel-tests"
+      - name: Verify actual animated GIF pixels timing limits and file ownership
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            Tests/StudioGIF/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIF-tests"
+          "$RUNNER_TEMP/sdi-StudioGIF-tests"
+      - name: Verify actual GIF capture cancellation scope and consumer lifetime
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            StickDeathInfinity/Services/StudioGIFExportSession.swift \
+            Tests/StudioGIFSession/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIFSession-tests"
+          "$RUNNER_TEMP/sdi-StudioGIFSession-tests"
+      - name: Verify GIF panel and completion-owned sharing leases
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioGIFEncoder.swift \
+            StickDeathInfinity/Services/StudioGIFExportService.swift \
+            StickDeathInfinity/Services/StudioGIFExportSession.swift \
+            StickDeathInfinity/Services/StudioGIFPanelState.swift \
+            StickDeathInfinity/Services/StudioGIFShareLifetime.swift \
+            Tests/StudioGIFPanel/main.swift \
+            -o "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
+          "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
+  native-ios-build:
+    needs: native-production-tests
+    # Always report this required gate, including a failed/cancelled dependency.
+    if: ${{ always() }}
+    runs-on: macos-15
+    # Match the bounded inventory budget: at most 60 cases x 180 seconds,
+    # five minutes of suite overhead and 25 minutes for build/preservation.
+    # This is a ceiling; the job exits as soon as all cases finish. One Mac
+    # runner at a time, unchanged case limits, no retries or skipped cases.
+    timeout-minutes: 210
+    steps:
+      - name: Require successful production verification
+        shell: bash
+        env:
+          SDI_PRODUCTION_RESULT: ${{ needs.native-production-tests.result }}
+        run: |
+          set -euo pipefail
+          test "$SDI_PRODUCTION_RESULT" = success
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
       - name: Build checked-in native iOS target without signing or deployment
         shell: bash
         run: |
@@ -470,6 +1119,33 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/sdi-native-build" \
             CODE_SIGNING_ALLOWED=NO build
           echo 'XCODE_IOS_BUILD=PASS'
+      - name: Verify simulator review packaging rules
+        id: native-review-rules
+        continue-on-error: true
+        run: python3 -m unittest discover -s Tests/NativeReviewPackage -p 'test_*.py' -v
+      - name: Preserve the unconfigured universal simulator app
+        id: native-review-app
+        if: ${{ !cancelled() && steps.native-review-rules.outcome == 'success' }}
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --quiet HEAD --
+          python3 scripts/native-review/package_simulator_app.py \
+            --app "$RUNNER_TEMP/sdi-native-build/Build/Products/Debug-iphonesimulator/StickDeathInfinity.app" \
+            --output "$RUNNER_TEMP/sdi-native-review-app" --commit "$(git rev-parse HEAD)"
+          echo "artifact_path=$RUNNER_TEMP/sdi-native-review-app" >> "$GITHUB_OUTPUT"
+      - name: Upload native simulator review app
+        id: native-review-upload
+        if: ${{ !cancelled() && steps.native-review-app.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.native-review-app.outputs.artifact_path }}
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
       - name: Exercise the native Studio and capture simulator evidence
         id: native-smoke
         shell: bash
@@ -477,22 +1153,7 @@ jobs:
           set -euo pipefail
           SDI_SMOKE_SIMULATOR_UDID="$(python3 scripts/native-smoke/select_simulator.py)"
           export SDI_SMOKE_SIMULATOR_UDID
-          set +e
           bash scripts/native-smoke/run_smoke_ci.sh
-          sdi_status=$?
-          set -e
-          python3 - <<'PY'
-          import os, pathlib
-          root = pathlib.Path(os.environ["RUNNER_TEMP"]).resolve()
-          marker = root / "sdi-native-smoke-artifact-path.txt"
-          if marker.is_file():
-              artifact = pathlib.Path(marker.read_text().strip()).resolve()
-              if not artifact.is_relative_to(root) or not artifact.is_dir() or not artifact.name.startswith("sdi-native-smoke."):
-                  raise SystemExit("Invalid native evidence path")
-              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-                  output.write("artifact_path=" + str(artifact) + "\n")
-          PY
-          exit "$sdi_status"
       - name: Preserve owned simulator setup receipt even when creation fails
         if: always() && steps.native-smoke.outputs.simulator_setup_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -510,3 +1171,17 @@ jobs:
           retention-days: 3
           compression-level: 3
           if-no-files-found: error
+      - name: Require successful native simulator app preservation
+        if: always()
+        shell: bash
+        env:
+          SDI_REVIEW_RULES: ${{ steps.native-review-rules.outcome }}
+          SDI_REVIEW_PACKAGE: ${{ steps.native-review-app.outcome }}
+          SDI_REVIEW_UPLOAD: ${{ steps.native-review-upload.outcome }}
+        run: |
+          set -euo pipefail
+          # Defer this mandatory result until after the independent UI evidence.
+          # Any packaging, verification or upload failure still fails this job.
+          test "$SDI_REVIEW_RULES" = success
+          test "$SDI_REVIEW_PACKAGE" = success
+          test "$SDI_REVIEW_UPLOAD" = success

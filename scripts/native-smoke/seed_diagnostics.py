@@ -15,10 +15,12 @@ import zlib
 
 DIAGNOSTIC_SECONDS = 30.0
 TEXT_BYTES = 128 * 1024
-SCREENSHOT_BYTES = 2 * 1024 * 1024
+SCREENSHOT_BYTES = 4 * 1024 * 1024
 EVIDENCE_BYTES = SCREENSHOT_BYTES + 96 * 1024
 _TERMS = ('timeout', 'timed out', 'connection', 'xpc', 'database', 'sqlite',
-          'locked', 'memory', 'bootstrap', 'unavailable', 'permission', 'denied')
+          'locked', 'memory', 'bootstrap', 'unavailable', 'permission', 'denied',
+          'no such table', 'no such column', 'database is locked', 'database or disk is full',
+          'database disk image is malformed', 'unable to open database file', 'migration')
 _SERVICES = {'com.apple.assetsd', 'com.apple.photolibraryd', 'com.apple.photoanalysisd'}
 
 
@@ -56,7 +58,7 @@ class Evidence:
 
     def write(self, name, data):
         allowed = {'SDI-generated-image-fixture.png', 'image-seed-start.json',
-                   'image-seed-command.json', 'image-seed-diagnostics.json',
+                   'image-seed-command.json', 'image-seed-diagnostics.json', 'image-seed-readiness.json',
                    'image-seed-setup.png', 'image-fixture.json'}
         if name not in allowed or len(data) > EVIDENCE_BYTES - self.written:
             raise ValueError('Evidence name or total byte budget exceeded')

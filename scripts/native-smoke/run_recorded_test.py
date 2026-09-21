@@ -9,7 +9,8 @@ import subprocess
 import sys
 import time
 
-from seed_image_fixture import seed_verified_fixture
+from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
+from test_budget import build_test_budget
 
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
@@ -58,7 +59,18 @@ def main() -> int:
     # Identity was validated above and the explicit target's native bootstatus
     # just succeeded. Re-enumerating every simulator here can stall CoreSimulator.
     # Keep the actual addmedia success and its own timeout as the seeding gate.
-    seed_verified_fixture(args.udid, output)
+    fixture_error = None
+    try:
+        wait_for_command_readiness(args.udid, output)
+        seed_verified_fixture(args.udid, output)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        # The isolated target/boot/offline-app gates already passed. A Photos
+        # fixture failure must still fail this job, but need not suppress the
+        # unrelated drawing, persistence, toolbar and export UI evidence.
+        # Run every test, including Photos; never skip or retry the failed seed.
+        fixture_error = type(error).__name__
+        print(json.dumps({"photoFixtureSeeded": False, "failureClass": fixture_error,
+                          "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -67,9 +79,13 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Ten UI journeys, each capped at 180s, share this bounded suite deadline.
-    # The workflow's separate 40-minute deadline still bounds build and testing.
-    test_timeout_seconds = 1680
+    # Each case already has a hard 180-second limit. Budget the whole suite
+    # from the exact checked-in inventory, so a growing suite cannot be cut
+    # off by an unrelated smaller fixed deadline. No retries or filtered cases.
+    source = pathlib.Path(__file__).resolve().parents[2] / "Tests/NativeUI/StudioSmokeUITests.swift"
+    budget = build_test_budget(source.read_text(), command)
+    (output / "ui-test-budget.json").write_text(json.dumps(budget, indent=2) + "\n")
+    test_timeout_seconds = budget["suiteSeconds"]
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)
@@ -120,12 +136,15 @@ def main() -> int:
     report = {"simulatorUDID": args.udid, "simulatorName": selected[0]["name"],
               "uiTestExitCode": test_exit, "recordingExitCode": recording_exit,
               "recordingError": recording_error, "uiProcessExitCode": test_process_exit,
-              "uiSuiteTimeoutSeconds": test_timeout_seconds}
+              "uiSuiteTimeoutSeconds": test_timeout_seconds,
+              "photoFixtureSeeded": fixture_error is None, "photoFixtureFailureClass": fixture_error}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     if test_exit != 0:
         return test_exit if test_exit > 0 else 1
-    return 3 if recording_error else 0
+    if recording_error:
+        return 3
+    return 4 if fixture_error else 0
 
 
 if __name__ == "__main__":

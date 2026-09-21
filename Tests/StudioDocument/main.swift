@@ -120,6 +120,106 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             try require(reopened.currentFrameIndex == 0, "playback did not restore user-selected frame")
             print("PASS persisted user frame/layer selection and transient playback playhead")
 
+            let timelineVM = StudioViewModel(storage: store)
+            let timelineCreated = await timelineVM.createProject(name: "Stable frame targets", width: 512, height: 512, fps: 12)
+            try require(timelineCreated, "Timeline fixture could not be created")
+            let originalFrame = timelineVM.currentFrame.id
+            let originalDrawing = stroke(layer: timelineVM.activeLayerID)
+            try require(timelineVM.commitElement(originalDrawing), "Timeline source drawing was rejected")
+            timelineVM.addFrame()
+            let blankFrame = timelineVM.currentFrame.id
+            let beforeDuplicate = timelineVM.document
+            timelineVM.duplicateFrame(originalFrame)
+            let duplicated = timelineVM.document, copyID = timelineVM.currentFrame.id
+            try require(duplicated.frames.count == 3 && duplicated.frames[0].id == originalFrame
+                && duplicated.frames[1].id == copyID && duplicated.frames[2].id == blankFrame,
+                "Context duplication used the active index rather than the explicit source identity")
+            try require(duplicated.revision == beforeDuplicate.revision + 1
+                && timelineVM.currentFrame.elements.count == 1
+                && timelineVM.currentFrame.elements[0].id != originalDrawing.id
+                && timelineVM.currentFrame.elements[0].points == originalDrawing.points,
+                "Context duplication lost real content or committed more than one document revision")
+            timelineVM.undo()
+            try require(timelineVM.document.frames == beforeDuplicate.frames
+                && timelineVM.document.activeFrameID == blankFrame,
+                "Undo of context duplication failed to restore the previously selected frame")
+            timelineVM.redo()
+            try require(timelineVM.document.frames == duplicated.frames && timelineVM.currentFrame.id == copyID,
+                "Redo lost the duplicate's stable identity or content")
+            timelineVM.moveFrame(originalFrame, offset: 1)
+            timelineVM.selectFrame(originalFrame)
+            try require(timelineVM.currentFrame.id == originalFrame && timelineVM.currentFrameIndex == 1,
+                "Reordering retargeted a retained frame identity")
+            timelineVM.deleteFrame(copyID)
+            let afterDelete = timelineVM.document
+            timelineVM.duplicateFrame(copyID)
+            try require(timelineVM.document == afterDelete && timelineVM.message != nil,
+                "A stale deleted context target duplicated an unrelated frame")
+            timelineVM.selectFrame("missing-frame")
+            try require(timelineVM.document == afterDelete, "Stale selection changed the document")
+            timelineVM.undo()
+            try require(timelineVM.document.frames.count == 3 && timelineVM.currentFrame.id == originalFrame,
+                "Rejected context command damaged the previous undo entry")
+            let timelineSaved = await timelineVM.save(), timelineSnapshot = timelineVM.document
+            try require(timelineSaved, "Timeline fixture save failed")
+            let timelineReopen = StudioViewModel(storage: store)
+            await timelineReopen.loadProjects()
+            guard let timelineMetadata = timelineReopen.savedProjects.first(where: { $0.id == timelineSnapshot.id }) else {
+                throw Failure(text: "Saved timeline project missing")
+            }
+            let timelineOpened = await timelineReopen.openProject(timelineMetadata)
+            try require(timelineOpened && timelineReopen.document == timelineSnapshot,
+                "Stable frame identities, order, selection or real drawing content failed cold reopen")
+            print("PASS explicit frame context identity, one-step duplication undo, stale-target rejection and cold reopen")
+
+            let clipboardStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("ClipboardDocuments"),
+                cachesDirectory: root.appendingPathComponent("ClipboardCaches"))
+            let clipboardVM = StudioViewModel(storage: clipboardStore)
+            let clipboardCreated = await clipboardVM.createProject(name: "Explicit frame clipboard", width: 512, height: 512, fps: 12)
+            try require(clipboardCreated, "Frame clipboard fixture could not be created")
+            let copiedFrameID = clipboardVM.currentFrame.id
+            let copiedStroke = stroke(layer: clipboardVM.activeLayerID)
+            try require(clipboardVM.commitElement(copiedStroke), "Frame clipboard source drawing failed")
+            clipboardVM.addFrame()
+            let selectedBlankID = clipboardVM.currentFrame.id
+            let clipboardSaved = await clipboardVM.save()
+            try require(clipboardSaved, "Frame clipboard fixture did not save")
+            let beforeCopy = clipboardVM.document
+            clipboardVM.copyFrame(copiedFrameID)
+            try require(clipboardVM.document == beforeCopy && !clipboardVM.isDirty && clipboardVM.canPaste,
+                "Copying a non-active timeline frame changed selection, history or persisted content")
+            clipboardVM.pasteClipboard()
+            let pastedID = clipboardVM.currentFrame.id
+            let pastedSnapshot = clipboardVM.document
+            try require(clipboardVM.frames.map(\.id) == [copiedFrameID, selectedBlankID, pastedID]
+                && clipboardVM.currentFrame.elements.count == 1
+                && clipboardVM.currentFrame.elements[0].id != copiedStroke.id
+                && clipboardVM.currentFrame.elements[0].points == copiedStroke.points,
+                "Explicit frame copy pasted the active blank frame or reused element identity")
+            clipboardVM.undo()
+            try require(clipboardVM.document.frames == beforeCopy.frames && clipboardVM.currentFrame.id == selectedBlankID,
+                "Paste Undo did not restore the prior frame selection and content")
+            clipboardVM.redo()
+            try require(clipboardVM.document.frames == pastedSnapshot.frames && clipboardVM.currentFrame.id == pastedID,
+                "Paste Redo changed the copied frame identity or drawing")
+            clipboardVM.deleteFrame(copiedFrameID)
+            let afterSourceDelete = clipboardVM.document
+            clipboardVM.copyFrame(copiedFrameID)
+            try require(clipboardVM.document == afterSourceDelete && clipboardVM.message != nil,
+                "Stale frame copy changed the document or failed to report rejection")
+            clipboardVM.pasteClipboard()
+            try require(clipboardVM.currentFrame.elements.count == 1
+                && clipboardVM.currentFrame.elements[0].points == copiedStroke.points,
+                "Deleting the source or rejecting a stale copy lost the previously copied snapshot")
+            let clipboardFinalSaved = await clipboardVM.save(), clipboardSnapshot = clipboardVM.document
+            try require(clipboardFinalSaved, "Explicit clipboard result did not save")
+            let clipboardReopen = StudioViewModel(storage: clipboardStore)
+            await clipboardReopen.loadProjects()
+            let clipboardOpened = await clipboardReopen.openProject(clipboardReopen.savedProjects[0])
+            try require(clipboardOpened && clipboardReopen.document == clipboardSnapshot && !clipboardReopen.canPaste,
+                "Clipboard result failed real cold reopen or leaked the transient clipboard")
+            print("PASS non-active frame copy, immutable snapshot, stale rejection, paste history and actual cold reopen")
+
             let preserved = documents.appendingPathComponent("Animations-preserved")
             try fm.moveItem(at: store.animationsDir, to: preserved)
             try Data("blocked directory fixture".utf8).write(to: store.animationsDir)
@@ -204,7 +304,7 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             try require(reopenOpaque && resavedOpaque && opaqueFinal.frames[0].layerData?.first?.id == originalOpaqueLayer.id,
                         "opaque frame record failed repeated editable reopen/save")
             print("PASS nil-image opaque frame metadata and deterministic legacy IDs survive open/save/reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 10 journeys")
+            print("STUDIO_DOCUMENT_TESTS=PASS 12 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

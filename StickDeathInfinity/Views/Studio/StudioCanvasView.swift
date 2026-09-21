@@ -6,7 +6,35 @@ struct StudioCanvasView: View {
     @Environment(\.displayScale) private var displayScale
     @GestureState private var gestureActive = false
     @State private var input: StudioStrokeInput?
+    @State private var imageMoveCapture: StudioViewModel.ImageMoveCapture?
+    @State private var imageMoveFrame: AnimationFrame?
+    @State private var startedAsImageMove = false
+    @State private var imageMoveCancelled = false
+    @State private var moveCapture: StudioViewModel.MoveCapture?
+    @State private var moveLayout: StudioColorSampleGesture.Layout?
+    @State private var moveFrame: AnimationFrame?
+    @State private var startedAsMove = false
+    @State private var moveCancelled = false
+    @State private var handleCapture: StudioViewModel.SelectionHandleCapture?
+    @State private var handleGeometry: StudioSelectionHandleGeometry?
+    @State private var handleKind: StudioSelectionHandleGeometry.Kind?
+    @State private var handleValues = StudioSelectionHandleGeometry.Values()
+    @State private var handleFrame: AnimationFrame?
+    @State private var startedAsHandle = false
+    @State private var handleCancelled = false
+    @State private var areaCapture: StudioViewModel.AreaSelectionCapture?
+    @State private var areaLayout: StudioColorSampleGesture.Layout?
+    @State private var areaTrace = StudioSelectionTrace()
+    @State private var areaPreview: [CGPoint] = []
+    @State private var startedAsArea = false
+    @State private var areaCancelled = false
     @State private var panOrigin: CGSize?
+    // A completed gesture still needs its captured context in onEnded.
+    // GestureState resets at touch end, so it cannot own this transaction.
+    @State private var colorInput = StudioColorSampleGesture()
+    @State private var touchID: UUID?
+    @State private var fillInput = StudioFillGesture()
+    @StateObject private var fillSession = StudioFillSession()
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -15,7 +43,10 @@ struct StudioCanvasView: View {
     var body: some View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
-            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: vm.currentFrame) }
+            let documentSize = CGSize(width: vm.canvasWidth, height: vm.canvasHeight)
+            let displayedFrame = imageMoveFrame ?? handleFrame ?? moveFrame ?? vm.currentFrame
+            let handles = selectionHandles(frame: displayedFrame, size: size)
+            let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: displayedFrame) }
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
             let currentRaster = Result { try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers,
                 data: vm.rasterData(vm.currentFrame.rasterAssetID), maximumDimension: rasterSize) }
@@ -46,7 +77,7 @@ struct StudioCanvasView: View {
                         }
                         switch (currentPrepared, currentRaster) {
                         case (.success(let brushes), .success(let image)):
-                            if let error = StudioFrameRenderer.draw(context: &context, frame: vm.currentFrame, layers: vm.layers,
+                            if let error = StudioFrameRenderer.draw(context: &context, frame: displayedFrame, layers: vm.layers,
                                 canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
                                 rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
                                 preparedBrushes: brushes, preparedRaster: image) {
@@ -55,20 +86,51 @@ struct StudioCanvasView: View {
                         case (.failure(let error), _), (_, .failure(let error)):
                             StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                         }
-                        for element in vm.currentFrame.elements where vm.selectedElementIDs.contains(element.id) {
-                            guard let first = element.points.first else { continue }
-                            let xs = element.points.map(\.x), ys = element.points.map(\.y)
-                            let x = xs.min() ?? first.x, y = ys.min() ?? first.y
-                            let rect = CGRect(x: x / CGFloat(vm.canvasWidth) * actual.width - 3,
-                                y: y / CGFloat(vm.canvasHeight) * actual.height - 3,
-                                width: ((xs.max() ?? x) - x) / CGFloat(vm.canvasWidth) * actual.width + 6,
-                                height: ((ys.max() ?? y) - y) / CGFloat(vm.canvasHeight) * actual.height + 6)
+                        for element in displayedFrame.elements where vm.selectedElementIDs.contains(element.id) {
+                            guard let bounds = try? StudioSelectionRegion.drawingBounds(element) else { continue }
+                            let rect = CGRect(x: bounds.minX / CGFloat(vm.canvasWidth) * actual.width - 3,
+                                y: bounds.minY / CGFloat(vm.canvasHeight) * actual.height - 3,
+                                width: bounds.width / CGFloat(vm.canvasWidth) * actual.width + 6,
+                                height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
+                        if vm.currentImageMoveCapture() != nil, let placement = displayedFrame.rasterPlacement {
+                            let rect = CGRect(x: placement.x / Double(vm.canvasWidth) * actual.width,
+                                y: placement.y / Double(vm.canvasHeight) * actual.height,
+                                width: placement.width / Double(vm.canvasWidth) * actual.width,
+                                height: placement.height / Double(vm.canvasHeight) * actual.height)
+                            context.stroke(Path(rect.insetBy(dx: 1, dy: 1)), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
+                        }
+                        if let handles {
+                            for handle in handles.handles {
+                                let r = handles.visualRadius
+                                let circle = Path(ellipseIn: CGRect(x: handle.point.x-r, y: handle.point.y-r, width: 2*r, height: 2*r))
+                                context.fill(circle, with: .color(handle.kind == .rotate ? .red : .white))
+                                context.stroke(circle, with: .color(.red), lineWidth: 2 / handles.zoom)
+                                if handle.kind == .rotate {
+                                    context.draw(Text("↻").font(.system(size: 10 / handles.zoom, weight: .bold)).foregroundColor(.white), at: handle.point)
+                                }
+                            }
+                        }
+                        if let first = areaPreview.first {
+                            func scaled(_ point: CGPoint) -> CGPoint {
+                                CGPoint(x: point.x / documentSize.width * actual.width,
+                                        y: point.y / documentSize.height * actual.height)
+                            }
+                            var outline = Path(); outline.move(to: scaled(first))
+                            areaPreview.dropFirst().forEach { outline.addLine(to: scaled($0)) }
+                            if areaPreview.count >= 3 {
+                                outline.closeSubpath()
+                                context.fill(outline, with: .color(.red.opacity(0.08)), style: FillStyle(eoFill: true))
+                            }
+                            context.stroke(outline, with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
                     }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Position image in the Move popup changes its size." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
                     if vm.gridEnabled { GridOverlay().allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -81,8 +143,20 @@ struct StudioCanvasView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
+            .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
+                scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
+                colorInput.invalidate(); fillInput.invalidate(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+            }
             .overlay(alignment: .bottom) {
-                if let pending = vm.pendingBrushStroke {
+                if fillSession.isFilling {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Filling artwork…").font(.specialElite(12))
+                        Button("Cancel") { fillSession.cancel() }
+                            .accessibilityIdentifier("studio.fill.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.fill.progress")
+                } else if let pending = vm.pendingBrushStroke {
                     VStack(spacing: 6) {
                         Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
                         Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
@@ -100,11 +174,31 @@ struct StudioCanvasView: View {
             }
         }
         .onChange(of: vm.currentFrame.id) { _, _ in
+            fillSession.cancel()
             interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
         }
-        .onChange(of: gestureActive) { _, active in
-            if !active { interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.") }
+        .onChange(of: StudioFillContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            fillInput.invalidate()
+            if fillSession.isFilling { fillSession.cancel() }
         }
+        .onChange(of: gestureActive) { _, active in
+            guard !active, let endedTouch = touchID else { return }
+            // Let onEnded consume its capture first. A cancelled gesture has
+            // no onEnded callback; clear only that touch on the next turn.
+            Task { @MainActor in
+                await Task.yield()
+                guard !gestureActive, touchID == endedTouch else { return }
+                interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
+            }
+        }
+        .onChange(of: vm.document.revision) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
+        .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
+        .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
+        .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
         }
@@ -119,7 +213,48 @@ struct StudioCanvasView: View {
         DragGesture(minimumDistance: 0)
             .updating($gestureActive) { _, active, _ in active = true }
             .onChanged { value in
+                if touchID == nil {
+                    touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
+                    startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
+                    imageMoveCancelled = false
+                    startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
+                    if startedAsImageMove {
+                        moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        imageMoveCapture = vm.beginImageMove(at: documentPoint(value.startLocation, size: size))
+                    }
+                    startedAsArea = vm.selectedTool == .lasso; areaCancelled = false
+                    if let geometry = selectionHandles(frame: vm.currentFrame, size: size),
+                       let kind = geometry.hit(value.startLocation), let capture = vm.beginSelectionHandle() {
+                        startedAsHandle = true; handleCancelled = false; startedAsMove = false
+                        handleCapture = capture; handleGeometry = geometry; handleKind = kind
+                        moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                    }
+                    if startedAsMove {
+                        moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        moveCapture = vm.beginMove(at: documentPoint(value.startLocation, size: size))
+                    }
+                    if startedAsArea {
+                        areaCapture = vm.beginAreaSelection()
+                        areaLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        _ = updateArea(location: value.startLocation, size: size)
+                    }
+                }
+                if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
+                if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
+                if startedAsArea { _ = updateArea(location: value.location, size: size); return }
+                if startedAsMove {
+                    updateMove(delta: value.translation, size: size)
+                    return
+                }
+                colorInput.update(context: input == nil ? vm.beginColorSample() : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
+                fillInput.update(context: input == nil ? StudioFillContext.current(vm) : nil,
+                    layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                    foreground: scenePhase == .active)
                 guard vm.pendingBrushStroke == nil else { return }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) { return }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
                     vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
@@ -134,13 +269,15 @@ struct StudioCanvasView: View {
                         let id = UUID().uuidString
                         let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
+                        let shape = try vm.shapeDescriptor()
+                        let eraser = try vm.eraserDescriptor()
                         guard vm.beginStrokeInput(id: id) else { return }
                         input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                             tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
-                            opacity: styled ? vm.capturedStrokeOpacity : vm.strokeOpacity,
+                            opacity: styled || shape != nil ? vm.capturedStrokeOpacity : vm.strokeOpacity,
                             brush: brush,
                             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
-                            startedAt: value.time)
+                            startedAt: value.time, shape: shape, eraser: eraser)
                     } catch { vm.message = error.localizedDescription; return }
                 }
                 do { try input?.append(location: value.location, time: value.time) }
@@ -158,6 +295,49 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if startedAsImageMove {
+                    guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
+                    _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
+                    return
+                }
+                if startedAsHandle {
+                    guard updateHandle(start: value.startLocation, location: value.location, size: size, final: true),
+                          let capture = handleCapture else { return }
+                    _ = vm.finishSelectionHandle(capture, values: handleValues)
+                    return
+                }
+                if startedAsArea {
+                    guard updateArea(location: value.location, size: size), let capture = areaCapture else { return }
+                    _ = vm.finishAreaSelection(capture, points: areaTrace.points)
+                    return
+                }
+                if startedAsMove {
+                    guard updateMove(delta: value.translation, size: size), let capture = moveCapture else { return }
+                    _ = vm.finishMove(capture, delta: documentDelta(value.translation, size: size))
+                    return
+                }
+                if fillInput.startedAsFill || (input == nil && vm.selectedTool == .fill) {
+                    guard let fill = fillInput.resolve(location: value.location,
+                        context: StudioFillContext.current(vm),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio changed during fill input. Choose a visible unlocked layer and start a new tap."
+                        return
+                    }
+                    Task { await fillSession.fill(vm, context: fill.context, point: fill.point) }
+                    return
+                }
+                if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) {
+                    guard let sample = colorInput.resolve(location: value.location,
+                        context: vm.beginColorSample(),
+                        layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                        foreground: scenePhase == .active) else {
+                        vm.message = "Studio or the canvas changed during color sampling. Start a new tap."
+                        return
+                    }
+                    _ = vm.sampleArtworkColor(at: sample.point, captured: sample.context)
+                    return
+                }
                 if panOrigin != nil { return }
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {
@@ -175,22 +355,115 @@ struct StudioCanvasView: View {
                     return
                 }
                 if vm.selectedTool == .zoom { vm.zoomIn(); return }
-                if vm.selectedTool == .move {
-                    vm.selectElement(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
-                                                 y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
-                    return
-                }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
-    private func clearInput() {
+    private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
+        CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
+    }
+    private func documentDelta(_ delta: CGSize, size: CGSize) -> CGSize {
+        CGSize(width: delta.width / size.width * CGFloat(vm.canvasWidth), height: delta.height / size.height * CGFloat(vm.canvasHeight))
+    }
+    private func selectionHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
+        guard vm.beginSelectionHandle() != nil else { return nil }
+        var bounds = CGRect.null
+        for element in frame.elements where vm.selectedElementIDs.contains(element.id) {
+            guard let rect = try? StudioSelectionRegion.drawingBounds(element) else { return nil }
+            bounds = bounds.union(rect)
+        }
+        return StudioSelectionHandleGeometry(bounds: bounds,
+            documentSize: CGSize(width: vm.canvasWidth,height: vm.canvasHeight),viewport: size,zoom: vm.canvasScale)
+    }
+    private func cancelHandlePreview() {
+        if startedAsHandle { handleCancelled = true; handleFrame = nil }
+    }
+    @discardableResult
+    private func updateHandle(start: CGPoint, location: CGPoint, size: CGSize, final: Bool = false) -> Bool {
+        guard !handleCancelled, let capture = handleCapture, let geometry = handleGeometry, let kind = handleKind else { return false }
+        guard scenePhase == .active, vm.beginSelectionHandle() == capture,
+              moveLayout == .init(viewport: size,scale: vm.canvasScale,offset: vm.canvasOffset) else {
+            cancelHandlePreview(); return false
+        }
+        do {
+            let values = try geometry.values(kind: kind,start: start,current: location)
+            let now = ProcessInfo.processInfo.systemUptime
+            if final || now-lastPreviewTime >= 1/30 {
+                handleFrame = try vm.selectionHandlePreview(capture, values: values)
+                handleValues = values; lastPreviewTime = now
+            }
+            return true
+        } catch { cancelHandlePreview(); vm.message = error.localizedDescription; return false }
+    }
+    private func cancelImageMovePreview() {
+        if startedAsImageMove { imageMoveCancelled = true; imageMoveFrame = nil }
+    }
+    @discardableResult
+    private func updateImageMove(delta: CGSize, size: CGSize) -> Bool {
+        guard !imageMoveCancelled, let capture = imageMoveCapture else { return false }
+        guard scenePhase == .active, vm.currentImageMoveCapture() == capture,
+              moveLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else {
+            cancelImageMovePreview(); return false
+        }
+        do { imageMoveFrame = try vm.imageMovePreview(capture, delta: documentDelta(delta, size: size)); return true }
+        catch { cancelImageMovePreview(); vm.message = error.localizedDescription; return false }
+    }
+    private func cancelMovePreview() {
+        if startedAsMove { moveCancelled = true; moveFrame = nil }
+    }
+    private func cancelAreaPreview() {
+        if startedAsArea { areaCancelled = true; areaPreview = [] }
+    }
+    @discardableResult
+    private func updateArea(location: CGPoint, size: CGSize) -> Bool {
+        guard !areaCancelled, let capture = areaCapture else { return false }
+        guard scenePhase == .active, vm.beginAreaSelection() == capture,
+              areaLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else {
+            cancelAreaPreview(); return false
+        }
+        do {
+            try areaTrace.append(documentPoint(location, size: size), kind: capture.kind)
+            areaPreview = (try? StudioSelectionRegion(points: areaTrace.points, kind: capture.kind,
+                smoothing: capture.smoothing).points) ?? areaTrace.points
+            return true
+        } catch { cancelAreaPreview(); vm.message = error.localizedDescription; return false }
+    }
+    @discardableResult
+    private func updateMove(delta: CGSize, size: CGSize) -> Bool {
+        guard !moveCancelled, let capture = moveCapture else { return false }
+        guard scenePhase == .active, moveLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+              vm.moveIsCurrent(capture) else {
+            cancelMovePreview(); vm.message = "Studio changed during the move. The artwork has not moved."; return false
+        }
+        do { moveFrame = try vm.movePreview(capture, delta: documentDelta(delta, size: size)); return true }
+        catch { cancelMovePreview(); vm.message = error.localizedDescription; return false }
+    }
+    private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
         input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
+        if endingTouch {
+            colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
+            imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
+            moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
+            handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
+            handleValues = .init(); startedAsHandle = false; handleCancelled = false
+            areaCapture = nil; areaLayout = nil; areaTrace = StudioSelectionTrace()
+            areaPreview = []; startedAsArea = false; areaCancelled = false
+        }
     }
     private func interruptInput(_ reason: String) {
+        fillSession.cancel()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
-        clearInput()
+        colorInput.invalidate()
+        fillInput.invalidate()
+        cancelMovePreview()
+        cancelImageMovePreview()
+        cancelAreaPreview()
+        cancelHandlePreview()
+        // A frame/scene change while the finger is down cancels that whole
+        // touch. Keep its identity until physical end; a later move must not
+        // capture the new frame as though it were a fresh gesture.
+        clearInput(endingTouch: !gestureActive)
     }
 }
 

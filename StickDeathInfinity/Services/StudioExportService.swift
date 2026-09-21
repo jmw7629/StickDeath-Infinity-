@@ -152,7 +152,7 @@ final class StudioExportService {
         }
     }
 
-    private func render(_ frame: AnimationFrame, document: StudioDocument,
+    func render(_ frame: AnimationFrame, document: StudioDocument,
                         background: Background, raster: Data?) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
@@ -184,12 +184,12 @@ final class StudioExportService {
         return size
     }
 
-    private func validate(_ document: StudioDocument) throws {
+    func validate(_ document: StudioDocument) throws {
         try document.validate()
         let pixels = document.width * document.height
         guard document.frames.count <= Self.maximumFrames, pixels <= Self.maximumFramePixels,
               pixels * document.frames.count <= Self.maximumTotalPixels else { throw ExportError.limitExceeded }
-        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
+        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill]
         let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
         func validColor(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
@@ -204,9 +204,11 @@ final class StudioExportService {
         for frame in document.frames {
             for element in frame.elements where element.opacity > 0 && element.layerID.map(renderedLayerIDs.contains) == true {
                 guard tools.contains(element.tool) else { throw ExportError.unsupportedContent }
+                guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 guard validColor(element.color) else { throw ExportError.invalidColor }
                 if element.tool == .text {
-                    guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent }
+                    if let text = element.text { try text.validate(element: element) }
+                    else { guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent } }
                 }
             }
         }

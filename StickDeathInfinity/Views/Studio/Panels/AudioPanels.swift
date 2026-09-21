@@ -1,80 +1,763 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-// The historical catalog is retained as reference labels. Imported Files assets
-// are the only enabled audio source until licensed bundled sounds are supplied.
 struct SoundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
+    var body: some View { StudioAudioWorkspace(vm: vm, opensLibrary: true) }
+}
+struct AudioTimelinePanel: View {
+    @ObservedObject var vm: StudioViewModel
+    var body: some View { StudioAudioWorkspace(vm: vm, opensLibrary: false) }
+}
+
+private struct StudioAudioWorkspace: View {
+    @ObservedObject var vm: StudioViewModel
+    let opensLibrary: Bool
     @StateObject private var audio = StudioAudioPreviewSession()
+    @StateObject private var timeline = StudioAudioTimelineSession()
     @Environment(\.scenePhase) private var scenePhase
-    @State private var selectedCategoryIndex: Int?
+    @State private var showingLibrary = false
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
+    @State private var category: String?
+    @State private var catalogue: StudioSoundCatalogue?
+    @State private var catalogueError: String?
+    @State private var libraryTrack = 1
+    @State private var trimCapture: StudioViewModel.AudioTrimCapture?
+    @State private var fadeCapture: StudioViewModel.AudioFadeCapture?
+    @State private var timelineZoom = 1.0
+    private let background = Color(hex: "0D0D12")
 
     var body: some View {
-        ScrollView {
-        VStack(spacing: 8) {
-            PanelHeader(title: "Sound Library", icon: "🎵", onClose: { vm.activePanel = .none })
-            AudioFilesImportControls(vm: vm, audio: audio)
-            AudioProjectClips(vm: vm, audio: audio, search: search)
-            HStack {
-                if selectedCategoryIndex != nil {
-                    Button("‹ Categories") { selectedCategoryIndex = nil }.foregroundColor(.sdRed)
-                }
-                TextField("Search clips or catalog references", text: $search).font(.specialElite(11))
+        GeometryReader { geometry in
+            // Keyboard presentation changes the available height. Keep the
+            // same view hierarchy so the active search field retains focus.
+            ScrollView(.vertical) {
+                workspace(height: geometry.size.height)
+                    .frame(minHeight: geometry.size.height, alignment: .top)
             }
-            .padding(.horizontal, 14)
-            Text("Catalog references · audio files and licensing are unavailable")
-                .font(.caption2).foregroundColor(.white.opacity(0.5)).padding(.horizontal, 14)
+            .scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("studio.audio.compact.scroll")
+        }
+        .frame(maxWidth: 900, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(background)
+        .onAppear {
+            showingLibrary = opensLibrary
+        }
+        .task {
+            guard catalogue == nil else { return }
+            catalogueError = nil
+            do {
+                let loaded = try await StudioSoundCatalogue.loadBundled()
+                try Task.checkCancellation()
+                catalogue = loaded
+            } catch is CancellationError {
+                // The panel disappeared; do not show a stale loading error.
+            } catch {
+                if !Task.isCancelled { catalogueError = error.localizedDescription }
+            }
+        }
+        .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
+        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil }
+        .onChange(of: vm.document.revision) { _, _ in
+            timeline.stop(); audio.stop()
+        }
+        .onChange(of: vm.selectedCurrentAudioClip?.id) { _, _ in
+            trimCapture = nil; fadeCapture = nil
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
+        }
+    }
+    private func workspace(height: CGFloat) -> some View {
+            VStack(spacing: 0) {
+                if showingLibrary {
+                    library
+                        .frame(height: max(160, min(height * 0.40, 390)))
+                    Divider().overlay(Color.white.opacity(0.3))
+                }
+                header
+                transport
+                if timeline.isPreparing {
+                    HStack {
+                        ProgressView(value: timeline.progress).tint(.sdRed)
+                        Button("Cancel") { timeline.stop() }.foregroundColor(.sdStudioActionText)
+                    }.padding(.horizontal, 16).padding(.bottom, 8)
+                }
+                if let notice = timeline.notice ?? vm.message {
+                    Text(notice).font(.caption2).foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
+                }
+                timelineControls
+                timelineGrid
+                    .frame(height: 306, alignment: .top)
+                Spacer(minLength: 0)
+                if let clip = vm.selectedCurrentAudioClip { clipInspector(clip) }
+                HStack {
+                    Text("Drag clips to move · Drag edges to trim").foregroundColor(.sdStudioSecondaryText)
+                    Spacer()
+                    Button("+ Add Sound") { showingLibrary = true }.foregroundColor(.sdStudioActionText)
+                }.font(.specialElite(10)).padding(12)
+            }
+            .background(background).foregroundColor(.white)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text("♫ Audio Timeline").font(.specialElite(16))
+            Text("\(vm.audioClips.count) clips").font(.specialElite(10))
+                .padding(5).background(Color.white.opacity(0.05)).clipShape(Capsule())
+                .accessibilityIdentifier("studio.audio.clip-count")
+            Spacer(minLength: 0)
+            Button(vm.snapEnabled ? "Snap: ON" : "Snap: OFF") { vm.snapEnabled.toggle() }
+                .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+                .accessibilityIdentifier("studio.audio.snap")
+            Button("+ Add") { showingLibrary = true }
+                .font(.specialElite(12)).padding(.horizontal, 12).padding(.vertical, 9)
+                .background(Color.sdRed).clipShape(Capsule())
+                .accessibilityIdentifier("studio.audio.library.open")
+            Button { audio.close(); timeline.close(); vm.activePanel = .none } label: {
+                Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
+            }.accessibilityLabel("Close audio workspace").accessibilityIdentifier("studio.audio.close")
+        }.padding(.leading, 12)
+    }
+    private var transport: some View {
+        HStack(spacing: 12) {
+            Button { seek(0) } label: { Image(systemName: "backward.end.fill").frame(width: 44, height: 44) }
+                .accessibilityLabel("Audio beginning")
+            Button { togglePlayback() } label: {
+                Image(systemName: timeline.isPlaying ? "pause.fill" : "play.fill")
+                    .frame(width: 54, height: 54).background(Color.sdRed).cornerRadius(18)
+            }.disabled(timeline.isPreparing || audio.isBusy)
+                .accessibilityLabel(timeline.isPlaying ? "Pause mixed audio" : "Play mixed audio")
+                .accessibilityIdentifier("studio.audio.timelinePlay")
+            Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
+                .accessibilityLabel("Audio end")
+            Text(clock(vm.audioPlayheadTime)).foregroundColor(.sdStudioActionText)
+            Text("/ " + clock(vm.audioDuration)).foregroundColor(.sdStudioSecondaryText)
+            Spacer(minLength: 0)
+        }.font(.specialElite(14)).padding(.horizontal, 12).padding(.bottom, 10)
+    }
+    private func clock(_ t: Double) -> String {
+        guard t.isFinite, t >= 0 else { return "00:00.00" }
+        return String(format: "%02d:%05.2f", Int(t) / 60, t.truncatingRemainder(dividingBy: 60))
+    }
+    private func seek(_ time: Double) {
+        timeline.stop(); audio.stop(); vm.stopPlayback()
+        vm.displayAudioPlaybackTime(min(vm.audioDuration, max(0, time)), playing: false)
+    }
+    private func togglePlayback() {
+        if timeline.isPlaying { timeline.stop(); return }
+        audio.stop(); vm.stopPlayback()
+        let id = vm.document.id, revision = vm.document.revision
+        let start = vm.audioPlayheadTime < vm.audioDuration ? vm.audioPlayheadTime : 0
+        _ = timeline.play(document: vm.document, tracks: vm.projectAudioTracks,
+            duration: vm.audioDuration, from: start,
+            stillCurrent: { vm.isEditing && vm.document.id == id && vm.document.revision == revision },
+            onTime: { time, playing in
+                guard vm.document.id == id, vm.document.revision == revision else { return }
+                vm.displayAudioPlaybackTime(min(vm.audioDuration, time), playing: playing)
+            })
+    }
+    private var library: some View {
+        VStack(spacing: 10) {
+            HStack {
+                if category != nil { Button("‹") { category = nil }.frame(width: 32, height: 44) }
+                Text(category ?? "Sound Library").font(.specialElite(16))
+                Spacer()
+                Button { showingLibrary = false } label: {
+                    Image(systemName: "xmark").font(.system(size: 10)).frame(width: 44, height: 44)
+                }.accessibilityLabel("Close sound library")
+                    .accessibilityIdentifier("studio.audio.library.close")
+            }.padding(.horizontal, 12)
+            TextField("Search sounds, tags, categories…", text: $search)
+                .focused($searchFocused).submitLabel(.search)
+                .onSubmit { searchFocused = false }
+                .font(.specialElite(14)).padding(14).background(Color(hex: "1B1B28"))
+                .cornerRadius(16).padding(.horizontal, 16)
+                .accessibilityIdentifier("studio.audio.search")
             ScrollView {
-                LazyVStack(spacing: 6) {
-                    if let index = selectedCategoryIndex, SoundLibrary.categories.indices.contains(index) {
-                        let category = SoundLibrary.categories[index]
-                        ForEach(category.sounds.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }) { sound in
-                            SoundRow(sound: sound, tagColor: category.color, onAdd: {})
+                VStack(spacing: 10) {
+                    AudioFilesImportControls(vm: vm, audio: audio)
+                    AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
+                    if let catalogue {
+                        Text("\(catalogue.sounds.count) offline sounds · CC0")
+                            .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                            .accessibilityIdentifier("studio.audio.catalogue.count")
+                        if category != nil || !search.isEmpty {
+                            catalogueRows(catalogue)
+                        } else {
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                                ForEach(catalogue.categories, id: \.self) { name in
+                                    Button { category = name } label: {
+                                        VStack(alignment: .leading, spacing: 12) {
+                                            Image(systemName: "waveform").font(.title2).foregroundColor(.sdStudioActionText)
+                                            Text(name).font(.specialElite(15)).multilineTextAlignment(.leading)
+                                            Text("\(catalogue.search("", category: name).count) sounds")
+                                                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                                        }.frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
+                                            .padding(14).background(Color.sdRed.opacity(0.06)).cornerRadius(18)
+                                            .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.sdRed.opacity(0.18)))
+                                    }.accessibilityIdentifier("studio.audio.category." + name)
+                                }
+                            }.padding(.horizontal, 16)
                         }
+                    } else if let catalogueError {
+                        Text(catalogueError).font(.caption2).foregroundColor(.sdStudioSecondaryText).padding(16)
                     } else {
-                        ForEach(Array(SoundLibrary.categories.enumerated()), id: \.element.id) { index, category in
-                            if search.isEmpty || category.name.localizedCaseInsensitiveContains(search) {
-                                Button { selectedCategoryIndex = index } label: {
-                                    HStack {
-                                        Text(category.icon)
-                                        Text(category.name).font(.specialElite(12)).foregroundColor(.white)
-                                        Spacer(); Image(systemName: "chevron.right").foregroundColor(.white.opacity(0.4))
-                                    }
-                                    .padding(10).background(Color(hex: "12121a")).cornerRadius(8)
+                        ProgressView("Loading sound library…")
+                            .font(.caption).tint(.sdRed).padding(16)
+                            .accessibilityIdentifier("studio.audio.catalogue.loading")
+                    }
+                }.padding(.bottom, 12)
+            }
+            .accessibilityIdentifier("studio.audio.library.scroll")
+        }
+    }
+    private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
+        LazyVStack(spacing: 8) {
+            Picker("Add sounds to track", selection: $libraryTrack) {
+                ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
+            }.tint(.sdStudioActionText).accessibilityIdentifier("studio.audio.catalogue.track")
+            ForEach(catalogue.search(search, category: category)) { sound in
+                HStack(spacing: 12) {
+                    Button {
+                        timeline.stop(); vm.stopPlayback()
+                        if audio.playingClipID == sound.id { audio.stop(); return }
+                        do {
+                            let track = try catalogue.previewTrack(sound)
+                            let clip = AudioClip(id: sound.id, soundName: sound.title, track: libraryTrack,
+                                startTime: 0, duration: track.duration, assetID: track.id)
+                            let project = vm.document.id, revision = vm.document.revision
+                            _ = audio.preview(clip, track: track,
+                                stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision })
+                        } catch { vm.message = error.localizedDescription }
+                    } label: {
+                        Image(systemName: audio.playingClipID == sound.id ? "stop.fill" : "play.fill")
+                            .frame(width: 44, height: 44).background(Color.white.opacity(0.06)).clipShape(Circle())
+                    }.disabled(audio.isBusy || timeline.isPreparing)
+                        .accessibilityLabel("Preview " + sound.title)
+                        .accessibilityIdentifier("studio.audio.catalogue.preview." + sound.id)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(sound.title).font(.specialElite(14)).lineLimit(1)
+                        HStack {
+                            Text(String(format: "%.2fs", sound.duration)).font(.caption2)
+                            MeasuredAudioWaveform(peaks: sound.waveformPeaks).frame(width: 56, height: 14)
+                        }.foregroundColor(.sdStudioSecondaryText)
+                        Text(sound.author + " · CC0").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    Button {
+                        timeline.stop(); audio.stop(); vm.stopPlayback()
+                        do {
+                            let resource = try catalogue.checkedResource(sound)
+                            let target = AudioImportLease(projectID: vm.document.id, revision: vm.document.revision,
+                                frameID: vm.document.activeFrameID, track: libraryTrack)
+                            _ = audio.importFile(resource.url, name: sound.title, expectedSHA256: sound.sha256,
+                                stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                                    try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
+                                        expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track)
+                                })
+                        } catch { vm.message = error.localizedDescription }
+                    } label: {
+                        Image(systemName: "plus").foregroundColor(.sdStudioActionText).frame(width: 44, height: 44)
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.sdRed.opacity(0.35)))
+                    }.disabled(audio.isBusy || timeline.isPreparing || vm.isSaving)
+                        .accessibilityLabel("Add " + sound.title)
+                        .accessibilityIdentifier("studio.audio.catalogue.add." + sound.id)
+                }.padding(.horizontal, 16)
+                Divider().opacity(0.15)
+            }
+        }
+    }
+    private var timelineControls: some View {
+        HStack(spacing: 8) {
+            Menu {
+                ForEach(vm.audioClips.sorted {
+                    if $0.track != $1.track { return $0.track < $1.track }
+                    if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
+                    return $0.id < $1.id
+                }) { clip in
+                    Button("Track \(clip.track) · \(clip.soundName) · \(clock(clip.startTime))") {
+                        timeline.stop(); audio.stop(); vm.stopPlayback()
+                        vm.selectedAudioClip = clip
+                    }.accessibilityIdentifier("studio.audio.select-clip.\(clip.id)")
+                }
+            } label: {
+                Label("Clips", systemImage: "list.bullet").frame(minWidth: 68, minHeight: 44)
+            }.disabled(vm.audioClips.isEmpty)
+                .accessibilityLabel("Select audio clip")
+                .accessibilityIdentifier("studio.audio.clip-picker")
+            Spacer(minLength: 0)
+            Button { timelineZoom = max(0.5, timelineZoom / 2) } label: {
+                Image(systemName: "minus.magnifyingglass").frame(width: 44, height: 44)
+            }.disabled(timelineZoom <= 0.5)
+                .accessibilityLabel("Zoom audio timeline out")
+                .accessibilityIdentifier("studio.audio.zoom-out")
+            Text("\(Int(timelineZoom * 100))%")
+                .frame(minWidth: 42)
+                .accessibilityIdentifier("studio.audio.zoom-value")
+            Button { timelineZoom = min(8, timelineZoom * 2) } label: {
+                Image(systemName: "plus.magnifyingglass").frame(width: 44, height: 44)
+            }.disabled(timelineZoom >= 8)
+                .accessibilityLabel("Zoom audio timeline in")
+                .accessibilityIdentifier("studio.audio.zoom-in")
+        }.font(.specialElite(11)).foregroundColor(.white.opacity(0.75))
+            .padding(.horizontal, 12)
+    }
+    private var timelineGrid: some View {
+        GeometryReader { geometry in
+            let pps = 110.0 * timelineZoom
+            let length = max(5, min(1300, vm.audioDuration + 1))
+            let width = max(geometry.size.width - 44, length * pps)
+            let rowHeight = 70.0
+            HStack(alignment: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    Color.clear.frame(width: 44, height: 26)
+                    ForEach(1...4, id: \.self) { track in
+                        let muted = vm.document.isAudioTrackMuted(track)
+                        VStack(spacing: 0) {
+                            Text("\(track)").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                            Button {
+                                timeline.stop(); audio.stop(); vm.stopPlayback()
+                                do { try vm.setAudioTrackMuted(track, muted: !muted, expectedRevision: vm.document.revision) }
+                                catch { vm.message = error.localizedDescription }
+                            } label: {
+                                Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                    .font(.system(size: 12)).frame(width: 44, height: 44)
+                            }.disabled(vm.isSaving)
+                                .accessibilityLabel(muted ? "Unmute track \(track)" : "Mute track \(track)")
+                                .accessibilityValue(muted ? "Muted" : "Audible")
+                                .accessibilityIdentifier("studio.audio.track-mute.\(track)")
+                        }.frame(width: 44, height: rowHeight)
+                    }
+                }.frame(width: 44, alignment: .top)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("studio.audio.track-labels")
+                // All four lanes scroll vertically with the workspace. A
+                // second vertical scroller traps swipes and detaches labels.
+                ScrollView(.horizontal) {
+                    VStack(spacing: 0) {
+                        ZStack(alignment: .topLeading) {
+                            Rectangle().fill(Color.white.opacity(0.02))
+                            ForEach(Array(stride(from: 0, through: Int(ceil(length)), by: length > 120 ? 10 : 1)), id: \.self) { second in
+                                Text(clock(Double(second))).font(.specialElite(9))
+                                    .foregroundColor(.sdStudioActionText).offset(x: Double(second) * pps + 3, y: 8)
+                            }
+                        }.frame(height: 26).contentShape(Rectangle())
+                            .gesture(SpatialTapGesture().onEnded { value in seek(Double(value.location.x) / pps) })
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Audio playhead")
+                            .accessibilityValue(clock(vm.audioPlayheadTime))
+                            .accessibilityIdentifier("studio.audio.playhead-ruler")
+                            .accessibilityAdjustableAction { direction in
+                                switch direction {
+                                case .increment: seek(vm.audioPlayheadTime + 1 / Double(vm.fps))
+                                case .decrement: seek(vm.audioPlayheadTime - 1 / Double(vm.fps))
+                                @unknown default: break
                                 }
                             }
+                        ForEach(1...4, id: \.self) { track in
+                            ZStack(alignment: .topLeading) {
+                                Rectangle().fill(Color.white.opacity(track % 2 == 0 ? 0.018 : 0.008))
+                                Rectangle().fill(Color.white.opacity(0.055)).frame(height: 1)
+                                ForEach(vm.audioClips.filter { $0.track == track }) { clip in
+                                    StudioAudioTimelineClip(vm: vm, clip: clip, pointsPerSecond: pps,
+                                        stop: { timeline.stop(); audio.stop(); vm.stopPlayback() })
+                                        .frame(width: clip.duration * pps, height: 58)
+                                        .offset(x: clip.startTime * pps, y: 6)
+                                }
+                            }.frame(height: rowHeight)
                         }
-                    }
-                }.padding(.horizontal, 14)
-            }.frame(maxHeight: 130)
-            Button("Open Audio Timeline") { vm.activePanel = .audioTimeline }
-                .font(.specialElite(12)).foregroundColor(.sdRed).padding(.bottom, 10)
+                    }.frame(width: width, height: 306, alignment: .topLeading)
+                        .overlay(alignment: .topLeading) {
+                            Rectangle().fill(Color.sdRed).frame(width: 2)
+                                .overlay(alignment: .top) { Circle().fill(Color.sdRed).frame(width: 12, height: 12) }
+                                .offset(x: vm.audioPlayheadTime * pps).allowsHitTesting(false)
+                        }
+                }.frame(height: 306, alignment: .top)
+                    .accessibilityIdentifier("studio.audio.lanes")
+            }.frame(width: geometry.size.width, height: 306, alignment: .topLeading)
         }
-        }
-        .frame(maxWidth: 680, maxHeight: .infinity)
-        .background(Color(hex: "1a1a24")).cornerRadius(16, corners: [.topLeft, .topRight])
-        .onDisappear { audio.close() }
-        .onChange(of: vm.document.id) { _, _ in audio.close() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { audio.close() } }
+    }
+    private func clipInspector(_ clip: AudioClip) -> some View {
+        let duplication = vm.prepareAudioDuplication()
+        let split = vm.prepareAudioSplit()
+        return VStack(spacing: 6) {
+            if vm.document.isAudioTrackMuted(clip.track) {
+                Text("Track \(clip.track) is muted")
+                    .font(.caption2).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.selected-track-muted")
+            }
+            HStack {
+                Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
+                Button { apply(.mute(!clip.isMuted), clip: clip) } label: {
+                    Image(systemName: clip.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill").frame(width: 44, height: 44)
+                }.accessibilityLabel(clip.isMuted ? "Unmute selected clip" : "Mute selected clip")
+                    .accessibilityIdentifier("studio.audio.clip-mute")
+                StudioAudioClipVolumeControl(vm: vm, clip: clip) {
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                }
+                .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
+                Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); vm.deleteAudioClip(clip.id) }
+                    .foregroundColor(.sdStudioActionText).font(.specialElite(11)).frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.audio.delete")
+            }
+            StudioAudioTrackVolumeControl(vm: vm, track: clip.track) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("\(vm.document.id):\(vm.document.revision):\(clip.track)")
+            HStack {
+                Text(String(format: "Start %.2fs · Source %.2fs · %.2fs", clip.startTime, clip.sourceOffset, clip.duration))
+                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.audio.clip-timing")
+                Spacer()
+                Button("− frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: max(1 / 48_000, clip.duration - 1 / Double(vm.fps))), clip: clip) }
+                Button("+ frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: clip.duration + 1 / Double(vm.fps)), clip: clip) }
+            }.font(.caption2).foregroundColor(.sdStudioActionText)
+            HStack {
+                Button("Duplicate after") {
+                    guard let duplication else { return }
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    do { try vm.duplicateAudioClip(duplication) }
+                    catch { vm.message = error.localizedDescription }
+                }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+                    .accessibilityLabel("Duplicate selected audio clip after its end")
+                    .accessibilityIdentifier("studio.audio.duplicate")
+                Button("Split at playhead") {
+                    guard let split else { return }
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    do { try vm.splitAudioClip(split) }
+                    catch { vm.message = error.localizedDescription }
+                }.disabled(split == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+                    .accessibilityHint("Move the red playhead inside the selected clip first")
+                    .accessibilityIdentifier("studio.audio.split")
+                Button("Trim values") {
+                    timeline.stop(); audio.stop(); vm.stopPlayback()
+                    fadeCapture = nil
+                    trimCapture = vm.prepareAudioTrim()
+                }.disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(11)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.audio.trim.open")
+                Spacer()
+            }
+            HStack {
+                Button {
+                    timeline.stop(); audio.stop(); vm.stopPlayback(); trimCapture = nil
+                    fadeCapture = vm.prepareAudioFades()
+                } label: { Text("Fade in / out").frame(minHeight: 44) }
+                    .disabled(duplication == nil || audio.isBusy || timeline.isPreparing)
+                    .font(.specialElite(12)).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.fades.open")
+                Spacer()
+                Text(clip.fadeEnvelope == nil ? "No fades" : "Source fades on")
+                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.audio.fades.status")
+            }
+            if let fadeCapture {
+                StudioAudioFadeEditor(vm: vm, capture: fadeCapture) { self.fadeCapture = nil }
+                    .id(fadeCapture.selection.clip.id + ":" + String(fadeCapture.selection.revision))
+            }
+            if let trimCapture {
+                StudioAudioNumericTrimEditor(vm: vm, capture: trimCapture) { self.trimCapture = nil }
+                    .id(trimCapture.selection.clip.id + ":" + String(trimCapture.selection.revision))
+            }
+        }.padding(.horizontal, 12).padding(.bottom, 8)
+            .background(Color.white.opacity(0.02))
+    }
+    private func apply(_ edit: StudioAudioClipEdit, clip: AudioClip) {
+        timeline.stop(); audio.stop(); vm.stopPlayback()
+        do { try vm.editSelectedAudioClip(clip.id, expectedRevision: vm.document.revision, edit: edit) }
+        catch { vm.message = error.localizedDescription }
     }
 }
 
-struct SoundRow: View {
-    let sound: SoundEffect
-    let tagColor: Color
-    let onAdd: () -> Void // Retained signature; absent assets cannot be added.
+private struct StudioAudioClipVolumeControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let clip: AudioClip
+    let projectID: UUID
+    let revision: Int
+    let stopPlayback: () -> Void
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var volume: Double
+    @State private var capture: StudioViewModel.AudioClipVolumeCapture?
+
+    init(vm: StudioViewModel, clip: AudioClip, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.clip = clip; self.stopPlayback = stopPlayback
+        projectID = vm.document.id; revision = vm.document.revision
+        _volume = State(initialValue: clip.volume)
+    }
+    private func discardDraft() {
+        capture = nil
+        volume = vm.document.audioClips.first(where: { $0.id == clip.id })?.volume ?? clip.volume
+    }
     var body: some View {
         HStack {
-            Image(systemName: "speaker.slash").foregroundColor(.white.opacity(0.3))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(sound.name).font(.specialElite(12)).foregroundColor(.white)
-                Text("Audio unavailable").font(.caption2).foregroundColor(.white.opacity(0.4))
-            }
-            Spacer()
-            Text(sound.tag).font(.caption2).foregroundColor(tagColor)
+            Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
+                if editing {
+                    stopPlayback()
+                    guard let current = vm.prepareAudioClipVolume(),
+                          current.selection.projectID == projectID,
+                          current.selection.revision == revision,
+                          current.selection.clip == clip else { discardDraft(); return }
+                    capture = current
+                } else {
+                    defer { discardDraft() }
+                    guard let capture else { return }
+                    do { try vm.setAudioClipVolume(capture, volume: volume) }
+                    catch { vm.message = error.localizedDescription }
+                }
+            }).tint(.sdRed)
+                .disabled(vm.isSaving || vm.prepareAudioClipVolume() == nil)
+                .accessibilityIdentifier("studio.audio.volume")
+                .accessibilityLabel("Selected clip volume")
+                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.caption2).frame(width: 30)
+                .accessibilityIdentifier("studio.audio.clip-volume-value")
         }
-        .padding(10).background(Color(hex: "12121a")).cornerRadius(8)
+        .onDisappear { discardDraft() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { discardDraft() } }
+    }
+}
+
+private struct StudioAudioTrackVolumeControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let track: Int
+    let stopPlayback: () -> Void
+    @State private var volume: Double
+    @State private var capture: StudioViewModel.AudioTrackVolumeCapture?
+
+    init(vm: StudioViewModel, track: Int, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.track = track; self.stopPlayback = stopPlayback
+        _volume = State(initialValue: vm.document.audioTrackVolume(track))
+    }
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Track \(track) volume").font(.specialElite(10))
+                .foregroundColor(.sdStudioSecondaryText)
+            Slider(value: $volume, in: 0...1, onEditingChanged: { editing in
+                if editing {
+                    stopPlayback(); capture = vm.prepareAudioTrackVolume(track)
+                } else {
+                    defer { capture = nil; volume = vm.document.audioTrackVolume(track) }
+                    guard let capture else { return }
+                    do { try vm.setAudioTrackVolume(capture, volume: volume) }
+                    catch { vm.message = error.localizedDescription }
+                }
+            }).tint(.sdRed)
+                .disabled(vm.isSaving || vm.prepareAudioTrackVolume(track) == nil)
+                .accessibilityLabel("Track \(track) volume")
+                .accessibilityValue("\(Int((volume * 100).rounded())) percent")
+                .accessibilityHint("Changes the whole track; individual clip levels stay unchanged")
+                .accessibilityIdentifier("studio.audio.track-volume.\(track)")
+            Text("\(Int((volume * 100).rounded()))%")
+                .font(.caption2).frame(width: 38, alignment: .trailing)
+                .accessibilityIdentifier("studio.audio.track-volume-value.\(track)")
+        }.frame(minHeight: 44)
+    }
+}
+
+private struct StudioAudioFadeEditor: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.AudioFadeCapture
+    let dismiss: () -> Void
+    @State private var incoming: String
+    @State private var outgoing: String
+    @State private var notice: String?
+    @FocusState private var focused: Field?
+    private enum Field: Hashable { case incoming, outgoing }
+
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioFadeCapture, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        let envelope = capture.selection.clip.fadeEnvelope, rate = StudioAudioTimelineGeometry.sampleRate
+        _incoming = State(initialValue: String(Double(envelope?.fadeInFrames ?? 0) / rate))
+        _outgoing = State(initialValue: String(Double(envelope?.fadeOutFrames ?? 0) / rate))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                input("Fade in (sec)", text: $incoming, field: .incoming)
+                input("Fade out (sec)", text: $outgoing, field: .outgoing)
+            }
+            Text("Fades follow the source through Trim and Split. Apply resets them to this clip.")
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            if let notice { Text(notice).font(.caption2).accessibilityIdentifier("studio.audio.fades.notice") }
+            if vm.prepareAudioFades() != capture {
+                Text("The clip changed. Cancel and reopen its fade options.").font(.caption2)
+            }
+            HStack {
+                Button { focused = nil; dismiss() } label: { Text("Cancel").frame(minHeight: 44) }
+                    .accessibilityIdentifier("studio.audio.fades.cancel")
+                Button { incoming = "0"; outgoing = "0"; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
+                    .accessibilityIdentifier("studio.audio.fades.clear")
+                Spacer()
+                Button {
+                    focused = nil
+                    guard let fadeIn = StudioViewModel.audioTrimSeconds(incoming),
+                          let fadeOut = StudioViewModel.audioTrimSeconds(outgoing) else {
+                        notice = "Enter a valid number of seconds in both fields."; return
+                    }
+                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut); dismiss() }
+                    catch { notice = error.localizedDescription }
+                } label: { Text("Apply fades").frame(minHeight: 44) }
+                    .disabled(vm.prepareAudioFades() != capture)
+                    .accessibilityIdentifier("studio.audio.fades.apply")
+            }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+        }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+    }
+    private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.system(size: 14, design: .monospaced)).padding(10).frame(minHeight: 44)
+                .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .accessibilityIdentifier(field == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out")
+        }.frame(maxWidth: .infinity)
+    }
+}
+
+private struct StudioAudioNumericTrimEditor: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.AudioTrimCapture
+    let dismiss: () -> Void
+    @State private var source: String
+    @State private var duration: String
+    @State private var notice: String?
+    @FocusState private var focused: Field?
+    private enum Field: Hashable { case source, duration }
+
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioTrimCapture, dismiss: @escaping () -> Void) {
+        self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        _source = State(initialValue: String(capture.selection.clip.sourceOffset))
+        _duration = State(initialValue: String(capture.selection.clip.duration))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                input("Source start (sec)", text: $source, field: .source)
+                input("Duration (sec)", text: $duration, field: .duration)
+            }
+            if let notice {
+                Text(notice).font(.caption2).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.trim.notice")
+            }
+            if vm.prepareAudioTrim() != capture {
+                Text("The clip changed. Cancel and reopen its trim values.").font(.caption2)
+            }
+            HStack {
+                Button("Cancel") { focused = nil; dismiss() }
+                    .accessibilityIdentifier("studio.audio.trim.cancel")
+                Spacer()
+                Button("Apply trim") {
+                    focused = nil
+                    guard let offset = StudioViewModel.audioTrimSeconds(source),
+                          let length = StudioViewModel.audioTrimSeconds(duration) else {
+                        notice = "Enter a valid number of seconds in both fields."; return
+                    }
+                    do {
+                        try vm.trimAudioClip(capture, sourceOffset: offset, duration: length)
+                        dismiss()
+                    } catch { notice = error.localizedDescription }
+                }.disabled(vm.prepareAudioTrim() != capture)
+                    .accessibilityIdentifier("studio.audio.trim.apply")
+            }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
+        }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+    }
+    private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                .font(.system(size: 14, design: .monospaced)).padding(10)
+                .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .accessibilityIdentifier(field == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration")
+        }.frame(maxWidth: .infinity)
+    }
+}
+
+private struct StudioAudioTimelineClip: View {
+    @ObservedObject var vm: StudioViewModel
+    let clip: AudioClip
+    let pointsPerSecond: Double
+    let stop: () -> Void
+    @State private var revision: Int?
+    @State private var captured: AudioClip?
+    @State private var capturedScale: Double?
+    @GestureState private var translation: CGSize = .zero
+    var body: some View {
+        let width = clip.duration * pointsPerSecond
+        let radius = min(14.0, width / 2)
+        HStack(spacing: 0) {
+            if width >= 88 { handle(leading: true) }
+            VStack(alignment: .leading, spacing: 3) {
+                if width >= 44 {
+                    Text(clip.soundName).lineLimit(1).font(.specialElite(11))
+                    Text(String(format: "%.2fs", clip.duration)).font(.system(size: 8)).foregroundColor(.sdStudioSecondaryText)
+                } else if width >= 12 {
+                    Image(systemName: "waveform").font(.system(size: 10))
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Color.clear
+                }
+            }.frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .clipped()
+                .contentShape(Rectangle()).onTapGesture { stop(); vm.selectedAudioClip = clip }
+                .gesture(moveGesture)
+            if width >= 88 { handle(leading: false) }
+        }.background(Color.sdRed.opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.05 : 0.16))
+            .clipShape(RoundedRectangle(cornerRadius: radius))
+            .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
+            .opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.55 : 1)
+            .offset(x: translation.width)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("studio.audio.clip.\(clip.id)")
+            .accessibilityLabel("\(clip.soundName), track \(clip.track), start \(clip.startTime.formatted()) seconds, duration \(clip.duration.formatted()) seconds")
+            .accessibilityAction(named: "Select clip") { stop(); vm.selectedAudioClip = clip }
+            .onChange(of: translation) { old, new in
+                if new == .zero, old != .zero { revision = nil; captured = nil; capturedScale = nil }
+            }
+    }
+    private func begin() {
+        guard revision == nil else { return }
+        stop(); vm.selectedAudioClip = clip; revision = vm.document.revision; captured = clip
+        capturedScale = pointsPerSecond
+    }
+    private var moveGesture: some Gesture {
+        DragGesture(minimumDistance: 6)
+            .updating($translation) { value, state, _ in state = value.translation }
+            .onChanged { _ in begin() }
+            .onEnded { value in
+                defer { revision = nil; captured = nil; capturedScale = nil }
+                guard let revision, let captured, capturedScale == pointsPerSecond,
+                      let time = StudioAudioTimelineGeometry.time(at: captured.startTime * pointsPerSecond + value.translation.width,
+                        pointsPerSecond: pointsPerSecond, fps: vm.fps, snap: vm.snapEnabled) else { return }
+                let lane = min(4, max(1, captured.track + Int((value.translation.height / 70).rounded())))
+                do { try vm.editSelectedAudioClip(clip.id, expectedRevision: revision, edit: .place(start: time, track: lane)) }
+                catch { vm.message = error.localizedDescription }
+            }
+    }
+    private func handle(leading: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 2).fill(Color.sdRed.opacity(0.8)).frame(width: 4)
+            .padding(.horizontal, 5).padding(.vertical, 9).contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 6)
+                .onChanged { _ in begin() }
+                .onEnded { value in
+                    defer { revision = nil; captured = nil; capturedScale = nil }
+                    guard let revision, let captured, capturedScale == pointsPerSecond else { return }
+                    let delta = Double(value.translation.width) / pointsPerSecond
+                    let raw = leading ? captured.sourceOffset + delta : captured.duration + delta
+                    guard let changed = StudioAudioTimelineGeometry.snapped(max(0, raw), fps: vm.fps, enabled: vm.snapEnabled) else { return }
+                    let offset = leading ? changed : captured.sourceOffset
+                    let duration = leading ? captured.duration + captured.sourceOffset - changed : changed
+                    do { try vm.editSelectedAudioClip(clip.id, expectedRevision: revision, edit: .trim(sourceOffset: offset, duration: duration)) }
+                    catch { vm.message = error.localizedDescription }
+                })
+            .accessibilityLabel(leading ? "Trim audio source start" : "Trim audio end")
     }
 }
 
@@ -103,32 +786,32 @@ private struct AudioFilesImportControls: View {
                 }
                 .disabled(audio.isBusy || !vm.isEditing || vm.isSaving)
                 .accessibilityIdentifier("studio.audio.import")
-                .font(.specialElite(12)).foregroundColor(.sdRed)
+                .font(.specialElite(12)).foregroundColor(.sdStudioActionText)
                 Spacer()
                 Picker("Track", selection: $track) {
                     ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
                 }.font(.caption).tint(.white).disabled(audio.isBusy)
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
-                .font(.caption2).foregroundColor(.white.opacity(0.45))
-            Text("Adds audio at the selected frame. Preview plays one clip; timeline mixing and audio export are unfinished.")
-                .font(.caption2).foregroundColor(.white.opacity(0.6))
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            Text("Adds audio at the selected frame. Move and trim clips in the timeline, then include them in MP4 export.")
+                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
             if let projectNotice = vm.message {
-                Text(projectNotice).font(.caption).foregroundColor(.sdRed)
+                Text(projectNotice).font(.caption).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.projectNotice")
             }
             if audio.isBusy {
                 HStack {
                     ProgressView(value: audio.progress).tint(.sdRed)
-                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdRed)
+                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdStudioActionText)
                         .accessibilityIdentifier("studio.audio.cancel")
                 }
             }
             if let notice = audio.notice {
-                Text(notice).font(.caption).foregroundColor(.sdRed)
+                Text(notice).font(.caption).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.notice")
             } else if let id = audio.lastImportedClipID, vm.audioClips.contains(where: { $0.id == id }) {
-                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.white.opacity(0.6))
+                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.imported")
             }
         }
@@ -151,73 +834,41 @@ private struct AudioFilesImportControls: View {
 private struct AudioProjectClips: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var audio: StudioAudioPreviewSession
-    var search = ""
+    @ObservedObject var timeline: StudioAudioTimelineSession
+    @State private var auditionID: String?
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if vm.audioClips.isEmpty {
-                Text("No imported clips. Historical audio records are preserved in the project.")
-                    .font(.caption2).foregroundColor(.white.opacity(0.5))
-            }
-            ScrollView {
-                LazyVStack(spacing: 6) {
-                    ForEach(vm.audioClips.filter { search.isEmpty || $0.soundName.localizedCaseInsensitiveContains(search) }) { clip in
+        LazyVStack(spacing: 8) {
+            ForEach(vm.audioClips) { clip in
+                HStack {
+                    Button {
+                        audio.stop(); timeline.stop(); vm.stopPlayback(); vm.selectedAudioClip = clip
+                        if auditionID == clip.id { auditionID = nil; return }
+                        guard let id = clip.assetID, let track = vm.audioTrack(forAssetID: id) else { return }
+                        var solo = vm.document; var audible = clip; audible.startTime = 0; solo.audioClips = [audible]
+                        let project = vm.document.id, revision = vm.document.revision
+                        auditionID = clip.id
+                        _ = timeline.play(document: solo, tracks: [track], duration: clip.duration, from: 0,
+                            stillCurrent: { vm.isEditing && vm.document.id == project && vm.document.revision == revision },
+                            onTime: { _, playing in if !playing { auditionID = nil } })
+                    } label: {
+                        Image(systemName: auditionID == clip.id && timeline.isPlaying ? "stop.fill" : "play.fill")
+                            .frame(width: 44, height: 44).background(Color.white.opacity(0.06)).clipShape(Circle())
+                    }.disabled(audio.isBusy || timeline.isPreparing || clip.assetID == nil)
+                        .accessibilityLabel("Preview " + clip.soundName)
+                    Button { vm.selectedAudioClip = clip } label: {
                         VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Button { vm.selectedAudioClip = clip } label: {
-                                    VStack(alignment: .leading) {
-                                        Text(clip.soundName).font(.specialElite(12)).lineLimit(1)
-                                        Text(String(format: "Track %d · %.2fs at %.2fs", clip.track, clip.duration, clip.startTime)).font(.caption2)
-                                    }.foregroundColor(.white)
-                                }
-                                Spacer()
-                                if let id = clip.assetID, let asset = vm.audioTrack(forAssetID: id), asset.audioData != nil {
-                                    Button(audio.playingClipID == clip.id ? "Stop" : "Preview") {
-                                        let project = vm.document.id, revision = vm.document.revision
-                                        _ = audio.preview(clip, track: asset, stillCurrent: {
-                                            vm.isEditing && vm.document.id == project && vm.document.revision == revision
-                                                && vm.audioClips.contains(where: { $0.id == clip.id && $0.assetID == id })
-                                        })
-                                    }
-                                    .disabled(audio.isBusy).font(.caption).foregroundColor(.sdRed)
-                                    .accessibilityIdentifier("studio.audio.preview.\(clip.id)")
-                                } else {
-                                    Text("Audio unavailable").font(.caption2).foregroundColor(.white.opacity(0.5))
-                                }
-                            }
-                            if let id = clip.assetID, let measurement = audio.measurements[id] {
-                                MeasuredAudioWaveform(peaks: measurement.peaks).frame(height: 24)
-                                if measurement.clipped { Text("Source contains clipped samples").font(.caption2).foregroundColor(.orange) }
-                            }
-                            if clip.startTime + clip.duration > Double(vm.frames.count) / Double(vm.fps) {
-                                Text("Extends beyond the animation end").font(.caption2).foregroundColor(.white.opacity(0.45))
-                            }
-                            if audio.playingClipID == clip.id {
-                                Text(String(format: "Preview %.2f / %.2fs", audio.currentTime, audio.playbackDuration))
-                                    .font(.caption2).foregroundColor(.sdRed).accessibilityIdentifier("studio.audio.playback")
+                            Text(clip.soundName).font(.specialElite(14)).lineLimit(1)
+                            Text(String(format: "%.2fs · Track %d%@", clip.duration, clip.track, clip.isMuted ? " · Muted" : ""))
+                                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                            if let id = clip.assetID, let measured = audio.measurements[id] {
+                                MeasuredAudioWaveform(peaks: measured.peaks).frame(height: 14)
                             }
                         }
-                        .padding(8).background(Color(hex: "12121a")).cornerRadius(8)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(vm.selectedCurrentAudioClip?.id == clip.id ? Color.sdRed : .clear))
                     }
-                }
-            }.frame(maxHeight: 130)
-            if let clip = vm.selectedCurrentAudioClip {
-                HStack {
-                    Text("Volume").font(.caption2).foregroundColor(.white.opacity(0.6))
-                    Slider(value: Binding(get: { vm.selectedCurrentAudioClip?.volume ?? 0 }, set: { value in
-                        vm.setAudioClipVolume(clip.id, volume: value)
-                        audio.setVolume(value, clipID: clip.id)
-                    }), in: 0...1).tint(.sdRed).accessibilityIdentifier("studio.audio.volume")
-                    Text("\(Int(clip.volume * 100))%").font(.caption2).foregroundColor(.white.opacity(0.6))
-                    Button("Delete") { audio.stop(); vm.deleteAudioClip(clip.id) }
-                        .font(.caption).foregroundColor(.sdRed).accessibilityIdentifier("studio.audio.delete")
-                }
+                    Spacer()
+                }.padding(.horizontal, 16)
+                Divider().opacity(0.1)
             }
-        }
-        .padding(.horizontal, 14)
-        .onChange(of: vm.document.revision) { _, _ in
-            if let id = audio.playingClipID, !vm.audioClips.contains(where: { $0.id == id }) { audio.stop() }
-            if let clip = vm.audioClips.first(where: { $0.id == audio.playingClipID }) { audio.setVolume(clip.volume, clipID: clip.id) }
         }
     }
 }
@@ -236,63 +887,4 @@ private struct MeasuredAudioWaveform: View {
             }.stroke(Color.sdRed.opacity(0.8), lineWidth: 1)
         }.accessibilityLabel("Measured audio waveform")
     }
-}
-
-struct AudioTimelinePanel: View {
-    @ObservedObject var vm: StudioViewModel
-    @StateObject private var audio = StudioAudioPreviewSession()
-    @Environment(\.scenePhase) private var scenePhase
-    private let colors: [Color] = [.sdRed, .blue, .green, .purple]
-    var body: some View {
-        ScrollView {
-        VStack(spacing: 8) {
-            PanelHeader(title: "Audio Timeline", icon: "🎵", onClose: { vm.activePanel = .none })
-            AudioFilesImportControls(vm: vm, audio: audio)
-            HStack {
-                Button(vm.isPlaying ? "Pause animation" : "Play animation") { audio.stop(); vm.togglePlayback() }
-                    .font(.specialElite(11)).foregroundColor(.sdRed)
-                Text("Animation only").font(.caption2).foregroundColor(.white.opacity(0.5))
-                Spacer()
-                Button("Sound Library") { vm.activePanel = .soundLibrary }.font(.caption).foregroundColor(.white)
-            }.padding(.horizontal, 14)
-            GeometryReader { geometry in
-                let width = max(1, geometry.size.width - 28), duration = max(0.1, vm.audioDuration)
-                VStack(spacing: 2) {
-                    HStack {
-                        Text("0s"); Spacer(); Text(String(format: "%.2fs", duration))
-                    }.font(.caption2).foregroundColor(.white.opacity(0.4))
-                    ForEach(1...4, id: \.self) { track in
-                        HStack(spacing: 2) {
-                            Text("\(track)").font(.caption2).foregroundColor(.white.opacity(0.4)).frame(width: 24)
-                            ZStack(alignment: .leading) {
-                                Rectangle().fill(Color.white.opacity(0.035))
-                                ForEach(vm.audioClips.filter { $0.track == track }) { clip in
-                                    let x = min(width, max(0, clip.startTime / duration * width))
-                                    let size = min(width - x, max(3, clip.duration / duration * width))
-                                    Button { vm.selectedAudioClip = clip } label: {
-                                        RoundedRectangle(cornerRadius: 3).fill(colors[track - 1].opacity(0.65))
-                                            .overlay(Text(clip.soundName).font(.system(size: 8)).foregroundColor(.white).lineLimit(1))
-                                    }.frame(width: max(1, size)).offset(x: x)
-                                }
-                            }.frame(height: 22).clipped()
-                        }
-                    }
-                }
-            }.frame(height: 116).padding(.horizontal, 14)
-            Text("Clip placement, trimming, snapping and mixed playback are unfinished.")
-                .font(.caption2).foregroundColor(.white.opacity(0.5)).padding(.horizontal, 14)
-            AudioProjectClips(vm: vm, audio: audio)
-            Spacer().frame(height: 4)
-        }
-        }
-        .frame(maxWidth: 680, maxHeight: .infinity)
-        .background(Color(hex: "1a1a24")).cornerRadius(16, corners: [.topLeft, .topRight])
-        .onDisappear { audio.close() }
-        .onChange(of: vm.document.id) { _, _ in audio.close() }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { audio.close() } }
-    }
-}
-
-extension Array where Element == Color {
-    subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
 }

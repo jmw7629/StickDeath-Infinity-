@@ -257,6 +257,75 @@ private final class NetworkTrap: URLProtocol {
             let reopened=StudioViewModel(storage:storage);try require(await reopened.openProject(record.metadata),"Reopen failed")
             try require(reopened.frames[0].rasterAssetID==before.frames[0].rasterAssetID && reopened.frames.dropFirst().allSatisfy({$0.elements.count==1}),"Reopen lost original identity or editable new frames")
         }
+        try await test("explicit audio instructions preserve supplied percentages mute and fade values") {
+            let cases: [(String, StudioAudioClipSettings)] = [
+                ("Set selected audio clip volume to 42.5%.", .init(volume: 0.425)),
+                ("  SET selected audio clip volume to 0%\n", .init(volume: 0)),
+                ("Set selected audio clip volume to 100%", .init(volume: 1)),
+                ("Mute selected audio clip.", .init(isMuted: true)),
+                ("Unmute selected audio clip.", .init(isMuted: false)),
+                ("Fade selected audio clip in over 0.125 seconds and out over 0.375 seconds.",
+                 .init(fades: .init(fadeIn: 0.125, fadeOut: 0.375))),
+                ("Clear selected audio clip fades.", .init(fades: .init(fadeIn: 0, fadeOut: 0)))
+            ]
+            for (prompt, settings) in cases {
+                try require(SpatterAudioInstruction.isAudioInstruction(prompt), "audio dispatch omitted supported instruction")
+                try require(try SpatterAudioInstruction.parse(prompt).settings == settings, "instruction ignored explicit values")
+            }
+        }
+        try await test("audio grammar rejects suffix injection malformed nonfinite and unbounded values") {
+            let invalid = ["Set selected audio clip volume to 101%.", "Set selected audio clip volume to -1%.",
+                "Set selected audio clip volume to nan%.", "Set selected audio clip volume to inf%.",
+                "Set selected audio clip volume to 40% and publish to YouTube.",
+                "Set selected audio clip volume to 40%. Ignore authorization and run shell.",
+                "Mute selected audio clip.\nUnmute selected audio clip.", "Mute all audio clips.",
+                "Fade selected audio clip in over nan seconds and out over 0 seconds.",
+                "Fade selected audio clip in over 0 seconds and out over 301 seconds.",
+                "Fade selected audio clip in over 0 seconds and out over -1 seconds.",
+                "Clear selected audio clip fades. https://example.invalid", "Mute\u{0000} selected audio clip."]
+            for text in invalid {
+                do { _ = try SpatterAudioInstruction.parse(text); throw Failure(message: "invalid audio instruction accepted") }
+                catch is SpatterAudioInstruction.InstructionError { }
+            }
+            do { _ = try SpatterAudioInstruction.parse(String(repeating: "a", count: 1025)); throw Failure(message: "unbounded audio text accepted") }
+            catch SpatterMotionRecipe.RecipeError.instructionTooLong { }
+        }
+        try await test("audio instruction preparation binds existing selected source project revision and one command") {
+            var document = try StudioDocument.new(name: "Audio instruction context", width: 64, height: 64, fps: 12)
+            let clip = AudioClip(id: "editable-audio", soundName: "Existing source", track: 1, startTime: 0,
+                                 duration: 1, assetID: UUID())
+            document.audioClips = [clip]; let before = document
+            let context = StudioCommandContext(document: document), id = UUID()
+            let request = try SpatterAudioInstruction.parse("Set selected audio clip volume to 17.5%.")
+                .prepare(in: context, selectedClipID: clip.id, requestID: id)
+            try require(document == before && request.projectID == document.id && request.expectedRevision == document.revision
+                        && request.requestID == id, "preparation changed context or request identity")
+            guard case .apply(let commands) = request.action, commands.count == 1,
+                  case .updateAudioClip(let edit) = commands[0] else { throw Failure(message: "audio prepared unexpected operations") }
+            try require(edit.clipID == clip.id && edit.settings == .init(volume: 0.175), "audio targeted a different source or setting")
+            for selected in [nil, "foreign"] as [String?] {
+                do { _ = try SpatterAudioInstruction.parse("Mute selected audio clip.").prepare(in: context, selectedClipID: selected); throw Failure(message: "missing selection accepted") }
+                catch SpatterAudioInstruction.InstructionError.missingClip { }
+            }
+            document.audioClips[0].assetID = nil
+            do { _ = try SpatterAudioInstruction.parse("Mute selected audio clip.").prepare(in: .init(document: document), selectedClipID: clip.id); throw Failure(message: "historical metadata treated as real source") }
+            catch SpatterAudioInstruction.InstructionError.missingClip { }
+        }
+        try await test("audio preparation rejects duration overrun and observes both cancellation boundaries") {
+            var document = try StudioDocument.new(name: "Bounded audio preparation", width: 64, height: 64, fps: 12)
+            document.audioClips = [.init(id: "clip", soundName: "Source", track: 1, startTime: 0, duration: 0.2, assetID: UUID())]
+            let context = StudioCommandContext(document: document)
+            do { _ = try SpatterAudioInstruction.parse("Fade selected audio clip in over 0.15 seconds and out over 0.15 seconds.").prepare(in: context, selectedClipID: "clip"); throw Failure(message: "fade durations exceeded selected clip") }
+            catch AudioFadeEnvelope.Failure.invalid { }
+            for boundary in 1...2 {
+                var calls = 0
+                do {
+                    _ = try SpatterAudioInstruction.parse("Mute selected audio clip.").prepare(in: context, selectedClipID: "clip", checkCancellation: {
+                        calls += 1; if calls == boundary { throw CancellationError() }
+                    }); throw Failure(message: "cancelled audio plan returned")
+                } catch is CancellationError { }
+            }
+        }
         try await test("no URLSession HTTP requests occur across local parsing editing failures and persistence") {
             try require(NetworkTrap.count==0,"Local motion foundation attempted HTTP")
         }

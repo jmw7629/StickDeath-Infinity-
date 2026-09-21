@@ -25,11 +25,17 @@ final class SpatterStudioEditSession: ObservableObject {
     }
     struct AppliedEdit {
         let receipt: StudioCommandReceipt
+        let isAudioEdit: Bool
         let addedFrameCount: Int
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
-            "Added \(addedFrameCount) editable frames at \(fps) FPS (\(String(format: "%.3f", addedDurationSeconds)) seconds) in one undoable local edit."
+            if isAudioEdit {
+                return receipt.outcome == .unchanged
+                    ? "The selected audio clip already matches this instruction. Nothing changed."
+                    : "Updated the selected audio clip in one undoable local edit."
+            }
+            return "Added \(addedFrameCount) editable frames at \(fps) FPS (\(String(format: "%.3f", addedDurationSeconds)) seconds) in one undoable local edit."
         }
     }
 
@@ -131,15 +137,23 @@ final class SpatterStudioEditSession: ObservableObject {
                 try await self.checkpoint()
                 guard let studio else { throw SessionError.outsideStudio }
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
-                let recipe = try SpatterMotionRecipe.parse(draft)
-                let prepared = try recipe.prepare(in: document, requestID: submissionID)
+                let isAudio = SpatterAudioInstruction.isAudioInstruction(draft)
+                let preparedRequest: StudioCommandRequest
+                if isAudio {
+                    let instruction = try SpatterAudioInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document,
+                        selectedClipID: captured.selectedAudioClipID, requestID: submissionID)
+                } else {
+                    let recipe = try SpatterMotionRecipe.parse(draft)
+                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request
+                }
                 try await self.checkpoint()
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
                 // No suspension between the last fresh context check and this
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
-                let receipt = try studio.applyStudioCommands(prepared.request)
-                let result = AppliedEdit(receipt: receipt, addedFrameCount: receipt.createdFrameIDs.count,
+                let receipt = try studio.applyStudioCommands(preparedRequest)
+                let result = AppliedEdit(receipt: receipt, isAudioEdit: isAudio, addedFrameCount: receipt.createdFrameIDs.count,
                     fps: studio.fps, addedDurationSeconds: Double(receipt.createdFrameIDs.count) / Double(studio.fps))
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary

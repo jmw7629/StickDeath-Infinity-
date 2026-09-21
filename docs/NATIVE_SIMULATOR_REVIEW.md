@@ -1,0 +1,11 @@
+# Native simulator review archive
+
+The existing generic simulator build produces Intel and Apple-silicon app slices. Preserve that actual app before destination-specific UI-test preparation changes build products. This makes the native app available for a later isolated local simulator review without downloading another SDK/runtime or changing signing.
+
+The archive step validates the expected app identity, simulator-only platform, empty public backend settings, both architectures and simulator build metadata in every Mach-O binary, including Debug dylibs. It rejects links, device provisioning profiles, excessive file counts/bytes, changed input, existing outputs and expired packaging budgets. It streams data, retains executable modes, checks CRCs and compares every archived file hash with the built input. The manifest binds the archive to the CI source commit and explicitly says local Mac runtime verification is pending. The two-minute packaging budget leaves all existing UI-test deadlines unchanged.
+
+Packaging tests use synthetic bundle metadata, test data and actual cross-compiled Mach-O fixtures. They do not prove that the product launches or behaves correctly. CI's actual app archive and subsequent local installation/launch/screenshots must be checked separately. This is a simulator artifact, not a signed iPhone/TestFlight/release build. Do not upload it to an app store or claim device verification.
+
+Before local use, validate the downloaded archive and source manifest, inspect compatible OS/architectures, retain original evidence, create one isolated simulator on an installed runtime, and use explicit simulator IDs. Never reset an existing user's device or copy production auth/session data. Native review data stays isolated and backend configuration remains empty.
+
+Packaging rules, archive creation and upload have explicit outcomes. Their required final check runs after the existing native UI and evidence steps. Intermediate continuation permits unrelated UI evidence to complete; the final check still fails the native job unless all three packaging outcomes are success. Packaging failure is never converted to a successful mandatory job or an app verification claim. A cancelled job stays cancelled.

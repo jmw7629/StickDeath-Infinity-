@@ -395,7 +395,12 @@ class DeviceStorageManager {
         }
         let data = try JSONEncoder().encode(frame)
         let textBytes = (frame.layerData ?? []).reduce(0) { $0 + $1.name.utf8.count + $1.blendMode.utf8.count + 512 }
-        let cost = data.count + (frame.imageData?.count ?? 0) + (frame.sourceImage?.originalData.count ?? 0) + textBytes + 16_384
+        let attributionBytes = (frame.sourceImage?.catalogueAttribution ?? [:]).reduce(0) {
+            $0 + $1.key.utf8.count + $1.value.utf8.count + 128
+        }
+        var cost = data.count + textBytes + attributionBytes + 16_384
+        cost += frame.imageData?.count ?? 0
+        cost += frame.sourceImage?.originalData.count ?? 0
         if let old = Self.encodedFrames.removeValue(forKey: id) { Self.encodedFrameBytes -= old.cost }
         guard cost <= Self.maximumSnapshotFrameCacheBytes else { return data }
         while !Self.encodedFrames.isEmpty && (Self.encodedFrameBytes + cost > Self.maximumSnapshotFrameCacheBytes || Self.encodedFrames.count >= 32) {
@@ -438,6 +443,7 @@ class DeviceStorageManager {
                 if let previous = imageSources[source.id], previous.source != source || previous.normalized != normalized { throw AnimationStorageError.identityMismatch }
                 imageSources[source.id] = (source, normalized)
                 try account(128); try text(source.name); try text(source.container); try asset(source.originalData)
+                for (key, value) in source.catalogueAttribution ?? [:] { try text(key); try text(value) }
             }
             guard frame.legacyFrameIndex.map({ (0...1_000_000).contains($0) }) ?? true else { throw AnimationStorageError.invalidDocument }
             let layers = frame.layerData ?? []
@@ -525,6 +531,7 @@ struct StoredImageSource: Codable, Equatable {
     let originalOrientation: Int
     let normalizedWidth: Int
     let normalizedHeight: Int
+    var catalogueAttribution: [String: String]? = nil
 
     func validate() throws {
         guard !name.isEmpty, name.count <= 120, !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
@@ -533,6 +540,24 @@ struct StoredImageSource: Codable, Equatable {
               originalWidth * originalHeight <= 16_777_216, (1...8).contains(originalOrientation),
               (1...8192).contains(normalizedWidth), (1...8192).contains(normalizedHeight),
               normalizedWidth * normalizedHeight <= 16_777_216 else { throw AnimationStorageError.invalidDocument }
+        if let origin = catalogueAttribution {
+            let keys: Set<String> = ["assetID", "author", "sourceURL", "license", "licenseURL",
+                                     "attribution", "originalSHA256", "sourceArchiveSHA256"]
+            func isDigest(_ text: String?) -> Bool {
+                guard let text else { return false }
+                return text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            }
+            guard Set(origin.keys) == keys,
+                  origin.values.allSatisfy({ !$0.isEmpty && $0.count <= 600 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }),
+                  origin["license"] == "CC0-1.0",
+                  origin["licenseURL"] == "https://creativecommons.org/publicdomain/zero/1.0/",
+                  isDigest(origin["originalSHA256"]), isDigest(origin["sourceArchiveSHA256"]),
+                  let source = origin["sourceURL"].flatMap(URL.init(string:)), source.scheme == "https", source.host == "kenney.nl",
+                  source.user == nil, source.password == nil, source.port == nil, source.query == nil, source.fragment == nil,
+                  source.path.hasPrefix("/assets/"),
+                  SHA256.hash(data: originalData).map({ String(format: "%02x", $0) }).joined() == origin["originalSHA256"]
+            else { throw AnimationStorageError.invalidDocument }
+        }
         let rotated = (5...8).contains(originalOrientation)
         guard normalizedWidth == (rotated ? originalHeight : originalWidth),
               normalizedHeight == (rotated ? originalWidth : originalHeight) else { throw AnimationStorageError.invalidDocument }

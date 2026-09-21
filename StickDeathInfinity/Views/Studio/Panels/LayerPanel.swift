@@ -27,6 +27,10 @@ struct LayerPanel: View {
             // Tap to dismiss area
             Color.black.opacity(0.3)
                 .onTapGesture { vm.activePanel = .none }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Close layers")
+                .accessibilityAddTraits(.isButton)
+                .accessibilityIdentifier("studio.layers.close")
             
             // Panel
             VStack(spacing: 0) {
@@ -69,6 +73,7 @@ struct LayerPanel: View {
                     }
                 }
                 .frame(maxHeight: 400)
+                .accessibilityIdentifier("studio.layers.list")
             }
             .background(Color(hex: "1A1A24").opacity(0.98))
             .overlay(
@@ -119,6 +124,8 @@ struct LayerRow: View {
             
             // Layer name (red text)
             Text(layer.name)
+                .lineLimit(1)
+                .truncationMode(.tail)
                 .font(.system(size: 14, weight: .bold, design: .monospaced))
                 .foregroundColor(Color(hex: "DC2626"))
             
@@ -160,9 +167,23 @@ struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
     let layer: CanvasLayer
     @State private var draftOpacity: Double?
+    @State private var pendingDeletion: StudioViewModel.LayerDeleteCapture?
+    @State private var pendingRename: StudioViewModel.LayerRenameCapture?
+    @State private var proposedName = ""
     
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
+            Button {
+                guard let capture = vm.prepareLayerRename(layer.id) else { return }
+                proposedName = capture.originalName
+                pendingRename = capture
+            } label: {
+                Label("Rename layer", systemImage: "pencil")
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("studio.layer.rename." + layer.id)
+            .disabled(!vm.canRenameLayer(layer.id))
             // Opacity slider (RED bar)
             HStack {
                 Text("Opacity")
@@ -288,10 +309,37 @@ struct LayerDetailView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.1), lineWidth: 0.5))
                 }
             }
+            Button(role: .destructive) { pendingDeletion = vm.prepareLayerDeletion(layer.id) } label: {
+                Label("Delete selected layer", systemImage: "trash")
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("studio.layer.delete." + layer.id)
+            .disabled(!vm.canDeleteLayer(layer.id))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(hex: "14141E"))
+        .alert("Rename layer", isPresented: Binding(
+            get: { pendingRename != nil }, set: { if !$0 { pendingRename = nil } }),
+            presenting: pendingRename) { capture in
+                TextField("Layer name", text: $proposedName)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("studio.layer.rename.input")
+                Button("Save name") { _ = vm.renameLayer(capture, to: proposedName); pendingRename = nil }
+                    .disabled(StudioViewModel.normalizedLayerName(proposedName) == nil)
+                Button("Cancel", role: .cancel) { pendingRename = nil }
+            } message: { _ in
+                Text("Use 1–120 characters. Renaming changes the label only; artwork and layer order stay intact.")
+            }
+        .confirmationDialog("Delete selected layer?", isPresented: Binding(
+            get: { pendingDeletion != nil }, set: { if !$0 { pendingDeletion = nil } }),
+            titleVisibility: .visible, presenting: pendingDeletion) { capture in
+                Button("Delete layer", role: .destructive) { _ = vm.deleteLayer(capture); pendingDeletion = nil }
+                Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            } message: { capture in
+                Text("Delete \"\(capture.name)\" and its content in \(capture.frameCount) frame(s)? You can undo this edit.")
+            }
     }
 }
 

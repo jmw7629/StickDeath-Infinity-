@@ -65,7 +65,7 @@ struct StudioProjectLibrary: View {
                     Picker("Frames per second", selection: $fps) {
                         ForEach([12, 24, 30, 60], id: \.self) { Text("\($0) FPS").tag($0) }
                     }
-                    Text("Stored on this device. Cloud publishing and audio/video export are still unfinished.").font(.caption)
+                    Text("Projects stay on this device. Use Export to create files for sharing. Cloud publishing is unavailable.").font(.caption)
                 }
                 .navigationTitle("New Animation")
                 .toolbar {

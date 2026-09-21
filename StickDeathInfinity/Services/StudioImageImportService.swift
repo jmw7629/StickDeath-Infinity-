@@ -36,6 +36,9 @@ actor StudioImageImportService {
         /// auxiliary depth/gain maps and source metadata remain in originalData;
         /// they are not reproduced in this editable SDR raster.
         let normalizedPNG: Data
+        /// Only verified library imports carry this optional original-asset record.
+        /// Files/Photos and historical projects remain nil.
+        var catalogueAttribution: [String: String]? = nil
     }
 
     /// One process-wide lease covers encoded bytes, ImageIO decode and bounded

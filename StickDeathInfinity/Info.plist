@@ -38,10 +38,6 @@
         <key>UIApplicationSupportsMultipleScenes</key>
         <true/>
     </dict>
-    <key>NSCameraUsageDescription</key>
-    <string>StickDeath Infinity needs camera access for video calls and profile photos.</string>
-    <key>NSMicrophoneUsageDescription</key>
-    <string>StickDeath Infinity needs microphone access for voice and video calls.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>StickDeath Infinity needs photo library access to import images and export animations.</string>
     <!-- URL Schemes for OAuth Callback (Google Sign In, Supabase redirects) -->
@@ -70,7 +66,5 @@
     <string>$(SUPABASE_PUBLISHABLE_KEY)</string>
     <key>SUPABASE_ANON_KEY</key>
     <string>$(SUPABASE_ANON_KEY)</string>
-    <key>LIVEKIT_WS_URL</key>
-    <string>$(LIVEKIT_WS_URL)</string>
 </dict>
 </plist>
