@@ -10,6 +10,7 @@ import sys
 import time
 
 from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
+from test_budget import build_test_budget
 
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
@@ -78,13 +79,13 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Run 35579052983 completed 43 journeys in 3732.904 seconds. Those plus
-    # prior measured durations for the remaining five total 4006.245 seconds,
-    # already beyond the old 3900-second deadline before runner overhead.
-    # Production suites now run in a preceding bounded job. Give all UI journeys
-    # a finite 75-minute window inside the unchanged 95-minute app/UI job.
-    # Individual 180-second limits, zero retries and mandatory failures remain.
-    test_timeout_seconds = 4500
+    # Each case already has a hard 180-second limit. Budget the whole suite
+    # from the exact checked-in inventory, so a growing suite cannot be cut
+    # off by an unrelated smaller fixed deadline. No retries or filtered cases.
+    source = pathlib.Path(__file__).resolve().parents[2] / "Tests/NativeUI/StudioSmokeUITests.swift"
+    budget = build_test_budget(source.read_text(), command)
+    (output / "ui-test-budget.json").write_text(json.dumps(budget, indent=2) + "\n")
+    test_timeout_seconds = budget["suiteSeconds"]
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)

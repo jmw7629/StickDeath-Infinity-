@@ -285,9 +285,13 @@ struct FloatingToolSettingsPanel: View {
         // ── SMUDGE (PURPLE THEME) ──
         case .smudge:
             VStack(alignment: .leading, spacing: 8) {
-                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
-                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Strength", value: .constant(50.0), range: 0...100, unit: "%", accent: accentColor)
+                Text("Smudge is not available yet.")
+                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .accessibilityIdentifier("studio.smudge.unavailable")
+                Text("Color dragging is still being integrated. Selecting this tool leaves your artwork unchanged.")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.sdStudioSecondaryText)
             }
             
         // Editable text lives in the same dismissible tool popup.

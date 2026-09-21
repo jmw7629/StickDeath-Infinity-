@@ -7,6 +7,64 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testNonActiveFrameCopyPasteUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let prepared = try preparePickerSourceStroke(app), canvas = prepared.canvas
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let canvasFrame = canvas.frame, drawn = try pixels(canvas.screenshot().image)
+        func frames(_ target: XCUIApplication) -> XCUIElementQuery {
+            target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
+        }
+        let originalID = frames(app).firstMatch.identifier
+        app.buttons["studio.add-frame"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let blankID = frames(app).allElementsBoundByIndex.first { $0.identifier != originalID }!.identifier
+        let blank = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(drawn, blank), 50)
+        app.buttons[originalID].press(forDuration: 0.7)
+        let copy = app.buttons["studio.frame-menu.copy"]
+        XCTAssertTrue(copy.waitForExistence(timeout: 5) && copy.isHittable && copy.isEnabled)
+        copy.tap()
+        XCTAssertEqual(app.buttons[blankID].value as? String, "Selected", "Copy must leave the current frame selected")
+        XCTAssertEqual(frames(app).count, 2)
+        XCTAssertEqual(app.buttons["studio.save"].label, "Saved", "Copy must not dirty the project")
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        let paste = app.buttons["studio.paste"]
+        XCTAssertTrue(paste.isEnabled && paste.isHittable)
+        XCTAssertEqual(paste.label, "Paste frame")
+        paste.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 3)
+        let copyID = frames(app).allElementsBoundByIndex.first { $0.identifier != originalID && $0.identifier != blankID }!.identifier
+        XCTAssertEqual(app.buttons[copyID].label, "Frame 3")
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
+        capture(app, name: "frame-explicit-copy-pasted")
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 2)
+        XCTAssertEqual(app.buttons[blankID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: canvasFrame)
+        XCTAssertEqual(frames(reopened).count, 3)
+        XCTAssertEqual(reopened.buttons[copyID].value as? String, "Selected")
+        XCTAssertEqual(reopened.buttons[copyID].label, "Frame 3")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(restored.screenshot().image)), 4)
+        XCTAssertFalse(reopened.buttons["studio.paste"].isEnabled, "Clipboard must not persist across app launches")
+        capture(reopened, name: "frame-copy-paste-cold-reopened")
+    }
+
+    @MainActor
     func testFrameContextIdentityDuplicateUndoReorderAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -3331,10 +3389,24 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor private func settlePickerCanvasAfterSave(_ app:XCUIApplication, canvas:XCUIElement) throws {
         let save = app.buttons["studio.save"]
-        XCTAssertTrue(save.isHittable); save.tap()
+        // Context-menu dismissal can outlive the menu action. Run 35589511247
+        // queried Save immediately and failed before its overlay disappeared.
+        let ready = expectation(for: NSPredicate(format: "exists == true AND hittable == true"), evaluatedWith: save)
+        let saveReady = ready.waitUntilFulfilled(timeout: 8)
+        if !saveReady {
+            capture(app, name: "save-readiness-timeout")
+            captureHierarchy(app, name: "save-readiness-timeout-hierarchy")
+        }
+        XCTAssertTrue(saveReady, "Save must become reachable after the preceding action")
+        guard saveReady else { throw NSError(domain: "NativeSaveReadiness", code: 1) }
+        save.tap()
         XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Saved"), evaluatedWith:save).waitUntilFulfilled(timeout:8))
-        let samplingMessage = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Sampled #")).firstMatch
-        XCTAssertTrue(expectation(for:NSPredicate(format:"exists == false"), evaluatedWith:samplingMessage).waitUntilFulfilled(timeout:5))
+        // Ask whether the query is empty. Resolving firstMatch's attributes
+        // retries a nonexistent element, exhausting the old five-second wait
+        // even when the recording visibly contains no sampled-color toast.
+        let samplingMessages = app.staticTexts.matching(NSPredicate(format:"label BEGINSWITH %@","Sampled #"))
+        let noSamplingMessage = NSPredicate { _, _ in samplingMessages.count == 0 }
+        XCTAssertTrue(expectation(for: noSamplingMessage, evaluatedWith: nil).waitUntilFulfilled(timeout: 5))
         let appBounds = app.frame
         // Run35491555925 recorded the visible canvas throughout, while a
         // frame query (2.83s) plus a second hittability query (3.18s) consumed

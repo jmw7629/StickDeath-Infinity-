@@ -643,6 +643,13 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
+    func copyFrame(_ id: String) {
+        guard allowDocumentEditDuringInput() else { return }
+        do {
+            try editor.copyFrame(id)
+            pruneManagedImages()
+        } catch { message = error.localizedDescription }
+    }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func pasteClipboard() {
         guard copiedDrawingCount > 0 else { pasteFrame(); return }

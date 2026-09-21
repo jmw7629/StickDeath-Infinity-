@@ -393,6 +393,14 @@ struct StudioDocumentEditor {
     mutating func copyFrame() {
         if let frame = document.frames.first(where: { $0.id == document.activeFrameID }) { clipboard = .frame(frame); clipboardVersion = UUID() }
     }
+    /// Capture a specific timeline frame without changing active selection,
+    /// document revision or history. Rejected stale targets retain the clipboard.
+    mutating func copyFrame(_ id: String) throws {
+        guard let frame = document.frames.first(where: { $0.id == id }) else {
+            throw StudioDocumentError.invalid("The selected frame is no longer available to copy.")
+        }
+        clipboard = .frame(frame); clipboardVersion = UUID()
+    }
     mutating func pasteFrame() throws {
         guard case .frame(let source) = clipboard else { return }
         try insertCopy(source)

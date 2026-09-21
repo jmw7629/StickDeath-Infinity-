@@ -172,6 +172,54 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
                 "Stable frame identities, order, selection or real drawing content failed cold reopen")
             print("PASS explicit frame context identity, one-step duplication undo, stale-target rejection and cold reopen")
 
+            let clipboardStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("ClipboardDocuments"),
+                cachesDirectory: root.appendingPathComponent("ClipboardCaches"))
+            let clipboardVM = StudioViewModel(storage: clipboardStore)
+            let clipboardCreated = await clipboardVM.createProject(name: "Explicit frame clipboard", width: 512, height: 512, fps: 12)
+            try require(clipboardCreated, "Frame clipboard fixture could not be created")
+            let copiedFrameID = clipboardVM.currentFrame.id
+            let copiedStroke = stroke(layer: clipboardVM.activeLayerID)
+            try require(clipboardVM.commitElement(copiedStroke), "Frame clipboard source drawing failed")
+            clipboardVM.addFrame()
+            let selectedBlankID = clipboardVM.currentFrame.id
+            let clipboardSaved = await clipboardVM.save()
+            try require(clipboardSaved, "Frame clipboard fixture did not save")
+            let beforeCopy = clipboardVM.document
+            clipboardVM.copyFrame(copiedFrameID)
+            try require(clipboardVM.document == beforeCopy && !clipboardVM.isDirty && clipboardVM.canPaste,
+                "Copying a non-active timeline frame changed selection, history or persisted content")
+            clipboardVM.pasteClipboard()
+            let pastedID = clipboardVM.currentFrame.id
+            let pastedSnapshot = clipboardVM.document
+            try require(clipboardVM.frames.map(\.id) == [copiedFrameID, selectedBlankID, pastedID]
+                && clipboardVM.currentFrame.elements.count == 1
+                && clipboardVM.currentFrame.elements[0].id != copiedStroke.id
+                && clipboardVM.currentFrame.elements[0].points == copiedStroke.points,
+                "Explicit frame copy pasted the active blank frame or reused element identity")
+            clipboardVM.undo()
+            try require(clipboardVM.document.frames == beforeCopy.frames && clipboardVM.currentFrame.id == selectedBlankID,
+                "Paste Undo did not restore the prior frame selection and content")
+            clipboardVM.redo()
+            try require(clipboardVM.document.frames == pastedSnapshot.frames && clipboardVM.currentFrame.id == pastedID,
+                "Paste Redo changed the copied frame identity or drawing")
+            clipboardVM.deleteFrame(copiedFrameID)
+            let afterSourceDelete = clipboardVM.document
+            clipboardVM.copyFrame(copiedFrameID)
+            try require(clipboardVM.document == afterSourceDelete && clipboardVM.message != nil,
+                "Stale frame copy changed the document or failed to report rejection")
+            clipboardVM.pasteClipboard()
+            try require(clipboardVM.currentFrame.elements.count == 1
+                && clipboardVM.currentFrame.elements[0].points == copiedStroke.points,
+                "Deleting the source or rejecting a stale copy lost the previously copied snapshot")
+            let clipboardFinalSaved = await clipboardVM.save(), clipboardSnapshot = clipboardVM.document
+            try require(clipboardFinalSaved, "Explicit clipboard result did not save")
+            let clipboardReopen = StudioViewModel(storage: clipboardStore)
+            await clipboardReopen.loadProjects()
+            let clipboardOpened = await clipboardReopen.openProject(clipboardReopen.savedProjects[0])
+            try require(clipboardOpened && clipboardReopen.document == clipboardSnapshot && !clipboardReopen.canPaste,
+                "Clipboard result failed real cold reopen or leaked the transient clipboard")
+            print("PASS non-active frame copy, immutable snapshot, stale rejection, paste history and actual cold reopen")
+
             let preserved = documents.appendingPathComponent("Animations-preserved")
             try fm.moveItem(at: store.animationsDir, to: preserved)
             try Data("blocked directory fixture".utf8).write(to: store.animationsDir)
@@ -256,7 +304,7 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             try require(reopenOpaque && resavedOpaque && opaqueFinal.frames[0].layerData?.first?.id == originalOpaqueLayer.id,
                         "opaque frame record failed repeated editable reopen/save")
             print("PASS nil-image opaque frame metadata and deterministic legacy IDs survive open/save/reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 11 journeys")
+            print("STUDIO_DOCUMENT_TESTS=PASS 12 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

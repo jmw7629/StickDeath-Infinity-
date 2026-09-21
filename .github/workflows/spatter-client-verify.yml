@@ -1089,10 +1089,11 @@ jobs:
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # The measured 48 journeys exceed 65 minutes before runner overhead.
-    # Reserve 75 minutes for the whole UI suite plus build/setup/preservation.
-    # Individual journeys remain capped at 180 seconds, with no retries/skips.
-    timeout-minutes: 95
+    # Match the bounded inventory budget: at most 60 cases x 180 seconds,
+    # five minutes of suite overhead and 25 minutes for build/preservation.
+    # This is a ceiling; the job exits as soon as all cases finish. One Mac
+    # runner at a time, unchanged case limits, no retries or skipped cases.
+    timeout-minutes: 210
     steps:
       - name: Require successful production verification
         shell: bash

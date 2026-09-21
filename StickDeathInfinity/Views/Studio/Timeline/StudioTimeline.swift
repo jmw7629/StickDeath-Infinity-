@@ -70,6 +70,8 @@ struct StudioTimeline: View {
                             .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
                             .accessibilityIdentifier("studio.frame." + frame.id)
                             .contextMenu {
+                                Button("Copy frame") { vm.copyFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frame-menu.copy")
                                 Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
                                     .accessibilityIdentifier("studio.frame-menu.duplicate")
                                 Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
