@@ -157,11 +157,13 @@ final class StudioExportService {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers, data: raster)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers,
+            canvasSize: size, rasterData: raster)
         var drawingError: Error?
         let content = Canvas { context, actual in
             if background == .white { context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white)) }
             drawingError = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedRaster: image)
+                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedRaster: image, preparedSmudges: smudges)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
@@ -189,7 +191,7 @@ final class StudioExportService {
         let pixels = document.width * document.height
         guard document.frames.count <= Self.maximumFrames, pixels <= Self.maximumFramePixels,
               pixels * document.frames.count <= Self.maximumTotalPixels else { throw ExportError.limitExceeded }
-        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill]
+        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge]
         let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
         func validColor(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
@@ -203,7 +205,7 @@ final class StudioExportService {
         }
         for frame in document.frames {
             for element in frame.elements where element.opacity > 0 && element.layerID.map(renderedLayerIDs.contains) == true {
-                guard tools.contains(element.tool) else { throw ExportError.unsupportedContent }
+                guard tools.contains(element.tool), element.tool != .smudge || element.smudge != nil else { throw ExportError.unsupportedContent }
                 guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 guard validColor(element.color) else { throw ExportError.invalidColor }
                 if element.tool == .text {

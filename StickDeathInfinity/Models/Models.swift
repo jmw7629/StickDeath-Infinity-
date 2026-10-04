@@ -85,6 +85,8 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var text: StudioTextDescriptor? = nil
     /// Schema11: world-space affine transform, applied after legacy placement.
     var transform: StudioElementTransform? = nil
+    /// Schema17: replayable color drag. The preceding editable artwork is preserved.
+    var smudge: StudioSmudgeDescriptor? = nil
 
     var selectionBounds: CGRect? {
         let bounds: CGRect

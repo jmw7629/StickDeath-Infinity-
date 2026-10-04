@@ -605,6 +605,9 @@ final class StudioViewModel: ObservableObject {
             do { try await Task.sleep(nanoseconds: 700_000_000) } catch { return }
             guard !Task.isCancelled, let self else { return }
             if self.activeStrokeID != nil { self.scheduleSave(); return }
+            // This timer now owns the save. Release its handle before save()
+            // cancels pending timers, so validation does not cancel itself.
+            self.autosaveTask = nil
             _ = await self.save()
         }
     }
@@ -1970,6 +1973,7 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             case .marker: value.width = 12; value.opacity = 0.75; value.family = .calligraphy
             case .crayon: value.width = 8; value.opacity = 0.9; value.family = .grain; value.smoothing = 1
             case .eraser: value.width = 8
+            case .smudge: value.width = 24; value.smoothing = 0
             default: break
             }
             return value

@@ -61,7 +61,7 @@ python3 "$sdi_script_dir/run_recorded_test.py" \
   -destination "platform=iOS Simulator,id=$SDI_SMOKE_SIMULATOR_UDID" \
   -resultBundlePath "$sdi_results" -parallel-testing-enabled NO \
   -maximum-concurrent-test-simulator-destinations 1 -test-timeouts-enabled YES \
-  -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180
+  -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 240
 sdi_test_status=$?
 set -e
 sdi_evidence_status=0

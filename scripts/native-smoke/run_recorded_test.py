@@ -79,7 +79,8 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Each case already has a hard 180-second limit. Budget the whole suite
+    # Cases retain a hard 180s default; two measured long journeys allow 240s.
+    # Budget the whole suite
     # from the exact checked-in inventory, so a growing suite cannot be cut
     # off by an unrelated smaller fixed deadline. No retries or filtered cases.
     source = pathlib.Path(__file__).resolve().parents[2] / "Tests/NativeUI/StudioSmokeUITests.swift"

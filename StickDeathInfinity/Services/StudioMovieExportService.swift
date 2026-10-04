@@ -713,7 +713,7 @@ final class StudioMovieExportService {
         let pixels = document.width * document.height
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
-        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill]
+        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge]
         let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
         func colorValid(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? value.dropFirst() : value[...]
@@ -728,7 +728,7 @@ final class StudioMovieExportService {
         for frame in document.frames {
             try Task.checkCancellation()
             for element in frame.elements where element.opacity > 0 && element.layerID.map(visibleIDs.contains) == true {
-                guard tools.contains(element.tool), colorValid(element.color) else { throw ExportError.unsupportedContent }
+                guard tools.contains(element.tool), element.tool != .smudge || element.smudge != nil, colorValid(element.color) else { throw ExportError.unsupportedContent }
                 guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 if element.tool == .text {
                     if let text = element.text { try text.validate(element: element) }
@@ -767,11 +767,12 @@ final class StudioMovieExportService {
     private func render(_ frame: AnimationFrame, document: StudioDocument, raster: Data?) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size, rasterData: raster)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes)
+                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedSmudges: smudges)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas); renderer.scale = 1; renderer.isOpaque = true
         guard let image = renderer.cgImage, image.width == document.width, image.height == document.height else { throw ExportError.renderFailed }

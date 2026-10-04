@@ -3,6 +3,11 @@ import hashlib
 import re
 
 PER_CASE_SECONDS = 180
+MAXIMUM_CASE_SECONDS = 240
+EXTENDED_CASE_SECONDS = {
+    "testBucketFillPopupUndoSaveReopenAndPNG": 240,
+    "testImagePlacementCancelApplyUndoAndColdReopen": 240,
+}
 MAXIMUM_CASES = 60
 SUITE_OVERHEAD_SECONDS = 300
 
@@ -20,7 +25,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
             raise ValueError("Native verification cannot filter or retry cases")
     required = {"-test-timeouts-enabled": "YES",
                 "-default-test-execution-time-allowance": str(PER_CASE_SECONDS),
-                "-maximum-test-execution-time-allowance": str(PER_CASE_SECONDS),
+                "-maximum-test-execution-time-allowance": str(MAXIMUM_CASE_SECONDS),
                 "-parallel-testing-enabled": "NO",
                 "-maximum-concurrent-test-simulator-destinations": "1"}
     for flag, value in required.items():
@@ -29,8 +34,19 @@ def build_test_budget(source: str, command: list[str]) -> dict:
         index = command.index(flag)
         if index + 1 == len(command) or command[index + 1] != value:
             raise ValueError("Native verification must preserve " + flag + " " + value)
+    # Only the two measured long journeys may opt into the longer ceiling.
+    # Preserve all cases, assertions and the 180s default for every other case.
+    declared = re.findall(r"executionTimeAllowance\s*=\s*([0-9]+)", source)
+    extended = {name: seconds for name, seconds in EXTENDED_CASE_SECONDS.items() if name in names}
+    if len(declared) != len(extended):
+        raise ValueError("Unexpected or missing per-case native time allowance")
+    for name, seconds in extended.items():
+        header = r"func\s+" + re.escape(name) + r"\s*\(\)\s*throws\s*\{\s*(?://[^\n]*\n\s*)*executionTimeAllowance\s*=\s*" + str(seconds) + r"\b"
+        if not re.search(header, source):
+            raise ValueError("Missing explicit measured allowance for " + name)
     return {"testNames": names, "testCount": len(names), "perCaseSeconds": PER_CASE_SECONDS,
+            "maximumCaseSeconds": MAXIMUM_CASE_SECONDS, "extendedCases": extended,
             "suiteOverheadSeconds": SUITE_OVERHEAD_SECONDS,
-            "suiteSeconds": len(names) * PER_CASE_SECONDS + SUITE_OVERHEAD_SECONDS,
+            "suiteSeconds": sum(extended.get(name, PER_CASE_SECONDS) for name in names) + SUITE_OVERHEAD_SECONDS,
             "maximumCases": MAXIMUM_CASES, "sourceSHA256": hashlib.sha256(source.encode()).hexdigest(),
             "retries": 0, "parallelSimulators": 1}

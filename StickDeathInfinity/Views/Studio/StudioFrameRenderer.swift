@@ -7,19 +7,21 @@ struct StudioFrameThumbnail: View {
         let prepared = Result { try StudioFrameRenderer.prepare(frame: frame) }
         let raster = Result { try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
             data: vm.rasterData(frame.rasterAssetID), maximumDimension: 128) }
+        let smudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers,
+            canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), rasterData: vm.rasterData(frame.rasterAssetID)) }
         Canvas { context, size in
             let scale = min(size.width / CGFloat(vm.canvasWidth), size.height / CGFloat(vm.canvasHeight))
             let fitted = CGSize(width: CGFloat(vm.canvasWidth) * scale, height: CGFloat(vm.canvasHeight) * scale)
             context.translateBy(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2)
             context.fill(Path(CGRect(origin: .zero, size: fitted)), with: .color(.white))
-            switch (prepared, raster) {
-            case (.success(let brushes), .success(let image)):
+            switch (prepared, raster, smudges) {
+            case (.success(let brushes), .success(let image), .success(let effects)):
                 if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: vm.layers,
                     canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
-                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes, preparedRaster: image) {
+                    rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
                     StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
                 }
-            case (.failure(let error), _), (_, .failure(let error)):
+            case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
                 StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
             }
         }
@@ -64,7 +66,8 @@ struct StudioFrameRenderer {
     @discardableResult
     static func draw(context: inout GraphicsContext, frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
                      size: CGSize, rasterData: Data? = nil, liveElement: DrawnElement? = nil,
-                     preparedBrushes: PreparedBrushes? = nil, preparedRaster: StudioRasterImage.Prepared? = nil) -> Error? {
+                     preparedBrushes: PreparedBrushes? = nil, preparedRaster: StudioRasterImage.Prepared? = nil,
+                     preparedSmudges: StudioSmudgeReplay.Prepared? = nil) -> Error? {
         let prepared: PreparedBrushes
         let image: StudioRasterImage.Prepared?
         do {
@@ -78,61 +81,97 @@ struct StudioFrameRenderer {
                 throw StudioDocumentError.invalid("Prepared brushes do not match this frame. No frame was rendered.")
             }
         } catch { return error }
+        do {
+            if frame.elements.contains(where: { $0.smudge != nil }) || liveElement?.smudge != nil {
+                guard let preparedSmudges else { throw StudioSmudgeReplay.Failure.unprepared }
+                try preparedSmudges.validate(frame: frame, layers: layers, canvasSize: canvasSize,
+                    rasterData: rasterData, liveElement: liveElement)
+            }
+        } catch { return error }
         var failure: Error?
-        for layer in layers.reversed() where layer.visible {
+        for layer in layers.reversed() where layer.visible && layer.opacity > 0 {
             var composite = context
             composite.opacity *= layer.opacity
             composite.blendMode = blend(layer.blendMode)
             if layer.glowEnabled { composite.addFilter(.shadow(color: Color(hex: layer.glowColor ?? "#FF0000"), radius: 5)) }
             composite.drawLayer { local in
-                if frame.rasterLayerID == layer.id, let image {
-                    let rect: CGRect
-                    if let placement = frame.rasterPlacement {
-                        rect = CGRect(x: placement.x / canvasSize.width * size.width,
-                            y: placement.y / canvasSize.height * size.height,
-                            width: placement.width / canvasSize.width * size.width,
-                            height: placement.height / canvasSize.height * size.height)
-                    } else { rect = CGRect(origin: .zero, size: size) }
-                    // Isolate the transform from drawing elements on this layer.
-                    // Reflect in viewport coordinates about the placed center;
-                    // canvas, thumbnails and every export share these pixels.
-                    var picture = local
-                    if let turns = frame.rasterQuarterTurns, let placement = frame.rasterPlacement {
-                        // Rotate in document coordinates. Conjugating viewport
-                        // scale keeps thumbnails/non-square views geometrically correct.
-                        picture.translateBy(x: rect.midX, y: rect.midY)
-                        picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
-                        if let reflection = frame.rasterReflection {
-                            picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
-                        }
-                        picture.rotate(by: .degrees(Double(turns) * 90))
-                        let width = turns % 2 == 0 ? placement.width : placement.height
-                        let height = turns % 2 == 0 ? placement.height : placement.width
-                        picture.draw(Image(decorative: image.image, scale: 1),
-                            in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
-                    } else {
-                    if let reflection = frame.rasterReflection {
-                        picture.translateBy(x: rect.midX, y: rect.midY)
-                        picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
-                        picture.translateBy(x: -rect.midX, y: -rect.midY)
-                    }
-                    picture.draw(Image(decorative: image.image, scale: 1), in: rect)
-                    }
-                }
-                for element in frame.elements where element.layerID == layer.id {
-                    var elementContext = local
-                    do { try drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
-                        brush: prepared.strokes[element.id]) } catch { failure = error; return }
-                }
-                if let element = liveElement, element.layerID == layer.id {
-                    var elementContext = local
-                    do { try drawElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
-                        brush: prepared.strokes[element.id]) } catch { failure = error }
-                }
+                failure = drawRawLayer(context: &local, frame: frame, layer: layer, canvasSize: canvasSize,
+                    size: size, preparedBrushes: prepared, preparedRaster: image,
+                    smudges: preparedSmudges?.images ?? [:], liveElement: liveElement)
             }
             if let failure { return failure }
         }
         return nil
+    }
+    /// Shared raw-layer compositor, before opacity/blend/glow. Replay uses the
+    /// same raster, vector, text and eraser operations as canvas and export.
+    static func drawRawLayer(context: inout GraphicsContext, frame: AnimationFrame, layer: CanvasLayer,
+                             canvasSize: CGSize, size: CGSize, preparedBrushes: PreparedBrushes,
+                             preparedRaster: StudioRasterImage.Prepared?, baseImage: CGImage? = nil,
+                             smudges: [String: CGImage] = [:], liveElement: DrawnElement? = nil) -> Error? {
+        if let baseImage {
+            context.draw(Image(decorative: baseImage, scale: 1), in: CGRect(origin: .zero, size: size))
+        } else if frame.rasterLayerID == layer.id, let image = preparedRaster {
+            let rect: CGRect
+            if let placement = frame.rasterPlacement {
+                rect = CGRect(x: placement.x / canvasSize.width * size.width,
+                    y: placement.y / canvasSize.height * size.height,
+                    width: placement.width / canvasSize.width * size.width,
+                    height: placement.height / canvasSize.height * size.height)
+            } else { rect = CGRect(origin: .zero, size: size) }
+            // Isolate the transform from drawing elements on this layer.
+            // Reflect in viewport coordinates about the placed center;
+            // canvas, thumbnails and every export share these pixels.
+            var picture = context
+            if let turns = frame.rasterQuarterTurns, let placement = frame.rasterPlacement {
+                // Rotate in document coordinates. Conjugating viewport
+                // scale keeps thumbnails/non-square views geometrically correct.
+                picture.translateBy(x: rect.midX, y: rect.midY)
+                picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
+                if let reflection = frame.rasterReflection {
+                    picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                }
+                picture.rotate(by: .degrees(Double(turns) * 90))
+                let width = turns % 2 == 0 ? placement.width : placement.height
+                let height = turns % 2 == 0 ? placement.height : placement.width
+                picture.draw(Image(decorative: image.image, scale: 1),
+                    in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
+            } else {
+            if let reflection = frame.rasterReflection {
+                picture.translateBy(x: rect.midX, y: rect.midY)
+                picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
+                picture.translateBy(x: -rect.midX, y: -rect.midY)
+            }
+            picture.draw(Image(decorative: image.image, scale: 1), in: rect)
+            }
+        }
+        for element in frame.elements where element.layerID == layer.id {
+            var elementContext = context
+            do { try drawPreparedElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
+                brush: preparedBrushes.strokes[element.id], smudges: smudges) } catch { return error }
+        }
+        if let element = liveElement, element.layerID == layer.id {
+            var elementContext = context
+            do { try drawPreparedElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
+                brush: preparedBrushes.strokes[element.id], smudges: smudges) } catch { return error }
+        }
+        return nil
+    }
+    private static func drawPreparedElement(context: inout GraphicsContext, element: DrawnElement,
+                                            size: CGSize, canvasSize: CGSize,
+                                            brush: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)?,
+                                            smudges: [String: CGImage]) throws {
+        if element.smudge != nil {
+            guard let image = smudges[element.id] else { throw StudioSmudgeReplay.Failure.unprepared }
+            // Replace the entire raw layer, including pixels made transparent.
+            // Opacity was applied once by the operation; layer effects occur later.
+            context.blendMode = .destinationOut
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
+            context.blendMode = .normal
+            context.draw(Image(decorative: image, scale: 1), in: CGRect(origin: .zero, size: size))
+        } else {
+            try drawElement(context: &context, element: element, size: size, canvasSize: canvasSize, brush: brush)
+        }
     }
     static func drawFailure(_ error: Error, context: inout GraphicsContext, size: CGSize) {
         context.draw(Text("Render unavailable: \(error.localizedDescription)").font(.system(size: 11)).foregroundColor(.red),

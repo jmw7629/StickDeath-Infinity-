@@ -107,7 +107,7 @@ class Harness(unittest.TestCase):
                 self.returncode = 0
         argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID,
                 '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '180',
-                '-maximum-test-execution-time-allowance', '180', '-parallel-testing-enabled', 'NO',
+                '-maximum-test-execution-time-allowance', '240', '-parallel-testing-enabled', 'NO',
                 '-maximum-concurrent-test-simulator-destinations', '1']
         def bounded(cmd, *args, **kw):
             calls.append(tuple(cmd))
@@ -151,7 +151,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 300)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 2 * (240 - 180) + 300)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
@@ -177,7 +177,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['recordingExitCode'], 0)
         self.assertIsNone(report['recordingError'])
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 300))
+        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 2 * (240 - 180) + 300))
         self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)

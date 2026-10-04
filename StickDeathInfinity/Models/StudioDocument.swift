@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...16
+    static let supportedSchemaVersions = 1...17
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -63,7 +63,9 @@ struct StudioDocument: Codable, Equatable {
         var fillSpanCount = 0
         var eraserCount = 0; var eraserSamples = 0
         var textBytes = 0
+        var smudgeCount = 0; var smudgeSamples = 0
         for frame in frames {
+            try StudioSmudgeDescriptor.validateFrame(frame, width: width, height: height)
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
             }
@@ -95,6 +97,11 @@ struct StudioDocument: Codable, Equatable {
                 throw StudioDocumentError.invalid("This frame exceeds its 256 text-box limit.")
             }
             for element in frame.elements {
+                if element.smudge != nil {
+                    guard schemaVersion >= 17 else { throw StudioDocumentError.invalid("Smudge effects require project version 17.") }
+                    smudgeCount += 1; smudgeSamples += element.points.count
+                    guard smudgeCount <= 256, smudgeSamples <= 65_536 else { throw StudioSmudge.Failure.workLimit }
+                }
                 if let transform = element.transform {
                     guard schemaVersion >= 11 else { throw StudioDocumentError.invalid("Transformed drawings require project version 11.") }
                     try transform.validate()
@@ -346,12 +353,18 @@ struct StudioDocumentEditor {
         return true
     }
     mutating func commit(_ element: DrawnElement, frameID: String) throws {
+        if element.tool == .smudge {
+            guard element.smudge != nil, selectedElementIDs.isEmpty,
+                  frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
+                throw StudioDocumentError.unavailable("Smudge requires the active unselected layer and a validated color-drag operation. Nothing changed.")
+            }
+        }
         if element.tool == .eraser, !selectedElementIDs.isEmpty {
             throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
         }
         try change { value in
             guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
-            if element.tool == .eraser {
+            if element.tool == .eraser || element.smudge != nil {
                 guard layer.opacity > 0, layer.lockMode == "free" else { throw StudioDocumentError.locked }
             }
             guard layer.lockMode == "free" || layer.lockMode == "position" else {
@@ -367,6 +380,7 @@ struct StudioDocumentEditor {
             if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
             if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
             if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
+            if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
         }
     }
     mutating func updateText(frameID: String, elementID: String, text: StudioTextDescriptor, color: String, opacity: Double) throws {
@@ -425,6 +439,9 @@ struct StudioDocumentEditor {
                 guard element.points.count <= 65_536 - points else {
                     throw StudioDocumentError.unavailable("Copy is limited to 65,536 drawing points. Copy a smaller selection.")
                 }
+                guard element.smudge == nil else {
+                    throw StudioDocumentError.unavailable("Copy the whole frame to preserve a Smudge effect and its source artwork.")
+                }
                 points += element.points.count
                 let geometryCost = element.points.count * 40 + (element.fillMask?.spans.count ?? 0) * MemoryLayout<StudioFillMask.Span>.stride
                 let identityCost = element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0)
@@ -465,7 +482,7 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -475,6 +492,7 @@ struct StudioDocumentEditor {
                 if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
                 if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
                 if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
+            if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             }
             try checkCancellation()
         }
@@ -490,7 +508,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -502,6 +520,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.eraser != nil }) { value.schemaVersion = max(value.schemaVersion, 9) }
             if elements.contains(where: { $0.text != nil }) { value.schemaVersion = max(value.schemaVersion, 10) }
             if elements.contains(where: { $0.transform != nil }) { value.schemaVersion = max(value.schemaVersion, 11) }
+            if elements.contains(where: { $0.smudge != nil }) { value.schemaVersion = max(value.schemaVersion, 17) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
             if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
             if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
@@ -868,7 +887,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }

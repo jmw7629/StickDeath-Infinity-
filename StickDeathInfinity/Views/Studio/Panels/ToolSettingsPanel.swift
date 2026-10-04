@@ -168,7 +168,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .line, .rectangle, .circle, .text].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -285,15 +285,13 @@ struct FloatingToolSettingsPanel: View {
         // ── SMUDGE (PURPLE THEME) ──
         case .smudge:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Smudge is not available yet.")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-                    .accessibilityIdentifier("studio.smudge.unavailable")
-                Text("Color dragging is still being integrated. Selecting this tool leaves your artwork unchanged.")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.sdStudioSecondaryText)
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...256, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Text("Drag existing color on the active layer. The effect is applied when you release. Deselect artwork first.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.smudge.instructions")
             }
-            
+
         // Editable text lives in the same dismissible tool popup.
         case .text:
             VStack(alignment: .leading, spacing: 8) {

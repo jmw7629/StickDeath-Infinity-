@@ -56,12 +56,14 @@ enum StudioColorSamplingService {
             data: visibleRaster ? rasterData : nil, maximumDimension: 8192)
         if visibleRaster && raster == nil { throw Failure.missingRaster }
         let size = CGSize(width: document.width, height: document.height)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size,
+            rasterData: visibleRaster ? rasterData : nil)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
                 canvasSize: size, size: actual, rasterData: visibleRaster ? rasterData : nil,
-                preparedBrushes: brushes, preparedRaster: raster)
+                preparedBrushes: brushes, preparedRaster: raster, preparedSmudges: smudges)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas)
         renderer.scale = 1

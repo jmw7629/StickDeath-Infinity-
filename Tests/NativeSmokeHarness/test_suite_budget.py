@@ -8,7 +8,7 @@ spec = importlib.util.spec_from_file_location("sdi_test_budget", ROOT / "scripts
 budget = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(budget)
 COMMAND = ["xcodebuild", "test-without-building", "-test-timeouts-enabled", "YES",
-           "-default-test-execution-time-allowance", "180", "-maximum-test-execution-time-allowance", "180",
+           "-default-test-execution-time-allowance", "180", "-maximum-test-execution-time-allowance", "240",
            "-parallel-testing-enabled", "NO", "-maximum-concurrent-test-simulator-destinations", "1"]
 
 
@@ -23,7 +23,7 @@ class NativeSuiteBudget(unittest.TestCase):
         value = budget.build_test_budget(source, COMMAND)
         self.assertIn("testFrameContextIdentityDuplicateUndoReorderAndColdReopen", value["testNames"])
         self.assertIn("testImageCanvasDragUndoAndColdReopen", value["testNames"])
-        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300)
+        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 120)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
 
     def test_per_case_capacity_is_available_and_global_bound_stays_finite(self):
@@ -55,6 +55,17 @@ class NativeSuiteBudget(unittest.TestCase):
             for command in variants:
                 with self.subTest(flag=flag, command=command), self.assertRaises(ValueError):
                     budget.build_test_budget(fixture(2), command)
+
+    def test_only_measured_long_journeys_receive_extra_time(self):
+        source = (ROOT / "Tests/NativeUI/StudioSmokeUITests.swift").read_text()
+        value = budget.build_test_budget(source, COMMAND)
+        self.assertEqual(value["extendedCases"], budget.EXTENDED_CASE_SECONDS)
+        self.assertEqual(sum(value["extendedCases"].values()), 480)
+        for changed in (source.replace("executionTimeAllowance = 240", "executionTimeAllowance = 300", 1),
+                        source.replace("executionTimeAllowance = 240", "", 1),
+                        source + "\nexecutionTimeAllowance = 240"):
+            with self.assertRaises(ValueError):
+                budget.build_test_budget(changed, COMMAND)
 
     def test_inventory_digest_changes_with_source(self):
         before = budget.build_test_budget(fixture(2), COMMAND)

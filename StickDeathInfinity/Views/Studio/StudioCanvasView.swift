@@ -35,6 +35,11 @@ struct StudioCanvasView: View {
     @State private var touchID: UUID?
     @State private var fillInput = StudioFillGesture()
     @StateObject private var fillSession = StudioFillSession()
+    @StateObject private var smudgeSession = StudioSmudgeSession()
+    @State private var smudgeInput: StudioSmudgeInput?
+    @State private var startedAsSmudge = false
+    @State private var smudgeSubmission: UUID?
+    @State private var smudgeTask: Task<Void, Never>?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -55,6 +60,12 @@ struct StudioCanvasView: View {
                     data: vm.rasterData(frame.rasterAssetID), maximumDimension: rasterSize)
             } } : nil
             let onionPrepared = vm.showOnionSkin ? vm.previousFrame.map { frame in Result { try StudioFrameRenderer.prepare(frame: frame) } } : nil
+            let currentSmudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: displayedFrame, layers: vm.layers,
+                canvasSize: documentSize, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement) }
+            let onionSmudges = vm.showOnionSkin ? vm.previousFrame.map { frame in Result {
+                try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers, canvasSize: documentSize,
+                    rasterData: vm.rasterData(frame.rasterAssetID))
+            } } : nil
             ZStack {
                 Color.clear
                 ZStack {
@@ -63,27 +74,30 @@ struct StudioCanvasView: View {
                         if vm.showOnionSkin, let previous = vm.previousFrame {
                             var onion = context
                             onion.opacity = 0.2
-                            if case .success(let brushes)? = onionPrepared, case .success(let image)? = onionRaster {
+                            if case .success(let brushes)? = onionPrepared, case .success(let image)? = onionRaster,
+                               case .success(let effects)? = onionSmudges {
                                 if let error = StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
                                     canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes, preparedRaster: image) {
+                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
                                     StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                                 }
                             } else if case .failure(let error)? = onionPrepared {
+                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
+                            } else if case .failure(let error)? = onionSmudges {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             } else if case .failure(let error)? = onionRaster {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             }
                         }
-                        switch (currentPrepared, currentRaster) {
-                        case (.success(let brushes), .success(let image)):
+                        switch (currentPrepared, currentRaster, currentSmudges) {
+                        case (.success(let brushes), .success(let image), .success(let effects)):
                             if let error = StudioFrameRenderer.draw(context: &context, frame: displayedFrame, layers: vm.layers,
                                 canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
                                 rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
-                                preparedBrushes: brushes, preparedRaster: image) {
+                                preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             }
-                        case (.failure(let error), _), (_, .failure(let error)):
+                        case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
                             StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                         }
                         for element in displayedFrame.elements where vm.selectedElementIDs.contains(element.id) {
@@ -112,6 +126,16 @@ struct StudioCanvasView: View {
                                     context.draw(Text("↻").font(.system(size: 10 / handles.zoom, weight: .bold)).foregroundColor(.white), at: handle.point)
                                 }
                             }
+                        }
+                        if let smudgeInput, !smudgeInput.isCancelled, let point = smudgeInput.points.last {
+                            // This ring shows the real brush footprint, not fabricated preview pixels.
+                            let diameter = smudgeInput.context.settings.diameter
+                            let rect = CGRect(x: (point.x-diameter/2) / documentSize.width * actual.width,
+                                y: (point.y-diameter/2) / documentSize.height * actual.height,
+                                width: diameter / documentSize.width * actual.width,
+                                height: diameter / documentSize.height * actual.height)
+                            context.stroke(Path(ellipseIn: rect), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
                         if let first = areaPreview.first {
                             func scaled(_ point: CGPoint) -> CGPoint {
@@ -145,10 +169,22 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate(); fillInput.invalidate(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
             }
             .overlay(alignment: .bottom) {
-                if fillSession.isFilling {
+                if smudgeSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Smudging artwork…").font(.specialElite(12))
+                        Button("Cancel") { cancelSmudge() }
+                            .accessibilityIdentifier("studio.smudge.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.smudge.progress")
+                } else if let smudgeInput, !smudgeInput.isCancelled, startedAsSmudge {
+                    Text("Release to smudge the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.smudge.release-hint")
+                } else if fillSession.isFilling {
                     HStack(spacing: 12) {
                         ProgressView().tint(.red)
                         Text("Filling artwork…").font(.specialElite(12))
@@ -181,6 +217,9 @@ struct StudioCanvasView: View {
             fillInput.invalidate()
             if fillSession.isFilling { fillSession.cancel() }
         }
+        .onChange(of: StudioSmudgeContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelSmudge()
+        }
         .onChange(of: gestureActive) { _, active in
             guard !active, let endedTouch = touchID else { return }
             // Let onEnded consume its capture first. A cancelled gesture has
@@ -200,9 +239,9 @@ struct StudioCanvasView: View {
         .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
         .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
+            if phase != .active { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
         }
-        .onDisappear { interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
+        .onDisappear { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
     }
     private func canvasRect(in size: CGSize) -> CGSize {
         let ratio = CGFloat(vm.canvasWidth) / CGFloat(vm.canvasHeight)
@@ -217,6 +256,12 @@ struct StudioCanvasView: View {
                     touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
                     startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
                     imageMoveCancelled = false
+                    startedAsSmudge = vm.selectedTool == .smudge
+                    if startedAsSmudge, smudgeSubmission == nil, let context = StudioSmudgeContext.current(vm) {
+                        smudgeInput = StudioSmudgeInput(context: context,
+                            layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
+                        _ = updateSmudge(location: value.startLocation, size: size)
+                    }
                     startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
                     if startedAsImageMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
@@ -239,6 +284,7 @@ struct StudioCanvasView: View {
                         _ = updateArea(location: value.startLocation, size: size)
                     }
                 }
+                if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
                 if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
                 if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
                 if startedAsArea { _ = updateArea(location: value.location, size: size); return }
@@ -295,6 +341,19 @@ struct StudioCanvasView: View {
             .onEnded { value in
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
+                if startedAsSmudge {
+                    guard updateSmudge(location: value.location, size: size), let captured = smudgeInput,
+                          smudgeSubmission == nil else { return }
+                    let submission = UUID(); smudgeSubmission = submission
+                    smudgeTask = Task { @MainActor in
+                        defer {
+                            if smudgeSubmission == submission { smudgeSubmission = nil; smudgeTask = nil }
+                        }
+                        guard !Task.isCancelled, smudgeSubmission == submission, scenePhase == .active else { return }
+                        await smudgeSession.apply(vm, input: captured)
+                    }
+                    return
+                }
                 if startedAsImageMove {
                     guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
                     _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
@@ -357,6 +416,27 @@ struct StudioCanvasView: View {
                 if vm.selectedTool == .zoom { vm.zoomIn(); return }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
+    }
+    private func updateSmudge(location: CGPoint, size: CGSize) -> Bool {
+        guard var captured = smudgeInput else {
+            vm.message = "Choose a visible unlocked layer and deselect artwork before smudging."
+            return false
+        }
+        do {
+            try captured.append(location, current: StudioSmudgeContext.current(vm),
+                layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                foreground: scenePhase == .active)
+            smudgeInput = captured
+            return true
+        } catch {
+            smudgeInput = captured
+            vm.message = "Smudge cancelled. Start a new drag on the current artwork."
+            return false
+        }
+    }
+    private func cancelSmudge() {
+        smudgeInput?.cancel(); smudgeTask?.cancel(); smudgeSession.cancel()
+        smudgeSubmission = nil; smudgeTask = nil
     }
     private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
         CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
@@ -443,6 +523,7 @@ struct StudioCanvasView: View {
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
+            smudgeInput = nil; startedAsSmudge = false
             imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
@@ -452,7 +533,7 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
-        fillSession.cancel()
+        fillSession.cancel(); cancelSmudge()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()
         fillInput.invalidate()

@@ -60,6 +60,8 @@ enum StudioFillService {
             data: needsRaster ? rasterData : nil, maximumDimension: 8192)
         if needsRaster && image == nil { throw Failure.missingRaster }
         let size = CGSize(width: document.width, height: document.height)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: layers, canvasSize: size,
+            rasterData: needsRaster ? rasterData : nil)
         var failure: Error?
         let canvas = Canvas { context, actual in
             // The current layer keeps its transparent pixels distinct from
@@ -69,7 +71,7 @@ enum StudioFillService {
             }
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
                 canvasSize: size, size: actual, rasterData: needsRaster ? rasterData : nil,
-                preparedBrushes: brushes, preparedRaster: image)
+                preparedBrushes: brushes, preparedRaster: image, preparedSmudges: smudges)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas)
         renderer.scale = 1; renderer.isOpaque = sampleAllLayers

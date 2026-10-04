@@ -666,6 +666,60 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testSmudgePixelsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.85)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85,dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(original).count, 60)
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.smudge", app: app, forward: true).tap()
+        XCTAssertTrue(app.staticTexts["studio.smudge.instructions"].waitForExistence(timeout: 5))
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.45)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        let savedSize = try XCTUnwrap(app.sliders["studio.setting.size"].value as? String)
+        capture(app, name: "smudge-size-opacity-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.7)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let smudged = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, smudged), 30, "Smudge did not move actual artwork pixels")
+        capture(app, name: "smudge-real-canvas-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(smudged, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(smudged, pixels(restored.screenshot().image)), 4,
+            "Cold reopen changed smudged artwork")
+        capture(reopened, name: "smudge-cold-reopened")
+        try pickerRailControl("studio.tool.smudge", app: reopened, forward: true).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, savedSize)
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
+    @MainActor
     func testEraserModesStrengthUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -2563,6 +2617,8 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testImagePlacementCancelApplyUndoAndColdReopen() throws {
+        // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
+        executionTimeAllowance = 240
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -3254,6 +3310,8 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testBucketFillPopupUndoSaveReopenAndPNG() throws {
+        // Run 35600568119 attempt 2 reached cold reopen/export at the 180s limit.
+        executionTimeAllowance = 240
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
