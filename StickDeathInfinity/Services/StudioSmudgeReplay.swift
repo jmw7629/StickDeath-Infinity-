@@ -1,16 +1,16 @@
 import SwiftUI
 import CoreGraphics
 
-/// Replays smudges from editable source artwork at document resolution. The
+/// Replays ordered Smudge and Blur effects from editable source artwork. The
 /// bitmaps are transient render products, never another persisted layer model.
 enum StudioSmudgeReplay {
     enum Failure: Error, LocalizedError {
         case unprepared, stale, render
         var errorDescription: String? {
             switch self {
-            case .unprepared: return "Smudge pixels have not been prepared. No substitute stroke was rendered."
-            case .stale: return "The artwork changed after Smudge rendering. Render it again before continuing."
-            case .render: return "The Smudge layer could not be rendered. The original artwork is unchanged."
+            case .unprepared: return "Pixel effect pixels have not been prepared. No substitute stroke was rendered."
+            case .stale: return "The artwork changed after pixel effect rendering. Render it again before continuing."
+            case .render: return "The pixel effect layer could not be rendered. The original artwork is unchanged."
             }
         }
     }
@@ -105,7 +105,7 @@ enum StudioSmudgeReplay {
         try checkCancellation()
         var complete = frame
         if let liveElement { complete.elements.append(liveElement) }
-        let effects = complete.elements.filter { $0.smudge != nil }
+        let effects = complete.elements.filter { $0.hasPixelEffect }
         var images: [String: CGImage] = [:]
         if !effects.isEmpty {
             guard canvasSize.width.isFinite, canvasSize.height.isFinite,
@@ -120,18 +120,27 @@ enum StudioSmudgeReplay {
             // color capture). Other frame layers remain editable but excluded.
             for layer in layers where layer.visible && layer.opacity > 0 {
                 let ordered = complete.elements.filter { $0.layerID == layer.id }
-                guard ordered.contains(where: { $0.smudge != nil }) else { continue }
+                guard ordered.contains(where: { $0.hasPixelEffect }) else { continue }
                 var base: CGImage?
                 var prefix = frame; prefix.elements = []
                 for element in ordered {
                     try checkCancellation()
-                    guard let descriptor = element.smudge else { prefix.elements.append(element); continue }
+                    guard element.hasPixelEffect else { prefix.elements.append(element); continue }
                     let source = try renderPrefix(prefix, layer: layer, canvasSize: canvasSize,
                                                   raster: raster, base: base)
                     let original = try pixels(source)
-                    let changed = try StudioSmudge.apply(to: original,
-                        path: element.points.map { .init(x: $0.x, y: $0.y) },
-                        settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+                    let changed: StudioSmudge.Pixels
+                    if let descriptor = element.smudge {
+                        changed = try StudioSmudge.apply(to: original,
+                            path: element.points.map { .init(x: $0.x, y: $0.y) },
+                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+                    } else if let descriptor = element.blur {
+                        let input = try StudioBlur.Pixels(width: original.width, height: original.height, rgba: original.rgba)
+                        let output = try StudioBlur.apply(to: input,
+                            path: element.points.map { .init(x: $0.x, y: $0.y) },
+                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+                        changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+                    } else { throw Failure.unprepared }
                     let image = try cgImage(changed)
                     images[element.id] = image; base = image; prefix.elements.removeAll()
                 }

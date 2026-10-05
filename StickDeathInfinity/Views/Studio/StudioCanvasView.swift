@@ -40,6 +40,11 @@ struct StudioCanvasView: View {
     @State private var startedAsSmudge = false
     @State private var smudgeSubmission: UUID?
     @State private var smudgeTask: Task<Void, Never>?
+    @StateObject private var blurSession = StudioBlurSession()
+    @State private var blurInput: StudioBlurInput?
+    @State private var startedAsBlur = false
+    @State private var blurSubmission: UUID?
+    @State private var blurTask: Task<Void, Never>?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -137,6 +142,16 @@ struct StudioCanvasView: View {
                             context.stroke(Path(ellipseIn: rect), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
+                        if let blurInput, !blurInput.isCancelled, let point = blurInput.points.last {
+                            // This ring shows the real brush footprint, not fabricated preview pixels.
+                            let diameter = blurInput.context.settings.diameter
+                            let rect = CGRect(x: (point.x-diameter/2) / documentSize.width * actual.width,
+                                y: (point.y-diameter/2) / documentSize.height * actual.height,
+                                width: diameter / documentSize.width * actual.width,
+                                height: diameter / documentSize.height * actual.height)
+                            context.stroke(Path(ellipseIn: rect), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
+                        }
                         if let first = areaPreview.first {
                             func scaled(_ point: CGPoint) -> CGPoint {
                                 CGPoint(x: point.x / documentSize.width * actual.width,
@@ -169,10 +184,22 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
             }
             .overlay(alignment: .bottom) {
-                if smudgeSession.isApplying {
+                if blurSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Blurring artwork…").font(.specialElite(12))
+                        Button("Cancel") { cancelBlur() }
+                            .accessibilityIdentifier("studio.blur.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.blur.progress")
+                } else if let blurInput, !blurInput.isCancelled, startedAsBlur {
+                    Text("Release to blur the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.blur.release-hint")
+                } else if smudgeSession.isApplying {
                     HStack(spacing: 12) {
                         ProgressView().tint(.red)
                         Text("Smudging artwork…").font(.specialElite(12))
@@ -220,6 +247,10 @@ struct StudioCanvasView: View {
         .onChange(of: StudioSmudgeContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
             cancelSmudge()
         }
+        .onChange(of: StudioBlurContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelBlur()
+        }
+        .onChange(of: vm.activePanel) { _, _ in cancelBlur() }
         .onChange(of: gestureActive) { _, active in
             guard !active, let endedTouch = touchID else { return }
             // Let onEnded consume its capture first. A cancelled gesture has
@@ -262,6 +293,12 @@ struct StudioCanvasView: View {
                             layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
                         _ = updateSmudge(location: value.startLocation, size: size)
                     }
+                    startedAsBlur = vm.selectedTool == .blur
+                    if startedAsBlur, blurSubmission == nil, let context = StudioBlurContext.current(vm) {
+                        blurInput = StudioBlurInput(context: context,
+                            layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
+                        _ = updateBlur(location: value.startLocation, size: size)
+                    }
                     startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
                     if startedAsImageMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
@@ -285,6 +322,7 @@ struct StudioCanvasView: View {
                     }
                 }
                 if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
+                if startedAsBlur { _ = updateBlur(location: value.location, size: size); return }
                 if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
                 if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
                 if startedAsArea { _ = updateArea(location: value.location, size: size); return }
@@ -351,6 +389,19 @@ struct StudioCanvasView: View {
                         }
                         guard !Task.isCancelled, smudgeSubmission == submission, scenePhase == .active else { return }
                         await smudgeSession.apply(vm, input: captured)
+                    }
+                    return
+                }
+                if startedAsBlur {
+                    guard updateBlur(location: value.location, size: size), let captured = blurInput,
+                          blurSubmission == nil else { return }
+                    let submission = UUID(); blurSubmission = submission
+                    blurTask = Task { @MainActor in
+                        defer {
+                            if blurSubmission == submission { blurSubmission = nil; blurTask = nil }
+                        }
+                        guard !Task.isCancelled, blurSubmission == submission, scenePhase == .active else { return }
+                        await blurSession.apply(vm, input: captured)
                     }
                     return
                 }
@@ -438,6 +489,27 @@ struct StudioCanvasView: View {
         smudgeInput?.cancel(); smudgeTask?.cancel(); smudgeSession.cancel()
         smudgeSubmission = nil; smudgeTask = nil
     }
+    private func updateBlur(location: CGPoint, size: CGSize) -> Bool {
+        guard var captured = blurInput else {
+            vm.message = "Choose a visible unlocked layer and deselect artwork before blurring."
+            return false
+        }
+        do {
+            try captured.append(location, current: StudioBlurContext.current(vm),
+                layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                foreground: scenePhase == .active)
+            blurInput = captured
+            return true
+        } catch {
+            blurInput = captured
+            vm.message = "Blur cancelled. Start a new drag on the current artwork."
+            return false
+        }
+    }
+    private func cancelBlur() {
+        blurInput?.cancel(); blurTask?.cancel(); blurSession.cancel()
+        blurSubmission = nil; blurTask = nil
+    }
     private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
         CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
     }
@@ -524,6 +596,7 @@ struct StudioCanvasView: View {
         if endingTouch {
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
             smudgeInput = nil; startedAsSmudge = false
+            blurInput = nil; startedAsBlur = false
             imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
@@ -533,7 +606,7 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
-        fillSession.cancel(); cancelSmudge()
+        fillSession.cancel(); cancelSmudge(); cancelBlur()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()
         fillInput.invalidate()

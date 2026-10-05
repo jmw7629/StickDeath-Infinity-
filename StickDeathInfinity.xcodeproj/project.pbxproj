@@ -139,10 +139,14 @@
 		28F9D1F2182AF46A98784423 /* StudioGIFExportControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01B1C8A5D2F4771F4E85B850 /* StudioGIFExportControls.swift */; };
 		14DD1764DCAF1F60415FA221 /* StudioGIFSharePresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEDBE0F065A44780169EF9B5 /* StudioGIFSharePresenter.swift */; };
 		C30AA4BE66FC0F70AB9082B1 /* StudioSmudge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51BF36B274FA6F7F734D0D54 /* StudioSmudge.swift */; };
+		C54C8B9419CFD6020BD0E42C /* StudioBlur.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC92573CB8ACFD459EA81E80 /* StudioBlur.swift */; };
 		D3737D9B30718A585A2A43F0 /* StudioSmudgeDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20C7402174E59B03BF6C78C /* StudioSmudgeDescriptor.swift */; };
+		9880F05F9ED2860CA2EB7AD5 /* StudioBlurDescriptor.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6F4F980B4D4B68646A49765 /* StudioBlurDescriptor.swift */; };
 		0B3BB2D20F287DEE829C6299 /* StudioSmudgeCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7F21A1831B7B01B39DA02E1 /* StudioSmudgeCapture.swift */; };
+		1E74B03DCDF681904A60F1D2 /* StudioBlurCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40CE6E47744891A04ABC0D84 /* StudioBlurCapture.swift */; };
 		0C9BEF650AC1FA16CD318F9A /* StudioSmudgeReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED12E5E2FB7BBF2F71EA64EE /* StudioSmudgeReplay.swift */; };
 		D398606ADFCA8C1D8E6D16AB /* StudioSmudgeSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BB2EDDB5687E90604C285C5 /* StudioSmudgeSession.swift */; };
+		87E5516AADC428BFE6ACC6D3 /* StudioBlurSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3512BE45C7B7FA53F429379F /* StudioBlurSession.swift */; };
 /* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
@@ -300,10 +304,14 @@
 		01B1C8A5D2F4771F4E85B850 /* StudioGIFExportControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioGIFExportControls.swift"; sourceTree = SOURCE_ROOT; };
 		BEDBE0F065A44780169EF9B5 /* StudioGIFSharePresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioGIFSharePresenter.swift"; sourceTree = SOURCE_ROOT; };
 		51BF36B274FA6F7F734D0D54 /* StudioSmudge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioSmudge.swift"; sourceTree = SOURCE_ROOT; };
+		BC92573CB8ACFD459EA81E80 /* StudioBlur.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioBlur.swift"; sourceTree = SOURCE_ROOT; };
 		A20C7402174E59B03BF6C78C /* StudioSmudgeDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioSmudgeDescriptor.swift"; sourceTree = SOURCE_ROOT; };
+		B6F4F980B4D4B68646A49765 /* StudioBlurDescriptor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioBlurDescriptor.swift"; sourceTree = SOURCE_ROOT; };
 		A7F21A1831B7B01B39DA02E1 /* StudioSmudgeCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSmudgeCapture.swift"; sourceTree = SOURCE_ROOT; };
+		40CE6E47744891A04ABC0D84 /* StudioBlurCapture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioBlurCapture.swift"; sourceTree = SOURCE_ROOT; };
 		ED12E5E2FB7BBF2F71EA64EE /* StudioSmudgeReplay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSmudgeReplay.swift"; sourceTree = SOURCE_ROOT; };
 		5BB2EDDB5687E90604C285C5 /* StudioSmudgeSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSmudgeSession.swift"; sourceTree = SOURCE_ROOT; };
+		3512BE45C7B7FA53F429379F /* StudioBlurSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioBlurSession.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
@@ -414,7 +422,9 @@
 				F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */,
 				62D2F0EA2FB3C1485B089D1F /* Models.swift */,
 				A20C7402174E59B03BF6C78C /* StudioSmudgeDescriptor.swift */,
+				B6F4F980B4D4B68646A49765 /* StudioBlurDescriptor.swift */,
 				51BF36B274FA6F7F734D0D54 /* StudioSmudge.swift */,
+				BC92573CB8ACFD459EA81E80 /* StudioBlur.swift */,
 				63F202A1A399355E17EA84D1 /* SpatterBotModels.swift */,
 			);
 			path = Models;
@@ -451,8 +461,10 @@
 				B71351A143CAF9EA730A1936 /* StudioFillService.swift */,
 				6AB8E0E95A2FE28C2B6958B7 /* StudioFillSession.swift */,
 				5BB2EDDB5687E90604C285C5 /* StudioSmudgeSession.swift */,
+				3512BE45C7B7FA53F429379F /* StudioBlurSession.swift */,
 				ED12E5E2FB7BBF2F71EA64EE /* StudioSmudgeReplay.swift */,
 				A7F21A1831B7B01B39DA02E1 /* StudioSmudgeCapture.swift */,
+				40CE6E47744891A04ABC0D84 /* StudioBlurCapture.swift */,
 				BEA49F4747DF4A261E527548 /* StudioGIFEncoder.swift */,
 				68D648F790E4D53E4C2EC1F9 /* StudioGIFExportService.swift */,
 				AF9CDC9D55D87CF81E1A06D0 /* StudioGIFExportSession.swift */,
@@ -899,10 +911,14 @@
 				DBCD6D5F922B5F2B4311E5E4 /* StudioFillService.swift in Sources */,
 				8BA244E6E046D789F067896C /* StudioFillSession.swift in Sources */,
 				D398606ADFCA8C1D8E6D16AB /* StudioSmudgeSession.swift in Sources */,
+				87E5516AADC428BFE6ACC6D3 /* StudioBlurSession.swift in Sources */,
 				0C9BEF650AC1FA16CD318F9A /* StudioSmudgeReplay.swift in Sources */,
 				0B3BB2D20F287DEE829C6299 /* StudioSmudgeCapture.swift in Sources */,
+				1E74B03DCDF681904A60F1D2 /* StudioBlurCapture.swift in Sources */,
 				D3737D9B30718A585A2A43F0 /* StudioSmudgeDescriptor.swift in Sources */,
+				9880F05F9ED2860CA2EB7AD5 /* StudioBlurDescriptor.swift in Sources */,
 				C30AA4BE66FC0F70AB9082B1 /* StudioSmudge.swift in Sources */,
+				C54C8B9419CFD6020BD0E42C /* StudioBlur.swift in Sources */,
 				EDD785B1589487F8DA134E27 /* StudioGIFEncoder.swift in Sources */,
 				170A18F9EA0390145475D2CE /* StudioGIFExportService.swift in Sources */,
 				9C3833D56D8D9FBD54236AFB /* StudioGIFExportSession.swift in Sources */,

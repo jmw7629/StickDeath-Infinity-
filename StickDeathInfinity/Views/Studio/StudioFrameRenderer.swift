@@ -82,7 +82,7 @@ struct StudioFrameRenderer {
             }
         } catch { return error }
         do {
-            if frame.elements.contains(where: { $0.smudge != nil }) || liveElement?.smudge != nil {
+            if frame.elements.contains(where: { $0.hasPixelEffect }) || liveElement?.hasPixelEffect == true {
                 guard let preparedSmudges else { throw StudioSmudgeReplay.Failure.unprepared }
                 try preparedSmudges.validate(frame: frame, layers: layers, canvasSize: canvasSize,
                     rasterData: rasterData, liveElement: liveElement)
@@ -161,7 +161,7 @@ struct StudioFrameRenderer {
                                             size: CGSize, canvasSize: CGSize,
                                             brush: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)?,
                                             smudges: [String: CGImage]) throws {
-        if element.smudge != nil {
+        if element.hasPixelEffect {
             guard let image = smudges[element.id] else { throw StudioSmudgeReplay.Failure.unprepared }
             // Replace the entire raw layer, including pixels made transparent.
             // Opacity was applied once by the operation; layer effects occur later.

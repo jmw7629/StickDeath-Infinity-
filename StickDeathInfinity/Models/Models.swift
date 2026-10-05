@@ -87,6 +87,10 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     var transform: StudioElementTransform? = nil
     /// Schema17: replayable color drag. The preceding editable artwork is preserved.
     var smudge: StudioSmudgeDescriptor? = nil
+    /// Schema18: ordered Gaussian blur; original artwork stays editable.
+    var blur: StudioBlurDescriptor? = nil
+
+    var hasPixelEffect: Bool { smudge != nil || blur != nil }
 
     var selectionBounds: CGRect? {
         let bounds: CGRect

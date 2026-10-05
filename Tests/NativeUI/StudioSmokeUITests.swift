@@ -720,6 +720,66 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testBlurPixelsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.85)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85,dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(original).count, 60)
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.blur", app: app, forward: true).tap()
+        XCTAssertTrue(app.staticTexts["studio.blur.instructions"].waitForExistence(timeout: 5))
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.45)
+        app.sliders["studio.setting.strength"].adjust(toNormalizedSliderPosition: 1)
+        app.sliders["studio.setting.hardness"].adjust(toNormalizedSliderPosition: 0.8)
+        app.sliders["studio.setting.radius"].adjust(toNormalizedSliderPosition: 0.35)
+        let savedHardness = app.sliders["studio.setting.hardness"].value as? String
+        let savedRadius = app.sliders["studio.setting.radius"].value as? String
+        let savedSize = try XCTUnwrap(app.sliders["studio.setting.size"].value as? String)
+        capture(app, name: "blur-size-opacity-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.7)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let blurd = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, blurd), 30, "Blur did not soften actual artwork pixels")
+        capture(app, name: "blur-real-canvas-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blurd, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blurd, pixels(restored.screenshot().image)), 4,
+            "Cold reopen changed blurd artwork")
+        capture(reopened, name: "blur-cold-reopened")
+        try pickerRailControl("studio.tool.blur", app: reopened, forward: true).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, savedSize)
+        XCTAssertEqual(reopened.sliders["studio.setting.hardness"].value as? String, savedHardness)
+        XCTAssertEqual(reopened.sliders["studio.setting.radius"].value as? String, savedRadius)
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
+    @MainActor
     func testEraserModesStrengthUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }

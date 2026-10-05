@@ -14,7 +14,7 @@ struct StudioSmudgeDescriptor: Codable, Equatable {
     func validate(element: DrawnElement, width: Int, height: Int) throws -> StudioSmudge.Work {
         guard version == 1, element.tool == .smudge,
               element.brush == nil, element.shape == nil, element.fillMask == nil,
-              element.eraser == nil, element.text == nil, element.fillColor == nil,
+              element.eraser == nil, element.text == nil, element.fillColor == nil, element.blur == nil,
               element.translation == nil, element.reflection == nil, element.transform == nil else {
             throw StudioSmudge.Failure.invalidSettings
         }
@@ -26,9 +26,14 @@ struct StudioSmudgeDescriptor: Codable, Equatable {
     static func validateFrame(_ frame: AnimationFrame, width: Int, height: Int) throws {
         var count = 0, touched = 0, renderedPixels = 0
         for element in frame.elements {
-            guard let descriptor = element.smudge else { continue }
-            let work = try descriptor.validate(element: element, width: width, height: height)
-            count += 1; touched += work.touchedPixels; renderedPixels += width * height
+            let touchedPixels: Int
+            if let descriptor = element.smudge {
+                touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
+            } else if let descriptor = element.blur {
+                touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
+            } else { continue }
+            // A mixed frame shares one processing budget, not one per tool.
+            count += 1; touched += touchedPixels; renderedPixels += width * height
             guard count <= 16, touched <= 33_554_432, renderedPixels <= 16_777_216 else {
                 throw StudioSmudge.Failure.workLimit
             }

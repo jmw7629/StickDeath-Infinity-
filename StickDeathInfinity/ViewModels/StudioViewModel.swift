@@ -101,6 +101,8 @@ final class StudioViewModel: ObservableObject {
     @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     @Published var strokeOpacity: Double = 1 { didSet { rememberDrawingToolPreferences() } }
     @Published var eraserMode: StudioEraserMode = .hard { didSet { rememberDrawingToolPreferences() } }
+    @Published var blurHardness: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var blurRadius: Double = 4 { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -233,7 +235,8 @@ final class StudioViewModel: ObservableObject {
         let value = StudioDrawingToolPreferences.Entry(width: strokeWidth, opacity: strokeOpacity,
             smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
             texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
-            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle)
+            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle,
+            blurHardness: blurHardness, blurRadius: blurRadius)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -255,6 +258,7 @@ final class StudioViewModel: ObservableObject {
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
         eraserMode = value.eraserMode ?? .hard
         textStyle = value.textStyle ?? StudioTextStyle()
+        blurHardness = value.blurHardness ?? 0.5; blurRadius = value.blurRadius ?? 4
     }
     func resetCurrentDrawingToolPreferences() {
         toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
@@ -1953,6 +1957,8 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var cornerRadius: Double = 0
         var eraserMode: StudioEraserMode? = nil
         var textStyle: StudioTextStyle? = nil
+        var blurHardness: Double? = nil
+        var blurRadius: Double? = nil
 
         var isValid: Bool {
             width.isFinite && (0.25...512).contains(width) &&
@@ -1963,7 +1969,9 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             grain.isFinite && (0...1).contains(grain) &&
             cornerRadius.isFinite && (0...50).contains(cornerRadius) &&
             (try? gradientEnd.validate()) != nil && gradientEnd.alpha == 1 &&
-            (textStyle?.isValid ?? true)
+            (textStyle?.isValid ?? true) &&
+            (blurHardness.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (blurRadius.map { $0.isFinite && (0.5...32).contains($0) } ?? true)
         }
         static func defaults(for tool: DrawingTool) -> Self {
             var value = Self()
@@ -1974,6 +1982,8 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             case .crayon: value.width = 8; value.opacity = 0.9; value.family = .grain; value.smoothing = 1
             case .eraser: value.width = 8
             case .smudge: value.width = 24; value.smoothing = 0
+            case .blur: value.width = 32; value.opacity = 0.5; value.smoothing = 0
+                value.blurHardness = 0.5; value.blurRadius = 4
             default: break
             }
             return value

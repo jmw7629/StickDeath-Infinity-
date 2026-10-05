@@ -168,7 +168,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .line, .rectangle, .circle, .text].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .line, .rectangle, .circle, .text].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -290,6 +290,17 @@ struct FloatingToolSettingsPanel: View {
                 Text("Drag existing color on the active layer. The effect is applied when you release. Deselect artwork first.")
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.smudge.instructions")
+            }
+
+        case .blur:
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...256, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Hardness", value: Binding(get: { vm.blurHardness * 100 }, set: { vm.blurHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Radius", value: $vm.blurRadius, range: 0.5...32, unit: "px", accent: accentColor, fractionDigits: 1)
+                Text("Soften existing artwork on the active layer. Radius controls the blur; Hardness controls its edge. Applied on release. Deselect artwork first.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.blur.instructions")
             }
 
         // Editable text lives in the same dismissible tool popup.
@@ -618,10 +629,14 @@ struct SettingsSlider: View {
     let range: ClosedRange<Double>
     let unit: String
     let accent: Color
+    var fractionDigits: Int = 0
+    private var displayedValue: String {
+        fractionDigits == 0 ? String(Int(value)) : value.formatted(.number.precision(.fractionLength(fractionDigits)))
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(label): \(Int(value))\(unit)")
+            Text("\(label): \(displayedValue)\(unit)")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.sdStudioSecondaryText)
             

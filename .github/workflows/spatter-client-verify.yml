@@ -62,7 +62,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -78,7 +80,9 @@ jobs:
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -93,7 +97,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -129,7 +135,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -158,7 +166,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -187,7 +197,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -216,7 +228,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -245,7 +259,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -274,7 +290,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -303,7 +321,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -332,7 +352,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -361,7 +383,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -390,7 +414,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -419,7 +445,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -457,7 +485,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
@@ -472,7 +502,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -499,7 +531,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -523,7 +557,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -548,7 +584,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -565,7 +603,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -586,7 +626,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -603,7 +645,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -626,7 +670,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -651,7 +697,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -669,7 +717,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -734,7 +784,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -759,7 +811,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -785,7 +839,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -815,7 +871,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -838,7 +896,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -860,7 +920,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -887,7 +949,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -911,7 +975,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -941,7 +1007,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -972,7 +1040,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1000,7 +1070,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1032,7 +1104,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1065,7 +1139,9 @@ jobs:
           swiftc -swift-version 5 -parse-as-library \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1102,7 +1178,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1134,7 +1212,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1167,7 +1247,9 @@ jobs:
             StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1194,6 +1276,8 @@ jobs:
           "$RUNNER_TEMP/sdi-StudioGIFPanel-tests"
       - name: Verify real Smudge pixels replay cache cancellable sessions and exports
         run: python3 scripts/test_studio_smudge.py --output-directory "$RUNNER_TEMP/studio-smudge"
+      - name: Verify real Blur pixels replay history cancellable sessions and exported media
+        run: python3 scripts/test_studio_blur.py --output-directory "$RUNNER_TEMP/studio-blur"
 
   native-ios-build:
     needs: native-production-tests
