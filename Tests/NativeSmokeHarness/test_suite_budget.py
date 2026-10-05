@@ -21,7 +21,10 @@ class NativeSuiteBudget(unittest.TestCase):
     def test_all_checked_in_native_cases_are_preserved(self):
         source = (ROOT / "Tests/NativeUI/StudioSmokeUITests.swift").read_text()
         value = budget.build_test_budget(source, COMMAND)
-        self.assertIn("testFrameContextIdentityDuplicateUndoReorderAndColdReopen", value["testNames"])
+        self.assertIn("testFrameContextDuplicateUndoRedo", value["testNames"])
+        self.assertIn("testFrameContextReorderDeleteUndoAndColdReopen", value["testNames"])
+        self.assertIn("testEditableTextUndoRedo", value["testNames"])
+        self.assertIn("testEditableTextCancelAndEdit", value["testNames"])
         self.assertIn("testImageCanvasDragUndoAndColdReopen", value["testNames"])
         self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 180)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))

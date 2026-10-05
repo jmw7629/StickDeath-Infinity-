@@ -90,7 +90,10 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Schema18: ordered Gaussian blur; original artwork stays editable.
     var blur: StudioBlurDescriptor? = nil
 
-    var hasPixelEffect: Bool { smudge != nil || blur != nil }
+    /// Schema19: ordered RGB unsharp mask with preserved original alpha.
+    var sharpen: StudioSharpenDescriptor? = nil
+
+    var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil }
 
     var selectionBounds: CGRect? {
         let bounds: CGRect

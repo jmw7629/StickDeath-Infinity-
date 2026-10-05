@@ -65,7 +65,17 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testFrameContextIdentityDuplicateUndoReorderAndColdReopen() throws {
+    func testFrameContextDuplicateUndoRedo() throws {
+        try verifyFrameContext(duplicateHistoryOnly: true)
+    }
+
+    @MainActor
+    func testFrameContextReorderDeleteUndoAndColdReopen() throws {
+        try verifyFrameContext(duplicateHistoryOnly: false)
+    }
+
+    @MainActor
+    private func verifyFrameContext(duplicateHistoryOnly: Bool) throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let projectName = try createProjectIfLibraryIsShown(app)
@@ -102,15 +112,18 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(app.buttons[copyID].label, "Frame 2")
         XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
         XCTAssertLessThanOrEqual(try changedPixelCount(drawn, pixels(canvas.screenshot().image)), 4)
-        app.buttons["studio.undo"].tap()
-        try settlePickerCanvasAfterSave(app, canvas: canvas)
-        XCTAssertEqual(thumbnails(app).count, 2)
-        XCTAssertFalse(app.buttons[copyID].exists)
-        XCTAssertEqual(app.buttons[blankID].value as? String, "Selected", "Undo must restore selection from before the context menu")
-        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
-        app.buttons["studio.redo"].tap()
-        try settlePickerCanvasAfterSave(app, canvas: canvas)
-        XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+        if duplicateHistoryOnly {
+            app.buttons["studio.undo"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+            XCTAssertEqual(thumbnails(app).count, 2)
+            XCTAssertFalse(app.buttons[copyID].exists)
+            XCTAssertEqual(app.buttons[blankID].value as? String, "Selected", "Undo must restore selection from before the context menu")
+            XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4)
+            app.buttons["studio.redo"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+            XCTAssertEqual(app.buttons[copyID].value as? String, "Selected")
+            return
+        }
         try contextAction(copyID, "earlier")
         XCTAssertEqual(app.buttons[copyID].label, "Frame 1")
         XCTAssertEqual(app.buttons[originalID].label, "Frame 2")
@@ -434,24 +447,10 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     private func selectToolbarTool(_ name: String, app: XCUIApplication) throws {
-        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
-        let tool = app.buttons["studio.tool." + name]
-        let scroll = rail.scrollViews.firstMatch
-        XCTAssertTrue(rail.waitForExistence(timeout: 5) && scroll.exists)
-        for _ in 0..<12 {
-            if tool.exists, tool.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(tool.frame) {
-                tool.tap(); return
-            }
-            let vertical = rail.value as? String == "Vertical"
-            let forward = !tool.exists || (vertical ? tool.frame.midY > scroll.frame.midY : tool.frame.midX > scroll.frame.midX)
-            let a = forward ? 0.8 : 0.2, b = forward ? 0.2 : 0.8
-            let start = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : a, dy: vertical ? a : 0.5))
-            let end = scroll.coordinate(withNormalizedOffset: CGVector(dx: vertical ? 0.5 : b, dy: vertical ? b : 0.5))
-            start.press(forDuration: 0.1, thenDragTo: end)
-        }
-        captureHierarchy(app, name: "toolbar-control-unreachable-" + name)
-        XCTFail("Actual toolbar tool unreachable after twelve bounded scrolls: " + name)
-        throw NSError(domain: "NativeToolbarSmoke", code: 1)
+        // Run 37261534983 tapped Text after two fast flicks but never opened
+        // its popup. Use the same bounded, fully-contained slow drag/hold
+        // path as the drawing tests so the tap does not land during inertia.
+        try pickerRailControl("studio.tool." + name, app: app, forward: true).tap()
     }
 
     @MainActor
@@ -780,6 +779,124 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    private func sharpenSetting(_ name: String, in target: XCUIApplication) throws -> XCUIElement {
+        let slider = target.sliders["studio.setting." + name]
+        for attempt in 0...5 {
+            if slider.exists && slider.isHittable { return slider }
+            guard attempt < 5 else { break }
+            let scroll = target.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
+            XCTAssertTrue(scroll.exists, "Sharpen popup must scroll to every real setting")
+            scroll.swipeUp()
+        }
+        captureHierarchy(target, name: "sharpen-setting-unreachable-" + name)
+        XCTFail("Sharpen setting is unreachable: " + name)
+        throw NSError(domain: "SharpenNative", code: 1)
+    }
+
+    @MainActor
+    func testSharpenPixelsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try choosePickerTestColor("#999999", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        try resetToolPreferencesInPopup(app)
+        let solid = app.buttons["studio.shape.fill"]
+        XCTAssertEqual(solid.value as? String, "None"); solid.tap()
+        XCTAssertEqual(solid.value as? String, "Solid")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.1,dy: 0.2)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.9,dy: 0.8)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let background = try pixels(canvas.screenshot().image)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: false).tap()
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try choosePickerTestColor("#666666", app: app)
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.85)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85,dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(background, original), 60)
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        try resetToolPreferencesInPopup(app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.sharpen", app: app, forward: true).tap()
+        XCTAssertTrue(app.staticTexts["studio.sharpen.instructions"].waitForExistence(timeout: 5))
+        let adjustments: [(String, CGFloat)] = [("size",0.45),("opacity",1),("hardness",0.8),("radius",0.2),("amount",0.75),("threshold",0)]
+        for (key, value) in adjustments {
+            let slider = try sharpenSetting(key, in: app)
+            slider.adjust(toNormalizedSliderPosition: value)
+        }
+        capture(app, name: "sharpen-size-opacity-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.7)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let sharpened = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, sharpened), 30, "Sharpen did not change actual edge contrast")
+        capture(app, name: "sharpen-real-canvas-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(sharpened, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(sharpened, pixels(restored.screenshot().image)), 4,
+            "Cold reopen changed sharpened artwork")
+        capture(reopened, name: "sharpen-cold-reopened")
+    }
+
+    // Keep all six persisted preference and reset checks independent of the
+    // drawing/reopen journey, which reached these checks at its 180s deadline.
+    @MainActor
+    func testSharpenSettingsPersistAndReset() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        try pickerRailControl("studio.tool.sharpen", app: app, forward: true).tap()
+        try resetToolPreferencesInPopup(app)
+        let adjustments: [(String, CGFloat)] = [("size",0.45),("opacity",1),("hardness",0.8),("radius",0.2),("amount",0.75),("threshold",0)]
+        var defaults: [String:String] = [:]
+        var saved: [String:String] = [:]
+        for (key, value) in adjustments {
+            let slider = try sharpenSetting(key, in: app)
+            defaults[key] = try XCTUnwrap(slider.value as? String)
+            slider.adjust(toNormalizedSliderPosition: value)
+            saved[key] = try XCTUnwrap(slider.value as? String)
+        }
+        app.buttons["studio.tool-settings.close"].tap()
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        try pickerRailControl("studio.tool.sharpen", app: reopened, forward: true).tap()
+        for (key, _) in adjustments {
+            XCTAssertEqual(try sharpenSetting(key, in: reopened).value as? String, saved[key])
+        }
+        capture(reopened, name: "sharpen-six-settings-cold-reopened")
+        try resetToolPreferencesInPopup(reopened)
+        for (key, _) in adjustments {
+            XCTAssertEqual(try sharpenSetting(key, in: reopened).value as? String, defaults[key])
+        }
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
+    @MainActor
     func testEraserModesStrengthUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -897,18 +1014,34 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testEditableTextCancelUndoAndEdit() throws {
+    func testEditableTextUndoRedo() throws {
+        try verifyEditableText(historyOnly: true)
+    }
+
+    @MainActor
+    func testEditableTextCancelAndEdit() throws {
+        try verifyEditableText(historyOnly: false)
+    }
+
+    @MainActor
+    private func verifyEditableText(historyOnly: Bool) throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false)
         let canvas = fixture.canvas, frame = fixture.frame, original = fixture.pixels
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
         capture(app, name: "editable-text-original-glyphs")
-        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
-        let blank = try pixels(canvas.screenshot().image)
-        XCTAssertLessThan(exportInkMask(blank).count, exportInkMask(original).count, "Undo left text pixels behind")
-        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
-        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        // Keep each real journey within the unchanged native time budget.
+        // The former combined case completed its pixel checks at 179.75 s
+        // but timed out during termination. Preserve both sets of assertions.
+        if historyOnly {
+            app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+            let blank = try pixels(canvas.screenshot().image)
+            XCTAssertLessThan(exportInkMask(blank).count, exportInkMask(original).count, "Undo left text pixels behind")
+            app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+            XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+            return
+        }
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         try selectToolbarTool("text", app: app)
         app.buttons["studio.text.edit"].tap()

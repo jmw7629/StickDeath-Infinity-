@@ -63,8 +63,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -81,8 +83,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -98,8 +102,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -136,8 +142,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -167,8 +175,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -198,8 +208,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -229,8 +241,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -260,8 +274,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -291,8 +307,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -322,8 +340,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -353,8 +373,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -384,8 +406,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -415,8 +439,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -446,8 +472,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -486,8 +514,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
@@ -503,8 +533,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -532,8 +564,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -558,8 +592,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -585,8 +621,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -604,8 +642,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -627,8 +667,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/App/AppConfig.swift \
@@ -646,8 +688,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -671,8 +715,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -698,8 +744,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -718,8 +766,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -785,8 +835,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -812,8 +864,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -840,8 +894,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -872,8 +928,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -897,8 +955,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -921,8 +981,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -950,8 +1012,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -976,8 +1040,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1008,8 +1074,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1041,8 +1109,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1071,8 +1141,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1105,8 +1177,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1140,8 +1214,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1179,8 +1255,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1213,8 +1291,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1248,8 +1328,10 @@ jobs:
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
             StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
             StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Models/StudioCommands.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
@@ -1278,6 +1360,8 @@ jobs:
         run: python3 scripts/test_studio_smudge.py --output-directory "$RUNNER_TEMP/studio-smudge"
       - name: Verify real Blur pixels replay history cancellable sessions and exported media
         run: python3 scripts/test_studio_blur.py --output-directory "$RUNNER_TEMP/studio-blur"
+      - name: Verify real Sharpen pixels replay history cancellable sessions and exported media
+        run: python3 scripts/test_studio_sharpen.py --output-directory "$RUNNER_TEMP/studio-sharpen"
 
   native-ios-build:
     needs: native-production-tests

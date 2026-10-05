@@ -14,7 +14,7 @@ struct StudioSmudgeDescriptor: Codable, Equatable {
     func validate(element: DrawnElement, width: Int, height: Int) throws -> StudioSmudge.Work {
         guard version == 1, element.tool == .smudge,
               element.brush == nil, element.shape == nil, element.fillMask == nil,
-              element.eraser == nil, element.text == nil, element.fillColor == nil, element.blur == nil,
+              element.eraser == nil, element.text == nil, element.fillColor == nil, element.blur == nil, element.sharpen == nil,
               element.translation == nil, element.reflection == nil, element.transform == nil else {
             throw StudioSmudge.Failure.invalidSettings
         }
@@ -30,6 +30,8 @@ struct StudioSmudgeDescriptor: Codable, Equatable {
             if let descriptor = element.smudge {
                 touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
             } else if let descriptor = element.blur {
+                touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
+            } else if let descriptor = element.sharpen {
                 touchedPixels = try descriptor.validate(element: element, width: width, height: height).touchedPixels
             } else { continue }
             // A mixed frame shares one processing budget, not one per tool.

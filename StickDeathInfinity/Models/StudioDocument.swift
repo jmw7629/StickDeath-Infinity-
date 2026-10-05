@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...18
+    static let supportedSchemaVersions = 1...19
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -98,7 +98,7 @@ struct StudioDocument: Codable, Equatable {
             }
             for element in frame.elements {
                 if element.hasPixelEffect {
-                    let required = element.blur != nil ? 18 : 17
+                    let required = element.sharpen != nil ? 19 : (element.blur != nil ? 18 : 17)
                     guard schemaVersion >= required else { throw StudioDocumentError.invalid("This editable effect requires project version \(required).") }
                     effectCount += 1; effectSamples += element.points.count
                     guard effectCount <= 256, effectSamples <= 65_536 else { throw StudioSmudge.Failure.workLimit }
@@ -366,6 +366,12 @@ struct StudioDocumentEditor {
                 throw StudioDocumentError.unavailable("Blur requires the active unselected layer and a validated operation. Nothing changed.")
             }
         }
+        if element.tool == .sharpen {
+            guard element.sharpen != nil, selectedElementIDs.isEmpty,
+                  frameID == document.activeFrameID, element.layerID == document.activeLayerID else {
+                throw StudioDocumentError.unavailable("Sharpen requires the active unselected layer and a validated operation. Nothing changed.")
+            }
+        }
         if element.tool == .eraser, !selectedElementIDs.isEmpty {
             throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
         }
@@ -389,6 +395,7 @@ struct StudioDocumentEditor {
             if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
+            if element.sharpen != nil { value.schemaVersion = max(value.schemaVersion, 19) }
         }
     }
     mutating func updateText(frameID: String, elementID: String, text: StudioTextDescriptor, color: String, opacity: Double) throws {
@@ -490,7 +497,7 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -502,6 +509,7 @@ struct StudioDocumentEditor {
                 if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
+            if element.sharpen != nil { value.schemaVersion = max(value.schemaVersion, 19) }
             }
             try checkCancellation()
         }
@@ -517,7 +525,7 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
@@ -531,6 +539,7 @@ struct StudioDocumentEditor {
             if elements.contains(where: { $0.transform != nil }) { value.schemaVersion = max(value.schemaVersion, 11) }
             if elements.contains(where: { $0.smudge != nil }) { value.schemaVersion = max(value.schemaVersion, 17) }
             if elements.contains(where: { $0.blur != nil }) { value.schemaVersion = max(value.schemaVersion, 18) }
+            if elements.contains(where: { $0.sharpen != nil }) { value.schemaVersion = max(value.schemaVersion, 19) }
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
             if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
             if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
@@ -897,7 +906,7 @@ struct StudioDocumentEditor {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
             }

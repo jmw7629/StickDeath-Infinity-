@@ -45,12 +45,65 @@ struct StudioCanvasView: View {
     @State private var startedAsBlur = false
     @State private var blurSubmission: UUID?
     @State private var blurTask: Task<Void, Never>?
+    @StateObject private var sharpenSession = StudioSharpenSession()
+    @State private var sharpenInput: StudioSharpenInput?
+    @State private var startedAsSharpen = false
+    @State private var sharpenSubmission: UUID?
+    @State private var sharpenTask: Task<Void, Never>?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
     @State private var previewFailure: String?
     @State private var lastPreviewTime: TimeInterval = 0
     var body: some View {
+        contextualCanvas
+        .onChange(of: gestureActive) { _, active in
+            guard !active, let endedTouch = touchID else { return }
+            // Let onEnded consume its capture first. A cancelled gesture has
+            // no onEnded callback; clear only that touch on the next turn.
+            Task { @MainActor in
+                await Task.yield()
+                guard !gestureActive, touchID == endedTouch else { return }
+                interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
+            }
+        }
+        .onChange(of: vm.document.revision) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
+        .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
+        .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
+        .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
+        .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
+        }
+        .onDisappear { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
+    }
+
+    private var contextualCanvas: some View {
+        canvasContent
+        .onChange(of: vm.currentFrame.id) { _, _ in
+            fillSession.cancel()
+            interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
+        }
+        .onChange(of: StudioFillContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            fillInput.invalidate()
+            if fillSession.isFilling { fillSession.cancel() }
+        }
+        .onChange(of: StudioSmudgeContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelSmudge()
+        }
+        .onChange(of: StudioBlurContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelBlur()
+        }
+        .onChange(of: StudioSharpenContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelSharpen()
+        }
+        .onChange(of: vm.activePanel) { _, _ in cancelBlur(); cancelSharpen() }
+    }
+
+    private var canvasContent: some View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
             let documentSize = CGSize(width: vm.canvasWidth, height: vm.canvasHeight)
@@ -152,6 +205,16 @@ struct StudioCanvasView: View {
                             context.stroke(Path(ellipseIn: rect), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
+                        if let sharpenInput, !sharpenInput.isCancelled, let point = sharpenInput.points.last {
+                            // This ring shows the real brush footprint, not fabricated preview pixels.
+                            let diameter = sharpenInput.context.settings.diameter
+                            let rect = CGRect(x: (point.x-diameter/2) / documentSize.width * actual.width,
+                                y: (point.y-diameter/2) / documentSize.height * actual.height,
+                                width: diameter / documentSize.width * actual.width,
+                                height: diameter / documentSize.height * actual.height)
+                            context.stroke(Path(ellipseIn: rect), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
+                        }
                         if let first = areaPreview.first {
                             func scaled(_ point: CGPoint) -> CGPoint {
                                 CGPoint(x: point.x / documentSize.width * actual.width,
@@ -184,96 +247,12 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
             }
-            .overlay(alignment: .bottom) {
-                if blurSession.isApplying {
-                    HStack(spacing: 12) {
-                        ProgressView().tint(.red)
-                        Text("Blurring artwork…").font(.specialElite(12))
-                        Button("Cancel") { cancelBlur() }
-                            .accessibilityIdentifier("studio.blur.cancel")
-                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
-                        .accessibilityIdentifier("studio.blur.progress")
-                } else if let blurInput, !blurInput.isCancelled, startedAsBlur {
-                    Text("Release to blur the active layer")
-                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
-                        .accessibilityIdentifier("studio.blur.release-hint")
-                } else if smudgeSession.isApplying {
-                    HStack(spacing: 12) {
-                        ProgressView().tint(.red)
-                        Text("Smudging artwork…").font(.specialElite(12))
-                        Button("Cancel") { cancelSmudge() }
-                            .accessibilityIdentifier("studio.smudge.cancel")
-                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
-                        .accessibilityIdentifier("studio.smudge.progress")
-                } else if let smudgeInput, !smudgeInput.isCancelled, startedAsSmudge {
-                    Text("Release to smudge the active layer")
-                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
-                        .accessibilityIdentifier("studio.smudge.release-hint")
-                } else if fillSession.isFilling {
-                    HStack(spacing: 12) {
-                        ProgressView().tint(.red)
-                        Text("Filling artwork…").font(.specialElite(12))
-                        Button("Cancel") { fillSession.cancel() }
-                            .accessibilityIdentifier("studio.fill.cancel")
-                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
-                        .accessibilityIdentifier("studio.fill.progress")
-                } else if let pending = vm.pendingBrushStroke {
-                    VStack(spacing: 6) {
-                        Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
-                        Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
-                            .lineLimit(4)
-                        HStack(spacing: 12) {
-                            Button("Retry with settings") { vm.retryRejectedBrush() }
-                                .disabled(!pending.inputComplete)
-                                .accessibilityIdentifier("studio.brush-retry")
-                            Button("Discard draft") { vm.discardRejectedBrush() }
-                                .accessibilityIdentifier("studio.brush-discard")
-                        }.font(.system(size: 11, weight: .bold))
-                    }.padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
-                        .padding(8)
-                }
-            }
+            .overlay(alignment: .bottom) { inputStatusOverlay }
         }
-        .onChange(of: vm.currentFrame.id) { _, _ in
-            fillSession.cancel()
-            interruptInput("The frame changed before touch input finished. The incomplete draft is retained for explicit discard.")
-        }
-        .onChange(of: StudioFillContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
-            fillInput.invalidate()
-            if fillSession.isFilling { fillSession.cancel() }
-        }
-        .onChange(of: StudioSmudgeContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
-            cancelSmudge()
-        }
-        .onChange(of: StudioBlurContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
-            cancelBlur()
-        }
-        .onChange(of: vm.activePanel) { _, _ in cancelBlur() }
-        .onChange(of: gestureActive) { _, active in
-            guard !active, let endedTouch = touchID else { return }
-            // Let onEnded consume its capture first. A cancelled gesture has
-            // no onEnded callback; clear only that touch on the next turn.
-            Task { @MainActor in
-                await Task.yield()
-                guard !gestureActive, touchID == endedTouch else { return }
-                interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
-            }
-        }
-        .onChange(of: vm.document.revision) { _, _ in cancelMovePreview() }
-        .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
-        .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
-        .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
-        .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
-        .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
-        .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
-        .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
-        }
-        .onDisappear { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio closed before the stroke finished. The incomplete draft remains unsaved.") }
     }
+
     private func canvasRect(in size: CGSize) -> CGSize {
         let ratio = CGFloat(vm.canvasWidth) / CGFloat(vm.canvasHeight)
         let width = max(1, size.width * 0.9), height = max(1, size.height * 0.9)
@@ -299,6 +278,12 @@ struct StudioCanvasView: View {
                             layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
                         _ = updateBlur(location: value.startLocation, size: size)
                     }
+                    startedAsSharpen = vm.selectedTool == .sharpen
+                    if startedAsSharpen, sharpenSubmission == nil, let context = StudioSharpenContext.current(vm) {
+                        sharpenInput = StudioSharpenInput(context: context,
+                            layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
+                        _ = updateSharpen(location: value.startLocation, size: size)
+                    }
                     startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
                     if startedAsImageMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
@@ -323,6 +308,7 @@ struct StudioCanvasView: View {
                 }
                 if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
                 if startedAsBlur { _ = updateBlur(location: value.location, size: size); return }
+                if startedAsSharpen { _ = updateSharpen(location: value.location, size: size); return }
                 if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
                 if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
                 if startedAsArea { _ = updateArea(location: value.location, size: size); return }
@@ -405,6 +391,19 @@ struct StudioCanvasView: View {
                     }
                     return
                 }
+                if startedAsSharpen {
+                    guard updateSharpen(location: value.location, size: size), let captured = sharpenInput,
+                          sharpenSubmission == nil else { return }
+                    let submission = UUID(); sharpenSubmission = submission
+                    sharpenTask = Task { @MainActor in
+                        defer {
+                            if sharpenSubmission == submission { sharpenSubmission = nil; sharpenTask = nil }
+                        }
+                        guard !Task.isCancelled, sharpenSubmission == submission, scenePhase == .active else { return }
+                        await sharpenSession.apply(vm, input: captured)
+                    }
+                    return
+                }
                 if startedAsImageMove {
                     guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
                     _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
@@ -468,6 +467,68 @@ struct StudioCanvasView: View {
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
             }
     }
+    @ViewBuilder private var inputStatusOverlay: some View {
+                if sharpenSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Sharpening artwork…").font(.specialElite(12))
+                        Button("Cancel") { cancelSharpen() }
+                            .accessibilityIdentifier("studio.sharpen.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.sharpen.progress")
+                } else if let sharpenInput, !sharpenInput.isCancelled, startedAsSharpen {
+                    Text("Release to sharpen the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.sharpen.release-hint")
+                } else if blurSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Blurring artwork…").font(.specialElite(12))
+                        Button("Cancel") { cancelBlur() }
+                            .accessibilityIdentifier("studio.blur.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.blur.progress")
+                } else if let blurInput, !blurInput.isCancelled, startedAsBlur {
+                    Text("Release to blur the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.blur.release-hint")
+                } else if smudgeSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Smudging artwork…").font(.specialElite(12))
+                        Button("Cancel") { cancelSmudge() }
+                            .accessibilityIdentifier("studio.smudge.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.smudge.progress")
+                } else if let smudgeInput, !smudgeInput.isCancelled, startedAsSmudge {
+                    Text("Release to smudge the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.smudge.release-hint")
+                } else if fillSession.isFilling {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Filling artwork…").font(.specialElite(12))
+                        Button("Cancel") { fillSession.cancel() }
+                            .accessibilityIdentifier("studio.fill.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.fill.progress")
+                } else if let pending = vm.pendingBrushStroke {
+                    VStack(spacing: 6) {
+                        Text("Brush draft not saved").font(.specialElite(12)).foregroundColor(.red)
+                        Text(pending.reason).font(.system(size: 10)).foregroundColor(.white)
+                            .lineLimit(4)
+                        HStack(spacing: 12) {
+                            Button("Retry with settings") { vm.retryRejectedBrush() }
+                                .disabled(!pending.inputComplete)
+                                .accessibilityIdentifier("studio.brush-retry")
+                            Button("Discard draft") { vm.discardRejectedBrush() }
+                                .accessibilityIdentifier("studio.brush-discard")
+                        }.font(.system(size: 11, weight: .bold))
+                    }.padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .padding(8)
+                }
+                }
+
     private func updateSmudge(location: CGPoint, size: CGSize) -> Bool {
         guard var captured = smudgeInput else {
             vm.message = "Choose a visible unlocked layer and deselect artwork before smudging."
@@ -509,6 +570,27 @@ struct StudioCanvasView: View {
     private func cancelBlur() {
         blurInput?.cancel(); blurTask?.cancel(); blurSession.cancel()
         blurSubmission = nil; blurTask = nil
+    }
+    private func updateSharpen(location: CGPoint, size: CGSize) -> Bool {
+        guard var captured = sharpenInput else {
+            vm.message = "Choose a visible unlocked layer and deselect artwork before sharpening."
+            return false
+        }
+        do {
+            try captured.append(location, current: StudioSharpenContext.current(vm),
+                layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                foreground: scenePhase == .active)
+            sharpenInput = captured
+            return true
+        } catch {
+            sharpenInput = captured
+            vm.message = "Sharpen cancelled. Start a new drag on the current artwork."
+            return false
+        }
+    }
+    private func cancelSharpen() {
+        sharpenInput?.cancel(); sharpenTask?.cancel(); sharpenSession.cancel()
+        sharpenSubmission = nil; sharpenTask = nil
     }
     private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
         CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
@@ -597,6 +679,7 @@ struct StudioCanvasView: View {
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
             smudgeInput = nil; startedAsSmudge = false
             blurInput = nil; startedAsBlur = false
+            sharpenInput = nil; startedAsSharpen = false
             imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
@@ -606,7 +689,7 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
-        fillSession.cancel(); cancelSmudge(); cancelBlur()
+        fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()
         fillInput.invalidate()

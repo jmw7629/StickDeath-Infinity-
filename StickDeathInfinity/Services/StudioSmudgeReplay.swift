@@ -140,6 +140,12 @@ enum StudioSmudgeReplay {
                             path: element.points.map { .init(x: $0.x, y: $0.y) },
                             settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
                         changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
+                    } else if let descriptor = element.sharpen {
+                        let input = try StudioSharpen.Pixels(width: original.width, height: original.height, rgba: original.rgba)
+                        let output = try StudioSharpen.apply(to: input,
+                            path: element.points.map { .init(x: $0.x, y: $0.y) },
+                            settings: descriptor.settings(for: element), checkCancellation: checkCancellation)
+                        changed = try StudioSmudge.Pixels(width: output.width, height: output.height, rgba: output.rgba)
                     } else { throw Failure.unprepared }
                     let image = try cgImage(changed)
                     images[element.id] = image; base = image; prefix.elements.removeAll()

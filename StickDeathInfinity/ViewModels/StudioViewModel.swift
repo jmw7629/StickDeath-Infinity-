@@ -103,6 +103,10 @@ final class StudioViewModel: ObservableObject {
     @Published var eraserMode: StudioEraserMode = .hard { didSet { rememberDrawingToolPreferences() } }
     @Published var blurHardness: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
     @Published var blurRadius: Double = 4 { didSet { rememberDrawingToolPreferences() } }
+    @Published var sharpenHardness: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var sharpenRadius: Double = 2 { didSet { rememberDrawingToolPreferences() } }
+    @Published var sharpenAmount: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var sharpenThreshold: Double = 0.02 { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -236,7 +240,9 @@ final class StudioViewModel: ObservableObject {
             smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
             texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
             shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle,
-            blurHardness: blurHardness, blurRadius: blurRadius)
+            blurHardness: blurHardness, blurRadius: blurRadius,
+            sharpenHardness: sharpenHardness, sharpenRadius: sharpenRadius,
+            sharpenAmount: sharpenAmount, sharpenThreshold: sharpenThreshold)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -259,6 +265,8 @@ final class StudioViewModel: ObservableObject {
         eraserMode = value.eraserMode ?? .hard
         textStyle = value.textStyle ?? StudioTextStyle()
         blurHardness = value.blurHardness ?? 0.5; blurRadius = value.blurRadius ?? 4
+        sharpenHardness = value.sharpenHardness ?? 0.5; sharpenRadius = value.sharpenRadius ?? 2
+        sharpenAmount = value.sharpenAmount ?? 0.5; sharpenThreshold = value.sharpenThreshold ?? 0.02
     }
     func resetCurrentDrawingToolPreferences() {
         toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
@@ -451,7 +459,13 @@ final class StudioViewModel: ObservableObject {
         let value = UIColor(color)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         value.getRed(&r, green: &g, blue: &b, alpha: &a)
-        return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(b * 255))
+        // UIColor may return a component just below its original byte value.
+        // Truncation darkens palette colors (for example #666666 became #656565).
+        func byte(_ component: CGFloat) -> Int {
+            guard component.isFinite else { return 0 }
+            return Int((min(1, max(0, component)) * 255).rounded())
+        }
+        return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
         #else
         return "#FF0000"
         #endif
@@ -1959,6 +1973,10 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var textStyle: StudioTextStyle? = nil
         var blurHardness: Double? = nil
         var blurRadius: Double? = nil
+        var sharpenHardness: Double? = nil
+        var sharpenRadius: Double? = nil
+        var sharpenAmount: Double? = nil
+        var sharpenThreshold: Double? = nil
 
         var isValid: Bool {
             width.isFinite && (0.25...512).contains(width) &&
@@ -1971,7 +1989,11 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             (try? gradientEnd.validate()) != nil && gradientEnd.alpha == 1 &&
             (textStyle?.isValid ?? true) &&
             (blurHardness.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
-            (blurRadius.map { $0.isFinite && (0.5...32).contains($0) } ?? true)
+            (blurRadius.map { $0.isFinite && (0.5...32).contains($0) } ?? true) &&
+            (sharpenHardness.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (sharpenRadius.map { $0.isFinite && (0.5...32).contains($0) } ?? true) &&
+            (sharpenAmount.map { $0.isFinite && (0...2).contains($0) } ?? true) &&
+            (sharpenThreshold.map { $0.isFinite && (0...1).contains($0) } ?? true)
         }
         static func defaults(for tool: DrawingTool) -> Self {
             var value = Self()
@@ -1984,6 +2006,9 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             case .smudge: value.width = 24; value.smoothing = 0
             case .blur: value.width = 32; value.opacity = 0.5; value.smoothing = 0
                 value.blurHardness = 0.5; value.blurRadius = 4
+            case .sharpen: value.width = 32; value.opacity = 1; value.smoothing = 0
+                value.sharpenHardness = 0.5; value.sharpenRadius = 2
+                value.sharpenAmount = 0.5; value.sharpenThreshold = 0.02
             default: break
             }
             return value

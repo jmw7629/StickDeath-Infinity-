@@ -106,6 +106,36 @@ enum StudioBlur {
             settings: settings, checkCancellation: checkCancellation)
         guard selection == nil || selection!.count == input.width * input.height else { throw Failure.invalidSelection }
         guard !stamps.isEmpty else { return input }
+        guard let mask = try coverage(input: input, stamps: stamps, settings: settings,
+            selection: selection, checkCancellation: checkCancellation) else { return input }
+        let blurred = try gaussian(input, radius: settings.radius, checkCancellation: checkCancellation)
+        var result = input.rgba
+        for i in mask.indices {
+            if i % 16384 == 0 { try checkCancellation() }
+            guard mask[i] > 0 else { continue }
+            let strength = Double(mask[i])/255 * settings.strength
+            for c in 0..<4 {
+                let offset = i*4+c
+                result[offset] = UInt8((Double(input.rgba[offset])*(1-strength)+Double(blurred[offset])*strength).rounded())
+            }
+            for c in 0..<3 { result[i*4+c] = min(result[i*4+c], result[i*4+3]) }
+        }
+        try checkCancellation()
+        return try Pixels(width: input.width, height: input.height, rgba: result)
+    }
+    /// Shared bounded footprint, independent of the pixel operation. Strength is
+    /// intentionally applied by the operation exactly once, after thresholding.
+    static func coverage(input: Pixels, path: [Point], settings: Settings,
+                         selection: [UInt8]?, checkCancellation: () throws -> Void) throws -> [UInt8]? {
+        let stamps = try plan(width: input.width, height: input.height, path: path,
+                              settings: settings, checkCancellation: checkCancellation)
+        guard selection == nil || selection!.count == input.width * input.height else { throw Failure.invalidSelection }
+        guard !stamps.isEmpty else { return nil }
+        return try coverage(input: input, stamps: stamps, settings: settings,
+                            selection: selection, checkCancellation: checkCancellation)
+    }
+    private static func coverage(input: Pixels, stamps: [Stamp], settings: Settings,
+                                 selection: [UInt8]?, checkCancellation: () throws -> Void) throws -> [UInt8]? {
         var mask = [UInt8](repeating: 0, count: input.width * input.height)
         let radius = settings.diameter / 2
         for stamp in stamps where stamp.count > 0 {
@@ -131,8 +161,12 @@ enum StudioBlur {
             if let selection { mask[i] = UInt8((Int(mask[i])*Int(selection[i])+127)/255) }
             hasCoverage = hasCoverage || mask[i] > 0
         }
-        guard hasCoverage else { return input }
+        return hasCoverage ? mask : nil
+    }
+    static func gaussian(_ input: Pixels, radius: Double,
+                         checkCancellation: () throws -> Void) throws -> [UInt8] {
         try checkCancellation()
+        guard radius.isFinite, (0.5...32).contains(radius) else { throw Failure.invalidSettings }
         guard let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw Failure.render }
         let bounds = CGRect(x: 0, y: 0, width: input.width, height: input.height)
         let original = CIImage(bitmapData: Data(input.rgba), bytesPerRow: input.width*4,
@@ -140,7 +174,7 @@ enum StudioBlur {
         // Clamp only at the canvas border. Transparent artwork edges inside the
         // layer still soften; an opaque canvas edge does not fade to transparency.
         let filtered = original.clampedToExtent().applyingFilter("CIGaussianBlur",
-            parameters: [kCIInputRadiusKey: settings.radius]).cropped(to: bounds)
+            parameters: [kCIInputRadiusKey: radius]).cropped(to: bounds)
         let context = CIContext(options: [.workingColorSpace: space, .outputColorSpace: space,
                                          .useSoftwareRenderer: true, .cacheIntermediates: false])
         var blurred = [UInt8](repeating: 0, count: input.rgba.count)
@@ -151,18 +185,7 @@ enum StudioBlur {
         // Core Image's bounded synchronous render cannot be interrupted midway.
         // Cancellation before/after prevents any result from being committed.
         try checkCancellation()
-        var result = input.rgba
-        for i in mask.indices {
-            if i % 16384 == 0 { try checkCancellation() }
-            guard mask[i] > 0 else { continue }
-            let strength = Double(mask[i])/255 * settings.strength
-            for c in 0..<4 {
-                let offset = i*4+c
-                result[offset] = UInt8((Double(input.rgba[offset])*(1-strength)+Double(blurred[offset])*strength).rounded())
-            }
-            for c in 0..<3 { result[i*4+c] = min(result[i*4+c], result[i*4+3]) }
-        }
-        try checkCancellation()
-        return try Pixels(width: input.width, height: input.height, rgba: result)
+        return blurred
     }
+
 }
