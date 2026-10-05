@@ -110,8 +110,13 @@ enum StudioBlur {
             selection: selection, checkCancellation: checkCancellation) else { return input }
         let blurred = try gaussian(input, radius: settings.radius, checkCancellation: checkCancellation)
         var result = input.rgba
-        for i in mask.indices {
-            if i % 16384 == 0 { try checkCancellation() }
+        // Unstamped pixels have zero coverage. Visit only the clipped union
+        // of stamp rectangles; this preserves the exact original blend while
+        // avoiding a full-canvas scan for a small brush gesture.
+        guard let bounds = footprintBounds(stamps) else { return input }
+        for y in bounds.minY...bounds.maxY {
+            try checkCancellation()
+            for i in (y * input.width + bounds.minX)...(y * input.width + bounds.maxX) {
             guard mask[i] > 0 else { continue }
             let strength = Double(mask[i])/255 * settings.strength
             for c in 0..<4 {
@@ -119,6 +124,7 @@ enum StudioBlur {
                 result[offset] = UInt8((Double(input.rgba[offset])*(1-strength)+Double(blurred[offset])*strength).rounded())
             }
             for c in 0..<3 { result[i*4+c] = min(result[i*4+c], result[i*4+3]) }
+            }
         }
         try checkCancellation()
         return try Pixels(width: input.width, height: input.height, rgba: result)
@@ -156,12 +162,25 @@ enum StudioBlur {
             }
         }
         var hasCoverage = false
-        for i in mask.indices {
-            if i % 16384 == 0 { try checkCancellation() }
-            if let selection { mask[i] = UInt8((Int(mask[i])*Int(selection[i])+127)/255) }
-            hasCoverage = hasCoverage || mask[i] > 0
+        guard let bounds = footprintBounds(stamps) else { return nil }
+        for y in bounds.minY...bounds.maxY {
+            try checkCancellation()
+            for i in (y * input.width + bounds.minX)...(y * input.width + bounds.maxX) {
+                if let selection { mask[i] = UInt8((Int(mask[i])*Int(selection[i])+127)/255) }
+                hasCoverage = hasCoverage || mask[i] > 0
+            }
         }
         return hasCoverage ? mask : nil
+    }
+    private static func footprintBounds(_ stamps: [Stamp]) -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
+        var bounds: (minX: Int, maxX: Int, minY: Int, maxY: Int)?
+        for stamp in stamps where stamp.count > 0 {
+            if let previous = bounds {
+                bounds = (min(previous.minX, stamp.minX), max(previous.maxX, stamp.maxX),
+                          min(previous.minY, stamp.minY), max(previous.maxY, stamp.maxY))
+            } else { bounds = (stamp.minX, stamp.maxX, stamp.minY, stamp.maxY) }
+        }
+        return bounds
     }
     static func gaussian(_ input: Pixels, radius: Double,
                          checkCancellation: () throws -> Void) throws -> [UInt8] {

@@ -51,18 +51,22 @@ enum StudioFillRegion {
               (0...5).contains(settings.gapClose) else { throw Failure.invalidSettings }
         guard x >= 0, y >= 0, x < width, y < height else { throw Failure.outsideCanvas }
         let count = width * height, seed = y * width + x, bytes = [UInt8](rgba)
+        let seedOffset = seed * 4
+        let red = Int(bytes[seedOffset]), green = Int(bytes[seedOffset + 1])
+        let blue = Int(bytes[seedOffset + 2]), alpha = Int(bytes[seedOffset + 3])
+        let tolerance = settings.tolerance
         var matches = [UInt8](repeating: 0, count: count)
         for row in 0..<height {
             try checkCancellation()
             for column in 0..<width {
                 let index = row * width + column
-                var accepts = true
-                for channel in 0..<4 {
-                    if abs(Int(bytes[index * 4 + channel]) - Int(bytes[seed * 4 + channel])) > settings.tolerance {
-                        accepts = false; break
-                    }
+                let offset = index * 4
+                if abs(Int(bytes[offset]) - red) <= tolerance &&
+                   abs(Int(bytes[offset + 1]) - green) <= tolerance &&
+                   abs(Int(bytes[offset + 2]) - blue) <= tolerance &&
+                   abs(Int(bytes[offset + 3]) - alpha) <= tolerance {
+                    matches[index] = 255
                 }
-                if accepts { matches[index] = 255 }
             }
         }
         // Closing the nonmatching barrier seals small gaps without changing
@@ -102,17 +106,27 @@ enum StudioFillRegion {
             selected = try morphology(selected, width, height, abs(settings.expand), erode: settings.expand < 0, checkCancellation)
         }
         if settings.antiAlias {
+            // Keep integer sums until the final division: averaging each axis
+            // separately would round twice and change boundary coverage.
             let hard = selected
+            var columns = [Int](repeating: 0, count: width)
+            for row in 0..<min(height, 2) {
+                for column in 0..<width { columns[column] += Int(hard[row * width + column]) }
+            }
             for row in 0..<height {
                 try checkCancellation()
+                let verticalSamples = 1 + (row > 0 ? 1 : 0) + (row + 1 < height ? 1 : 0)
+                var total = columns[0] + (width > 1 ? columns[1] : 0)
                 for column in 0..<width {
-                    var total = 0, samples = 0
-                    for yy in max(0,row-1)...min(height-1,row+1) {
-                        for xx in max(0,column-1)...min(width-1,column+1) {
-                            total += Int(hard[yy * width + xx]); samples += 1
-                        }
-                    }
+                    let samples = verticalSamples * (1 + (column > 0 ? 1 : 0) + (column + 1 < width ? 1 : 0))
                     selected[row * width + column] = UInt8((total + samples / 2) / samples)
+                    if column > 0 { total -= columns[column - 1] }
+                    if column + 2 < width { total += columns[column + 2] }
+                }
+                let leaving = row - 1, entering = row + 2
+                for column in 0..<width {
+                    if leaving >= 0 { columns[column] -= Int(hard[leaving * width + column]) }
+                    if entering < height { columns[column] += Int(hard[entering * width + column]) }
                 }
             }
         }

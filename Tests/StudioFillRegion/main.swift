@@ -117,6 +117,21 @@ private struct TestFailure: Error { let message: String }
             var settings=hard;settings.contiguous=false
             try reject(.spanLimit) { _ = try fill(checker,1024,1024,0,0,settings) }
         }
+        try test("anti-alias preserves exact clipped single-column and single-row coverage") {
+            let settings = StudioFillRegion.Settings(tolerance:0,antiAlias:true)
+            let column = image(1,5) { _,y in y == 2 ? white:black }
+            try require(try coverage(fill(column,1,5,0,2,settings)) == [0,85,85,85,0],"Single-column box coverage")
+            let row = image(3,1) { x,_ in x == 1 ? white:black }
+            try require(try coverage(fill(row,3,1,1,0,settings)) == [128,85,128],"Clip edge samples before rounding once")
+            try require(try coverage(fill(image(1,1) { _,_ in white },1,1,0,0,settings)) == [255],"One-pixel canvas stays opaque")
+        }
+        try test("default portrait blank fill produces complete exact coverage with bounded sparse rows") {
+            let width=1080,height=1920,data=Data(repeating:0,count:1080*1920*4),start=Date()
+            let mask=try fill(data,width,height,width/2,height/2,.init())
+            try require(mask.coveredPixels == width*height && mask.spans.count == height,"Full portrait coverage and row count")
+            try require(mask.spans.allSatisfy { $0.start == 0 && $0.end == width && $0.alpha == 255 },"No faded canvas boundaries")
+            print("FILL_PORTRAIT_CORE_SECONDS=\(Date().timeIntervalSince(start))")
+        }
         let task=Task { try fill(box,9,9,4,4) };task.cancel()
         var cancelled=false
         do { _ = try await task.value } catch is CancellationError {cancelled=true}

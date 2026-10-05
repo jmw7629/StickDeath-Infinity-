@@ -1027,7 +1027,7 @@ final class StudioSmokeUITests: XCTestCase {
     private func verifyEditableText(historyOnly: Bool) throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false)
+        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false, keepTextSelected: !historyOnly)
         let canvas = fixture.canvas, frame = fixture.frame, original = fixture.pixels
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
         capture(app, name: "editable-text-original-glyphs")
@@ -1042,7 +1042,9 @@ final class StudioSmokeUITests: XCTestCase {
             XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
             return
         }
-        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        // The fixture keeps this exact text box selected. Both pixel captures
+        // include the same fixed selection outline, as in the cold-reopen test.
+        // Avoid deselecting and selecting it again before editing its source.
         try selectToolbarTool("text", app: app)
         app.buttons["studio.text.edit"].tap()
         XCTAssertTrue(input.waitForExistence(timeout: 5)); XCTAssertEqual(input.value as? String, "SDI")
@@ -1060,10 +1062,7 @@ final class StudioSmokeUITests: XCTestCase {
         // assertions had passed. Reset changes tool defaults, not saved text.
         try resetToolPreferencesInPopup(app)
         app.buttons["studio.tool-settings.close"].tap()
-        try selectToolbarTool("move", app: app)
-        app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas, expected: frame)
-        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.05, dy: 0.05)).tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         let edited = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(try changedPixelCount(original, edited), 4, "Editing text did not change glyphs")
@@ -3502,6 +3501,44 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(imageFixtureColors(try pixels(preview.screenshot().image))[0], 500,
             "Real exported PNG lost the filled shape")
         capture(reopened, name: "shape-real-png-export-preview")
+    }
+
+    @MainActor
+    func testFullCanvasFillUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        XCTAssertTrue(canvas.waitUntilPresent(timeout: 8))
+        try choosePickerTestColor("#0000FF", app: app)
+        try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).tap()
+        // Retain the original eight-second Saved assertion that caught the
+        // blank portrait-canvas stall; no performance-specific deadline waiver.
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        let filled = try pixels(canvas.screenshot().image)
+        let blue = imageFixtureColors(filled)[1]
+        XCTAssertGreaterThan(blue, filled.width * filled.height * 7 / 10)
+        capture(app, name: "fill-full-portrait-real-blue-pixels")
+        let undo=app.buttons["studio.undo"],redo=app.buttons["studio.redo"]
+        XCTAssertTrue(undo.isEnabled);undo.tap()
+        XCTAssertTrue(expectation(for:NSPredicate(format:"enabled == true"),evaluatedWith:redo).waitUntilFulfilled(timeout:5))
+        XCTAssertLessThan(imageFixtureColors(try pixels(canvas.screenshot().image))[1],10)
+        redo.tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(filled,pixels(canvas.screenshot().image)),4)
+        try settlePickerCanvasAfterSave(app,canvas:canvas)
+        app.buttons["studio.back"].tap()
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch.waitUntilPresent(timeout:8))
+        app.terminate()
+        let reopened=try launchGuestStudio();defer { reopened.terminate() }
+        let project=reopened.buttons.matching(NSPredicate(format:"label == %@",projectName)).firstMatch
+        XCTAssertTrue(project.waitUntilPresent(timeout:8));project.tap()
+        let restored=reopened.descendants(matching:.any)["studio.canvas"].firstMatch
+        XCTAssertTrue(restored.waitUntilPresent(timeout:8));try waitForStableCanvas(restored)
+        XCTAssertLessThanOrEqual(try changedPixelCount(filled,pixels(restored.screenshot().image)),4)
+        capture(reopened,name:"fill-full-portrait-cold-reopened")
     }
 
     @MainActor
