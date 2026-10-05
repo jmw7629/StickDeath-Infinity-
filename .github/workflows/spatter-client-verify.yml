@@ -1452,11 +1452,11 @@ jobs:
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 61 cases x 180 seconds, three measured
+    # Match the bounded inventory: 64 cases x 180 seconds, three measured
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
     # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 216
+    timeout-minutes: 225
     steps:
       - name: Require successful production verification
         shell: bash

@@ -212,8 +212,19 @@ struct FloatingToolSettingsPanel: View {
                     SettingsSlider(label: "Grain", value: Binding(get: { vm.brushGrain * 100 }, set: { vm.brushGrain = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 }
                 if vm.brushFamily == .gradient {
-                    ColorPicker("End Color", selection: $vm.brushGradientEndColor, supportsOpacity: false)
-                        .font(.specialElite(11)).foregroundColor(.white)
+                    Button { vm.activePanel = .gradientEndColor } label: {
+                        HStack {
+                            Text("End Color")
+                            Spacer()
+                            Circle().fill(vm.brushGradientEndColor).frame(width: 28, height: 28)
+                                .overlay(Circle().stroke(AngularGradient(colors: [.red, .yellow, .green, .cyan, .blue, .purple, .red], center: .center), lineWidth: 3))
+                        }.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .font(.specialElite(11)).foregroundColor(.white)
+                    .accessibilityIdentifier("studio.brush.gradient-end")
+                    .accessibilityLabel("Gradient end color")
+                    .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
                     Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 SettingsToggle(label: "Pressure Sensitivity", isOn: .constant(false), accent: .red).disabled(true)

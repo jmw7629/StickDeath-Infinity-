@@ -7,6 +7,174 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testGradientCustomEndpointValidationRenderAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let original = try drawNativeGradient(app)
+        let frame = original.canvas.frame
+        try selectToolbarTool("brush", app: app)
+        try gradientPopupControl("studio.brush.gradient-end", app: app, scrollUp: true).tap()
+        let input = app.textFields["studio.color.hex"]
+        XCTAssertTrue(input.waitForExistence(timeout: 5)); XCTAssertTrue(input.isHittable)
+        let apply = app.buttons["studio.color.hex.apply"]
+        XCTAssertFalse(apply.isEnabled)
+        input.tap(); input.typeText("ZZZZZZ")
+        XCTAssertFalse(apply.isEnabled, "Malformed custom colors must not mutate preferences")
+        XCTAssertEqual(app.staticTexts["studio.color.current"].label, "#0000FF")
+        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 6))
+        input.typeText("00FF00")
+        XCTAssertTrue(apply.isEnabled); apply.tap()
+        XCTAssertEqual(app.staticTexts["studio.color.current"].label, "#00FF00")
+        capture(app, name: "gradient-custom-green-endpoint")
+        app.buttons["studio.panel.close.Gradient end color"].tap()
+        XCTAssertEqual(app.buttons["studio.brush.gradient-end"].value as? String, "#00FF00")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(original.canvas, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original.drawn, pixels(original.canvas.screenshot().image)), 4,
+                                "Changing brush preferences recolored the existing editable stroke")
+        XCTAssertEqual(app.buttons["studio.color.open"].value as? String, "#FF0000",
+                       "Editing the gradient endpoint changed the primary drawing color")
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: original.canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original.blank, pixels(original.canvas.screenshot().image)), 4)
+        original.canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: original.canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: original.canvas)
+        let green = try pixels(original.canvas.screenshot().image)
+        var redPixels = 0, greenPixels = 0, bluePixels = 0
+        for y in 0..<green.height {
+            for x in 0..<green.width {
+                let i = (y * green.width + x) * 4
+                let red = Int(green.bytes[i]), g = Int(green.bytes[i+1]), blue = Int(green.bytes[i+2])
+                let fraction = Double(x) / Double(green.width)
+                if (0.18...0.40).contains(fraction), red > g + 60, blue < 120 { redPixels += 1 }
+                if (0.60...0.82).contains(fraction), g > red + 60, blue < 120 { greenPixels += 1 }
+                if (0.60...0.82).contains(fraction), blue > g + 60 { bluePixels += 1 }
+            }
+        }
+        XCTAssertGreaterThan(redPixels, 4); XCTAssertGreaterThan(greenPixels, 4)
+        XCTAssertEqual(bluePixels, 0, "New stroke ignored the custom endpoint and kept the old blue")
+        capture(app, name: "gradient-custom-green-real-stroke")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(green, pixels(restored.screenshot().image)), 4)
+        capture(reopened, name: "gradient-custom-green-cold-reopened")
+        try selectToolbarTool("brush", app: reopened)
+        let endpoint = try gradientPopupControl("studio.brush.gradient-end", app: reopened, scrollUp: true)
+        XCTAssertEqual(endpoint.value as? String, "#00FF00", "Endpoint preference did not survive app termination")
+        reopened.buttons["studio.tool-settings.close"].tap()
+    }
+
+
+    @MainActor
+    private func gradientPopupControl(_ id: String, app: XCUIApplication, scrollUp: Bool) throws -> XCUIElement {
+        let control = app.descendants(matching: .any)[id].firstMatch
+        for attempt in 0...4 {
+            if control.exists && control.isHittable { return control }
+            guard attempt < 4 else { break }
+            let scroll = app.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
+            XCTAssertTrue(scroll.exists, "Gradient controls must stay inside the one scrollable popup")
+            if scrollUp { scroll.swipeUp() } else { scroll.swipeDown() }
+        }
+        captureHierarchy(app, name: "gradient-control-unreachable-" + id)
+        XCTFail("Gradient control is unreachable: " + id)
+        throw NSError(domain: "GradientNative", code: 1)
+    }
+
+    @MainActor
+    private func drawNativeGradient(_ app: XCUIApplication) throws -> (canvas: XCUIElement, blank: Raster, drawn: Raster) {
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try choosePickerTestColor("#FF0000", app: app)
+        try selectToolbarTool("brush", app: app)
+        try resetToolPreferencesInPopup(app)
+        try gradientPopupControl("studio.brush-library", app: app, scrollUp: false).tap()
+        try gradientPopupControl("studio.brush-family.gradient", app: app, scrollUp: true).tap()
+        XCTAssertTrue(app.buttons["studio.brush-library"].label.contains("Gradient"))
+        let size = try gradientPopupControl("studio.setting.size", app: app, scrollUp: false)
+        size.adjust(toNormalizedSliderPosition: 0.85)
+        let opacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(opacity.isHittable); opacity.adjust(toNormalizedSliderPosition: 1)
+        let endpoint = try gradientPopupControl("studio.brush.gradient-end", app: app, scrollUp: true)
+        XCTAssertTrue(endpoint.exists && endpoint.isHittable, "Gradient must expose its own end-color control")
+        capture(app, name: "gradient-family-sole-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        let blank = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.15, dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.85, dy: 0.5)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let drawn = try pixels(canvas.screenshot().image)
+        assertNativeGradientColors(drawn)
+        capture(app, name: "gradient-red-to-blue-actual-canvas")
+        return (canvas, blank, drawn)
+    }
+
+    private func assertNativeGradientColors(_ raster: Raster, file: StaticString = #filePath, line: UInt = #line) {
+        var redStart = 0, blueEnd = 0, mixedMiddle = 0
+        for y in 0..<raster.height {
+            for x in 0..<raster.width {
+                let offset = (y * raster.width + x) * 4
+                let red = Int(raster.bytes[offset]), green = Int(raster.bytes[offset + 1]), blue = Int(raster.bytes[offset + 2])
+                let fraction = Double(x) / Double(raster.width)
+                guard green < 120 else { continue }
+                if (0.18...0.40).contains(fraction), red > blue + 60 { redStart += 1 }
+                if (0.60...0.82).contains(fraction), blue > red + 60 { blueEnd += 1 }
+                if (0.45...0.55).contains(fraction), red > 60, blue > 60, abs(red-blue) < 80 { mixedMiddle += 1 }
+            }
+        }
+        XCTAssertGreaterThan(redStart, 4, "Actual gradient does not start with the chosen red", file: file, line: line)
+        XCTAssertGreaterThan(blueEnd, 4, "Actual gradient does not reach its reset blue endpoint", file: file, line: line)
+        XCTAssertGreaterThan(mixedMiddle, 4, "Gradient is not interpolating between its endpoint colors", file: file, line: line)
+    }
+
+    @MainActor
+    func testGradientBrushPixelsUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let result = try drawNativeGradient(app), frame = result.canvas.frame
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: result.canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(result.blank, pixels(result.canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: result.canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(result.drawn, pixels(result.canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        let raster = try pixels(restored.screenshot().image)
+        XCTAssertLessThanOrEqual(try changedPixelCount(result.drawn, raster), 4)
+        assertNativeGradientColors(raster)
+        capture(reopened, name: "gradient-actual-cold-reopened")
+    }
+
+    @MainActor
+    func testGradientBrushRealPNGExport() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        _ = try drawNativeGradient(app)
+        try openExportPanel(app)
+        try exportControl("studio.export.format.png", app: app, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: app).tap()
+        let preview = try waitForPNGPreview(app)
+        let output = try exportPreviewPixels(preview, app: app, name: "gradient-red-blue")
+        assertNativeGradientColors(output)
+        capture(app, name: "gradient-real-decoded-png")
+    }
+
+
+    @MainActor
     func testNonActiveFrameCopyPasteUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -3584,6 +3752,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(canvas.waitForExistence(timeout: 8))
         try choosePickerTestColor("#FF0000", app: app)
         try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        // Tool preferences intentionally survive projects and earlier journeys.
+        // Establish the visible default through the same Reset control as users.
+        try resetToolPreferencesInPopup(app)
         let fill = app.buttons["studio.shape.fill"]
         XCTAssertTrue(fill.waitForExistence(timeout: 5) && fill.isHittable)
         XCTAssertEqual(fill.value as? String, "None")
@@ -3769,17 +3940,20 @@ final class StudioSmokeUITests: XCTestCase {
         let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
         let element = app.buttons[id], scroll = rail.scrollViews.firstMatch
         XCTAssertTrue(rail.waitUntilPresent(timeout: 5) && scroll.exists)
+        let vertical = rail.value as? String == "Vertical"
         for _ in 0..<12 {
-            if element.exists, element.isHittable, scroll.frame.insetBy(dx: 1, dy: 1).contains(element.frame) { return element }
-            let vertical = rail.value as? String == "Vertical"
+            // Each AX attribute is a remote query. Reuse geometry only within
+            // this iteration; every drag still requires fresh containment and
+            // hittability before the actual button tap. No larger timeout.
             let viewport = scroll.frame.insetBy(dx: 1, dy: 1)
+            let target = element.exists ? element.frame : nil
+            if let target, viewport.contains(target), element.isHittable { return element }
             let length = vertical ? viewport.height : viewport.width
             // The retained 87c9 native failure had Brush ending at x392 while
             // the viewport ended at x390. Large flicks alternated past it.
             // Reveal the clipped edge, then hold before lifting to avoid inertia.
             var delta = (forward ? 1.0 : -1.0) * length * 0.4
-            if element.exists {
-                let target = element.frame
+            if let target {
                 let leading = vertical ? target.minY - viewport.minY : target.minX - viewport.minX
                 let trailing = vertical ? target.maxY - viewport.maxY : target.maxX - viewport.maxX
                 if leading < 0 { delta = leading - 8 }

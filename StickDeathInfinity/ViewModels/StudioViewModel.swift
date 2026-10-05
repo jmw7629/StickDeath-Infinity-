@@ -143,6 +143,7 @@ final class StudioViewModel: ObservableObject {
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
+    var brushGradientEndColorHex: String { Self.hex(brushGradientEndColor) }
     @discardableResult
     func beginTextEditing(selected: Bool = false) -> Bool {
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
@@ -1780,7 +1781,7 @@ final class StudioViewModel: ObservableObject {
 }
 
 enum StudioPanelType: String {
-    case none, colorPicker, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
+    case none, colorPicker, gradientEndColor, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
     case soundLibrary, stickerEmoji, addImage, backgroundLibrary, menu, aiVoice, spatterAI, magicCut, rotoscope
 }
 extension Array {

@@ -33,6 +33,7 @@ struct StudioView: View {
             
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
+            if vm.activePanel == .gradientEndColor { ColorPickerPanel(vm: vm, target: .gradientEnd) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
             if vm.activePanel == .export { ExportPanel(vm: vm) }
