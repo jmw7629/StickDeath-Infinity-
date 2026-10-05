@@ -2436,6 +2436,9 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testImageQuarterTurnsUndoAndColdReopen() throws {
+        // Full CI reached cold reopen at 180s; the unchanged local journey
+        // passed all pixel/history/reopen assertions in 182.757s.
+        executionTimeAllowance = 240
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch

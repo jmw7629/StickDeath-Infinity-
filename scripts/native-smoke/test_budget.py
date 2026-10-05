@@ -7,6 +7,7 @@ MAXIMUM_CASE_SECONDS = 240
 EXTENDED_CASE_SECONDS = {
     "testBucketFillPopupUndoSaveReopenAndPNG": 240,
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
+    "testImageQuarterTurnsUndoAndColdReopen": 240,
 }
 MAXIMUM_CASES = 60
 SUITE_OVERHEAD_SECONDS = 300
@@ -34,7 +35,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
         index = command.index(flag)
         if index + 1 == len(command) or command[index + 1] != value:
             raise ValueError("Native verification must preserve " + flag + " " + value)
-    # Only the two measured long journeys may opt into the longer ceiling.
+    # Only the explicitly measured long journeys may opt into the longer ceiling.
     # Preserve all cases, assertions and the 180s default for every other case.
     declared = re.findall(r"executionTimeAllowance\s*=\s*([0-9]+)", source)
     extended = {name: seconds for name, seconds in EXTENDED_CASE_SECONDS.items() if name in names}

@@ -32,21 +32,21 @@ class Diagnostics(unittest.TestCase):
         self.env.stop()
         self.tmp.cleanup()
 
-    def test_success_retains_exact60s_gate_and_original_fixture_without_diagnostics(self):
+    def test_success_retains_exact120s_gate_and_original_fixture_without_diagnostics(self):
         with patch.object(seed.time, 'monotonic', return_value=10), patch.object(seed, 'run_bounded', return_value=diag.Result(0, False, 0.1)) as run, patch.object(seed, 'collect_failure') as collect:
             seed.seed_verified_fixture(ID, self.out)
         self.assertEqual(run.call_count, 1)
-        self.assertEqual(run.call_args.args[1], 71)
-        self.assertEqual(run.call_args.kwargs['work_deadline'], 70)
+        self.assertEqual(run.call_args.args[1], 131)
+        self.assertEqual(run.call_args.kwargs['work_deadline'], 130)
         collect.assert_not_called()
         self.assertEqual(hashlib.sha256((self.out/'SDI-generated-image-fixture.png').read_bytes()).hexdigest(), '1f8b75bc39c94c7f4a27bbd4192bdb3dc3f57766b01991dba7f9a6bd6ac93614')
         self.assertTrue((self.out/'image-fixture.json').is_file())
 
-    def test_timeout_and_secondary_failure_preserve_original_timeout60(self):
-        with patch.object(seed, 'run_bounded', return_value=diag.Result(-9, True, 60)), patch.object(seed, 'collect_failure', side_effect=RuntimeError('secret credential')) as collect, patch('builtins.print') as printed:
+    def test_timeout_and_secondary_failure_preserve_original_timeout120(self):
+        with patch.object(seed, 'run_bounded', return_value=diag.Result(-9, True, 120)), patch.object(seed, 'collect_failure', side_effect=RuntimeError('secret credential')) as collect, patch('builtins.print') as printed:
             with self.assertRaises(subprocess.TimeoutExpired) as caught:
                 seed.seed_verified_fixture(ID, self.out)
-        self.assertEqual(caught.exception.timeout, 60)
+        self.assertEqual(caught.exception.timeout, 120)
         self.assertEqual(caught.exception.cmd[:4], ['xcrun','simctl','addmedia',ID])
         collect.assert_called_once()
         self.assertNotIn('secret credential', str(printed.call_args_list))

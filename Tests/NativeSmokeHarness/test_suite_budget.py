@@ -23,7 +23,7 @@ class NativeSuiteBudget(unittest.TestCase):
         value = budget.build_test_budget(source, COMMAND)
         self.assertIn("testFrameContextIdentityDuplicateUndoReorderAndColdReopen", value["testNames"])
         self.assertIn("testImageCanvasDragUndoAndColdReopen", value["testNames"])
-        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 120)
+        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 180)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
 
     def test_per_case_capacity_is_available_and_global_bound_stays_finite(self):
@@ -60,7 +60,7 @@ class NativeSuiteBudget(unittest.TestCase):
         source = (ROOT / "Tests/NativeUI/StudioSmokeUITests.swift").read_text()
         value = budget.build_test_budget(source, COMMAND)
         self.assertEqual(value["extendedCases"], budget.EXTENDED_CASE_SECONDS)
-        self.assertEqual(sum(value["extendedCases"].values()), 480)
+        self.assertEqual(sum(value["extendedCases"].values()), 720)
         for changed in (source.replace("executionTimeAllowance = 240", "executionTimeAllowance = 300", 1),
                         source.replace("executionTimeAllowance = 240", "", 1),
                         source + "\nexecutionTimeAllowance = 240"):

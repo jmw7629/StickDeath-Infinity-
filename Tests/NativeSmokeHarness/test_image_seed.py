@@ -114,7 +114,7 @@ class Harness(unittest.TestCase):
             if readiness_failure and cmd[:3] == ['xcrun', 'simctl', 'spawn']:
                 return Result(-9, True, 120)
             if seed_failure and cmd[:3] == ['xcrun', 'simctl', 'addmedia']:
-                return Result(-9, True, 60)
+                return Result(-9, True, 120)
             return Result(0, False, 0)
         with patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
@@ -151,7 +151,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 2 * (240 - 180) + 300)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 3 * (240 - 180) + 300)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
@@ -177,7 +177,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['recordingExitCode'], 0)
         self.assertIsNone(report['recordingError'])
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 2 * (240 - 180) + 300))
+        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 3 * (240 - 180) + 300))
         self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)

@@ -13,6 +13,11 @@ import time
 
 from seed_diagnostics import Evidence, collect_failure, result_projection, run_bounded
 
+# Cold Photos-library import is setup, not the interactive app journey.
+# CI exhausted 60s; a fresh local device required 34.286s for this one import.
+# Allow one bounded 120s attempt; failure still gates the complete run.
+SEED_IMPORT_SECONDS = 120
+
 
 def make_png() -> bytes:
     width, height = 96, 64
@@ -94,19 +99,19 @@ def seed_verified_fixture(udid: str, output: pathlib.Path) -> None:
                   "source": "Original generated four-color UI fixture; no third-party corpus",
                   "route": "System Photos library; the app must select through PHPicker"}
         evidence.json('image-seed-start.json', {**report, 'stage': 'addmedia',
-                      'timeoutSeconds': 60, 'ownership': 'Caller already verified the explicit available, booted iOS target'})
+                      'timeoutSeconds': SEED_IMPORT_SECONDS, 'ownership': 'Caller already verified the explicit available, booted iOS target'})
         command = ["xcrun", "simctl", "addmedia", udid, str(fixture)]
         started = time.monotonic()
         result = None
         try:
             evidence.check()
-            # Same 60-second operation gate. One further second only bounds
+            # One 120-second cold-library operation. One further second only bounds
             # reaping the owned timed-out child; there is never a second seed.
-            result = run_bounded(command, started + 61, work_deadline=started + 60)
+            result = run_bounded(command, started + SEED_IMPORT_SECONDS + 1, work_deadline=started + SEED_IMPORT_SECONDS)
             if result.spawn_error:
                 raise OSError('The addmedia command could not be started')
             if result.timed_out:
-                raise subprocess.TimeoutExpired(command, 60)
+                raise subprocess.TimeoutExpired(command, SEED_IMPORT_SECONDS)
             if result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, command)
         except Exception:
