@@ -50,6 +50,11 @@ struct StudioCanvasView: View {
     @State private var startedAsSharpen = false
     @State private var sharpenSubmission: UUID?
     @State private var sharpenTask: Task<Void, Never>?
+    @StateObject private var dodgeBurnSession = StudioDodgeBurnSession()
+    @State private var dodgeBurnInput: StudioDodgeBurnInput?
+    @State private var startedAsDodgeBurn = false
+    @State private var dodgeBurnSubmission: UUID?
+    @State private var dodgeBurnTask: Task<Void, Never>?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -100,7 +105,10 @@ struct StudioCanvasView: View {
         .onChange(of: StudioSharpenContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
             cancelSharpen()
         }
-        .onChange(of: vm.activePanel) { _, _ in cancelBlur(); cancelSharpen() }
+        .onChange(of: StudioDodgeBurnContext.current(vm, ownedStroke: vm.activeStrokeID)) { _, _ in
+            cancelDodgeBurn()
+        }
+        .onChange(of: vm.activePanel) { _, _ in cancelBlur(); cancelSharpen(); cancelDodgeBurn() }
     }
 
     private var canvasContent: some View {
@@ -215,6 +223,16 @@ struct StudioCanvasView: View {
                             context.stroke(Path(ellipseIn: rect), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
+                        if let dodgeBurnInput, !dodgeBurnInput.isCancelled, let point = dodgeBurnInput.points.last {
+                            // This ring shows the real brush footprint, not fabricated preview pixels.
+                            let diameter = dodgeBurnInput.context.settings.diameter
+                            let rect = CGRect(x: (point.x-diameter/2) / documentSize.width * actual.width,
+                                y: (point.y-diameter/2) / documentSize.height * actual.height,
+                                width: diameter / documentSize.width * actual.width,
+                                height: diameter / documentSize.height * actual.height)
+                            context.stroke(Path(ellipseIn: rect), with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
+                        }
                         if let first = areaPreview.first {
                             func scaled(_ point: CGPoint) -> CGPoint {
                                 CGPoint(x: point.x / documentSize.width * actual.width,
@@ -247,7 +265,7 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
-                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
             }
             .overlay(alignment: .bottom) { inputStatusOverlay }
         }
@@ -284,6 +302,12 @@ struct StudioCanvasView: View {
                             layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
                         _ = updateSharpen(location: value.startLocation, size: size)
                     }
+                    startedAsDodgeBurn = vm.selectedTool == .dodge || vm.selectedTool == .burn
+                    if startedAsDodgeBurn, dodgeBurnSubmission == nil, let context = StudioDodgeBurnContext.current(vm) {
+                        dodgeBurnInput = StudioDodgeBurnInput(context: context,
+                            layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset))
+                        _ = updateDodgeBurn(location: value.startLocation, size: size)
+                    }
                     startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
                     if startedAsImageMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
@@ -309,6 +333,7 @@ struct StudioCanvasView: View {
                 if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
                 if startedAsBlur { _ = updateBlur(location: value.location, size: size); return }
                 if startedAsSharpen { _ = updateSharpen(location: value.location, size: size); return }
+                if startedAsDodgeBurn { _ = updateDodgeBurn(location: value.location, size: size); return }
                 if startedAsImageMove { _ = updateImageMove(delta: value.translation, size: size); return }
                 if startedAsHandle { _ = updateHandle(start: value.startLocation, location: value.location, size: size); return }
                 if startedAsArea { _ = updateArea(location: value.location, size: size); return }
@@ -404,6 +429,19 @@ struct StudioCanvasView: View {
                     }
                     return
                 }
+                if startedAsDodgeBurn {
+                    guard updateDodgeBurn(location: value.location, size: size), let captured = dodgeBurnInput,
+                          dodgeBurnSubmission == nil else { return }
+                    let submission = UUID(); dodgeBurnSubmission = submission
+                    dodgeBurnTask = Task { @MainActor in
+                        defer {
+                            if dodgeBurnSubmission == submission { dodgeBurnSubmission = nil; dodgeBurnTask = nil }
+                        }
+                        guard !Task.isCancelled, dodgeBurnSubmission == submission, scenePhase == .active else { return }
+                        await dodgeBurnSession.apply(vm, input: captured)
+                    }
+                    return
+                }
                 if startedAsImageMove {
                     guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
                     _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
@@ -468,7 +506,19 @@ struct StudioCanvasView: View {
             }
     }
     @ViewBuilder private var inputStatusOverlay: some View {
-                if sharpenSession.isApplying {
+                if dodgeBurnSession.isApplying {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(.red)
+                        Text("Adjusting exposure…").font(.specialElite(12))
+                        Button("Cancel") { cancelDodgeBurn() }
+                            .accessibilityIdentifier("studio.dodge-burn.cancel")
+                    }.padding(12).background(Color.black.opacity(0.95)).cornerRadius(10).padding(8)
+                        .accessibilityIdentifier("studio.dodge-burn.progress")
+                } else if let dodgeBurnInput, !dodgeBurnInput.isCancelled, startedAsDodgeBurn {
+                    Text("Release to adjust exposure on the active layer")
+                        .font(.specialElite(12)).padding(10).background(Color.black.opacity(0.95)).cornerRadius(10)
+                        .accessibilityIdentifier("studio.dodge-burn.release-hint")
+                } else if sharpenSession.isApplying {
                     HStack(spacing: 12) {
                         ProgressView().tint(.red)
                         Text("Sharpening artwork…").font(.specialElite(12))
@@ -592,6 +642,27 @@ struct StudioCanvasView: View {
         sharpenInput?.cancel(); sharpenTask?.cancel(); sharpenSession.cancel()
         sharpenSubmission = nil; sharpenTask = nil
     }
+    private func updateDodgeBurn(location: CGPoint, size: CGSize) -> Bool {
+        guard var captured = dodgeBurnInput else {
+            vm.message = "Choose a visible unlocked layer and deselect artwork before adjusting exposure."
+            return false
+        }
+        do {
+            try captured.append(location, current: StudioDodgeBurnContext.current(vm),
+                layout: .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                foreground: scenePhase == .active)
+            dodgeBurnInput = captured
+            return true
+        } catch {
+            dodgeBurnInput = captured
+            vm.message = "Dodge/Burn cancelled. Start a new drag on the current artwork."
+            return false
+        }
+    }
+    private func cancelDodgeBurn() {
+        dodgeBurnInput?.cancel(); dodgeBurnTask?.cancel(); dodgeBurnSession.cancel()
+        dodgeBurnSubmission = nil; dodgeBurnTask = nil
+    }
     private func documentPoint(_ point: CGPoint, size: CGSize) -> CGPoint {
         CGPoint(x: point.x / size.width * CGFloat(vm.canvasWidth), y: point.y / size.height * CGFloat(vm.canvasHeight))
     }
@@ -680,6 +751,7 @@ struct StudioCanvasView: View {
             smudgeInput = nil; startedAsSmudge = false
             blurInput = nil; startedAsBlur = false
             sharpenInput = nil; startedAsSharpen = false
+            dodgeBurnInput = nil; startedAsDodgeBurn = false
             imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
@@ -689,7 +761,7 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
-        fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen()
+        fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()
         fillInput.invalidate()

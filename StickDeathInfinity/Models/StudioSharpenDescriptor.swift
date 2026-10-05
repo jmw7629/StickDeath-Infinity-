@@ -20,7 +20,7 @@ struct StudioSharpenDescriptor: Codable, Equatable {
               element.brush == nil, element.shape == nil, element.fillMask == nil,
               element.eraser == nil, element.text == nil, element.fillColor == nil,
               element.smudge == nil, element.blur == nil, element.translation == nil,
-              element.reflection == nil, element.transform == nil else {
+              element.reflection == nil, element.transform == nil, element.dodgeBurn == nil else {
             throw StudioSharpen.Failure.invalidSettings
         }
         return try StudioSharpen.validateWork(width: width, height: height,

@@ -92,8 +92,9 @@ struct DrawnElement: Codable, Identifiable, Equatable {
 
     /// Schema19: ordered RGB unsharp mask with preserved original alpha.
     var sharpen: StudioSharpenDescriptor? = nil
+    var dodgeBurn: StudioDodgeBurnDescriptor? = nil
 
-    var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil }
+    var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil || dodgeBurn != nil }
 
     var selectionBounds: CGRect? {
         let bounds: CGRect
@@ -408,7 +409,7 @@ enum DrawingTool: String, Codable, CaseIterable {
     case line, rectangle, circle, text, lasso, wand
     case arrow, image, ruler, gradient, blur
     case airbrush, watercolor, neon, calligraphy
-    case smudge, sharpen, move, hand, zoom
+    case smudge, sharpen, dodge, burn, move, hand, zoom
 }
 
 struct AnimationFrame: Codable, Identifiable, Equatable {

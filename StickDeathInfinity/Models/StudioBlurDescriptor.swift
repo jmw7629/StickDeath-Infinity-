@@ -17,7 +17,7 @@ struct StudioBlurDescriptor: Codable, Equatable {
               element.brush == nil, element.shape == nil, element.fillMask == nil,
               element.eraser == nil, element.text == nil, element.fillColor == nil,
               element.smudge == nil, element.sharpen == nil, element.translation == nil,
-              element.reflection == nil, element.transform == nil else { throw StudioBlur.Failure.invalidSettings }
+              element.reflection == nil, element.transform == nil, element.dodgeBurn == nil else { throw StudioBlur.Failure.invalidSettings }
         return try StudioBlur.validateWork(width: width, height: height,
             path: element.points.map { .init(x: $0.x, y: $0.y) }, settings: settings(for: element))
     }

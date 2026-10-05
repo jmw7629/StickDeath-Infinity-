@@ -107,6 +107,10 @@ final class StudioViewModel: ObservableObject {
     @Published var sharpenRadius: Double = 2 { didSet { rememberDrawingToolPreferences() } }
     @Published var sharpenAmount: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
     @Published var sharpenThreshold: Double = 0.02 { didSet { rememberDrawingToolPreferences() } }
+    @Published var dodgeBurnHardness: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
+    @Published var dodgeBurnExposure: Double = 0.25 { didSet { rememberDrawingToolPreferences() } }
+    @Published var dodgeBurnRange: StudioDodgeBurn.TonalRange = .midtones { didSet { rememberDrawingToolPreferences() } }
+    @Published var dodgeBurnProtectTones = true { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -242,7 +246,9 @@ final class StudioViewModel: ObservableObject {
             shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle,
             blurHardness: blurHardness, blurRadius: blurRadius,
             sharpenHardness: sharpenHardness, sharpenRadius: sharpenRadius,
-            sharpenAmount: sharpenAmount, sharpenThreshold: sharpenThreshold)
+            sharpenAmount: sharpenAmount, sharpenThreshold: sharpenThreshold,
+            dodgeBurnHardness: dodgeBurnHardness, dodgeBurnExposure: dodgeBurnExposure,
+            dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -267,6 +273,8 @@ final class StudioViewModel: ObservableObject {
         blurHardness = value.blurHardness ?? 0.5; blurRadius = value.blurRadius ?? 4
         sharpenHardness = value.sharpenHardness ?? 0.5; sharpenRadius = value.sharpenRadius ?? 2
         sharpenAmount = value.sharpenAmount ?? 0.5; sharpenThreshold = value.sharpenThreshold ?? 0.02
+        dodgeBurnHardness = value.dodgeBurnHardness ?? 0.5; dodgeBurnExposure = value.dodgeBurnExposure ?? 0.25
+        dodgeBurnRange = value.dodgeBurnRange ?? .midtones; dodgeBurnProtectTones = value.dodgeBurnProtectTones ?? true
     }
     func resetCurrentDrawingToolPreferences() {
         toolPreferences.values.removeValue(forKey: selectedTool.rawValue)
@@ -1977,6 +1985,10 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var sharpenRadius: Double? = nil
         var sharpenAmount: Double? = nil
         var sharpenThreshold: Double? = nil
+        var dodgeBurnHardness: Double? = nil
+        var dodgeBurnExposure: Double? = nil
+        var dodgeBurnRange: StudioDodgeBurn.TonalRange? = nil
+        var dodgeBurnProtectTones: Bool? = nil
 
         var isValid: Bool {
             width.isFinite && (0.25...512).contains(width) &&
@@ -1993,7 +2005,9 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             (sharpenHardness.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
             (sharpenRadius.map { $0.isFinite && (0.5...32).contains($0) } ?? true) &&
             (sharpenAmount.map { $0.isFinite && (0...2).contains($0) } ?? true) &&
-            (sharpenThreshold.map { $0.isFinite && (0...1).contains($0) } ?? true)
+            (sharpenThreshold.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (dodgeBurnHardness.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (dodgeBurnExposure.map { $0.isFinite && (0...1).contains($0) } ?? true)
         }
         static func defaults(for tool: DrawingTool) -> Self {
             var value = Self()
@@ -2009,6 +2023,9 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
             case .sharpen: value.width = 32; value.opacity = 1; value.smoothing = 0
                 value.sharpenHardness = 0.5; value.sharpenRadius = 2
                 value.sharpenAmount = 0.5; value.sharpenThreshold = 0.02
+            case .dodge, .burn: value.width = 32; value.opacity = 1; value.smoothing = 0
+                value.dodgeBurnHardness = 0.5; value.dodgeBurnExposure = 0.25
+                value.dodgeBurnRange = .midtones; value.dodgeBurnProtectTones = true
             default: break
             }
             return value

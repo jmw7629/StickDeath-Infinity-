@@ -168,7 +168,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .line, .rectangle, .circle, .text].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -314,6 +314,28 @@ struct FloatingToolSettingsPanel: View {
                 Text("Increase contrast at existing edges on this layer. Radius sets detail size; Amount sets contrast. Threshold protects subtle texture. Applied on release. Deselect artwork first.")
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.sharpen.instructions")
+            }
+
+        case .dodge, .burn:
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...256, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Hardness", value: Binding(get: { vm.dodgeBurnHardness * 100 }, set: { vm.dodgeBurnHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                SettingsSlider(label: "Exposure", value: Binding(get: { vm.dodgeBurnExposure * 100 }, set: { vm.dodgeBurnExposure = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                Picker("Tonal range", selection: $vm.dodgeBurnRange) {
+                    ForEach(StudioDodgeBurn.TonalRange.allCases, id: \.self) { range in
+                        Text(range.rawValue.capitalized).tag(range)
+                    }
+                }.pickerStyle(.menu).accessibilityIdentifier("studio.dodge-burn.range")
+                    .accessibilityLabel("Tonal range")
+                    .accessibilityValue(vm.dodgeBurnRange.rawValue.capitalized)
+                Toggle("Protect tones", isOn: $vm.dodgeBurnProtectTones)
+                    .accessibilityIdentifier("studio.dodge-burn.protect-tones")
+                Text(vm.selectedTool == .dodge
+                    ? "Lighten existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first."
+                    : "Darken existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first.")
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.dodge-burn.instructions")
             }
 
         // Editable text lives in the same dismissible tool popup.

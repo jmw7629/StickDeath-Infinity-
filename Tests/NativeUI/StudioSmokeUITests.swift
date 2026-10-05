@@ -249,7 +249,29 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Layer 1"].exists)
         let input = try renameInput()
         XCTAssertEqual(input.value as? String, "Layer 1")
-        input.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: "Layer 1".count))
+        // The preserved iOS 18.5 failure recording shows the caret at the
+        // beginning: backspacing seven times left "Layer 1" untouched. Select
+        // the actual text first, then prove the field is empty before checking
+        // validation. Keep the original invalid-name assertion.
+        input.press(forDuration: 1.1)
+        let selectAll = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", "Select All")).firstMatch
+        XCTAssertTrue(selectAll.waitForExistence(timeout: 5), "Layer name selection menu is unavailable")
+        // XCTest treated the expected rename alert as an interruption when
+        // tapping its text-selection menu and automatically pressed Cancel.
+        // Anchor the tap to that alert, using the observed menu frame.
+        let dialog = app.alerts.firstMatch
+        let menuFrame = selectAll.frame, dialogFrame = dialog.frame
+        XCTAssertGreaterThan(menuFrame.width, 0)
+        XCTAssertGreaterThan(menuFrame.height, 0)
+        dialog.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: menuFrame.midX - dialogFrame.minX,
+                                 dy: menuFrame.midY - dialogFrame.minY)).tap()
+        XCTAssertTrue(dialog.exists, "Selecting layer-name text dismissed its editor")
+        input.typeText(XCUIKeyboardKey.delete.rawValue)
+        let clearedValue = input.value as? String
+        XCTAssertTrue(clearedValue == "" || clearedValue == input.placeholderValue,
+                      "Layer name was not cleared before invalid-name validation")
         XCTAssertFalse(app.alerts.buttons["Save name"].isEnabled, "Empty name can be saved")
         input.typeText("Hero ink")
         capture(app, name: "layer-rename-draft")
@@ -859,6 +881,118 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(sharpened, pixels(restored.screenshot().image)), 4,
             "Cold reopen changed sharpened artwork")
         capture(reopened, name: "sharpen-cold-reopened")
+    }
+
+    @MainActor
+    func testDodgePixelsUndoAndColdReopen() throws { try exerciseDodgeBurnPixelsAndReopen("dodge") }
+
+    @MainActor
+    func testBurnPixelsUndoAndColdReopen() throws { try exerciseDodgeBurnPixelsAndReopen("burn") }
+
+    @MainActor
+    private func exerciseDodgeBurnPixelsAndReopen(_ tool: String) throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try choosePickerTestColor("#999999", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        try resetToolPreferencesInPopup(app)
+        let solid = app.buttons["studio.shape.fill"]
+        XCTAssertEqual(solid.value as? String, "None"); solid.tap()
+        XCTAssertEqual(solid.value as? String, "Solid")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.1,dy: 0.2)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.9,dy: 0.8)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        try pickerRailControl("studio.tool." + tool, app: app, forward: true).tap()
+        XCTAssertTrue(app.staticTexts["studio.dodge-burn.instructions"].waitForExistence(timeout: 5))
+        let adjustments: [(String, CGFloat)] = [("size",0.65),("opacity",1),("hardness",0.8),("exposure",0.75)]
+        for (key, value) in adjustments {
+            let slider = try sharpenSetting(key, in: app)
+            slider.adjust(toNormalizedSliderPosition: value)
+        }
+        capture(app, name: tool + "-exposure-popup")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.5)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5,dy: 0.7)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let sharpened = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, sharpened), 30, tool + " did not change existing artwork exposure")
+        capture(app, name: tool + "-real-canvas-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(sharpened, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(sharpened, pixels(restored.screenshot().image)), 4,
+            "Cold reopen changed " + tool + " artwork")
+        capture(reopened, name: tool + "-cold-reopened")
+    }
+
+    @MainActor
+    func testDodgeSettingsPersistAndReset() throws { try exerciseDodgeBurnSettings("dodge") }
+
+    @MainActor
+    func testBurnSettingsPersistAndReset() throws { try exerciseDodgeBurnSettings("burn") }
+
+    @MainActor
+    private func exerciseDodgeBurnSettings(_ tool: String) throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        try pickerRailControl("studio.tool." + tool, app: app, forward: true).tap()
+        try resetToolPreferencesInPopup(app)
+        let adjustments: [(String, CGFloat)] = [("size",0.6),("opacity",0.7),("hardness",0.8),("exposure",0.65)]
+        var defaults: [String:String] = [:]
+        var saved: [String:String] = [:]
+        for (key, value) in adjustments {
+            let slider = try sharpenSetting(key, in: app)
+            defaults[key] = try XCTUnwrap(slider.value as? String)
+            slider.adjust(toNormalizedSliderPosition: value)
+            saved[key] = try XCTUnwrap(slider.value as? String)
+            XCTAssertNotEqual(saved[key], defaults[key], "Setting did not change: " + key)
+        }
+        let range = app.buttons["studio.dodge-burn.range"]
+        XCTAssertTrue(range.isHittable)
+        XCTAssertEqual(range.value as? String, "Midtones")
+        range.tap()
+        let highlights = app.buttons["Highlights"]
+        XCTAssertTrue(highlights.waitForExistence(timeout: 5)); highlights.tap()
+        XCTAssertEqual(range.value as? String, "Highlights")
+        let protection = app.switches["studio.dodge-burn.protect-tones"]
+        XCTAssertEqual(protection.value as? String, "1"); protection.tap()
+        XCTAssertEqual(protection.value as? String, "0")
+        capture(app, name: tool + "-all-settings-changed")
+        app.buttons["studio.tool-settings.close"].tap()
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        try pickerRailControl("studio.tool." + tool, app: reopened, forward: true).tap()
+        for (key, _) in adjustments {
+            XCTAssertEqual(try sharpenSetting(key, in: reopened).value as? String, saved[key])
+        }
+        XCTAssertEqual(reopened.buttons["studio.dodge-burn.range"].value as? String, "Highlights")
+        XCTAssertEqual(reopened.switches["studio.dodge-burn.protect-tones"].value as? String, "0")
+        capture(reopened, name: tool + "-six-settings-cold-reopened")
+        try resetToolPreferencesInPopup(reopened)
+        for (key, _) in adjustments {
+            XCTAssertEqual(try sharpenSetting(key, in: reopened).value as? String, defaults[key])
+        }
+        XCTAssertEqual(reopened.buttons["studio.dodge-burn.range"].value as? String, "Midtones")
+        XCTAssertEqual(reopened.switches["studio.dodge-burn.protect-tones"].value as? String, "1")
+        reopened.buttons["studio.tool-settings.close"].tap()
     }
 
     // Keep all six persisted preference and reset checks independent of the

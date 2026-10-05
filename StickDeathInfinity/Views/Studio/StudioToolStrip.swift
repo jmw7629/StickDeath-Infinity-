@@ -41,6 +41,8 @@ struct StudioToolStrip: View {
         ToolDef(tool: .smudge,    icon: "hand.point.up.left",emoji: "👆", label: "Smudge", shortcut: "R", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
         ToolDef(tool: .blur,      icon: "drop.halffull", emoji: "◌", label: "Blur", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
         ToolDef(tool: .sharpen,      icon: "triangle", emoji: "◌", label: "Sharpen", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .dodge,      icon: "sun.max", emoji: "◌", label: "Dodge", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .burn,      icon: "sun.min", emoji: "◌", label: "Burn", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
         ToolDef(tool: .text,      icon: "textformat",       emoji: "T",  label: "Text",   shortcut: "T", topColor: "E879F9", bottomColor: "A21CAF", glowColor: "D946EF"),
         ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   shortcut: "H", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
         ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   shortcut: "Z", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
