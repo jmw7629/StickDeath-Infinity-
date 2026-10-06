@@ -8,6 +8,13 @@ struct StudioImageLibraryView: View {
     let onClose: () -> Void
     @State private var catalogue: StudioImageCatalogue?
     @State private var query = ""
+    @State private var favorites = Set<String>()
+    @State private var recent: [String] = []
+    @State private var collection = "All"
+    @State private var preferenceNotice: String?
+    private func preferences(_ catalogue: StudioImageCatalogue) -> StudioImageLibraryPreferences {
+        .init(allowedIDs: Set(catalogue.images.map(\.id)))
+    }
     @State private var category: StudioImageCatalogue.Category?
     @State private var includeCartoonWeapons = true
     @State private var failure: String?
@@ -15,7 +22,13 @@ struct StudioImageLibraryView: View {
     @FocusState private var searchFocused: Bool
 
     private var matches: [StudioImageCatalogue.Image] {
-        catalogue?.search(query, category: category, includeCartoonWeapons: includeCartoonWeapons) ?? []
+        let found = catalogue?.search(query, category: category, includeCartoonWeapons: includeCartoonWeapons) ?? []
+        if collection == "Favorites" { return found.filter { favorites.contains($0.id) } }
+        if collection == "Recent" {
+            let byID = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
+            return recent.compactMap { byID[$0] }
+        }
+        return found
     }
 
     var body: some View {
@@ -41,9 +54,26 @@ struct StudioImageLibraryView: View {
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("studio.image-library.category")
+                    Picker("Collection", selection: $collection) {
+                        Text("All").tag("All"); Text("Favorites").tag("Favorites"); Text("Recent").tag("Recent")
+                    }.pickerStyle(.segmented).accessibilityIdentifier("studio.image-library.collection")
+                    if collection == "Recent" {
+                        Button("Clear recent previews") {
+                            preferences(catalogue).clearRecent(); recent = []
+                        }.font(.caption).foregroundColor(.red)
+                    }
+                    if let preferenceNotice { Text(preferenceNotice).font(.caption).foregroundColor(.red) }
                     Toggle("Include cartoon weapons", isOn: $includeCartoonWeapons)
                         .font(.caption).tint(.red).foregroundColor(.white.opacity(0.8))
                         .accessibilityIdentifier("studio.image-library.weapons")
+                    HStack {
+                        Text("\(matches.count) matching pictures").font(.caption)
+                            .accessibilityIdentifier("studio.image-library.matches")
+                        Spacer()
+                        Button("Clear filters") {
+                            query = ""; category = nil; collection = "All"; includeCartoonWeapons = true; searchFocused = false
+                        }.font(.caption).foregroundColor(.red)
+                    }.foregroundColor(.white.opacity(0.7))
                     Text("Choose a picture to preview it. Add attaches it to a new image layer. This build supports one imported picture per frame.")
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                 }
@@ -56,7 +86,11 @@ struct StudioImageLibraryView: View {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 12) {
                             ForEach(matches) { item in
-                                Button { onSelect(catalogue, item) } label: {
+                                VStack(spacing: 4) {
+                                Button {
+                                    let store = preferences(catalogue); store.recordPreview(item.id); recent = store.recent
+                                    onSelect(catalogue, item)
+                                } label: {
                                     VStack(alignment: .leading, spacing: 8) {
                                         StudioLibraryThumbnail(item: item, catalogue: catalogue)
                                             .frame(height: 106).frame(maxWidth: .infinity)
@@ -71,6 +105,16 @@ struct StudioImageLibraryView: View {
                                 .buttonStyle(.plain)
                                 .accessibilityLabel("Preview \(item.title), free CC0 picture by Kenney")
                                 .accessibilityIdentifier("studio.image-library.item." + item.id)
+                                Button {
+                                    let store = preferences(catalogue)
+                                    preferenceNotice = store.toggleFavorite(item.id) ? nil : "You can keep up to 256 favorites. Remove one before adding another."
+                                    favorites = Set(store.favorites)
+                                } label: {
+                                    Label(favorites.contains(item.id) ? "Favorited" : "Favorite",
+                                          systemImage: favorites.contains(item.id) ? "star.fill" : "star")
+                                        .font(.caption).foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 32)
+                                }.accessibilityIdentifier("studio.image-library.favorite." + item.id)
+                                }
                             }
                         }
                         .padding(20)
@@ -92,6 +136,7 @@ struct StudioImageLibraryView: View {
             do {
                 let loaded = try await StudioImageCatalogue.loadBundled()
                 try Task.checkCancellation(); catalogue = loaded; failure = nil
+                let store = preferences(loaded); favorites = Set(store.favorites); recent = store.recent
             } catch is CancellationError { }
             catch { failure = error.localizedDescription }
         }

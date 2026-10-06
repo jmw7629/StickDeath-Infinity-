@@ -1,10 +1,11 @@
 import SwiftUI
+import UIKit
 
 struct StudioCanvasView: View {
     @ObservedObject var vm: StudioViewModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
-    @GestureState private var gestureActive = false
+    @State private var gestureActive = false
     @State private var input: StudioStrokeInput?
     @State private var imageMoveCapture: StudioViewModel.ImageMoveCapture?
     @State private var imageMoveFrame: AnimationFrame?
@@ -30,8 +31,8 @@ struct StudioCanvasView: View {
     @State private var startedAsArea = false
     @State private var areaCancelled = false
     @State private var panOrigin: CGSize?
-    // A completed gesture still needs its captured context in onEnded.
-    // GestureState resets at touch end, so it cannot own this transaction.
+    // A completed touch still needs its captured context in inputEnded.
+    // UIKit cancellation and backgrounding share the interruption path.
     @State private var colorInput = StudioColorSampleGesture()
     @State private var touchID: UUID?
     @State private var fillInput = StudioFillGesture()
@@ -66,8 +67,8 @@ struct StudioCanvasView: View {
         contextualCanvas
         .onChange(of: gestureActive) { _, active in
             guard !active, let endedTouch = touchID else { return }
-            // Let onEnded consume its capture first. A cancelled gesture has
-            // no onEnded callback; clear only that touch on the next turn.
+            // Let inputEnded consume its capture first; clear only the same
+            // interrupted touch on the next turn.
             Task { @MainActor in
                 await Task.yield()
                 guard !gestureActive, touchID == endedTouch else { return }
@@ -284,7 +285,18 @@ struct StudioCanvasView: View {
                 .frame(width: size.width, height: size.height)
                 .clipped()
                 .contentShape(Rectangle())
-                .gesture(gesture(size: size))
+                .overlay {
+                    StudioTouchSurface(onChanged: { value in
+                        gestureActive = true
+                        inputChanged(value, size: size)
+                    }, onEnded: { value in
+                        inputEnded(value, size: size)
+                        gestureActive = false
+                    }, onCancelled: {
+                        gestureActive = false
+                        interruptInput("Touch input was cancelled. The incomplete draft remains unsaved.")
+                    }).accessibilityHidden(true)
+                }
                 .scaleEffect(vm.canvasScale)
                 .offset(vm.canvasOffset)
                 .shadow(color: .black.opacity(0.4), radius: 12)
@@ -304,10 +316,7 @@ struct StudioCanvasView: View {
         let width = max(1, size.width * 0.9), height = max(1, size.height * 0.9)
         return width / height > ratio ? CGSize(width: height * ratio, height: height) : CGSize(width: width, height: width / ratio)
     }
-    private func gesture(size: CGSize) -> some Gesture {
-        DragGesture(minimumDistance: 0)
-            .updating($gestureActive) { _, active, _ in active = true }
-            .onChanged { value in
+    private func inputChanged(_ value: StudioTouchValue, size: CGSize) {
                 if touchID == nil {
                     touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
                     startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
@@ -417,7 +426,7 @@ struct StudioCanvasView: View {
                                 .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil)
                     } catch { vm.message = error.localizedDescription; return }
                 }
-                do { try input?.append(location: value.location, time: value.time) }
+                do { try input?.append(location: value.location, time: value.time, pressure: value.pressure) }
                 catch { inputFailure = error.localizedDescription; return }
                 let now = ProcessInfo.processInfo.systemUptime
                 // Capture every supported sample; only preview regeneration is
@@ -436,8 +445,8 @@ struct StudioCanvasView: View {
                         liveElement = previewElement; livePrepared = next; lastPreviewTime = now
                     } catch { previewFailure = error.localizedDescription }
                 }
-            }
-            .onEnded { value in
+    }
+    private func inputEnded(_ value: StudioTouchValue, size: CGSize) {
                 defer { clearInput() }
                 guard vm.pendingBrushStroke == nil else { return }
                 if startedAsSmudge {
@@ -548,7 +557,7 @@ struct StudioCanvasView: View {
                             reason: inputFailure, inputComplete: false, mirror: captured.mirror)
                     } else {
                         do {
-                            try captured.append(location: value.location, time: value.time)
+                            try captured.append(location: value.location, time: value.time, pressure: value.pressure)
                             _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
                         } catch {
                             vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
@@ -559,7 +568,6 @@ struct StudioCanvasView: View {
                 }
                 if vm.selectedTool == .zoom { vm.zoomIn(); return }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
-            }
     }
     @ViewBuilder private var inputStatusOverlay: some View {
                 if dodgeBurnSession.isApplying {
@@ -859,5 +867,100 @@ struct GridOverlay: View {
             let color: Color = settings.tint == .blue ? .blue : settings.tint == .red ? .red : .gray
             context.stroke(path, with: .color(color.opacity(settings.opacity)), lineWidth: 0.5)
         }
+    }
+}
+
+// UIKit provides real coalesced Pencil samples; SwiftUI's DragGesture does not
+// expose pressure. Both Pencil and finger now use the same Studio transaction.
+private struct StudioTouchValue {
+    let location: CGPoint
+    let startLocation: CGPoint
+    let time: Date
+    let pressure: CGFloat?
+    var translation: CGSize { CGSize(width: location.x-startLocation.x, height: location.y-startLocation.y) }
+}
+
+private struct StudioTouchSurface: UIViewRepresentable {
+    var onChanged: (StudioTouchValue) -> Void
+    var onEnded: (StudioTouchValue) -> Void
+    var onCancelled: () -> Void
+    func makeUIView(context: Context) -> StudioTouchView {
+        let view = StudioTouchView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = true
+        view.isAccessibilityElement = false
+        updateUIView(view, context: context)
+        return view
+    }
+    func updateUIView(_ view: StudioTouchView, context: Context) {
+        view.changed = onChanged; view.ended = onEnded; view.cancelled = onCancelled
+    }
+    static func dismantleUIView(_ view: StudioTouchView, coordinator: ()) { view.cancelStroke() }
+}
+
+private final class StudioTouchView: UIView {
+    var changed: ((StudioTouchValue) -> Void)?
+    var ended: ((StudioTouchValue) -> Void)?
+    var cancelled: (() -> Void)?
+    private var active: UITouch?
+    private var held = Set<UITouch>()
+    private var start = CGPoint.zero
+    private var startTime: TimeInterval = 0
+    private var startDate = Date()
+    private var lastTime: TimeInterval = -.infinity
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        held.formUnion(touches)
+        if let active {
+            // Ignore palm contacts while Pencil owns the stroke. Additional
+            // fingers cancel finger drawing rather than connecting segments.
+            if active.type != .pencil { cancelStroke() }
+            return
+        }
+        guard let touch = touches.first(where: { $0.type == .pencil }) ?? (held.count == 1 ? touches.first : nil),
+              touch.type == .pencil || touch.type == .direct else { return }
+        // Do not restart a cancelled multi-touch gesture until all contacts lift.
+        guard held.count == 1 || touch.type == .pencil else { return }
+        active = touch; start = touch.preciseLocation(in: self)
+        startTime = touch.timestamp; startDate = Date(); lastTime = -.infinity
+        emit(touch, event: event)
+    }
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard let active, touches.contains(active) else { return }
+        emit(active, event: event)
+    }
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        defer { held.subtract(touches) }
+        guard let active, touches.contains(active) else { return }
+        emit(active, event: event)
+        let final = value(active)
+        self.active = nil
+        ended?(final)
+    }
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let active, touches.contains(active) { cancelStroke() }
+        held.subtract(touches)
+    }
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { cancelStroke(); held.removeAll() }
+    }
+    func cancelStroke() {
+        guard active != nil else { return }
+        active = nil; cancelled?()
+    }
+    private func emit(_ touch: UITouch, event: UIEvent?) {
+        // Predicted samples are deliberately excluded from persisted artwork.
+        for sample in event?.coalescedTouches(for: touch) ?? [touch] {
+            guard sample.timestamp >= startTime, sample.timestamp > lastTime else { continue }
+            lastTime = sample.timestamp
+            changed?(value(sample))
+        }
+    }
+    private func value(_ touch: UITouch) -> StudioTouchValue {
+        let pressure: CGFloat? = touch.type == .pencil && touch.maximumPossibleForce > 0
+            ? min(1, max(0, touch.force / touch.maximumPossibleForce)) : nil
+        return StudioTouchValue(location: touch.preciseLocation(in: self), startLocation: start,
+            time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure)
     }
 }

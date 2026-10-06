@@ -58,6 +58,7 @@ private struct StudioAudioWorkspace: View {
                 if !Task.isCancelled { catalogueError = error.localizedDescription }
             }
         }
+        .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
         .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil }
         .onChange(of: vm.document.revision) { _, _ in
@@ -163,7 +164,7 @@ private struct StudioAudioWorkspace: View {
     private var library: some View {
         VStack(spacing: 10) {
             HStack {
-                if category != nil { Button("‹") { category = nil }.frame(width: 32, height: 44) }
+                if category != nil { Button("‹") { category = nil }.frame(width: 32, height: 44).accessibilityLabel("All sound categories") }
                 Text(category ?? "Sound Library").font(.specialElite(16))
                 Spacer()
                 Button { showingLibrary = false } label: {
@@ -216,11 +217,25 @@ private struct StudioAudioWorkspace: View {
         }
     }
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
-        LazyVStack(spacing: 8) {
+        let results = catalogue.search(search, category: category)
+        return LazyVStack(spacing: 8) {
+            HStack {
+                Text("\(results.count) matching sounds").font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .accessibilityIdentifier("studio.audio.search.count")
+                Spacer()
+                Button("Clear filters") { search = ""; category = nil; searchFocused = false }
+                    .font(.caption).foregroundColor(.sdStudioActionText)
+                    .accessibilityIdentifier("studio.audio.search.clear")
+            }.padding(.horizontal, 16)
+            if results.isEmpty {
+                Text("No sounds match these filters. Try another word or clear the filters.")
+                    .font(.caption).foregroundColor(.sdStudioSecondaryText).padding(16)
+                    .accessibilityIdentifier("studio.audio.search.empty")
+            }
             Picker("Add sounds to track", selection: $libraryTrack) {
                 ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
             }.tint(.sdStudioActionText).accessibilityIdentifier("studio.audio.catalogue.track")
-            ForEach(catalogue.search(search, category: category)) { sound in
+            ForEach(results) { sound in
                 HStack(spacing: 12) {
                     Button {
                         timeline.stop(); vm.stopPlayback()

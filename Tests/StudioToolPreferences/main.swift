@@ -130,6 +130,18 @@ private struct Failure: Error { let message: String }
         cold.selectDrawingTool(.pen); try require(cold.brushFamily == .dipPen && cold.strokeWidth == 6, "New production instance lost pen preferences")
         cold.selectDrawingTool(.rectangle); try require(cold.shapeFilled && cold.shapeCornerRadius == 23, "New production instance lost shape preferences")
         pass("actual UserDefaults and fresh production view model restore persisted preferences")
+        vm.selectDrawingTool(.brush); vm.pressureSensitivity = true
+        let pressureCapture = try vm.brushDescriptor(elementID: "pressure-captured")
+        try require(pressureCapture.pressureEnabled, "Pressure toggle did not change the real brush descriptor")
+        vm.selectDrawingTool(.pen)
+        try require(!vm.pressureSensitivity, "Pressure preference leaked into another tool")
+        let pressureReopened = StudioViewModel(toolDefaults: UserDefaults(suiteName: suite))
+        pressureReopened.selectDrawingTool(.brush)
+        try require(pressureReopened.pressureSensitivity, "Pressure preference was lost on cold launch")
+        vm.selectDrawingTool(.brush); vm.pressureSensitivity = false
+        try require(pressureCapture.pressureEnabled && !(try vm.brushDescriptor(elementID: "pressure-off")).pressureEnabled,
+                    "Changing pressure modified an already captured stroke or failed to affect the next stroke")
+
 
         vm.selectDrawingTool(.brush); vm.resetCurrentDrawingToolPreferences()
         try require(vm.strokeWidth == 3 && vm.strokeOpacity == 1 && vm.brushFamily == .round, "Reset failed")

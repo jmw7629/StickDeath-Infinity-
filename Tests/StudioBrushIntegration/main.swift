@@ -112,6 +112,20 @@ private func rejects(_ operation: () throws -> Void) throws {
             try rejects { try input.append(location: .zero, time: started.addingTimeInterval(0.01)) }
             try require(input.element == beforeTimingError, "Invalid event timing mutated captured stroke")
             print("PASS production touch capture uses measured timestamps/stable identity and no invented pressure")
+            var pencilInput = input
+            try pencilInput.append(location: CGPoint(x: 105, y: 88), time: started.addingTimeInterval(0.25), pressure: 0.2)
+            try pencilInput.append(location: CGPoint(x: 110, y: 88), time: started.addingTimeInterval(0.375), pressure: 0.9)
+            try require(pencilInput.points.suffix(2).map(\.pressure) == [0.2, 0.9], "Real normalized pressure was lost")
+            let encodedPencil = try JSONEncoder().encode(pencilInput.element)
+            try require(try JSONDecoder().decode(DrawnElement.self, from: encodedPencil) == pencilInput.element,
+                        "Pressure samples did not survive document encoding")
+            let beforePressureError = pencilInput.element
+            for invalid: CGFloat in [-0.1, 1.1, .nan, .infinity] {
+                try rejects { try pencilInput.append(location: .zero, time: started.addingTimeInterval(0.5), pressure: invalid) }
+            }
+            try require(pencilInput.element == beforePressureError, "Invalid pressure partially modified the stroke")
+            print("PASS real pressure capture survives encoding and rejects invalid force without partial edits")
+
 
             var halfLayer = CanvasLayer(id: "half", name: "Half"); halfLayer.opacity = 0.5
             let halfStroke = stroke(halfLayer.id, opacity: 0.5)

@@ -12,6 +12,7 @@ struct StudioProjectLibrary: View {
     @State private var customWidth = 1080
     @State private var customHeight = 1920
     @State private var search = ""
+    @FocusState private var searchFocused: Bool
     @State private var sort: ProjectSort = .modified
     private enum ProjectSort: String, CaseIterable, Identifiable {
         case modified = "Recently edited", title = "Name", frames = "Frame count"
@@ -57,8 +58,10 @@ struct StudioProjectLibrary: View {
                     TextField("Search projects", text: $search)
                         .foregroundColor(.white).textInputAutocapitalization(.never)
                         .autocorrectionDisabled().accessibilityIdentifier("studio.library.search")
+                        .focused($searchFocused).submitLabel(.search)
+                        .onSubmit { searchFocused = false }
                     if !search.isEmpty {
-                        Button { search = "" } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray) }
+                        Button { search = ""; searchFocused = false } label: { Image(systemName: "xmark.circle.fill").foregroundColor(.gray) }
                             .accessibilityLabel("Clear project search")
                     }
                     Menu {
@@ -90,6 +93,7 @@ struct StudioProjectLibrary: View {
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
                         ForEach(matchingProjects, id: \.id) { project in
+                            ZStack(alignment: .topTrailing) {
                             Button { Task { await vm.openProject(project) } } label: {
                                 VStack(alignment: .leading, spacing: 10) {
                                     ZStack {
@@ -111,17 +115,21 @@ struct StudioProjectLibrary: View {
                             }
                             .accessibilityIdentifier("studio.project.\(project.id.uuidString)")
                             .accessibilityLabel(project.title)
-                            .contextMenu {
-                                Button { Task { await vm.duplicateProject(project) } } label: {
-                                    Label("Duplicate Project", systemImage: "doc.on.doc")
-                                }.disabled(vm.isManagingProjects)
-                                Button(role: .destructive) { removal = project } label: {
-                                    Label("Move to Recently Deleted", systemImage: "trash")
-                                }
+                            .contextMenu { projectActions(project) }
+                            Menu { projectActions(project) } label: {
+                                Image(systemName: "ellipsis.circle.fill")
+                                    .font(.system(size: 22)).foregroundColor(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(Color(hex: "17171F").opacity(0.95), in: Circle())
+                            }
+                            .accessibilityLabel("Actions for " + project.title)
+                            .accessibilityIdentifier("studio.project-actions.\(project.id.uuidString)")
+                            .padding(12)
                             }
                         }
                     }
-                }.refreshable { await vm.loadProjects() }
+                }.scrollDismissesKeyboard(.interactively)
+                    .refreshable { await vm.loadProjects() }
             }.padding(16).disabled(vm.isManagingProjects)
         }
         .confirmationDialog("Move this project to Recently Deleted?", isPresented: Binding(
@@ -197,6 +205,14 @@ struct StudioProjectLibrary: View {
                     }
                 }
             }.preferredColorScheme(.dark)
+        }
+    }
+    @ViewBuilder private func projectActions(_ project: AnimationMetadata) -> some View {
+        Button { searchFocused = false; Task { await vm.duplicateProject(project) } } label: {
+            Label("Duplicate Project", systemImage: "doc.on.doc")
+        }.disabled(vm.isManagingProjects)
+        Button(role: .destructive) { searchFocused = false; removal = project } label: {
+            Label("Move to Recently Deleted", systemImage: "trash")
         }
     }
 }

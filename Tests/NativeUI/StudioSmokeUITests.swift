@@ -7,6 +7,54 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testProjectLibraryDuplicateRecoveryAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate() }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        app.buttons["studio.back"].tap()
+        let original = app.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(original.waitForExistence(timeout: 8))
+        try waitForButton("Actions for " + name, in: app).tap()
+        try waitForButton("Duplicate Project", in: app).tap()
+        let copiedName = name + " Copy"
+        let copied = app.buttons.matching(NSPredicate(format: "label == %@", copiedName)).firstMatch
+        XCTAssertTrue(copied.waitForExistence(timeout: 8))
+        XCTAssertTrue(original.exists, "Duplicating removed the original")
+        let search = app.textFields["studio.library.search"]
+        search.tap(); search.typeText(copiedName)
+        XCTAssertTrue(copied.exists)
+        XCTAssertFalse(original.exists, "Project search did not filter by the entered name")
+        try waitForButton("Clear project search", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5), "Clearing project search must dismiss the keyboard before project actions")
+        try waitForButton("Actions for " + copiedName, in: app).tap()
+        // Exercise the menu directly; screenshot collection during the native
+        // menu transition can block XCTest before the recovery assertions run.
+        // The restored library and cold-open canvas are captured below.
+        try waitForButton("Move to Recently Deleted", in: app).tap()
+        try waitForButton("Move " + copiedName + " to Recently Deleted", in: app).tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: copied).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(original.exists, "Deleting the copy removed the original")
+        app.buttons["studio.library.recently-deleted"].tap()
+        let recoveredRow = app.cells.containing(.staticText, identifier: copiedName).firstMatch
+        XCTAssertTrue(recoveredRow.waitForExistence(timeout: 8))
+        recoveredRow.buttons["Restore"].tap()
+        try waitForButton("Done", in: app).tap()
+        XCTAssertTrue(copied.waitForExistence(timeout: 8))
+        // Finish the persistence journey before collecting diagnostic imagery.
+        // A screenshot-service timeout must not prevent cold-reopen assertions.
+        app.terminate()
+        let reopened = try launchGuestStudio()
+        defer { reopened.terminate() }
+        let restored = reopened.buttons.matching(NSPredicate(format: "label == %@", copiedName)).firstMatch
+        XCTAssertTrue(restored.waitForExistence(timeout: 8), "Restored copy was lost after relaunch")
+        restored.tap()
+        XCTAssertTrue(reopened.descendants(matching: .any)["studio.canvas"].firstMatch.waitForExistence(timeout: 8))
+        capture(reopened, name: "project-library-restored-cold-open")
+    }
+
+    @MainActor
     func testRotoscopePhotosActualPlayheadUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -4615,7 +4663,7 @@ final class StudioSmokeUITests: XCTestCase {
     private func waitForButton(_ label: String, in app: XCUIApplication, timeout: TimeInterval = 10) throws -> XCUIElement {
         let element = button(label, in: app)
         XCTAssertTrue(element.waitUntilPresent(timeout: timeout), "Missing native button: \(label)")
-        XCTAssertTrue(element.isHittable, "Native button is not reachable: \(label)")
+        XCTAssertTrue(expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element).waitUntilFulfilled(timeout: timeout), "Native button is not reachable: \(label)")
         return element
     }
 

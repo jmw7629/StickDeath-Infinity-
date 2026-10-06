@@ -458,9 +458,12 @@ struct StudioStrokeInput {
     var mirror: StudioMirrorCapture? = nil
     private(set) var points: [StrokePoint] = []
 
-    mutating func append(location: CGPoint, time: Date) throws {
+    mutating func append(location: CGPoint, time: Date, pressure: CGFloat? = nil) throws {
         guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
             throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
+        }
+        guard pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+            throw StudioBrushError.invalidSettings("Touch pressure must be normalized from zero to one.")
         }
         let limit = brush == nil && eraser == nil ? 100_000 : 8_192
         guard points.count < limit else {
@@ -508,7 +511,7 @@ struct StudioStrokeInput {
                 point = CGPoint(x: start.x+dx*fraction, y: start.y+dy*fraction)
             }
         }
-        points.append(StrokePoint(x: point.x, y: point.y, pressure: nil, timestamp: elapsed))
+        points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed))
     }
     /// Editor-only ruler guide, never part of a DrawnElement or export.
     var rulerGuide: [CGPoint] {

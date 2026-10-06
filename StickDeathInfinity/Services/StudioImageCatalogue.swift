@@ -178,3 +178,35 @@ struct StudioImageCatalogue: Sendable {
         }
     }
 }
+
+/// Device-local catalogue IDs only; never artwork, project data or network state.
+struct StudioImageLibraryPreferences {
+    private let defaults: UserDefaults
+    private let allowed: Set<String>
+    private let prefix = "studio.image-library.v1."
+    init(defaults: UserDefaults = .standard, allowedIDs: Set<String>) {
+        self.defaults = defaults; allowed = allowedIDs
+    }
+    private func read(_ key: String, limit: Int) -> [String] {
+        guard let data = defaults.data(forKey: prefix + key), data.count <= 65536,
+              let ids = try? JSONDecoder().decode([String].self, from: data), ids.count <= 512 else { return [] }
+        var seen = Set<String>()
+        return Array(ids.filter { allowed.contains($0) && seen.insert($0).inserted }.prefix(limit))
+    }
+    var favorites: [String] { read("favorites", limit: 256) }
+    var recent: [String] { read("recent", limit: 50) }
+    @discardableResult func toggleFavorite(_ id: String) -> Bool {
+        guard allowed.contains(id) else { return false }
+        var ids = favorites
+        if let index = ids.firstIndex(of: id) { ids.remove(at: index) }
+        else { guard ids.count < 256 else { return false }; ids.append(id) }
+        guard let data = try? JSONEncoder().encode(ids) else { return false }
+        defaults.set(data, forKey: prefix + "favorites"); return true
+    }
+    func recordPreview(_ id: String) {
+        guard allowed.contains(id) else { return }
+        let ids = [id] + recent.filter { $0 != id }
+        if let data = try? JSONEncoder().encode(Array(ids.prefix(50))) { defaults.set(data, forKey: prefix + "recent") }
+    }
+    func clearRecent() { defaults.removeObject(forKey: prefix + "recent") }
+}

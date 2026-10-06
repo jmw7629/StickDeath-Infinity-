@@ -127,7 +127,7 @@ final class StudioViewModel: ObservableObject {
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
     @Published var smoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
-    @Published var pressureSensitivity = false
+    @Published var pressureSensitivity = false { didSet { rememberDrawingToolPreferences() } }
     @Published var brushFamily: StudioBrushFamily = .round { didSet { rememberDrawingToolPreferences() } }
     @Published var brushTipAngle: Double = 45 { didSet { rememberDrawingToolPreferences() } }
     @Published var brushTexture: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
@@ -271,7 +271,7 @@ final class StudioViewModel: ObservableObject {
     }
     func brushDescriptor(elementID: String, seed: UInt64? = nil) throws -> StudioBrushDescriptor {
         let value = StudioBrushDescriptor(family: brushFamily, seed: seed ?? StudioBrushRenderer.seed(for: elementID),
-            smoothing: smoothing, pressureEnabled: false, tipAngleDegrees: brushTipAngle,
+            smoothing: smoothing, pressureEnabled: pressureSensitivity, tipAngleDegrees: brushTipAngle,
             texture: brushTexture, grain: brushGrain,
             gradientEndColor: brushFamily == .gradient ? try StudioBrushGeometryCache.color(Self.hex(brushGradientEndColor)) : nil)
         _ = try value.settings(width: strokeWidth, opacity: capturedStrokeOpacity)
@@ -294,7 +294,7 @@ final class StudioViewModel: ObservableObject {
             dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones,
             lineAngleSnap: lineAngleSnap, equalShapeSides: equalShapeSides,
             lineRulerEnabled: lineRulerEnabled, lineRulerAngle: lineRulerAngle,
-            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode)
+            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -309,6 +309,7 @@ final class StudioViewModel: ObservableObject {
         defer { restoringToolPreferences = false }
         let value = toolPreferences.settings(for: selectedTool)
         strokeWidth = value.width; strokeOpacity = value.opacity; smoothing = value.smoothing
+        pressureSensitivity = value.pressureSensitivity ?? false
         brushFamily = value.family; brushTipAngle = value.tipAngle
         brushTexture = value.texture; brushGrain = value.grain
         brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
@@ -2539,6 +2540,7 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var lineRulerFixedLength: Bool? = nil
         var lineRulerLength: Double? = nil
         var mirrorMode: StudioMirrorMode? = nil
+        var pressureSensitivity: Bool? = nil
 
         var isValid: Bool {
             (lineRulerAngle.map { $0.isFinite && (-180...180).contains($0) } ?? true) &&

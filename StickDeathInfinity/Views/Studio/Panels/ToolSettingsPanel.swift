@@ -240,8 +240,9 @@ struct FloatingToolSettingsPanel: View {
                     .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
                     Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                 }
-                SettingsToggle(label: "Pressure Sensitivity", isOn: .constant(false), accent: .red).disabled(true)
-                Text("Pressure input is unavailable in this build. Size and measured stroke timing work with touch; saved pressure data remains supported.")
+                SettingsToggle(label: "Pressure Sensitivity", isOn: $vm.pressureSensitivity, accent: .red)
+                    .accessibilityIdentifier("studio.brush.pressure")
+                Text("Uses measured Apple Pencil force when available. Finger drawing keeps a steady width. This setting is saved separately for each drawing tool.")
                     .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
             }
             

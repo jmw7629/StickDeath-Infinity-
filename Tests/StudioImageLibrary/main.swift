@@ -820,6 +820,23 @@ private final class NetworkTrap: URLProtocol {
             try require(cache.entries <= 32 && cache.bytes <= DeviceStorageManager.maximumSnapshotFrameCacheBytes,
                 "Attribution escaped bounded snapshot cache accounting")
         }
+        try await test("device-local favorites and recent previews survive reopen and reject unknown catalogue IDs") {
+            let suite = "sdi-image-preferences-" + UUID().uuidString
+            let defaults = UserDefaults(suiteName: suite)!
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let ids = catalogue.images.map(\.id)
+            let store = StudioImageLibraryPreferences(defaults: defaults, allowedIDs: Set(ids))
+            try require(store.toggleFavorite(ids[0]), "Favorite not saved")
+            try require(!store.toggleFavorite("unknown.asset"), "Unknown asset accepted")
+            for id in ids.prefix(60) { store.recordPreview(id) }
+            store.recordPreview(ids[0])
+            let reopened = StudioImageLibraryPreferences(defaults: defaults, allowedIDs: Set(ids))
+            try require(reopened.favorites == [ids[0]], "Favorite lost on reopen")
+            try require(reopened.recent.count == 50 && reopened.recent.first == ids[0] && Set(reopened.recent).count == 50, "Recent previews unbounded or duplicated")
+            reopened.clearRecent()
+            try require(reopened.recent.isEmpty && reopened.favorites == [ids[0]], "Clear recent erased favorites")
+            try require(reopened.toggleFavorite(ids[0]) && reopened.favorites.isEmpty, "Unfavorite failed")
+        }
         try require(NetworkTrap.count == 0, "Library attempted a network request")
         print("STUDIO_IMAGE_LIBRARY_TESTS=PASS \(groups)/\(groups), 207 actual thumbnails, zero network requests")
     }
