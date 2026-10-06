@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import AVFoundation
 import UniformTypeIdentifiers
 
 /// Uses the original Add Picture surface with actual picker, decoding and
@@ -16,6 +17,9 @@ struct StudioImageImportPanel: View {
     @State private var filesRequest: StudioImagePickerRequest?
     @State private var photosRequest: StudioImagePickerRequest?
     @State private var libraryRequest: StudioImagePickerRequest?
+    @State private var cameraRequest: StudioImagePickerRequest?
+    @State private var cameraPermissionToken: UUID?
+    @State private var cameraAuthorized = false
     @FocusState private var timingFieldFocused: Bool
     @State private var sourceStart = 0.0
     @State private var sourceEnd = 1.0
@@ -81,6 +85,48 @@ struct StudioImageImportPanel: View {
     private func refreshScope() {
         scopeHolder.value = scope
         session.refreshScope(scopeHolder.value)
+    }
+
+    private func cancelPendingCamera() {
+        guard cameraRequest != nil || cameraPermissionToken != nil else { return }
+        cameraRequest = nil; cameraPermissionToken = nil; cameraAuthorized = false
+        session.cancel()
+    }
+    private func beginCamera() {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            vm.message = "This device has no available camera. Use Photos, Files or the Image Library."
+            return
+        }
+        guard let token = session.beginPicker(in: vm, scope: scope) else { return }
+        refreshScope(); cameraPermissionToken = token; cameraAuthorized = false
+        Task { @MainActor in
+            let granted: Bool
+            switch AVCaptureDevice.authorizationStatus(for: .video) {
+            case .authorized: granted = true
+            case .notDetermined: granted = await AVCaptureDevice.requestAccess(for: .video)
+            default: granted = false
+            }
+            guard cameraPermissionToken == token, !session.isClosed else { return }
+            guard granted else {
+                cameraPermissionToken = nil
+                session.pickerFailed(StudioCameraFailure.permission, token: token)
+                return
+            }
+            cameraAuthorized = true
+            presentAuthorizedCamera()
+        }
+    }
+    private func presentAuthorizedCamera() {
+        guard cameraAuthorized, let token = cameraPermissionToken else { return }
+        guard session.status == .picking, scope.isStudioVisible else {
+            cameraPermissionToken = nil; cameraAuthorized = false; return
+        }
+        guard scope.isForeground else { return }
+        cameraPermissionToken = nil; cameraAuthorized = false
+        guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+            session.pickerFailed(StudioCameraFailure.unavailable, token: token); return
+        }
+        cameraRequest = .init(id: token)
     }
 
     var body: some View {
@@ -170,8 +216,11 @@ struct StudioImageImportPanel: View {
                         Text("Camera recording and whole-video timeline import are not available yet.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
                     } else {
-                    AddImageOption(icon: "camera.fill", title: "Take Photo", subtitle: "Camera capture is not available yet", action: {})
-                        .disabled(true).opacity(0.45)
+                    AddImageOption(icon: "camera.fill", title: "Take Photo", subtitle: "Capture a still photo, preview it, then add it") { beginCamera() }
+                        .disabled(session.isClosed || session.isWorking || session.status == .picking)
+                        .accessibilityIdentifier("studio.image.camera")
+                    Text("Camera photos are encoded as a still JPEG for preview. They are not saved to Photos or uploaded. Captures above 16 megapixels or 16 MB are rejected.")
+                        .font(.caption).foregroundColor(.white.opacity(0.6))
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Paste an image").font(.specialElite(16)).foregroundColor(.white)
                         Text("Tap Paste to preview one copied JPEG, PNG or HEIF image. Nothing is added until you choose Add to current frame.")
@@ -222,6 +271,26 @@ struct StudioImageImportPanel: View {
                 .id(request.id)
             }
         }
+        .sheet(item: $cameraRequest) { request in
+            StudioCameraPicker { result in
+                guard cameraRequest?.id == request.id else { return }
+                cameraRequest = nil
+                switch result {
+                case .success(let provider):
+                    if let provider {
+                        let holder = scopeHolder
+                        _ = session.receivePhoto(provider, token: request.id, currentScope: { holder.value })
+                    } else { session.pickerCancelled(token: request.id) }
+                case .failure(let error): session.pickerFailed(error, token: request.id)
+                }
+            }
+            .id(request.id)
+            .presentationDetents([.large])
+            .onDisappear {
+                session.pickerCancelled(token: request.id)
+                if cameraRequest?.id == request.id { cameraRequest = nil }
+            }
+        }
         .sheet(item: $photosRequest) { request in
             StudioPhotoPicker(videoFrameMode: videoFrameMode) { provider in
                 guard photosRequest?.id == request.id else { return }
@@ -259,19 +328,21 @@ struct StudioImageImportPanel: View {
         }
         .onAppear { isVisible = true; refreshScope() }
         .onDisappear {
+            cameraPermissionToken = nil; cameraAuthorized = false; cameraRequest = nil
             isVisible = false; refreshScope(); session.close()
             if vm.activePanel == (videoFrameMode ? .rotoscope : .addImage) { vm.activePanel = .none }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { session.cancel() }
+            if phase == .background { session.cancel(); cameraPermissionToken = nil; cameraAuthorized = false; cameraRequest = nil }
             refreshScope()
+            if phase == .active { presentAuthorizedCamera() }
         }
         .onChange(of: authVM.userId) {
-            refreshScope(); session.close(); filesRequest = nil; photosRequest = nil; libraryRequest = nil
+            refreshScope(); session.close(); filesRequest = nil; photosRequest = nil; libraryRequest = nil; cameraRequest = nil; cameraPermissionToken = nil; cameraAuthorized = false
             if vm.activePanel == (videoFrameMode ? .rotoscope : .addImage) { vm.activePanel = .none }
         }
-        .onChange(of: vm.document.id) { refreshScope() }
-        .onChange(of: vm.document.revision) { refreshScope() }
+        .onChange(of: vm.document.id) { cancelPendingCamera(); refreshScope() }
+        .onChange(of: vm.document.revision) { cancelPendingCamera(); refreshScope() }
         .onChange(of: vm.activePanel) { refreshScope() }
         .onChange(of: vm.isEditing) { refreshScope() }
     }
@@ -371,5 +442,60 @@ private final class StudioClipboardImageTarget: UIView {
     override func paste(itemProviders: [NSItemProvider]) {
         guard isUserInteractionEnabled else { return }
         onPaste(itemProviders)
+    }
+}
+
+private enum StudioCameraFailure: LocalizedError {
+    case permission, unavailable, image
+    var errorDescription: String? {
+        switch self {
+        case .permission: return "Camera access is denied or restricted. Enable camera access for SDI in Settings, or use Photos or Files. Nothing was added."
+        case .unavailable: return "The camera is unavailable on this device. Use Photos or Files. Nothing was added."
+        case .image: return "The camera photo could not be prepared within the 16-megapixel and 16-MB limits. Capture a smaller still image or use Photos. Nothing was added."
+        }
+    }
+}
+
+/// Explicit still capture only; no microphone, photo-library write or upload.
+/// https://developer.apple.com/documentation/uikit/uiimagepickercontroller
+private struct StudioCameraPicker: UIViewControllerRepresentable {
+    let completion: (Result<NSItemProvider?, Error>) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(completion: completion) }
+    func makeUIViewController(context: Context) -> UIViewController {
+        guard UIImagePickerController.isSourceTypeAvailable(.camera),
+              AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
+            DispatchQueue.main.async { context.coordinator.finish(.failure(StudioCameraFailure.unavailable)) }
+            return UIViewController()
+        }
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.mediaTypes = [UTType.image.identifier]
+        picker.cameraCaptureMode = .photo
+        picker.allowsEditing = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller: UIViewController, context: Context) {}
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let completion: (Result<NSItemProvider?, Error>) -> Void
+        private var finished = false
+        init(completion: @escaping (Result<NSItemProvider?, Error>) -> Void) { self.completion = completion }
+        func finish(_ result: Result<NSItemProvider?, Error>) {
+            guard !finished else { return }; finished = true; completion(result)
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { finish(.success(nil)) }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            guard !finished, let image = info[.originalImage] as? UIImage, let pixels = image.cgImage,
+                  pixels.width > 0, pixels.height > 0, pixels.width <= 16_000_000 / pixels.height,
+                  let data = image.jpegData(compressionQuality: 0.95), data.count <= 16 * 1024 * 1024 else {
+                finish(.failure(StudioCameraFailure.image)); return
+            }
+            let provider = NSItemProvider()
+            provider.suggestedName = "Camera photo.jpg"
+            provider.registerDataRepresentation(forTypeIdentifier: UTType.jpeg.identifier, visibility: .ownProcess) { complete in
+                complete(data, nil); return nil
+            }
+            finish(.success(provider))
+        }
     }
 }

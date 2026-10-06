@@ -6,6 +6,14 @@ import SwiftUI
 
 struct ProjectSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var projectName = ""
+    @State private var capturedProjectID: UUID?
+    @State private var capturedRevision = -1
+    private func loadName() {
+        projectName = vm.projectName; capturedProjectID = vm.document.id; capturedRevision = vm.document.revision
+    }
     @State private var showingOnionSettings = false
     @State private var showingGridSettings = false
     
@@ -38,9 +46,27 @@ struct ProjectSettingsPanel: View {
             .padding(.bottom, 12)
             
             // Project Settings row
-            PanelSettingsRow(icon: "⚙️", label: "Project Settings") {
-                // Navigate to project settings detail
-            }
+            VStack(alignment: .leading, spacing: 10) {
+                Text("PROJECT SETTINGS").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.gray)
+                TextField("Project name", text: $projectName)
+                    .textFieldStyle(.roundedBorder).foregroundColor(.black)
+                    .accessibilityIdentifier("studio.settings.name")
+                Text("\(vm.canvasWidth) × \(vm.canvasHeight) · \(vm.fps) FPS · \(vm.frames.count) frames")
+                    .font(.caption).foregroundColor(.gray)
+                HStack {
+                    Button("Rename project") {
+                        guard let id = capturedProjectID, scenePhase == .active else { return }
+                        if vm.renameProject(projectName, expectedProjectID: id, expectedRevision: capturedRevision) { loadName() }
+                    }
+                    .disabled(scenePhase != .active || vm.isSaving || vm.isPlaying || projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectName.count > 120)
+                    .accessibilityIdentifier("studio.settings.rename")
+                    Spacer()
+                    Button("Reload name") { loadName() }.accessibilityIdentifier("studio.settings.reload-name")
+                }.font(.caption).foregroundColor(.red)
+                Text("Rename keeps the same project and artwork. Undo restores the previous name.")
+                    .font(.caption2).foregroundColor(.gray)
+                if let message = vm.message { Text(message).font(.caption).foregroundColor(.red) }
+            }.padding(14)
             
             Divider().background(Color.white.opacity(0.05)).padding(.horizontal, 14)
             
@@ -120,9 +146,9 @@ struct ProjectSettingsPanel: View {
             
             if showingGridSettings { StudioGridSettingsControls(vm: vm) }
 
-            PanelSettingsRow(icon: "✨", label: "Magic Cut") {}
-            PanelSettingsRow(icon: "🖼", label: "Background Library") {}
-            PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") {}
+            PanelSettingsRow(icon: "✨", label: "Magic Cut") { vm.activePanel = .magicCut }
+            PanelSettingsRow(icon: "🖼", label: "Background Library") { vm.activePanel = .backgroundLibrary }
+            PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") { vm.activePanel = .rotoscope }
             
             PanelSettingsRow(icon: "📸", label: "Add Picture") {
                 vm.activePanel = .addImage
@@ -141,6 +167,9 @@ struct ProjectSettingsPanel: View {
         }
         .background(Color(hex: "#1a1a24"))
         .cornerRadius(16, corners: [.topLeft, .topRight])
+        .onAppear { loadName() }
+        .onChange(of: authVM.userId) { projectName = ""; capturedProjectID = nil; vm.activePanel = .none }
+        .onChange(of: vm.document.id) { projectName = ""; capturedProjectID = nil; vm.activePanel = .none }
     }
 }
 

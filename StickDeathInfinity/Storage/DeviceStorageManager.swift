@@ -299,6 +299,65 @@ class DeviceStorageManager {
         try FileManager.default.removeItem(at: projectDir)
     }
 
+    // Recoverable deletion moves the entire bundle, including historical files.
+    // There is deliberately no automatic expiry or permanent-delete UI.
+    private func recoveryStore(create: Bool) throws -> DeviceStorageManager? {
+        let root = documentsDir.appendingPathComponent(".sdi-recently-deleted", isDirectory: true)
+        let marker = Data("SDI-PROJECT-RECOVERY-1\n".utf8)
+        if !itemExists(root) {
+            guard create else { return nil }
+            try checkedDirectory(documentsDir, create: true)
+            let staging = documentsDir.appendingPathComponent(".sdi-recovery-init-" + UUID().uuidString, isDirectory: true)
+            try checkedDirectory(staging, create: true)
+            try marker.write(to: staging.appendingPathComponent("format"), options: .withoutOverwriting)
+            try FileManager.default.moveItem(at: staging, to: root)
+        }
+        try checkedDirectory(root)
+        guard try checkedFile(root.appendingPathComponent("format"), maximumBytes: 64) == marker else {
+            throw AnimationStorageError.storageCollision
+        }
+        let store = DeviceStorageManager(documentsDirectory: root, cachesDirectory: suppliedCachesDirectory)
+        if create { try checkedDirectory(store.animationsDir, create: true) }
+        return store
+    }
+
+    func saveNewAnimation(_ project: AnimationProject) throws {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        try checkedDirectory(animationsDir, create: true)
+        guard !itemExists(animationsDir.appendingPathComponent(project.id.uuidString)) else {
+            throw AnimationStorageError.storageCollision
+        }
+        try saveAnimation(project)
+    }
+
+    func recoverableDeleteAnimation(id: UUID) throws {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        try checkedDirectory(animationsDir)
+        let source = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        try checkedDirectory(source)
+        guard let recovery = try recoveryStore(create: true) else { throw AnimationStorageError.storageCollision }
+        let destination = recovery.animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        guard !itemExists(destination) else { throw AnimationStorageError.storageCollision }
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
+    func listRecoverableAnimations() throws -> AnimationStorageListing {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        return try recoveryStore(create: false)?.listAnimationsReportingFailures() ?? AnimationStorageListing()
+    }
+
+    func restoreAnimation(id: UUID) throws {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        guard let recovery = try recoveryStore(create: false) else { throw AnimationStorageError.storageCollision }
+        try checkedDirectory(recovery.animationsDir)
+        let source = recovery.animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        try checkedDirectory(source)
+        try checkedDirectory(animationsDir, create: true)
+        let destination = animationsDir.appendingPathComponent(id.uuidString, isDirectory: true)
+        guard !itemExists(destination) else { throw AnimationStorageError.storageCollision }
+        try FileManager.default.moveItem(at: source, to: destination)
+    }
+
     private func revisionDirectory(_ projectDir: URL, create: Bool) throws -> URL {
         let storage = projectDir.appendingPathComponent(".sdi", isDirectory: true)
         if !itemExists(storage), create {

@@ -73,6 +73,11 @@ private final class NetworkTrap: URLProtocol {
                 let before = studio.document
                 for (question, expected) in [
                     ("How do I make phone calls?", "have been removed"),
+                    ("How do I restore a deleted project?", "refuses to overwrite either copy"),
+                    ("How do I duplicate my project?", "new project identity"),
+                    ("How do I create custom canvas dimensions?", "16–4096 pixels"),
+                    ("Camera permission was denied when I take a photo", "no microphone recording"),
+                    ("Can you refund my subscription charge?", "cannot inspect your billing account"),
                     ("How do I generate a walking stick figure?", "8–20 frames"),
                     ("How does Voice Maker speech work?", "installed system voice"),
                     ("How do I remove an image background?", "edge-connected pixels"),

@@ -78,6 +78,25 @@ private final class Observation: @unchecked Sendable {
                 try require(image.originalData == bytes && image.width == 24 && image.height == 12, "Real decoder lost provider bytes")
                 try owned.cleanup(); try owned.cleanup()
             }
+            try await test("in-memory still JPEG provider survives real file transfer decode and cleanup") { _, scratch in
+                let png = try image()
+                let source = CGImageSourceCreateWithData(png as CFData, nil)!
+                let pixels = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+                let encoded = NSMutableData()
+                let destination = CGImageDestinationCreateWithData(encoded, "public.jpeg" as CFString, 1, nil)!
+                CGImageDestinationAddImage(destination, pixels, nil)
+                try require(CGImageDestinationFinalize(destination), "JPEG encoding failed")
+                let bytes = encoded as Data
+                let p = NSItemProvider(); p.suggestedName = "Camera photo.jpg"
+                p.registerDataRepresentation(forTypeIdentifier: "public.jpeg", visibility: .ownProcess) { done in
+                    done(bytes, nil); return nil
+                }
+                let owned = try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch)
+                let decoded = try await StudioImageImportService().importImage(from: owned.url(), name: owned.displayName, scratchParent: scratch)
+                try require(decoded.originalData == bytes && decoded.width == 24 && decoded.height == 12,
+                            "In-memory camera-style provider lost actual JPEG data")
+                try owned.cleanup()
+            }
             try await test("registered preferred supported format retained without generic coercion") { folder, scratch in
                 let source = folder.appendingPathComponent("source.png"); try image().write(to: source)
                 let p = provider(source, type: "public.heic")

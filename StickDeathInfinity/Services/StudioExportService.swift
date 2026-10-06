@@ -157,8 +157,10 @@ final class StudioExportService {
     }
 
     func render(_ frame: AnimationFrame, document: StudioDocument,
-                        background: Background, raster: Data?) throws -> CGImage {
+                        background: Background, raster: Data?, thumbnail: Bool = false) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
+        let ratio = thumbnail ? min(1, 256 / max(size.width, size.height)) : 1
+        let output = CGSize(width: max(1, floor(size.width * ratio)), height: max(1, floor(size.height * ratio)))
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers, data: raster)
         let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers,
@@ -168,15 +170,28 @@ final class StudioExportService {
             if background == .white { context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white)) }
             drawingError = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
                 canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedRaster: image, preparedSmudges: smudges)
-        }.frame(width: size.width, height: size.height)
+        }.frame(width: output.width, height: output.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
         renderer.isOpaque = background == .white
-        guard let image = renderer.cgImage, image.width == document.width, image.height == document.height else {
+        guard let image = renderer.cgImage, image.width == Int(output.width), image.height == Int(output.height) else {
             throw ExportError.renderFailed
         }
         if let drawingError { throw drawingError }
         return image
+    }
+
+    func projectThumbnail(document: StudioDocument, raster: Data?) throws -> Data {
+        try document.validate()
+        guard let frame = document.frames.first else { throw ExportError.renderFailed }
+        let image = try render(frame, document: document, background: .white, raster: raster, thumbnail: true)
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw ExportError.encodeFailed
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination), data.length <= 512 * 1024 else { throw ExportError.encodeFailed }
+        return data as Data
     }
 
     private func writePNG(_ image: CGImage, to url: URL) throws -> Int {

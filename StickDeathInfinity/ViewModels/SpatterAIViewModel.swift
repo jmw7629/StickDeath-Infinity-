@@ -165,6 +165,10 @@ final class SpatterAIViewModel: ObservableObject {
     /// These are instructions for the user, never execution receipts.
     static let currentStudioCapabilities = """
     Studio uses one snapping toolbar and one dismissible tool-options popup. Tool-specific settings differ.
+    The offline project library supports search, sorting, actual edit dates, separate project copies and Recently Deleted restoration.
+    Returning to the library saves a real first-frame preview when rendering succeeds. Custom canvas sides are 16–4096 pixels.
+    Rename in Project Settings preserves identity and artwork and supports Undo. Recently Deleted has no automatic purge.
+    Take Photo is an explicit still-camera permission flow with preview and a separate Add action; it does not record audio.
     The Color panel accepts six-digit RGB hex and remembers recent colors on this device.
     Layers have real thumbnails, drag/arrow reordering, visibility, opacity, blending and full locking.
     Move's Lock layers locks the selected elements' entire layers across every frame; it is not object or alpha locking.
@@ -187,6 +191,21 @@ final class SpatterAIViewModel: ObservableObject {
         }
         if mentions("publish", "publication", "upload", "youtube", "marketing") {
             return "Export creates a file on your device; it does not publish it. Official-channel uploads and marketing need separate creator permissions, asset rights and moderation. Every Spatter-generated public video also needs Joe's approval of the exact render. Connected automatic publishing is not available yet."
+        }
+        if mentions("refund", "billing", "subscription", "charge", "charged", "payment", "stripe") {
+            return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent."
+        }
+        if mentions("camera", "photo", "photograph") && mentions("take", "capture", "permission", "denied") {
+            return "Open Add Picture in Studio, then Take Photo. The app asks for camera permission only when you choose capture. Review the still image, then explicitly Add it to the project; cancelling changes nothing. There is no microphone recording. If access is denied, enable camera access in iOS Settings before retrying. Hardware availability varies; Photos and Files remain alternatives."
+        }
+        if mentions("project", "projects", "library") && mentions("delete", "deleted", "trash", "restore", "recover") {
+            return "In the project library, open the selected project's context menu and choose Move to Recently Deleted, then confirm. The complete bundle stays on your device. Open Recently Deleted and choose Restore to return it. There is no automatic purge or permanent-delete button. If another project already uses its identity, restoration refuses to overwrite either copy. This does not recover files deleted outside the app."
+        }
+        if mentions("project", "projects") && mentions("duplicate", "copy", "copies", "rename", "name") {
+            return "Use Duplicate Project in a saved project's context menu to create a separate local copy with a new project identity. To rename the open animation, use Studio's Project Settings, edit its name and choose Rename project; Undo restores the previous name. A stale settings form must reload its name before applying. Neither action publishes or uploads your work."
+        }
+        if mentions("canvas") && mentions("size", "dimensions", "custom", "width", "height") {
+            return "Choose New Project in the library, then Custom canvas. Each side must be 16–4096 pixels; Swap width and height changes orientation before creation. Select the animation FPS before creating. This creates a new project rather than resizing existing artwork. Large canvases and effects require more memory, and export formats have separate limits."
         }
         if mentions("voice", "speech", "narration", "narrator") {
             return "Open Voice Maker from Studio's menu. Enter your script, choose an installed system voice and generate local speech. Preview the real recording, then explicitly add it to the audio timeline. Availability depends on installed voices; this uses no microphone or cloud provider. Audio placement and volume can be edited afterward."

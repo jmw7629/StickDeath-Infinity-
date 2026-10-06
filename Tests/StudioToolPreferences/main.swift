@@ -222,6 +222,51 @@ private struct Failure: Error { let message: String }
         let sanitizedPalette = StudioViewModel(storage: paletteStorage, toolDefaults: constraintDefaults)
         try require(sanitizedPalette.recentColorHexes == ["#FFFFFF", "#102030"], "Stored swatches were not normalized and deduplicated")
         pass("custom drawing and gradient colors validate exact bytes; recent swatches persist bounded without document edits and render real pixels")
+        let renameStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Rename"))
+        let renameVM = StudioViewModel(storage: renameStore)
+        let madeRename = await renameVM.createProject(name: "Before", width: 128, height: 128, fps: 12)
+        try require(madeRename, "Rename project creation failed")
+        let renameOriginal = renameVM.document
+        try require(renameVM.renameProject("  After  ", expectedProjectID: renameOriginal.id, expectedRevision: renameOriginal.revision), "Valid rename rejected")
+        try require(renameVM.projectName == "After" && renameVM.document.id == renameOriginal.id && renameVM.document.frames == renameOriginal.frames && renameVM.document.layers == renameOriginal.layers, "Rename changed project identity or artwork")
+        renameVM.undo(); try require(renameVM.projectName == "Before", "Rename undo lost title")
+        renameVM.redo(); try require(renameVM.projectName == "After", "Rename redo failed")
+        let renamed = renameVM.document
+        try require(!renameVM.renameProject("Stale", expectedProjectID: renameOriginal.id, expectedRevision: renameOriginal.revision) && renameVM.document == renamed, "Stale rename overwrote intervening edit")
+        try require(!renameVM.renameProject("Wrong", expectedProjectID: UUID(), expectedRevision: renamed.revision) && renameVM.document == renamed, "Foreign project rename accepted")
+        for invalid in ["  ", String(repeating: "a", count: 121), "bad\u{0000}name"] {
+            try require(!renameVM.renameProject(invalid, expectedProjectID: renamed.id, expectedRevision: renamed.revision) && renameVM.document == renamed, "Invalid name mutated project")
+        }
+        try require(renameVM.renameProject("After", expectedProjectID: renamed.id, expectedRevision: renamed.revision) && renameVM.document == renamed, "No-op rename changed revision")
+        let renameSaved = await renameVM.save(); try require(renameSaved, "Renamed project save failed")
+        let reopenedRename = StudioViewModel(storage: renameStore); await reopenedRename.loadProjects()
+        try require(reopenedRename.savedProjects.count == 1 && reopenedRename.savedProjects[0].title == "After" && reopenedRename.savedProjects[0].id == renameOriginal.id, "Rename created another project or stale library entry")
+        let renameOpened = await reopenedRename.openProject(reopenedRename.savedProjects[0])
+        try require(renameOpened && reopenedRename.projectName == "After" && reopenedRename.document.frames == renameOriginal.frames, "Cold reopen lost renamed title or artwork")
+        pass("project rename preserves identity artwork one-step Undo Redo and actual cold persistence; stale invalid and no-op edits are bounded")
+        reopenedRename.projectThumbnailRenderer = { document, raster in
+            try StudioExportService().projectThumbnail(document: document, raster: raster)
+        }
+        await reopenedRename.backToProjects()
+        let originalMetadata = reopenedRename.savedProjects[0]
+        try require(originalMetadata.thumbnailData?.isEmpty == false, "Returning to library did not persist a real thumbnail")
+        let thumbnail = originalMetadata.thumbnailData!
+        guard let thumbSource = CGImageSourceCreateWithData(thumbnail as CFData, nil),
+              let thumbImage = CGImageSourceCreateImageAtIndex(thumbSource, 0, nil) else {
+            throw Failure(message: "Saved thumbnail is not a decodable image")
+        }
+        try require(thumbImage.width == 128 && thumbImage.height == 128, "Thumbnail dimensions changed aspect ratio")
+        await reopenedRename.duplicateProject(originalMetadata)
+        try require(reopenedRename.savedProjects.count == 2, "Duplicate not listed")
+        guard let duplicateMetadata = reopenedRename.savedProjects.first(where: { $0.id != renameOriginal.id }) else { throw Failure(message: "Duplicate identity missing") }
+        let duplicateOpened = await reopenedRename.openProject(duplicateMetadata)
+        try require(duplicateOpened && reopenedRename.projectName == "After Copy" && reopenedRename.document.frames == renameOriginal.frames, "Duplicate lost artwork/name")
+        await reopenedRename.backToProjects()
+        await reopenedRename.moveProjectToRecovery(duplicateMetadata.id)
+        try require(reopenedRename.savedProjects.count == 1 && reopenedRename.recoverableProjects.count == 1, "VM removal did not refresh listings")
+        await reopenedRename.restoreProject(duplicateMetadata.id)
+        try require(reopenedRename.savedProjects.count == 2 && reopenedRename.recoverableProjects.isEmpty, "VM restore did not refresh listings")
+        pass("project duplicate uses distinct identity and actual archive validation; recoverable removal and restore refresh actual library")
         print("PASS \(passed) production tool-preference groups")
     }
 }

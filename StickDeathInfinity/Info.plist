@@ -38,6 +38,8 @@
         <key>UIApplicationSupportsMultipleScenes</key>
         <true/>
     </dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Take a still photo to preview and add to your Studio project on this device.</string>
     <key>NSPhotoLibraryUsageDescription</key>
     <string>StickDeath Infinity needs photo library access to import images and export animations.</string>
     <!-- URL Schemes for OAuth Callback (Google Sign In, Supabase redirects) -->

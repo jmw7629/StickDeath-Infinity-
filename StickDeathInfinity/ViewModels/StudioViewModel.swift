@@ -37,6 +37,8 @@ final class StudioViewModel: ObservableObject {
     private let storage: DeviceStorageManager
     @Published private var imageClipboard: AnimationFrame?
     private var copiedImageLayer: CanvasLayer?
+    var projectThumbnailRenderer: ((StudioDocument, Data?) throws -> Data)?
+    private var projectThumbnailData: Data?
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
     private var retainedAudioTracks: [AudioTrack] = []
     private var managedAudioTracks: [UUID: AudioTrack] = [:]
@@ -572,11 +574,50 @@ final class StudioViewModel: ObservableObject {
             if !listing.failures.isEmpty { message = "Some projects could not be read. Their original files have been preserved." }
         } catch { message = "Projects could not be listed: \(error.localizedDescription)" }
     }
+    @Published private(set) var isManagingProjects = false
+    func duplicateProject(_ metadata: AnimationMetadata) async {
+        guard !isEditing, !isSaving, !isManagingProjects else { return }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        // Use the same full archive/asset validation as opening a project. The
+        // temporary editor never replaces or changes the user's current session.
+        let source = StudioViewModel(storage: storage)
+        guard await source.openProject(metadata) else { message = source.message; return }
+        do {
+            let title = String(source.document.name.prefix(115)) + " Copy"
+            let copy = try source.document.duplicated(name: title)
+            let project = try source.storageProject(copy, rasters: source.retainedRasterFrames)
+            try storage.saveNewAnimation(project)
+            message = nil; await loadProjects()
+        } catch { message = "Copy could not be saved. Original preserved: \(error.localizedDescription)" }
+    }
+    @Published var recoverableProjects: [AnimationMetadata] = []
+    func loadRecoverableProjects() {
+        do {
+            let listing = try storage.listRecoverableAnimations()
+            recoverableProjects = listing.animations.sorted { $0.modifiedAt > $1.modifiedAt }
+            if !listing.failures.isEmpty { message = "Some recovered projects need repair. Their original files remain preserved." }
+        } catch { message = "Recently Deleted could not be read: \(error.localizedDescription)" }
+    }
+    func moveProjectToRecovery(_ id: UUID) async {
+        guard !isEditing, !isSaving, !isManagingProjects else { message = "Save and return to projects before removing an animation."; return }
+        do {
+            try storage.recoverableDeleteAnimation(id: id)
+            message = nil; await loadProjects(); loadRecoverableProjects()
+        } catch { message = "Project was not removed: \(error.localizedDescription)" }
+    }
+    func restoreProject(_ id: UUID) async {
+        guard !isEditing, !isSaving, !isManagingProjects else { return }
+        do {
+            try storage.restoreAnimation(id: id)
+            message = nil; await loadProjects(); loadRecoverableProjects()
+        } catch { message = "Project could not be restored. Both copies remain preserved: \(error.localizedDescription)" }
+    }
     @discardableResult
     func createProject(name: String, width: Int, height: Int, fps: Int) async -> Bool {
         guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
+            projectThumbnailData = nil
             imageClipboard = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
             savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
             return await save()
@@ -653,6 +694,7 @@ final class StudioViewModel: ObservableObject {
             // Only records explicitly referenced by the new clip schema become
             // managed; opaque historical/unrelated records remain preserved.
             let managed = stored.audioTracks.filter { importedIDs.contains($0.id) && $0.legacySourceFilename == nil }
+            projectThumbnailData = stored.metadata.thumbnailData
             imageClipboard = nil; copiedImageLayer = nil; editor = nextEditor; retainedRasterFrames = rasters
             let managedIDs = Set(managed.map(\.id))
             retainedAudioTracks = stored.audioTracks.filter { !managedIDs.contains($0.id) }
@@ -664,13 +706,40 @@ final class StudioViewModel: ObservableObject {
         } catch { message = "Project could not be opened: \(error.localizedDescription)"; return false }
     }
     @discardableResult
-    func save() async -> Bool {
+    func renameProject(_ name: String, expectedProjectID: UUID, expectedRevision: Int) -> Bool {
+        do {
+            try requireOpenCommandEditor()
+            guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before renaming the project.") }
+            guard document.id == expectedProjectID, document.revision == expectedRevision else {
+                throw StudioDocumentError.unavailable("The project changed. Reload its current name before renaming.")
+            }
+            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, title.count <= 120, title.utf8.count <= 480,
+                  title.rangeOfCharacter(from: .controlCharacters) == nil else {
+                throw StudioDocumentError.invalid("Use a project name of 1–120 characters without control characters.")
+            }
+            guard title != document.name else { message = nil; return true }
+            var candidate = editor
+            try candidate.change { $0.name = title }
+            try preflightRasterDocument(candidate.document)
+            editor = candidate; scheduleSave(); message = nil
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func save(updateThumbnail: Bool = false) async -> Bool {
         guard isEditing, !isSaving else { return !isDirty }
         autosaveTask?.cancel(); autosaveTask = nil
         isSaving = true
         defer { isSaving = false }
         do {
             let snapshot = document
+            if updateThumbnail, let renderThumbnail = projectThumbnailRenderer {
+                // Optional preview generation never blocks preservation of the editable project.
+                projectThumbnailData = try? renderThumbnail(snapshot,
+                    snapshot.frames.first?.rasterAssetID.flatMap { retainedRasterFrames[$0]?.imageData })
+            }
             try storage.saveAnimation(storageProject(snapshot, rasters: retainedRasterFrames))
             savedRevision = snapshot.revision; lastSaveTime = Date(); message = nil
             await loadProjects()
@@ -692,7 +761,7 @@ final class StudioViewModel: ObservableObject {
             message = "Retry or explicitly discard the rejected brush draft before leaving this project."
             return
         }
-        guard await save(), !isDirty else { return }
+        guard await save(updateThumbnail: true), !isDirty else { return }
         isEditing = false; activePanel = .none; await loadProjects()
     }
     func flush() async { if isEditing && isDirty { _ = await save() } }
@@ -2209,7 +2278,7 @@ final class StudioViewModel: ObservableObject {
         }
         let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
             canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
-            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: nil)
+            layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: projectThumbnailData)
         return AnimationProject(id: snapshot.id, metadata: metadata, frames: frames,
             audioTracks: try audioTracks ?? audioTracksForSave(snapshot),
             editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded())

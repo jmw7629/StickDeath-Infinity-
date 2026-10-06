@@ -18,7 +18,12 @@ struct StudioView: View {
             if vm.isEditing { editorBody }
             else { StudioProjectLibrary(vm: vm) }
         }
-        .task { await vm.loadProjects() }
+        .task {
+            vm.projectThumbnailRenderer = { document, raster in
+                try StudioExportService().projectThumbnail(document: document, raster: raster)
+            }
+            await vm.loadProjects()
+        }
         .onChange(of: scenePhase) { phase in
             if phase != .active { vm.stopPlayback(); Task { await vm.flush() } }
         }

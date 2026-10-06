@@ -39,6 +39,18 @@ struct StudioDocument: Codable, Equatable {
         return value
     }
 
+    /// Preserve every editable setting while allocating a new project identity.
+    func duplicated(name: String, id: UUID = UUID(), date: Date = Date()) throws -> Self {
+        let copy = Self(schemaVersion: schemaVersion, id: id, name: name,
+            width: width, height: height, fps: fps, frames: frames, layers: layers,
+            activeFrameID: activeFrameID, activeLayerID: activeLayerID,
+            audioClips: audioClips, mutedAudioTracks: mutedAudioTracks, audioTrackVolumes: audioTrackVolumes,
+            gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
+            onionSettings: onionSettings, createdAt: date, modifiedAt: date, revision: 0)
+        try copy.validate()
+        return copy
+    }
+
     var totalTimelineTicks: Int { frames.reduce(0) { $0 + $1.durationTicks } }
     var durationSeconds: Double { Double(totalTimelineTicks) / Double(max(1, fps)) }
     func startTick(ofFrame index: Int) -> Int {

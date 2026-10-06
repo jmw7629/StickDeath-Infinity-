@@ -74,3 +74,7 @@ Primary platform references checked September 19, 2026:
 - [YouTube Developer Policies](https://developers.google.com/youtube/terms/developer-policies): channel identification, visibility, use of data and prior specific express consent for automated actions.
 - [YouTube Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality): upload UI and privacy choices.
 - [Apple App Review Guidelines](https://developer.apple.com/app-store/review/guidelines/): user-generated content moderation and privacy requirements.
+
+### Studio still camera (October 6 implementation)
+
+An explicit Take Photo action may request camera access solely to capture a still image for the existing on-device preview/import flow. It does not authorize room camera sharing, video recording, microphone access, writing to Photos or uploading. Denial, cancellation and unavailable hardware must remain truthful. Native device capture verification remains a release gate.

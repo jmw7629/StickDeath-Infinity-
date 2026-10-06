@@ -280,6 +280,46 @@ private final class CommitFailureStore: DeviceStorageManager {
             try rejects { _ = try store.saveMedia(data: red, type: .audio, filename: "tone.wav") }
             try require(try Data(contentsOf: saved) == tone, "Existing media overwritten")
         }
+        test("new-project save refuses an existing project identity") {
+            let (store, _) = try fixture(); let original = project(); try store.saveNewAnimation(original)
+            var replacement = original; replacement.metadata.title = "Overwrite"
+            try rejects { try store.saveNewAnimation(replacement) }
+            try require(try store.loadAnimation(id: original.id)?.metadata.title == "Fixture", "New project overwrote existing identity")
+        }
+        test("recoverable removal preserves the complete bundle and restores across store restart") {
+            let (store, root) = try fixture(); let original = project()
+            try store.saveAnimation(original)
+            let directory = store.animationsDir.appendingPathComponent(original.id.uuidString)
+            let opaque = directory.appendingPathComponent("historical-original.bin")
+            try tone.write(to: opaque)
+            try store.recoverableDeleteAnimation(id: original.id)
+            try require(try store.loadAnimation(id: original.id) == nil, "Removed project still active")
+            let restarted = DeviceStorageManager(documentsDirectory: root)
+            try require(try restarted.listRecoverableAnimations().animations.map(\.id) == [original.id], "Recovery did not survive restart")
+            try restarted.restoreAnimation(id: original.id)
+            try require(try restarted.loadAnimation(id: original.id)?.frames.first?.imageData == red, "Restored pixels changed")
+            try require(try Data(contentsOf: opaque) == tone, "Historical bytes were not retained")
+            try require(try restarted.listRecoverableAnimations().animations.isEmpty, "Restored project still in recovery")
+        }
+        test("restore and repeated removal collisions preserve both project copies") {
+            let (store, _) = try fixture(); let original = project()
+            try store.saveAnimation(original); try store.recoverableDeleteAnimation(id: original.id)
+            var conflicting = original; conflicting.metadata.title = "Collision"
+            try store.saveAnimation(conflicting)
+            try rejects { try store.restoreAnimation(id: original.id) }
+            try rejects { try store.recoverableDeleteAnimation(id: original.id) }
+            try require(try store.loadAnimation(id: original.id)?.metadata.title == "Collision", "Active collision overwritten")
+            try require(try store.listRecoverableAnimations().animations.first?.title == "Fixture", "Recovery collision overwritten")
+        }
+        test("unrecognized recovery directory is not adopted or overwritten") {
+            let (store, root) = try fixture(); let original = project(); try store.saveAnimation(original)
+            let recovery = root.appendingPathComponent(".sdi-recently-deleted")
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+            try red.write(to: recovery.appendingPathComponent("owner-file"))
+            try rejects { try store.recoverableDeleteAnimation(id: original.id) }
+            try require(try store.loadAnimation(id: original.id) != nil, "Failed removal moved original")
+            try require(try Data(contentsOf: recovery.appendingPathComponent("owner-file")) == red, "Unknown recovery content overwritten")
+        }
         print("DEVICE_STORAGE_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed > 0 { exit(1) }
     }

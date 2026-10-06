@@ -38,8 +38,11 @@ def verify(root: Path = ROOT) -> None:
     excludes = set(re.findall(r"^          - (.+)$", spec, re.M))
     assert EXCLUSIONS <= excludes, "XcodeGen can reintroduce retired code"
     plist = plistlib.loads((root / "StickDeathInfinity/Info.plist").read_bytes())
-    assert not {"NSCameraUsageDescription", "NSMicrophoneUsageDescription",
+    assert not {"NSMicrophoneUsageDescription",
                 "NSContactsUsageDescription", "LIVEKIT_WS_URL"} & plist.keys()
+    # Camera is limited to explicit still-image acquisition inside Studio.
+    # Calls/rooms retain no camera or microphone path.
+    assert plist.get("NSCameraUsageDescription") == "Take a still photo to preview and add to your Studio project on this device."
     main = (root / "StickDeathInfinity/Views/Main/MainTabView.swift").read_text()
     assert "case .rooms:" in main and "CollabRoomView()" in main
     assert "case .messages:" not in main and "MessagesView()" not in main
@@ -50,6 +53,12 @@ def verify(root: Path = ROOT) -> None:
         if path.name not in sources:
             continue
         content = path.read_text()
+        if "AVCaptureDevice" in content or "UIImagePickerController" in content:
+            assert path.relative_to(root).as_posix() == "StickDeathInfinity/Views/Studio/Panels/StudioImageImportPanel.swift", str(path)
+            assert "picker.cameraCaptureMode = .photo" in content
+            assert "picker.mediaTypes = [UTType.image.identifier]" in content
+            assert "requestAccess(for: .audio)" not in content
+
         assert not re.search(r"^import LiveKit\b|\b(?:LiveKitService|MessageService)\.shared",
                              content, re.M), str(path)
     for name in ("CollabRoomView", "WarRoomView"):

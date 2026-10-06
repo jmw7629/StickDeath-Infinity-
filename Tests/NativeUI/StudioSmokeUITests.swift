@@ -949,10 +949,10 @@ final class StudioSmokeUITests: XCTestCase {
         canvas.coordinate(withNormalizedOffset:CGVector(dx:0.25,dy:0.4)).tap()
         try selectToolbarTool("move",app:app)
         let copy = app.buttons["studio.selection.copy"]
-        let selectionLock = app.buttons["studio.selection.lock"]
+        let selectionLock = app.buttons["studio.selection.lock-layers"]
         XCTAssertTrue(selectionLock.waitForExistence(timeout: 5))
-        XCTAssertFalse(selectionLock.isEnabled, "Unimplemented selection locking must be explicitly unavailable")
-        XCTAssertTrue(app.staticTexts["studio.selection.lock-unavailable"].exists)
+        XCTAssertTrue(selectionLock.isEnabled, "Explicit selection must enable the implemented whole-layer lock action")
+        XCTAssertTrue(app.staticTexts["studio.selection.lock-scope"].exists, "Whole-layer scope must be disclosed")
         XCTAssertTrue(copy.isHittable && copy.isEnabled); copy.tap()
         app.buttons["studio.tool-settings.close"].tap()
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Copy must not dirty the saved document")
