@@ -161,7 +161,59 @@ final class SpatterAIViewModel: ObservableObject {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { isOrbVisible.toggle() }
     }
 
+    /// Current shipping behavior takes precedence over historical brain packs.
+    /// These are instructions for the user, never execution receipts.
+    static let currentStudioCapabilities = """
+    Studio uses one snapping toolbar and one dismissible tool-options popup. Tool-specific settings differ.
+    The Color panel accepts six-digit RGB hex and remembers recent colors on this device.
+    Layers have real thumbnails, drag/arrow reordering, visibility, opacity, blending and full locking.
+    Move's Lock layers locks the selected elements' entire layers across every frame; it is not object or alpha locking.
+    Voice Maker creates local speech from installed system voices; preview it and explicitly add it to the audio timeline.
+    Magic Cut removes edge-connected pixels matching a chosen color/tolerance in imported images. Preview before Apply.
+    Magic Cut preserves originals and supports Undo; it is not semantic AI segmentation.
+    Spatter's separate Studio edit panel supports bounded editable circle motion, walking/running/jumping/waving stick figures,
+    and selected-audio volume, mute and fades. Choose a complete example and Apply; chat advice does not execute it.
+    Stick recipes support 8–20 frames with color, start/end positions, height and line width at the project's current FPS.
+    The Export panel renders MP4, GIF, PNG sequence or spritesheet. Actual success requires a completed real output file.
+    Open-ended AI video generation, automatic publishing and connected collaboration are not available yet.
+    User messaging, text chat, phone and video calls are removed. Every generated public video needs owner approval of its exact render.
+    """
+
+    private static func currentGuide(for query: String) -> String? {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
+        func mentions(_ values: String...) -> Bool { !words.isDisjoint(with: values) }
+        if mentions("messaging", "messenger", "calls", "calling", "phone", "livekit") {
+            return "User messaging and voice/video calls have been removed. Collaboration rooms are planned for mutually agreed sharing of a Studio project; connected rooms are not available yet. Spatter remains your Studio assistant."
+        }
+        if mentions("publish", "publication", "upload", "youtube", "marketing") {
+            return "Export creates a file on your device; it does not publish it. Official-channel uploads and marketing need separate creator permissions, asset rights and moderation. Every Spatter-generated public video also needs Joe's approval of the exact render. Connected automatic publishing is not available yet."
+        }
+        if mentions("voice", "speech", "narration", "narrator") {
+            return "Open Voice Maker from Studio's menu. Enter your script, choose an installed system voice and generate local speech. Preview the real recording, then explicitly add it to the audio timeline. Availability depends on installed voices; this uses no microphone or cloud provider. Audio placement and volume can be edited afterward."
+        }
+        if mentions("background", "cutout", "segmentation") || (words.contains("magic") && words.contains("cut")) {
+            return "Open Magic Cut for an imported image. Set the background color and tolerance, generate a preview, then Apply to the current frame or explicitly confirm all imported frames. It removes matching edge-connected pixels, not recognized objects. Original images are preserved, and Undo reverses the cut."
+        }
+        if mentions("walking", "running", "jumping", "waving") || (words.contains("stick") && mentions("generate", "build", "animate")) {
+            return "In Studio's Spatter edit panel, open Stick figure examples, choose walking, running, jumping or waving, edit the complete instruction, then Apply. Use 8–20 frames; color, baseline start/end, height and line width affect the editable result. It adds a new layer, preserves current FPS and supports one Undo. This is bounded procedural motion, not open-ended AI video generation. Use Export to render a file."
+        }
+        if mentions("alpha") && mentions("lock", "locking") {
+            return "Alpha locking is not available yet. Full layer locking prevents edits to that layer. Move's Lock layers locks each selected element's entire layer across all frames; use the Layers panel to unlock it."
+        }
+        if mentions("layers", "layer") {
+            return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha locking and imported-image layer duplication remain unavailable."
+        }
+        if mentions("hex", "palette", "colors", "colour") {
+            return "Open Color from the main toolbar. Enter a six-digit RGB hex color and Apply, or select a recent swatch. Recent colors are stored on this device. Gradient start and end colors are separate settings."
+        }
+        if mentions("export", "mp4", "gif", "spritesheet") {
+            return "Open Studio's Export panel and choose MP4, GIF, PNG sequence or spritesheet. Check frame timing, background and visible layers first. MP4 can mix project audio; GIF and still-image outputs are silent. Wait for the real output file before sharing. Cancellation or an error is not export success, and export never authorizes publication."
+        }
+        return nil
+    }
+
     static func localGuidance(for query: String, context: SpatterContext) -> String {
+        if let guide = currentGuide(for: query) { return "💀 Current Studio guide\n\n" + guide + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }

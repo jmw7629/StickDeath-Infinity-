@@ -197,7 +197,7 @@ private struct Failure: Error { let message: String }
         let vm = StudioViewModel(storage: storage)
         let created = await vm.createProject(name: "Saved shapes",width: 128,height: 128,fps: 12)
         try require(created, "Actual VM creates project")
-        vm.selectedTool = .rectangle; vm.shapeFilled = true; vm.shapeCornerRadius = 30; vm.strokeColor = .red
+        vm.selectedTool = .rectangle; vm.shapeFilled = true; vm.shapeCornerRadius = 30; vm.strokeColor = Color(.sRGB, red: 1, green: 0, blue: 0)
         let start = Date(timeIntervalSince1970: 100)
         var input = StudioStrokeInput(id: "captured-shape",frameID: vm.currentFrame.id,layerID: vm.activeLayerID,
             tool: .rectangle,color: vm.strokeColorHex,width: 8,opacity: 1,brush: nil,
@@ -206,7 +206,7 @@ private struct Failure: Error { let message: String }
         try input.append(location: CGPoint(x:32,y:32),time: start)
         try input.append(location: CGPoint(x:224,y:160),time: start.addingTimeInterval(0.2))
         try require(input.element.points.last?.y == 112, "Committed square must constrain the unequal drag")
-        vm.shapeFilled = false; vm.shapeCornerRadius = 0
+        vm.shapeFilled = false; vm.shapeCornerRadius = 0; vm.strokeColor = .blue
         try require(input.element.shape?.cornerRadius == 30 && input.element.shape?.fillColor == "#FF0000", "Gesture retains captured settings")
         try require(vm.commitElement(input.element,frameID: input.frameID), "Actual VM commits shape")
         let drawn = try render(vm.document)

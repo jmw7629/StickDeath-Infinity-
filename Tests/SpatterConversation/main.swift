@@ -67,6 +67,30 @@ private final class NetworkTrap: URLProtocol {
                 try await idle(vm)
                 try require(vm.messages.last!.content != first, "Distinct supported topics returned invariant canned text")
             }
+            try await test("current Studio guidance overrides historical features without executing edits or requesting cloud") {
+                var calls = 0
+                let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                let before = studio.document
+                for (question, expected) in [
+                    ("How do I make phone calls?", "have been removed"),
+                    ("How do I generate a walking stick figure?", "8–20 frames"),
+                    ("How does Voice Maker speech work?", "installed system voice"),
+                    ("How do I remove an image background?", "edge-connected pixels"),
+                    ("How do I alpha lock?", "not available yet"),
+                    ("How do I reorder layers?", "insertion marker"),
+                    ("Can I upload to YouTube?", "separate creator permissions"),
+                    ("How do I enter a hex color?", "six-digit RGB"),
+                    ("How do I export an MP4?", "real output file")
+                ] {
+                    try require(vm.submit(question, context: .messages), "Current guide request rejected")
+                    try await idle(vm)
+                    let answer = vm.messages.last!.content
+                    try require(answer.contains(expected) && answer.contains("Guidance only"), "Current capability guidance missing: \(question)")
+                    try require(vm.messages.last?.origin == .local && vm.status == .localGuide, "Guide falsely classified")
+                }
+                try require(calls == 0 && studio.document == before, "Help performed edits or cloud requests")
+                try require(SpatterKnowledgeBase.allModules.count == 120, "Historical packs were discarded")
+            }
             try await test("empty and oversized UTF-8 drafts fail before message or request creation") {
                 var calls = 0
                 let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
