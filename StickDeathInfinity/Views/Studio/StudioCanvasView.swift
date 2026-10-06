@@ -56,6 +56,7 @@ struct StudioCanvasView: View {
     @State private var startedAsDodgeBurn = false
     @State private var dodgeBurnSubmission: UUID?
     @State private var dodgeBurnTask: Task<Void, Never>?
+    @State private var strokePreviewFrame: AnimationFrame?
     @State private var liveElement: DrawnElement?
     @State private var livePrepared: StudioFrameRenderer.PreparedBrushes?
     @State private var inputFailure: String?
@@ -79,7 +80,7 @@ struct StudioCanvasView: View {
         .onChange(of: vm.isPlaying) { _, _ in cancelMovePreview() }
         .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
         .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
-        .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview() }
+        .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview(); vm.cancelPolygonSelection() }
         .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
@@ -116,7 +117,7 @@ struct StudioCanvasView: View {
         GeometryReader { geo in
             let size = canvasRect(in: geo.size)
             let documentSize = CGSize(width: vm.canvasWidth, height: vm.canvasHeight)
-            let displayedFrame = imageMoveFrame ?? handleFrame ?? moveFrame ?? vm.currentFrame
+            let displayedFrame = imageMoveFrame ?? handleFrame ?? moveFrame ?? strokePreviewFrame ?? vm.currentFrame
             let handles = selectionHandles(frame: displayedFrame, size: size)
             let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: displayedFrame) }
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
@@ -243,18 +244,45 @@ struct StudioCanvasView: View {
                             context.stroke(Path(ellipseIn: rect), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [3, 2]))
                         }
-                        if let first = areaPreview.first {
+                        if let mirror = input?.mirror {
+                            var guide = Path()
+                            if mirror.mode == .vertical || mirror.mode == .both {
+                                guide.move(to: CGPoint(x: actual.width/2, y: 0)); guide.addLine(to: CGPoint(x: actual.width/2, y: actual.height))
+                            }
+                            if mirror.mode == .horizontal || mirror.mode == .both {
+                                guide.move(to: CGPoint(x: 0, y: actual.height/2)); guide.addLine(to: CGPoint(x: actual.width, y: actual.height/2))
+                            }
+                            context.stroke(guide, with: .color(.blue.opacity(0.6)),
+                                style: StrokeStyle(lineWidth: 1/max(0.01,vm.canvasScale), dash: [5,3]))
+                        }
+                        if let guide = input?.rulerGuide, guide.count == 2 {
+                            var ruler = Path()
+                            ruler.move(to: CGPoint(x: guide[0].x/documentSize.width*actual.width, y: guide[0].y/documentSize.height*actual.height))
+                            ruler.addLine(to: CGPoint(x: guide[1].x/documentSize.width*actual.width, y: guide[1].y/documentSize.height*actual.height))
+                            context.stroke(ruler, with: .color(.blue.opacity(0.6)),
+                                style: StrokeStyle(lineWidth: 1/max(0.01,vm.canvasScale), dash: [5,3]))
+                        }
+                        let selectionPreview = vm.areaSelectionKind == .polygon ? vm.currentPolygonSelectionVertices : areaPreview
+                        if let first = selectionPreview.first {
                             func scaled(_ point: CGPoint) -> CGPoint {
                                 CGPoint(x: point.x / documentSize.width * actual.width,
                                         y: point.y / documentSize.height * actual.height)
                             }
                             var outline = Path(); outline.move(to: scaled(first))
-                            areaPreview.dropFirst().forEach { outline.addLine(to: scaled($0)) }
-                            if areaPreview.count >= 3 {
+                            selectionPreview.dropFirst().forEach { outline.addLine(to: scaled($0)) }
+                            if selectionPreview.count >= 3 {
                                 outline.closeSubpath()
                                 context.fill(outline, with: .color(.red.opacity(0.08)), style: FillStyle(eoFill: true))
                             }
                             context.stroke(outline, with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                            if vm.areaSelectionKind == .polygon {
+                                for vertex in selectionPreview {
+                                    let point = scaled(vertex)
+                                    let marker = Path(ellipseIn: CGRect(x: point.x-3, y: point.y-3, width: 6, height: 6))
+                                    context.fill(marker, with: .color(.white))
+                                    context.stroke(marker, with: .color(.red), lineWidth: 1)
+                                }
+                            }
                         }
                     }
                     .accessibilityElement(children: .ignore)
@@ -390,7 +418,13 @@ struct StudioCanvasView: View {
                             opacity: styled || shape != nil ? vm.capturedStrokeOpacity : vm.strokeOpacity,
                             brush: brush,
                             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewportSize: size,
-                            startedAt: value.time, shape: shape, eraser: eraser)
+                            startedAt: value.time, shape: shape, eraser: eraser,
+                            angleSnapDegrees: vm.selectedTool == .line && !vm.lineRulerEnabled ? vm.lineAngleSnap : 0,
+                            equalShapeSides: [.rectangle, .circle].contains(vm.selectedTool) && vm.equalShapeSides,
+                            rulerAngleDegrees: vm.selectedTool == .line && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
+                            rulerLength: vm.selectedTool == .line && vm.lineRulerEnabled && vm.lineRulerFixedLength ? vm.lineRulerLength : nil,
+                            mirror: vm.selectedTool != .eraser && vm.mirrorMode != .off ?
+                                .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil)
                     } catch { vm.message = error.localizedDescription; return }
                 }
                 do { try input?.append(location: value.location, time: value.time) }
@@ -400,8 +434,16 @@ struct StudioCanvasView: View {
                 // coalesced to 30Hz. Commit always prepares the complete input.
                 if now - lastPreviewTime >= 1 / 30, previewFailure == nil, let input {
                     do {
-                        let next = try StudioFrameRenderer.prepare(frame: vm.currentFrame, liveElement: input.element)
-                        liveElement = input.element; livePrepared = next; lastPreviewTime = now
+                        var preview = vm.currentFrame
+                        let previewElement: DrawnElement?
+                        if let mirror = input.mirror {
+                            // Match commit ordering even where translucent gradient copies overlap.
+                            preview.elements.append(contentsOf: try mirror.elements(from: input.element))
+                            previewElement = nil
+                        } else { previewElement = input.element }
+                        let next = try StudioFrameRenderer.prepare(frame: preview, liveElement: previewElement)
+                        strokePreviewFrame = preview
+                        liveElement = previewElement; livePrepared = next; lastPreviewTime = now
                     } catch { previewFailure = error.localizedDescription }
                 }
             }
@@ -475,7 +517,11 @@ struct StudioCanvasView: View {
                 }
                 if startedAsArea {
                     guard updateArea(location: value.location, size: size), let capture = areaCapture else { return }
-                    _ = vm.finishAreaSelection(capture, points: areaTrace.points)
+                    if capture.kind == .polygon {
+                        _ = vm.appendPolygonSelectionVertex(documentPoint(value.location, size: size))
+                    } else {
+                        _ = vm.finishAreaSelection(capture, points: areaTrace.points)
+                    }
                     return
                 }
                 if startedAsMove {
@@ -509,14 +555,14 @@ struct StudioCanvasView: View {
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {
                         vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
-                            reason: inputFailure, inputComplete: false)
+                            reason: inputFailure, inputComplete: false, mirror: captured.mirror)
                     } else {
                         do {
                             try captured.append(location: value.location, time: value.time)
-                            _ = vm.commitElement(captured.element, frameID: captured.frameID)
+                            _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
                         } catch {
                             vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
-                                reason: error.localizedDescription, inputComplete: false)
+                                reason: error.localizedDescription, inputComplete: false, mirror: captured.mirror)
                         }
                     }
                     return
@@ -755,6 +801,7 @@ struct StudioCanvasView: View {
               areaLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else {
             cancelAreaPreview(); return false
         }
+        if capture.kind == .polygon { return true }
         do {
             try areaTrace.append(documentPoint(location, size: size), kind: capture.kind)
             areaPreview = (try? StudioSelectionRegion(points: areaTrace.points, kind: capture.kind,
@@ -774,7 +821,7 @@ struct StudioCanvasView: View {
     }
     private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
-        input = nil; panOrigin = nil; liveElement = nil; livePrepared = nil
+        input = nil; panOrigin = nil; strokePreviewFrame = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
@@ -791,6 +838,7 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
+        vm.cancelPolygonSelection()
         fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()

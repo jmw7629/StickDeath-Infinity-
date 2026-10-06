@@ -1571,7 +1571,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testRectangleSelectionDeleteUndoAndColdReopen() throws {
+    func testRectangleAndPolygonSelectionDeleteUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let name = try createProjectIfLibraryIsShown(app)
@@ -1601,6 +1601,29 @@ final class StudioSmokeUITests: XCTestCase {
         try selectToolbarTool("lasso",app:app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Rectangle must select only the enclosed drawing")
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Selection must not edit the document")
+        app.buttons["studio.lasso.deselect"].tap()
+        let polygon = app.buttons["studio.selection.kind.polygon"]
+        XCTAssertTrue(polygon.isHittable); polygon.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        for point in [CGVector(dx:0.13,dy:0.34), CGVector(dx:0.51,dy:0.34)] {
+            canvas.coordinate(withNormalizedOffset:point).tap()
+        }
+        try selectToolbarTool("lasso",app:app)
+        XCTAssertFalse(app.buttons["studio.selection.polygon.finish"].isEnabled,"Two corners must not finish a polygon")
+        XCTAssertTrue(app.buttons["studio.selection.polygon.cancel"].isEnabled)
+        app.buttons["studio.selection.polygon.cancel"].tap()
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"0 drawings selected")
+        app.buttons["studio.tool-settings.close"].tap()
+        for point in [CGVector(dx:0.13,dy:0.34), CGVector(dx:0.51,dy:0.34),
+                      CGVector(dx:0.51,dy:0.50), CGVector(dx:0.13,dy:0.50)] {
+            canvas.coordinate(withNormalizedOffset:point).tap()
+        }
+        try selectToolbarTool("lasso",app:app)
+        let finishPolygon = app.buttons["studio.selection.polygon.finish"]
+        XCTAssertTrue(finishPolygon.isEnabled && finishPolygon.isHittable); finishPolygon.tap()
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Polygon must enclose the same single drawing")
+        XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Polygon selection must remain transient")
+        capture(app,name:"polygon-selection-finished-with-canonical-drawing")
         let delete = app.buttons["studio.lasso.delete"]
         XCTAssertTrue(delete.isEnabled && delete.isHittable); delete.tap()
         app.buttons["studio.tool-settings.close"].tap()

@@ -107,6 +107,30 @@ private struct Failure: Error { let message: String }
         try require(vm.selectedElementIDs == [red.id], "Exact boundary enclosure rejected")
         pass("freehand uses its closed outline including boundary contact and concave cutouts")
 
+        vm.areaSelectionKind = .polygon
+        vm.areaSelectionSmoothing = 10
+        for point in boundary { try require(vm.appendPolygonSelectionVertex(point), "Polygon vertex rejected") }
+        let polygonRegion = try StudioSelectionRegion(points: boundary, kind: .polygon, smoothing: 10)
+        try require(polygonRegion.points == boundary, "Polygon corners must not inherit freehand smoothing")
+        try require(vm.finishPolygonSelection() && vm.selectedElementIDs == [red.id], "Polygon did not select exact enclosed artwork")
+        try require(vm.currentPolygonSelectionVertices.isEmpty && vm.document == initial && vm.canUndo == undoBefore, "Polygon altered document/history or retained draft")
+        for point in boundary.prefix(2) { try require(vm.appendPolygonSelectionVertex(point), "Polygon draft") }
+        try require(!vm.finishPolygonSelection() && vm.currentPolygonSelectionVertices.count == 2, "Invalid polygon discarded editable draft")
+        vm.message = nil
+        vm.removeLastPolygonSelectionVertex()
+        try require(vm.currentPolygonSelectionVertices.count == 1, "Back did not remove one vertex")
+        vm.cancelPolygonSelection()
+        try require(vm.currentPolygonSelectionVertices.isEmpty && vm.selectedElementIDs == [red.id], "Cancel altered selection")
+        try require(!vm.appendPolygonSelectionVertex(.init(x: -1, y: 0)), "Out-of-canvas polygon vertex accepted")
+        try require(vm.appendPolygonSelectionVertex(boundary[0]), "Stale test draft")
+        vm.selectionMode = .add
+        try require(!vm.appendPolygonSelectionVertex(boundary[1]) && vm.currentPolygonSelectionVertices.isEmpty, "Stale polygon continued after mode change")
+        vm.message = nil; vm.selectionMode = .new
+        for point in notch { try require(vm.appendPolygonSelectionVertex(point), "Concave polygon point") }
+        try require(vm.finishPolygonSelection() && vm.selectedElementIDs.isEmpty, "Concave polygon falsely enclosed artwork")
+        try require(vm.document == initial && !vm.isDirty, "Transient polygon modified saved project")
+        pass("polygon corners remain exact, Back/Cancel preserve artwork and stale/degenerate drafts cannot commit")
+
         let exact = try StudioSelectionRegion(points: boundary, kind: .freehand, smoothing: 0)
         let smoothed = try StudioSelectionRegion(points: boundary, kind: .freehand, smoothing: 3)
         try require(exact.points != smoothed.points && exact.contains(try StudioSelectionRegion.drawingBounds(red)!) && !smoothed.contains(try StudioSelectionRegion.drawingBounds(red)!), "Smoothing was only a label")

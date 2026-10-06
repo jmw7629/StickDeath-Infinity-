@@ -18,6 +18,7 @@ final class StudioViewModel: ObservableObject {
         let element: DrawnElement
         let reason: String
         let inputComplete: Bool
+        let mirror: StudioMirrorCapture?
     }
     @Published private(set) var pendingBrushStroke: PendingBrushStroke?
     @Published private(set) var activeStrokeID: String?
@@ -111,6 +112,13 @@ final class StudioViewModel: ObservableObject {
     @Published var dodgeBurnExposure: Double = 0.25 { didSet { rememberDrawingToolPreferences() } }
     @Published var dodgeBurnRange: StudioDodgeBurn.TonalRange = .midtones { didSet { rememberDrawingToolPreferences() } }
     @Published var dodgeBurnProtectTones = true { didSet { rememberDrawingToolPreferences() } }
+    @Published var mirrorMode: StudioMirrorMode = .off { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineRulerEnabled = false { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineRulerAngle: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineRulerFixedLength = false { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineRulerLength: Double = 100 { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineAngleSnap: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var equalShapeSides = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -249,7 +257,10 @@ final class StudioViewModel: ObservableObject {
             sharpenHardness: sharpenHardness, sharpenRadius: sharpenRadius,
             sharpenAmount: sharpenAmount, sharpenThreshold: sharpenThreshold,
             dodgeBurnHardness: dodgeBurnHardness, dodgeBurnExposure: dodgeBurnExposure,
-            dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones)
+            dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones,
+            lineAngleSnap: lineAngleSnap, equalShapeSides: equalShapeSides,
+            lineRulerEnabled: lineRulerEnabled, lineRulerAngle: lineRulerAngle,
+            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -268,6 +279,10 @@ final class StudioViewModel: ObservableObject {
         brushTexture = value.texture; brushGrain = value.grain
         brushGradientEndColor = Color(red: value.gradientEnd.red, green: value.gradientEnd.green,
                                      blue: value.gradientEnd.blue)
+        mirrorMode = value.mirrorMode ?? .off
+        lineRulerEnabled = value.lineRulerEnabled ?? false; lineRulerAngle = value.lineRulerAngle ?? 0
+        lineRulerFixedLength = value.lineRulerFixedLength ?? false; lineRulerLength = value.lineRulerLength ?? 100
+        lineAngleSnap = value.lineAngleSnap ?? 0; equalShapeSides = value.equalShapeSides ?? false
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
         eraserMode = value.eraserMode ?? .hard
         textStyle = value.textStyle ?? StudioTextStyle()
@@ -730,7 +745,7 @@ final class StudioViewModel: ObservableObject {
     func nextFrame() { if currentFrameIndex + 1 < frames.count { currentFrameIndex += 1 } }
     func prevFrame() { if currentFrameIndex > 0 { currentFrameIndex -= 1 } }
     @discardableResult
-    func commitElement(_ element: DrawnElement, frameID: String? = nil) -> Bool {
+    func commitElement(_ element: DrawnElement, frameID: String? = nil, mirror: StudioMirrorCapture? = nil) -> Bool {
         guard textDraft == nil else { message = "Apply or cancel the text draft before drawing."; return false }
         guard activeStrokeID == nil || activeStrokeID == element.id else {
             message = "Finish the current touch stroke before adding another drawing."
@@ -743,25 +758,28 @@ final class StudioViewModel: ObservableObject {
         let target = frameID ?? document.activeFrameID
         do {
             var candidate = editor
-            try candidate.commit(element, frameID: target)
+            if let mirror {
+                guard mirror.width == Double(canvasWidth), mirror.height == Double(canvasHeight) else { throw StudioCommandError.staleRevision }
+                try candidate.commitMirroredStroke(mirror.elements(from: element), frameID: target)
+            } else { try candidate.commit(element, frameID: target) }
             try preflightRasterDocument(candidate.document)
             editor = candidate
             if pendingBrushStroke?.element.id == element.id { pendingBrushStroke = nil }
             pruneManagedAudio(); scheduleSave()
             return true
         } catch {
-            if element.brush != nil { retainRejectedBrush(element, frameID: target, reason: error.localizedDescription) }
+            if element.brush != nil || mirror != nil { retainRejectedBrush(element, frameID: target, reason: error.localizedDescription, mirror: mirror) }
             else { message = error.localizedDescription }
             return false
         }
     }
-    func retainRejectedBrush(_ element: DrawnElement, frameID: String, reason: String, inputComplete: Bool = true) {
+    func retainRejectedBrush(_ element: DrawnElement, frameID: String, reason: String, inputComplete: Bool = true, mirror: StudioMirrorCapture? = nil) {
         guard pendingBrushStroke == nil || pendingBrushStroke?.element.id == element.id else {
             message = "Resolve the existing rejected drawing draft before adding another."
             return
         }
         pendingBrushStroke = PendingBrushStroke(projectID: document.id, frameID: frameID,
-            element: element, reason: reason, inputComplete: inputComplete)
+            element: element, reason: reason, inputComplete: inputComplete, mirror: mirror)
         message = reason + " The rejected draft remains open. Retry with current brush settings or discard it explicitly."
     }
     func beginStrokeInput(id: String) -> Bool {
@@ -774,7 +792,7 @@ final class StudioViewModel: ObservableObject {
         guard activeStrokeID == input.id else { return }
         activeStrokeID = nil
         guard !input.points.isEmpty else { return }
-        retainRejectedBrush(input.element, frameID: input.frameID, reason: reason, inputComplete: false)
+        retainRejectedBrush(input.element, frameID: input.frameID, reason: reason, inputComplete: false, mirror: input.mirror)
     }
     func discardRejectedBrush() { pendingBrushStroke = nil; message = nil }
     func retryRejectedBrush() {
@@ -790,7 +808,7 @@ final class StudioViewModel: ObservableObject {
                 element.opacity = capturedStrokeOpacity
                 element.brush = try brushDescriptor(elementID: element.id, seed: element.brush?.seed)
             } else { element.opacity = strokeOpacity }
-            _ = commitElement(element, frameID: pending.frameID)
+            _ = commitElement(element, frameID: pending.frameID, mirror: pending.mirror)
         } catch { message = error.localizedDescription }
     }
     @discardableResult
@@ -927,6 +945,52 @@ final class StudioViewModel: ObservableObject {
         let mode: SelectionMode
         let kind: StudioAreaSelectionKind
         let smoothing: Double
+    }
+    @Published private(set) var polygonSelectionVertices: [CGPoint] = []
+    private var polygonSelectionCapture: AreaSelectionCapture?
+    var currentPolygonSelectionVertices: [CGPoint] {
+        guard let capture = polygonSelectionCapture, beginAreaSelection() == capture else { return [] }
+        return polygonSelectionVertices
+    }
+    func cancelPolygonSelection() {
+        polygonSelectionCapture = nil
+        polygonSelectionVertices = []
+    }
+    @discardableResult
+    func appendPolygonSelectionVertex(_ point: CGPoint) -> Bool {
+        guard let capture = beginAreaSelection(), capture.kind == .polygon else {
+            cancelPolygonSelection(); return false
+        }
+        if let previous = polygonSelectionCapture, previous != capture {
+            cancelPolygonSelection()
+            message = "Studio changed. Start a new polygon selection."
+            return false
+        }
+        guard point.x.isFinite, point.y.isFinite, point.x >= 0, point.y >= 0,
+              point.x <= CGFloat(canvasWidth), point.y <= CGFloat(canvasHeight) else { return false }
+        guard polygonSelectionVertices.count < StudioSelectionTrace.maximumPoints else {
+            message = "The polygon has reached its vertex limit. Finish it or remove a point."
+            return false
+        }
+        if let last = polygonSelectionVertices.last, hypot(point.x-last.x, point.y-last.y) < 0.5 { return false }
+        polygonSelectionCapture = capture
+        polygonSelectionVertices.append(point)
+        return true
+    }
+    func removeLastPolygonSelectionVertex() {
+        guard !currentPolygonSelectionVertices.isEmpty else { cancelPolygonSelection(); return }
+        polygonSelectionVertices.removeLast()
+        if polygonSelectionVertices.isEmpty { polygonSelectionCapture = nil }
+    }
+    @discardableResult
+    func finishPolygonSelection() -> Bool {
+        guard let capture = polygonSelectionCapture, beginAreaSelection() == capture else {
+            cancelPolygonSelection(); return false
+        }
+        // Invalid/degenerate polygons retain their vertices so the user can correct them.
+        guard finishAreaSelection(capture, points: polygonSelectionVertices) else { return false }
+        cancelPolygonSelection()
+        return true
     }
     func beginAreaSelection() -> AreaSelectionCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .lasso,
@@ -1890,8 +1954,10 @@ extension Array {
 /// Area selection encloses whole editable drawings, rather than altering pixels.
 /// The exact same region is used for the visible outline and selected IDs.
 enum StudioAreaSelectionKind: String, CaseIterable {
-    case freehand, rectangle
-    var label: String { self == .freehand ? "Freehand" : "Rectangle" }
+    case freehand, rectangle, polygon
+    var label: String {
+        switch self { case .freehand: return "Freehand"; case .rectangle: return "Rectangle"; case .polygon: return "Polygon" }
+    }
 }
 
 struct StudioSelectionTrace {
@@ -1951,7 +2017,7 @@ struct StudioSelectionRegion {
                 let prev = unique[(index + unique.count - 1) % unique.count], next = unique[(index + 1) % unique.count], p = unique[index]
                 let dx = (prev.x + next.x) / 2 - p.x, dy = (prev.y + next.y) / 2 - p.y
                 let distance = hypot(dx, dy)
-                let weight = distance > 0 ? min(0.5, CGFloat(smoothing) / distance) : 0
+                let weight = distance > 0 ? min(0.5, CGFloat(kind == .polygon ? 0 : smoothing) / distance) : 0
                 return CGPoint(x: p.x + dx * weight, y: p.y + dy * weight)
             }
             var area: CGFloat = 0
@@ -2089,8 +2155,18 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var dodgeBurnExposure: Double? = nil
         var dodgeBurnRange: StudioDodgeBurn.TonalRange? = nil
         var dodgeBurnProtectTones: Bool? = nil
+        var lineAngleSnap: Double? = nil
+        var equalShapeSides: Bool? = nil
+        var lineRulerEnabled: Bool? = nil
+        var lineRulerAngle: Double? = nil
+        var lineRulerFixedLength: Bool? = nil
+        var lineRulerLength: Double? = nil
+        var mirrorMode: StudioMirrorMode? = nil
 
         var isValid: Bool {
+            (lineRulerAngle.map { $0.isFinite && (-180...180).contains($0) } ?? true) &&
+            (lineRulerLength.map { $0.isFinite && (1...4096).contains($0) } ?? true) &&
+            (lineAngleSnap.map { [0.0, 15, 45, 90].contains($0) } ?? true) &&
             width.isFinite && (0.25...512).contains(width) &&
             opacity.isFinite && (0...1).contains(opacity) &&
             smoothing.isFinite && (0...10).contains(smoothing) &&

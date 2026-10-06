@@ -362,6 +362,43 @@ struct StrokePoint: Codable, Equatable {
     var timestamp: TimeInterval?
 }
 
+enum StudioMirrorMode: String, Codable, CaseIterable {
+    case off, vertical, horizontal, both
+    var title: String { rawValue.capitalized }
+}
+
+/// Captured at touch start. Copies retain original samples and brush seed;
+/// canonical reflection/translation makes their pixels true mirror images.
+struct StudioMirrorCapture: Equatable {
+    let mode: StudioMirrorMode
+    let width: Double
+    let height: Double
+    func elements(from source: DrawnElement) throws -> [DrawnElement] {
+        guard width.isFinite, height.isFinite, (1...8192).contains(width), (1...8192).contains(height),
+              [.pencil,.pen,.brush,.marker,.crayon,.line,.rectangle,.circle].contains(source.tool),
+              source.translation == nil, source.reflection == nil, source.transform == nil else {
+            throw StudioBrushError.invalidSettings("This mirror draft cannot be applied. The original remains unchanged.")
+        }
+        var result = [source]
+        let axes: [(Bool,Bool)]
+        switch mode {
+        case .off: axes = []
+        case .vertical: axes = [(true,false)]
+        case .horizontal: axes = [(false,true)]
+        case .both: axes = [(true,false),(false,true),(true,true)]
+        }
+        for (x,y) in axes {
+            result.append(DrawnElement(id: source.id + "-mirror-" + (x ? "x" : "") + (y ? "y" : ""),
+                tool: source.tool, points: source.points, color: source.color, width: source.width,
+                opacity: source.opacity, fillColor: source.fillColor, layerID: source.layerID,
+                brush: source.brush, shape: source.shape,
+                translation: .init(x: x ? width : 0, y: y ? height : 0),
+                reflection: .init(horizontal: x, vertical: y)))
+        }
+        return result
+    }
+}
+
 /// Captures one touch operation's identity/settings and actual event times.
 /// The same element is previewed and committed; copying it later retains seed.
 struct StudioStrokeInput {
@@ -378,6 +415,11 @@ struct StudioStrokeInput {
     let startedAt: Date
     var shape: StudioShapeDescriptor? = nil
     var eraser: StudioEraserDescriptor? = nil
+    var angleSnapDegrees: Double = 0
+    var equalShapeSides = false
+    var rulerAngleDegrees: Double? = nil
+    var rulerLength: Double? = nil
+    var mirror: StudioMirrorCapture? = nil
     private(set) var points: [StrokePoint] = []
 
     mutating func append(location: CGPoint, time: Date) throws {
@@ -392,9 +434,61 @@ struct StudioStrokeInput {
         guard elapsed.isFinite, elapsed >= 0, elapsed >= (points.last?.timestamp ?? 0) else {
             throw StudioBrushError.invalidSettings("Touch event timing changed unexpectedly. The stroke was not committed.")
         }
-        points.append(StrokePoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
-            y: min(max(location.y / viewportSize.height, 0), 1) * documentSize.height,
-            pressure: nil, timestamp: elapsed))
+        guard [0.0, 15, 45, 90].contains(angleSnapDegrees),
+              angleSnapDegrees == 0 || tool == .line,
+              !equalShapeSides || [.rectangle, .circle].contains(tool),
+              rulerAngleDegrees.map({ $0.isFinite && (-180...180).contains($0) && tool == .line && angleSnapDegrees == 0 }) ?? true,
+              rulerLength.map({ $0.isFinite && (1...4096).contains($0) && rulerAngleDegrees != nil }) ?? true else {
+            throw StudioBrushError.invalidSettings("These drawing constraints are invalid for this tool.")
+        }
+        var point = CGPoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
+                            y: min(max(location.y / viewportSize.height, 0), 1) * documentSize.height)
+        if let start = points.first {
+            var dx = point.x-start.x, dy = point.y-start.y
+            if let rulerAngleDegrees {
+                let radians = CGFloat(rulerAngleDegrees * .pi / 180)
+                let unitX = cos(radians), unitY = sin(radians)
+                let projection = dx*unitX + dy*unitY
+                let length = rulerLength.map { CGFloat($0) } ?? abs(projection)
+                let direction: CGFloat = projection < 0 ? -1 : 1
+                dx = unitX*length*direction; dy = unitY*length*direction
+            } else if tool == .line, angleSnapDegrees > 0 {
+                let step = CGFloat(angleSnapDegrees * .pi / 180)
+                let angle = (atan2(dy, dx) / step).rounded() * step
+                let length = hypot(dx, dy)
+                dx = cos(angle) * length; dy = sin(angle) * length
+            } else if equalShapeSides {
+                let side = max(abs(dx), abs(dy))
+                dx = dx < 0 ? -side : side; dy = dy < 0 ? -side : side
+            }
+            // Clamp along the ray, never per axis: a canvas edge must not
+            // break the snapped angle or equal-sided shape.
+            if angleSnapDegrees > 0 || equalShapeSides || rulerAngleDegrees != nil {
+                var fraction: CGFloat = 1
+                if dx > 0 { fraction = min(fraction, (documentSize.width-start.x)/dx) }
+                if dx < 0 { fraction = min(fraction, -start.x/dx) }
+                if dy > 0 { fraction = min(fraction, (documentSize.height-start.y)/dy) }
+                if dy < 0 { fraction = min(fraction, -start.y/dy) }
+                point = CGPoint(x: start.x+dx*fraction, y: start.y+dy*fraction)
+            }
+        }
+        points.append(StrokePoint(x: point.x, y: point.y, pressure: nil, timestamp: elapsed))
+    }
+    /// Editor-only ruler guide, never part of a DrawnElement or export.
+    var rulerGuide: [CGPoint] {
+        guard tool == .line, let angle = rulerAngleDegrees, angle.isFinite,
+              let start = points.first else { return [] }
+        let radians = CGFloat(angle * .pi / 180), dx = cos(radians), dy = sin(radians)
+        func endpoint(_ sign: CGFloat) -> CGPoint {
+            let x = dx*sign, y = dy*sign
+            var distance = hypot(documentSize.width, documentSize.height)
+            if x > 0.000001 { distance = min(distance, (documentSize.width-start.x)/x) }
+            if x < -0.000001 { distance = min(distance, -start.x/x) }
+            if y > 0.000001 { distance = min(distance, (documentSize.height-start.y)/y) }
+            if y < -0.000001 { distance = min(distance, -start.y/y) }
+            return CGPoint(x: start.x+x*distance, y: start.y+y*distance)
+        }
+        return [endpoint(-1), endpoint(1)]
     }
     var element: DrawnElement {
         let shape = [.line, .rectangle, .circle].contains(tool)

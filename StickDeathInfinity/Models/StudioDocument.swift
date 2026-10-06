@@ -380,6 +380,15 @@ struct StudioDocumentEditor {
         document.revision += 1; document.modifiedAt = Date()
         return true
     }
+    mutating func commitMirroredStroke(_ elements: [DrawnElement], frameID: String) throws {
+        guard (1...4).contains(elements.count), Set(elements.map(\.id)).count == elements.count else {
+            throw StudioDocumentError.invalid("The mirror stroke is invalid.")
+        }
+        var staged = self
+        for element in elements { try staged.commit(element, frameID: frameID) }
+        // Publish the complete validated group as one history/revision change.
+        try change { $0 = staged.document }
+    }
     mutating func commit(_ element: DrawnElement, frameID: String) throws {
         if element.tool == .smudge {
             guard element.smudge != nil, selectedElementIDs.isEmpty,

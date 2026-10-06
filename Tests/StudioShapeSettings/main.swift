@@ -58,6 +58,55 @@ private struct Failure: Error { let message: String }
     }
     static func main() async throws {
         setbuf(stdout, nil)
+        let constraintStart = Date(timeIntervalSince1970: 1)
+        func constrained(_ tool: DrawingTool, end: CGPoint, snap: Double = 0, equal: Bool = false,
+                         zoom: CGFloat = 1, origin: CGPoint = .init(x: 16, y: 16), ruler: Double? = nil, length: Double? = nil) throws -> DrawnElement {
+            var stroke = StudioStrokeInput(id: "constraint", frameID: "frame", layerID: "layer", tool: tool,
+                color: "#FF0000", width: 2, opacity: 1, brush: nil,
+                documentSize: .init(width: 128, height: 128), viewportSize: .init(width: 128*zoom, height: 128*zoom),
+                startedAt: constraintStart, angleSnapDegrees: snap, equalShapeSides: equal, rulerAngleDegrees: ruler, rulerLength: length)
+            try stroke.append(location: .init(x: origin.x*zoom, y: origin.y*zoom), time: constraintStart)
+            try stroke.append(location: .init(x: end.x*zoom, y: end.y*zoom), time: constraintStart.addingTimeInterval(0.1))
+            return stroke.element
+        }
+        let diagonal = try constrained(.line, end: .init(x: 70,y: 50), snap: 45)
+        try require(abs(diagonal.points[1].x-diagonal.points[1].y) < 0.0001, "Line did not snap to 45 degrees")
+        let free = try constrained(.line, end: .init(x: 70,y: 50))
+        try require(free.points[1].x == 70 && free.points[1].y == 50, "Free line changed")
+        try require(try constrained(.line,end: .init(x: 70,y: 50),snap:45,zoom:2).points == diagonal.points, "Snap depends on viewport scale")
+        var diagonalDocument = try document(); var placed = diagonal; placed.layerID = diagonalDocument.activeLayerID
+        diagonalDocument.frames[0].elements = [placed]
+        try require(channel(render(diagonalDocument),40,40) > 200, "Actual snapped line pixels absent")
+        for tool in [DrawingTool.rectangle, .circle] {
+            let square = try constrained(tool,end:.init(x:80,y:40),equal:true)
+            try require(square.points[1].x == 80 && square.points[1].y == 80, "Equal side constraint failed")
+            let reverse = try constrained(tool,end:.init(x:0,y:8),equal:true)
+            try require(reverse.points[1].x == 0 && reverse.points[1].y == 0, "Reverse equal sides failed")
+        }
+        let edge = try constrained(.line,end:.init(x:127,y:120),snap:45,origin:.init(x:100,y:100))
+        try require(edge.points[1].x <= 128 && edge.points[1].y <= 128 && abs(edge.points[1].x-edge.points[1].y)<0.0001, "Edge clipping broke snapped angle")
+        try rejects { _ = try constrained(.line,end:.zero,snap:17) }
+        try rejects { _ = try constrained(.pen,end:.zero,equal:true) }
+        pass("real constrained touch geometry snaps angles and equal sides across zoom reverse drags and canvas boundaries")
+
+        let measured = try constrained(.line,end:.init(x:90,y:80),ruler:30,length:40)
+        try require(abs(measured.points[1].x - (16+cos(Double.pi/6)*40)) < 0.0001 && abs(measured.points[1].y-36)<0.0001, "Ruler angle/length not applied")
+        let projected = try constrained(.line,end:.init(x:80,y:70),ruler:0)
+        try require(projected.points[1].x == 80 && projected.points[1].y == 16, "Ruler did not project drag onto its axis")
+        let backwards = try constrained(.line,end:.init(x:30,y:20),origin:.init(x:64,y:64),ruler:0,length:20)
+        try require(backwards.points[1].x == 44 && backwards.points[1].y == 64, "Reverse ruler direction failed")
+        let clippedRuler = try constrained(.line,end:.init(x:127,y:120),origin:.init(x:100,y:100),ruler:45,length:4096)
+        try require(abs(clippedRuler.points[1].x-128)<0.0001 && abs(clippedRuler.points[1].y-128)<0.0001, "Fixed ruler must clip at canvas edge")
+        var guideInput = StudioStrokeInput(id:"guide",frameID:"frame",layerID:"layer",tool:.line,color:"#FF0000",width:2,opacity:1,brush:nil,
+            documentSize:.init(width:128,height:128),viewportSize:.init(width:256,height:256),startedAt:constraintStart,rulerAngleDegrees:0)
+        try guideInput.append(location:.init(x:32,y:32),time:constraintStart)
+        try require(guideInput.rulerGuide == [.init(x:0,y:16),.init(x:128,y:16)], "Overlay ruler extent incorrect")
+        try require(!String(decoding:JSONEncoder().encode(measured),as:UTF8.self).contains("ruler"), "Guide leaked into document")
+        try rejects { _ = try constrained(.line,end:.zero,ruler:181) }
+        try rejects { _ = try constrained(.line,end:.zero,ruler:0,length:0) }
+        try rejects { _ = try constrained(.line,end:.zero,length:10) }
+        pass("ruler projects both directions with exact angle length edge clipping and editor-only guides")
+
         var legacy = shape("legacy"); legacy.shape = nil
         let encoded = try JSONEncoder().encode(legacy)
         try require(!String(decoding: encoded, as: UTF8.self).contains("\"shape\""), "Historical element did not gain metadata")
@@ -153,9 +202,10 @@ private struct Failure: Error { let message: String }
         var input = StudioStrokeInput(id: "captured-shape",frameID: vm.currentFrame.id,layerID: vm.activeLayerID,
             tool: .rectangle,color: vm.strokeColorHex,width: 8,opacity: 1,brush: nil,
             documentSize: CGSize(width: 128,height: 128),viewportSize: CGSize(width: 256,height: 256),
-            startedAt: start,shape: try vm.shapeDescriptor())
+            startedAt: start,shape: try vm.shapeDescriptor(), equalShapeSides: true)
         try input.append(location: CGPoint(x:32,y:32),time: start)
-        try input.append(location: CGPoint(x:224,y:224),time: start.addingTimeInterval(0.2))
+        try input.append(location: CGPoint(x:224,y:160),time: start.addingTimeInterval(0.2))
+        try require(input.element.points.last?.y == 112, "Committed square must constrain the unequal drag")
         vm.shapeFilled = false; vm.shapeCornerRadius = 0
         try require(input.element.shape?.cornerRadius == 30 && input.element.shape?.fillColor == "#FF0000", "Gesture retains captured settings")
         try require(vm.commitElement(input.element,frameID: input.frameID), "Actual VM commits shape")
@@ -251,6 +301,40 @@ private struct Failure: Error { let message: String }
         try rejects { _ = try StudioCommandExecutor.execute(invalidRequest,editor:&commands) }
         try require(commands.document == before && commands.canUndo == undo && commands.canRedo == redo, "Invalid batch is transactional")
         pass("typed validated shape commands share rendering and reject invalid batches transactionally")
+        let mirrorStorage = DeviceStorageManager(documentsDirectory:root.appendingPathComponent("MirrorDocuments"), cachesDirectory:root.appendingPathComponent("MirrorCache"))
+        let mirrorVM = StudioViewModel(storage:mirrorStorage)
+        let mirrorCreated = await mirrorVM.createProject(name:"Mirror",width:128,height:128,fps:12)
+        try require(mirrorCreated,"Mirror project")
+        let mirrorBefore = mirrorVM.document
+        var original = shape(mirrorVM.activeLayerID)
+        original.points = [.init(x:16,y:16),.init(x:32,y:32)]
+        let mirror = StudioMirrorCapture(mode:.both,width:128,height:128)
+        let copies = try mirror.elements(from:original)
+        try require(copies.count == 4 && Set(copies.map(\.id)).count == 4 && copies == mirror.elements(from:original),"Mirror identity must be stable")
+        try require(mirrorVM.commitElement(original,mirror:mirror),"Actual mirror commit")
+        try require(mirrorVM.document.revision == mirrorBefore.revision+1 && mirrorVM.currentFrame.elements.count == 4,"Mirror must commit one revision")
+        let mirrorPixels = try render(mirrorVM.document)
+        for x in [24,104] { for y in [24,104] { try require(channel(mirrorPixels,x,y,0)==255,"Actual reflected artwork pixels missing") } }
+        mirrorVM.undo()
+        try require(mirrorVM.currentFrame.elements.isEmpty && !mirrorVM.canUndo,"Mirror required more than one Undo")
+        mirrorVM.redo(); try require(render(mirrorVM.document)==mirrorPixels,"Mirror Redo changed pixels")
+        let mirrorSaved = await mirrorVM.save(); try require(mirrorSaved,"Mirror save")
+        let mirrorReopened = StudioViewModel(storage:mirrorStorage); await mirrorReopened.loadProjects()
+        let mirrorOpened = await mirrorReopened.openProject(mirrorReopened.savedProjects[0]); try require(mirrorOpened,"Mirror cold reopen")
+        try require(render(mirrorReopened.document)==mirrorPixels && mirrorReopened.currentFrame.elements.map(\.id)==copies.map(\.id),"Mirror identities/pixels lost on reopen")
+        var atomic = try StudioDocumentEditor(document:mirrorBefore)
+        var invalidCopies = copies; invalidCopies[3].layerID = "missing"
+        try rejects { try atomic.commitMirroredStroke(invalidCopies,frameID:mirrorBefore.activeFrameID) }
+        try require(atomic.document == mirrorBefore && !atomic.canUndo,"Rejected mirror partially committed")
+        try require(!mirrorVM.commitElement(original,mirror:.init(mode:.both,width:64,height:64)),"Stale mirror canvas accepted")
+        try require(mirrorVM.pendingBrushStroke?.mirror?.width == 64,"Rejected mirror capture lost")
+        mirrorVM.discardRejectedBrush()
+        var brushOriginal = original; brushOriginal.tool = .brush; brushOriginal.shape = nil
+        brushOriginal.brush = .init(family:.calligraphy,seed:12345)
+        let brushCopies = try mirror.elements(from:brushOriginal)
+        try require(brushCopies.allSatisfy { $0.points == brushOriginal.points && $0.brush?.seed == 12345 },"Mirror changed brush randomness or original samples")
+        pass("mirror copies render with stable IDs and seeds, one-step history, cold persistence and atomic rejection")
+
         print("STUDIO_SHAPE_SETTINGS_TESTS=PASS \(passed)/\(passed)")
     }
 }

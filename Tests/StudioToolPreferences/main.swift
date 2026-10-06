@@ -58,6 +58,29 @@ private struct Failure: Error { let message: String }
     }
     static func main() async throws {
         setbuf(stdout, nil)
+        let constraintSuite = "sdi-constraint-prefs-" + UUID().uuidString
+        let constraintDefaults = UserDefaults(suiteName: constraintSuite)!
+        defer { constraintDefaults.removePersistentDomain(forName: constraintSuite) }
+        let constrainedVM = StudioViewModel(toolDefaults: constraintDefaults)
+        constrainedVM.selectedTool = .line; constrainedVM.lineAngleSnap = 45
+        constrainedVM.lineRulerEnabled = true; constrainedVM.lineRulerAngle = 30
+        constrainedVM.lineRulerFixedLength = true; constrainedVM.lineRulerLength = 48
+        constrainedVM.selectedTool = .rectangle; constrainedVM.equalShapeSides = true; constrainedVM.mirrorMode = .both
+        constrainedVM.selectedTool = .circle
+        try require(!constrainedVM.equalShapeSides && constrainedVM.lineAngleSnap == 0, "Constraints leaked to another tool")
+        let restoredConstraints = StudioViewModel(toolDefaults: constraintDefaults)
+        restoredConstraints.selectedTool = .line
+        try require(restoredConstraints.lineAngleSnap == 45, "Line snapping did not survive relaunch")
+        try require(restoredConstraints.lineRulerEnabled && restoredConstraints.lineRulerAngle == 30 && restoredConstraints.lineRulerFixedLength && restoredConstraints.lineRulerLength == 48, "Ruler settings did not survive relaunch")
+        restoredConstraints.selectedTool = .rectangle
+        try require(restoredConstraints.equalShapeSides && restoredConstraints.mirrorMode == .both, "Square/mirror preference did not survive relaunch")
+        var oldConstraintEntry = StudioDrawingToolPreferences.Entry()
+        let legacyConstraintData = try JSONEncoder().encode(oldConstraintEntry)
+        try require(try JSONDecoder().decode(StudioDrawingToolPreferences.Entry.self, from: legacyConstraintData).isValid, "Legacy preference migration failed")
+        oldConstraintEntry.lineAngleSnap = 17
+        try require(!oldConstraintEntry.isValid, "Invalid snap angle persisted")
+        pass("line and shape constraints restore independently per tool without changing legacy preferences")
+
         let suite = "sdi-tool-preferences-test-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)

@@ -188,6 +188,7 @@ struct FloatingToolSettingsPanel: View {
         // ── BRUSH / PENCIL / PEN ──
         case .pencil, .pen, .brush, .marker, .crayon:
             VStack(alignment: .leading, spacing: 8) {
+                mirrorSettings
                 Button { showBrushLibrary.toggle() } label: {
                     HStack {
                         Text("Brush Library: " + vm.brushFamily.title)
@@ -399,9 +400,18 @@ struct FloatingToolSettingsPanel: View {
         // ── LINE ──
         case .line:
             VStack(alignment: .leading, spacing: 8) {
+                mirrorSettings
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                Text("Drag to draw line · Tap endpoint to connect")
+                Picker("Angle snap", selection: $vm.lineAngleSnap) {
+                    Text("Free").tag(0.0)
+                    Text("15°").tag(15.0)
+                    Text("45°").tag(45.0)
+                    Text("90°").tag(90.0)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.angle-snap")
+                    .disabled(vm.lineRulerEnabled)
+                lineRulerSettings
+                Text("Drag from the line's start. Angle snapping is measured in canvas coordinates.")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundColor(.sdStudioSecondaryText)
             }
@@ -409,6 +419,10 @@ struct FloatingToolSettingsPanel: View {
         // ── RECTANGLE / CIRCLE ──
         case .rectangle, .circle:
             VStack(alignment: .leading, spacing: 8) {
+                mirrorSettings
+                Toggle(vm.selectedTool == .rectangle ? "Square" : "Perfect circle", isOn: $vm.equalShapeSides)
+                    .font(.specialElite(11))
+                    .accessibilityIdentifier("studio.shape.equal-sides")
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 
@@ -641,7 +655,22 @@ struct FloatingToolSettingsPanel: View {
                         .accessibilityIdentifier("studio.lasso.deselect")
                 }.font(.specialElite(11)).frame(minHeight: 44)
                     .disabled(vm.selectedElementIDs.isEmpty)
-                Text("Polygon, Magnetic, Smart and feathered pixel selection are unavailable.")
+                if vm.areaSelectionKind == .polygon {
+                    Text("Tap canvas corners, then Finish to close the outline. \(vm.currentPolygonSelectionVertices.count) points.")
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                    HStack(spacing: 4) {
+                        Button("Back") { vm.removeLastPolygonSelectionVertex() }
+                            .disabled(vm.currentPolygonSelectionVertices.isEmpty)
+                            .accessibilityIdentifier("studio.selection.polygon.back")
+                        Button("Finish") { _ = vm.finishPolygonSelection() }
+                            .disabled(vm.currentPolygonSelectionVertices.count < 3)
+                            .accessibilityIdentifier("studio.selection.polygon.finish")
+                        Button("Cancel") { vm.cancelPolygonSelection() }
+                            .disabled(vm.currentPolygonSelectionVertices.isEmpty)
+                            .accessibilityIdentifier("studio.selection.polygon.cancel")
+                    }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                }
+                Text("Magnetic, Smart and feathered pixel selection are unavailable.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
 
@@ -663,6 +692,35 @@ struct FloatingToolSettingsPanel: View {
         }
     }
     
+    private var mirrorSettings: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Picker("Mirror", selection: $vm.mirrorMode) {
+                ForEach(StudioMirrorMode.allCases, id: \.self) { mode in Text(mode.title).tag(mode) }
+            }.accessibilityIdentifier("studio.drawing.mirror")
+            if vm.mirrorMode != .off {
+                Text(vm.mirrorMode == .both ? "Four editable copies around the canvas center; one Undo step." : "Two editable copies across the canvas center; one Undo step.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            }
+        }.font(.specialElite(11))
+    }
+
+    private var lineRulerSettings: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle("Ruler", isOn: $vm.lineRulerEnabled)
+                .accessibilityIdentifier("studio.line.ruler")
+            if vm.lineRulerEnabled {
+                SettingsSlider(label: "Angle", value: $vm.lineRulerAngle, range: -180...180, unit: "°", accent: .red)
+                Toggle("Fixed length", isOn: $vm.lineRulerFixedLength)
+                    .accessibilityIdentifier("studio.line.ruler-fixed-length")
+                if vm.lineRulerFixedLength {
+                    SettingsSlider(label: "Length", value: $vm.lineRulerLength, range: 1...4096, unit: "px", accent: .red)
+                }
+                Text("Drag either way along the ruler. With Fixed length, tapping also places a line. Lines stop at the canvas edge. The blue guide is never exported.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            }
+        }.font(.specialElite(11))
+    }
+
     private func zoomControl(_ icon: String, _ label: String, _ identifier: String,
                              action: @escaping () -> Void) -> some View {
         Button(action: action) {
