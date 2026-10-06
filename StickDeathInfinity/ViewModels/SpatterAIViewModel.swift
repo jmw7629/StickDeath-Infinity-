@@ -220,7 +220,7 @@ final class SpatterAIViewModel: ObservableObject {
             return "Alpha locking is not available yet. Full layer locking prevents edits to that layer. Move's Lock layers locks each selected element's entire layer across all frames; use the Layers panel to unlock it."
         }
         if mentions("layers", "layer") {
-            return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha locking and imported-image layer duplication remain unavailable."
+            return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha lock keeps existing transparency while brush painting; unlock before fill, erasing, transforms or pasting. Imported-image layer duplication remains unavailable."
         }
         if mentions("hex", "palette", "colors", "colour") {
             return "Open Color from the main toolbar. Enter a six-digit RGB hex color and Apply, or select a recent swatch. Recent colors are stored on this device. Gradient start and end colors are separate settings."

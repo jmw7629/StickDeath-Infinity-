@@ -222,10 +222,10 @@ struct FloatingToolSettingsPanel: View {
                     Text("Tilting Pencil widens the nib and follows its direction plus Tip Angle. Finger input uses the fixed nib. Saved per tool.")
                         .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                 }
-                if [.stipple, .grain, .roughPen].contains(vm.brushFamily) {
-                    SettingsSlider(label: "Texture", value: Binding(get: { vm.brushTexture * 100 }, set: { vm.brushTexture = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
+                if [.stipple, .grain, .roughPen, .airbrush, .watercolor, .neon].contains(vm.brushFamily) {
+                    SettingsSlider(label: vm.brushFamily == .airbrush ? "Flow" : vm.brushFamily == .watercolor ? "Pigment" : vm.brushFamily == .neon ? "Glow" : "Texture", value: Binding(get: { vm.brushTexture * 100 }, set: { vm.brushTexture = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 }
-                if [.stipple, .grain].contains(vm.brushFamily) {
+                if [.stipple, .grain, .watercolor].contains(vm.brushFamily) {
                     SettingsSlider(label: "Grain", value: Binding(get: { vm.brushGrain * 100 }, set: { vm.brushGrain = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 }
                 if vm.brushFamily == .gradient {
@@ -419,6 +419,14 @@ struct FloatingToolSettingsPanel: View {
                 mirrorSettings
                 SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
+                Picker("Arrowheads", selection: $vm.lineArrowEnds) {
+                    Text("None").tag(StudioArrowEnds.none); Text("Start").tag(StudioArrowEnds.start)
+                    Text("End").tag(StudioArrowEnds.end); Text("Both").tag(StudioArrowEnds.both)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.line.arrowheads")
+                if vm.lineArrowEnds != .none {
+                    SettingsSlider(label: "Head Length", value: $vm.lineArrowLength, range: 1...100, unit: "px", accent: accentColor)
+                        .accessibilityIdentifier("studio.line.arrow-length")
+                }
                 Picker("Angle snap", selection: $vm.lineAngleSnap) {
                     Text("Free").tag(0.0)
                     Text("15°").tag(15.0)

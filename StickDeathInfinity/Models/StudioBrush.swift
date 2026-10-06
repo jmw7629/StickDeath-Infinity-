@@ -1,10 +1,10 @@
 import Foundation
 
-/// The ten entries in the supplied Studio brush library. These are native
-/// rendering settings; integration into DrawnElement/history is a separate step.
+/// Native brush families shared by capture, editable history, preview and export.
 enum StudioBrushFamily: String, Codable, CaseIterable {
     case round, stipple, grain, roughPen, calligraphy, dipPen
     case halftone, hatchRight, hatchLeft, gradient
+    case airbrush, watercolor, neon
 }
 
 struct StudioBrushColor: Codable, Equatable {

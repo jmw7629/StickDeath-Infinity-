@@ -38,11 +38,11 @@ private func rejects(_ operation: () throws -> Void) throws {
         return bytes
     }
     static func render(_ frame: AnimationFrame, layers: [CanvasLayer], edge: Int = 64,
-                       outerOpacity: Double = 1) throws -> [UInt8] {
+                       outerOpacity: Double = 1, transparent: Bool = false) throws -> [UInt8] {
         let prepared = try StudioFrameRenderer.prepare(frame: frame)
         var error: Error?
         let renderer = ImageRenderer(content: Canvas { context, size in
-            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+            if !transparent { context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white)) }
             context.opacity = outerOpacity
             error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
                 canvasSize: CGSize(width: 64, height: 64), size: size, preparedBrushes: prepared)
@@ -129,6 +129,33 @@ private func rejects(_ operation: () throws -> Void) throws {
 
             let flatTilt = StudioPencilTilt(altitude: 0, azimuth: 0)
             let uprightTilt = StudioPencilTilt(altitude: .pi / 2, azimuth: .pi / 2)
+            var estimatedInput = input
+            try estimatedInput.append(location: CGPoint(x: 80, y: 80), time: started.addingTimeInterval(0.25), pressure: 0.2, tilt: uprightTilt, estimationIndex: 42)
+            try estimatedInput.append(location: CGPoint(x: 100, y: 100), time: started.addingTimeInterval(0.5), pressure: 0.7, estimationIndex: 43)
+            let beforeCorrection = estimatedInput.element
+            try require(try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42,
+                location: CGPoint(x: 90, y: 84), pressure: 0.8, tilt: flatTilt, expectsMoreUpdates: true), "Known estimated sample was ignored")
+            try require(estimatedInput.points.count == 4 && estimatedInput.points[2].x == 45 && estimatedInput.points[2].y == 42 && estimatedInput.points[2].pressure == 0.8 && estimatedInput.points[2].tilt == flatTilt && estimatedInput.points[2].timestamp == 0.25 && estimatedInput.points[3] == beforeCorrection.points[3], "Correction changed ordering, timing or unrelated samples")
+            try require(estimatedInput.estimatedSampleIndices[42] == 2, "Partial update prematurely discarded sample identity")
+            let validCorrection = estimatedInput.element
+            for invalid: CGFloat in [-0.1, 1.1, .nan, .infinity] {
+                try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: .zero, pressure: invalid, tilt: nil, expectsMoreUpdates: false) }
+            }
+            try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: CGPoint(x: CGFloat.nan, y: 0), pressure: nil, tilt: nil, expectsMoreUpdates: false) }
+            try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: .zero, pressure: nil, tilt: .init(altitude: .nan, azimuth: 0), expectsMoreUpdates: false) }
+            try rejects { try estimatedInput.append(location: .zero, time: started.addingTimeInterval(0.75), estimationIndex: 42) }
+            try require(estimatedInput.element == validCorrection && estimatedInput.estimatedSampleIndices.count == 2, "Invalid correction or duplicate identity mutated the capture")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "another-stroke", estimationIndex: 42, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Cross-stroke correction accepted")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 999, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Unknown sample accepted")
+            try require(try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: CGPoint(x: 90, y: 84), pressure: 0.8, tilt: flatTilt, expectsMoreUpdates: false), "Final known correction ignored")
+            try require(estimatedInput.estimatedSampleIndices[42] == nil && estimatedInput.finishEstimatedUpdates() == 1 && estimatedInput.estimatedSampleIndices.isEmpty, "Finalization did not bound unresolved updates")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 43, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Late correction rewrote finalized artwork")
+            try require(estimatedInput.element == validCorrection, "Finalization changed best-known artwork")
+            let correctedArchive = try JSONEncoder().encode(estimatedInput.element)
+            try require(try JSONDecoder().decode(DrawnElement.self, from: correctedArchive) == validCorrection, "Corrected samples did not persist")
+            try require(try render(.init(id: "before-estimate", elements: [beforeCorrection]), layers: editor.document.layers) != render(.init(id: "after-estimate", elements: [validCorrection]), layers: editor.document.layers), "Estimated correction did not change actual rendered pixels")
+            print("PASS live estimated Pencil corrections preserve sample identity/timing, render and persist; invalid, stale and post-finalization updates are fenced")
+
             var tiltInput = input
             try tiltInput.append(location: CGPoint(x: 90, y: 88), time: started.addingTimeInterval(0.25), pressure: 0.5, tilt: flatTilt)
             try require(tiltInput.points.last?.tilt == flatTilt, "Measured tilt was lost during capture")
@@ -162,6 +189,80 @@ private func rejects(_ operation: () throws -> Void) throws {
             let tiltImage = CGImageSourceCreateImageAtIndex(tiltSource, 0, nil)!
             try require(try pixels(tiltImage) == render(tiltEditor.document.frames[0], layers: tiltEditor.document.layers), "Tilt PNG differs from canvas")
             print("PASS measured tilt validates atomically, rotates and widens real nib pixels, survives schema23/archive/Undo/Redo and PNG export")
+
+            var alphaEditor = try StudioDocumentEditor(document: .new(name: "Alpha paint", width: 64, height: 64, fps: 12))
+            let alphaLayer = alphaEditor.document.activeLayerID, alphaFrame = alphaEditor.document.activeFrameID
+            var alphaBase = stroke(alphaLayer, opacity: 0.5); alphaBase.width = 12
+            try alphaEditor.commit(alphaBase, frameID: alphaFrame)
+            try alphaEditor.updateLayer(alphaLayer) { $0.lockMode = "alpha" }
+            let beforeAlphaPaint = alphaEditor.document
+            let originalAlphaPixels = try render(beforeAlphaPaint.frames[0], layers: beforeAlphaPaint.layers, transparent: true)
+            var alphaPaint = stroke(alphaLayer); alphaPaint.color = "#0000FF"; alphaPaint.width = 64
+            alphaPaint.points = [.init(x: 32, y: 0), .init(x: 32, y: 64)]
+            try alphaEditor.commit(alphaPaint, frameID: alphaFrame)
+            try require(alphaEditor.document.schemaVersion == 24 && alphaEditor.document.frames[0].elements.last?.preservesLayerAlpha == true, "Canonical alpha lock did not capture its rendering operation")
+            let alphaPixels = try render(alphaEditor.document.frames[0], layers: alphaEditor.document.layers, transparent: true)
+            try require(alphaPixels != originalAlphaPixels, "Alpha painting did not recolor real pixels")
+            for offset in stride(from: 0, to: alphaPixels.count, by: 4) {
+                try require(abs(Int(alphaPixels[offset+3])-Int(originalAlphaPixels[offset+3])) <= 1, "Alpha painting changed destination alpha")
+                if originalAlphaPixels[offset+3] == 0 { try require(alphaPixels[offset+3] == 0, "Paint escaped the existing coverage") }
+            }
+            let afterAlphaPaint = alphaEditor.document
+            alphaEditor.undo(); try require(alphaEditor.document.frames == beforeAlphaPaint.frames, "Undo did not restore pre-alpha artwork")
+            alphaEditor.redo(); try require(alphaEditor.document.frames == afterAlphaPaint.frames, "Redo lost alpha-paint operation")
+            let alphaArchive = try StudioDocumentArchive(document: alphaEditor.document, rasterFrameIndices: [:]).encoded()
+            try require(StudioDocumentArchive.decode(alphaArchive).document == alphaEditor.document, "Alpha paint changed during persistence")
+            var oldAlpha = alphaEditor.document; oldAlpha.schemaVersion = 23; try rejects { try oldAlpha.validate() }
+            var invalidAlpha = alphaEditor.document; invalidAlpha.frames[0].elements[1].preservesLayerAlpha = false; try rejects { try invalidAlpha.validate() }
+            let alphaOutput = try await StudioExportService().export(document: alphaEditor.document, format: .pngSequence, outputParent: root)
+            let alphaSource = CGImageSourceCreateWithURL(alphaOutput.imageURLs[0] as CFURL, nil)!
+            try require(try pixels(CGImageSourceCreateImageAtIndex(alphaSource, 0, nil)!) == render(alphaEditor.document.frames[0], layers: alphaEditor.document.layers), "Alpha paint PNG differs from the canonical canvas")
+            for mode in ["full", "hidden", "zero"] {
+                var denied = alphaEditor
+                try denied.updateLayer(alphaLayer) { if mode == "hidden" { $0.visible = false } else if mode == "zero" { $0.opacity = 0 } else { $0.lockMode = "full"; $0.locked = true } }
+                let unchanged = denied.document
+                var rejected = alphaPaint; rejected = DrawnElement(id: UUID().uuidString, tool: rejected.tool, points: rejected.points, color: rejected.color, width: rejected.width, opacity: rejected.opacity, layerID: alphaLayer, brush: rejected.brush)
+                try rejects { try denied.commit(rejected, frameID: alphaFrame) }
+                try require(denied.document == unchanged, "Denied alpha paint partially changed the document")
+            }
+            var emptyAlpha = try StudioDocumentEditor(document: .new(name: "Empty alpha", width: 64, height: 64, fps: 12))
+            try emptyAlpha.updateLayer(emptyAlpha.document.activeLayerID) { $0.lockMode = "alpha" }
+            var emptyPaint = alphaPaint; emptyPaint.layerID = emptyAlpha.document.activeLayerID
+            try emptyAlpha.commit(emptyPaint, frameID: emptyAlpha.document.activeFrameID)
+            try require(try render(emptyAlpha.document.frames[0], layers: emptyAlpha.document.layers, transparent: true).allSatisfy { $0 == 0 }, "Painting an empty alpha-locked layer created coverage")
+            var unsupported = alphaPaint; unsupported.brush = nil
+            let beforeUnsupported = alphaEditor.document
+            try rejects { try alphaEditor.commit(unsupported, frameID: alphaFrame) }
+            try require(alphaEditor.document == beforeUnsupported, "Unsupported alpha-locked edit changed history")
+            var copiedAlpha = alphaEditor
+            copiedAlpha.copyFrame(); try copiedAlpha.pasteFrame()
+            try require(copiedAlpha.document.frames[1].elements.last?.preservesLayerAlpha == true, "Frame copy stripped alpha preservation")
+            try require(render(copiedAlpha.document.frames[1], layers: copiedAlpha.document.layers, transparent: true) == alphaPixels, "Frame copy changed alpha-painted pixels")
+            var duplicatedAlpha = alphaEditor
+            try duplicatedAlpha.duplicateLayer(alphaLayer)
+            try require(duplicatedAlpha.document.frames[0].elements.filter { $0.preservesLayerAlpha == true }.count == 2, "Layer duplication stripped alpha preservation")
+            let alphaStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("alpha-documents"), cachesDirectory: root.appendingPathComponent("alpha-cache"))
+            let alphaMetadata = AnimationMetadata(id: beforeAlphaPaint.id, title: beforeAlphaPaint.name, fps: beforeAlphaPaint.fps,
+                canvasWidth: 64, canvasHeight: 64, frameCount: 1, layerCount: 1, createdAt: beforeAlphaPaint.createdAt, modifiedAt: beforeAlphaPaint.modifiedAt, thumbnailData: nil)
+            try alphaStorage.saveAnimation(AnimationProject(id: beforeAlphaPaint.id, metadata: alphaMetadata,
+                frames: [StoredAnimationFrame(imageData: nil, layerData: nil)], audioTracks: [],
+                editableDocumentData: StudioDocumentArchive(document: beforeAlphaPaint, rasterFrameIndices: [:]).encoded()))
+            let alphaVM = StudioViewModel(storage: alphaStorage)
+            let alphaOpened = await alphaVM.openProject(alphaMetadata); try require(alphaOpened, "Actual alpha project did not open")
+            alphaVM.setLayerLockMode(alphaLayer, mode: .free)
+            alphaVM.setLayerLockMode(alphaLayer, mode: .alpha)
+            try require(alphaVM.document.layers.first?.lockMode == "alpha", "User-facing alpha lock control did not enable painting")
+            let lockedCaptureDocument = alphaVM.document
+            try require(alphaVM.beginStrokeInput(id: alphaPaint.id), "Alpha stroke could not acquire input ownership")
+            alphaVM.setLayerLockMode(alphaLayer, mode: .free)
+            try require(alphaVM.document == lockedCaptureDocument, "Layer lock changed during active capture")
+            try require(alphaVM.commitElement(alphaPaint), "Actual VM alpha paint rejected")
+            alphaVM.finishStrokeInput(id: alphaPaint.id)
+            let alphaSaved = await alphaVM.save(); try require(alphaSaved, "Actual alpha paint save failed")
+            let coldAlphaVM = StudioViewModel(storage: alphaStorage)
+            let coldAlphaOpened = await coldAlphaVM.openProject(alphaMetadata); try require(coldAlphaOpened, "Actual alpha paint cold reopen failed")
+            try require(coldAlphaVM.currentFrame.elements.last?.preservesLayerAlpha == true && render(coldAlphaVM.currentFrame, layers: coldAlphaVM.document.layers, transparent: true) == alphaPixels, "Actual save/reopen changed alpha-painted pixels")
+            print("PASS canonical alpha-lock brush paint changes RGB, preserves transparent/partial coverage, fences unsupported edits, survives schema24/archive/Undo/Redo and real PNG export")
 
             var halfLayer = CanvasLayer(id: "half", name: "Half"); halfLayer.opacity = 0.5
             let halfStroke = stroke(halfLayer.id, opacity: 0.5)
@@ -246,7 +347,15 @@ private func rejects(_ operation: () throws -> Void) throws {
             for family in StudioBrushFamily.allCases {
                 var doc = try StudioDocument.new(name: "Brush \(family.rawValue)", width: 64, height: 64, fps: 12)
                 let element = stroke(doc.activeLayerID, family: family)
-                doc.schemaVersion = 2; doc.frames[0].elements = [element]
+                var familyEditor = try StudioDocumentEditor(document: doc)
+                try familyEditor.commit(element, frameID: doc.activeFrameID)
+                doc = familyEditor.document
+                if [.airbrush, .watercolor, .neon].contains(family) {
+                    try require(doc.schemaVersion == 25, "Extended family did not guard the project schema")
+                    var oldFamily = doc; oldFamily.schemaVersion = 24; try rejects { try oldFamily.validate() }
+                    let archive = try StudioDocumentArchive(document: doc, rasterFrameIndices: [:]).encoded()
+                    try require(StudioDocumentArchive.decode(archive).document == doc, "Extended family archive changed")
+                }
                 let expected = try render(doc.frames[0], layers: doc.layers)
                 distinct.insert(Data(expected))
                 let output = try await exportService.export(document: doc, format: .pngSequence, outputParent: root)
@@ -258,7 +367,7 @@ private func rejects(_ operation: () throws -> Void) throws {
                 try require(small.contains { $0 < 240 }, "Thumbnail lost actual brush ink")
             }
             try require(distinct.count == StudioBrushFamily.allCases.count, "Exposed brush families do not produce distinct shared-renderer pixels")
-            print("PASS all ten families share distinct actual native/thumbnail/export pixels; real PNGs reopen")
+            print("PASS all thirteen families share distinct actual native/thumbnail/export pixels; real PNGs reopen")
 
             var collision = stroke("cache", id: "same-id")
             let first = try StudioBrushGeometryCache.geometry(for: collision)
@@ -378,7 +487,7 @@ private func rejects(_ operation: () throws -> Void) throws {
             print("BRUSH_INTEGRATION_METRICS rapid60Total=\(durations.reduce(0,+))s rapidWorst=\(durations.max() ?? 0)s cachedDocumentValidation=\(validationSeconds)s cacheBytes=\(footprint.bytes)")
             try require((durations.max() ?? 0) < 2 && validationSeconds < 2, "Bounded preparation unexpectedly stalled for seconds")
             print("PASS actual rapid input preparation and full production document validation benchmark")
-            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 14 production groups")
+            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 16 production groups")
         } catch {
             fputs("STUDIO_BRUSH_INTEGRATION_TESTS=FAIL \(error)\n", stderr)
             exit(1)

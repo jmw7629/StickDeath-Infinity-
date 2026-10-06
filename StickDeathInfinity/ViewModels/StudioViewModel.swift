@@ -125,6 +125,8 @@ final class StudioViewModel: ObservableObject {
     @Published var equalShapeSides = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineArrowEnds: StudioArrowEnds = .none { didSet { rememberDrawingToolPreferences() } }
+    @Published var lineArrowLength: Double = 16 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
     @Published var smoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     @Published var pressureSensitivity = false { didSet { rememberDrawingToolPreferences() } }
@@ -244,6 +246,10 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
     func shapeDescriptor() throws -> StudioShapeDescriptor? {
+        if selectedTool == .line, lineArrowEnds != .none {
+            let value = StudioShapeDescriptor(version: 2, arrowEnds: lineArrowEnds, arrowLength: lineArrowLength)
+            try value.validate(tool: .line); return value
+        }
         guard [.rectangle, .circle].contains(selectedTool) else { return nil }
         let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
             cornerRadius: selectedTool == .rectangle ? shapeCornerRadius : 0)
@@ -296,7 +302,7 @@ final class StudioViewModel: ObservableObject {
             dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones,
             lineAngleSnap: lineAngleSnap, equalShapeSides: equalShapeSides,
             lineRulerEnabled: lineRulerEnabled, lineRulerAngle: lineRulerAngle,
-            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled)
+            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -322,6 +328,7 @@ final class StudioViewModel: ObservableObject {
         lineRulerFixedLength = value.lineRulerFixedLength ?? false; lineRulerLength = value.lineRulerLength ?? 100
         lineAngleSnap = value.lineAngleSnap ?? 0; equalShapeSides = value.equalShapeSides ?? false
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
+        lineArrowEnds = value.lineArrowEnds ?? .none; lineArrowLength = value.lineArrowLength ?? 16
         eraserMode = value.eraserMode ?? .hard
         textStyle = value.textStyle ?? StudioTextStyle()
         blurHardness = value.blurHardness ?? 0.5; blurRadius = value.blurRadius ?? 4
@@ -1552,7 +1559,6 @@ final class StudioViewModel: ObservableObject {
     func toggleLayerVisibility(_ id: String) { command { try $0.updateLayer(id) { $0.visible.toggle() } } }
     func toggleLayerLock(_ id: String) { command { try $0.updateLayer(id) { layer in layer.locked.toggle(); layer.lockMode = layer.locked ? "full" : "free" } } }
     func setLayerLockMode(_ id: String, mode: LayerLockMode) {
-        if mode == .alpha { message = "Alpha-lock painting is unfinished. The layer lock was not changed."; return }
         command { try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full } }
     }
     func setLayerOpacity(_ id: String, opacity: Double) { command { try $0.updateLayer(id) { $0.opacity = opacity } } }
@@ -2545,8 +2551,11 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var mirrorMode: StudioMirrorMode? = nil
         var pressureSensitivity: Bool? = nil
         var pencilTiltEnabled: Bool? = nil
+        var lineArrowEnds: StudioArrowEnds? = nil
+        var lineArrowLength: Double? = nil
 
         var isValid: Bool {
+            (lineArrowLength.map { $0.isFinite && (1...100).contains($0) } ?? true) &&
             (lineRulerAngle.map { $0.isFinite && (-180...180).contains($0) } ?? true) &&
             (lineRulerLength.map { $0.isFinite && (1...4096).contains($0) } ?? true) &&
             (lineAngleSnap.map { [0.0, 15, 45, 90].contains($0) } ?? true) &&

@@ -18,11 +18,12 @@ struct StudioBrushRenderer {
         let marks: [Mark]
         let opacity: Double
         let gradientEndColor: StudioBrushColor?
+        let brightCore: Bool
         let sampledPointCount: Int
         let seed: UInt64
         let bounds: CGRect
         fileprivate init(marks: [Mark], settings: StudioBrushSettings, count: Int, seed: UInt64) {
-            self.marks = marks; opacity = settings.opacity
+            self.marks = marks; opacity = settings.opacity; brightCore = settings.family == .neon
             gradientEndColor = settings.family == .gradient ? settings.gradientEndColor : nil
             sampledPointCount = count; self.seed = seed
             var footprint = CGRect.null
@@ -76,6 +77,7 @@ struct StudioBrushRenderer {
         }
         let spacingRatio: Double
         switch settings.family {
+        case .neon: spacingRatio = 0.05
         case .halftone: spacingRatio = 0.65
         case .hatchRight, .hatchLeft: spacingRatio = 0.45
         case .stipple: spacingRatio = 0.28
@@ -144,6 +146,40 @@ struct StudioBrushRenderer {
             let pressure = settings.pressureEnabled ? 0.15 + 0.85 * dab.pressure : 1
             let size = settings.size * pressure
             switch settings.family {
+            case .airbrush:
+                // Nested low-opacity soft dabs accumulate through actual overlap.
+                // Texture is exposed as Flow for this family.
+                for ring in (1...6).reversed() {
+                    let scale = Double(ring) / 6
+                    try mark(.ellipse, dab.x, dab.y, size * scale, size * scale, 0,
+                             (0.015 + settings.texture * 0.045) * (1.2 - scale * 0.5))
+                }
+            case .watercolor:
+                // Seeded translucent washes and pigment flecks; no raster assets.
+                try mark(.ellipse, dab.x, dab.y, size, size, 0, 0.025 + (1-settings.texture) * 0.055)
+                for _ in 0..<5 {
+                    let angle = random.unit() * .pi * 2, radius = sqrt(random.unit()) * size * 0.35
+                    let diameter = size * (0.2 + random.unit() * 0.35)
+                    try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
+                        diameter, diameter * (0.65 + random.unit()*0.35), random.unit() * .pi,
+                        0.025 + settings.texture * 0.08)
+                }
+                for _ in 0..<3 {
+                    let angle = random.unit() * .pi * 2, radius = sqrt(random.unit()) * size * 0.48
+                    let diameter = size * (0.015 + settings.grain * 0.045)
+                    try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
+                        diameter, diameter, 0, 0.12 + settings.texture * 0.2)
+                }
+            case .neon:
+                // Colored halo and a bright narrow core use the same geometry in
+                // Canvas and export; Texture controls halo intensity, not a label.
+                for ring in (1...5).reversed() {
+                    let scale = 0.35 + Double(ring) * 0.13
+                    try mark(.ellipse, dab.x, dab.y, size*scale, size*scale, 0,
+                        (0.02 + settings.texture * 0.07) * (1.2-scale))
+                }
+                try mark(.ellipse, dab.x, dab.y, size*0.24, size*0.24, 0, 0.85)
+                try mark(.ellipse, dab.x, dab.y, size*0.10, size*0.10, 0, 1, 0.9)
             case .round:
                 try mark(.ellipse, dab.x, dab.y, size, size)
             case .stipple:
@@ -189,7 +225,10 @@ struct StudioBrushRenderer {
             }
         }
         try checkCancellation()
-        return Geometry(marks: marks, settings: settings, count: dabs.count, seed: seed)
+        // Render every halo before every white core. Later colored dabs must
+        // not paint over an earlier core or leave dotted gaps along the tube.
+        let ordered = settings.family == .neon ? marks.filter { $0.colorMix == 0 } + marks.filter { $0.colorMix > 0 } : marks
+        return Geometry(marks: ordered, settings: settings, count: dabs.count, seed: seed)
     }
 
     /// Geometry uses document coordinates. Supply a top-left user-space CTM
@@ -210,7 +249,7 @@ struct StudioBrushRenderer {
         context.beginTransparencyLayer(auxiliaryInfo: nil)
         context.setFillColorSpace(colorSpace)
         for mark in geometry.marks {
-            let tint = mixed(color, geometry.gradientEndColor, mark.colorMix)
+            let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
             context.setAlpha(mark.opacity)
             let components: [CGFloat] = [tint.red, tint.green, tint.blue, tint.alpha]
             context.setFillColor(components)
@@ -229,7 +268,7 @@ struct StudioBrushRenderer {
         group.clip(to: Path(geometry.bounds))
         group.drawLayer { local in
             for mark in geometry.marks {
-                let tint = mixed(color, geometry.gradientEndColor, mark.colorMix)
+                let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
                 var stamp = local; stamp.opacity *= mark.opacity
                 stamp.fill(Path(path(mark)), with: .color(Color(.sRGB, red: tint.red, green: tint.green,
                                                               blue: tint.blue, opacity: tint.alpha)))

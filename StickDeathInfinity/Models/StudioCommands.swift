@@ -75,12 +75,13 @@ struct StudioCommandStroke: Codable {
     var shape: StudioShapeDescriptor? = nil
     var eraser: StudioEraserDescriptor? = nil
     var text: StudioTextDescriptor? = nil
+    var brush: StudioBrushDescriptor? = nil
 }
 
 enum StudioCommandDirection: String, Codable { case earlier, later
     var offset: Int { self == .earlier ? -1 : 1 }
 }
-enum StudioCommandLock: String, Codable { case free, full, position }
+enum StudioCommandLock: String, Codable { case free, full, position, alpha }
 enum StudioCommandBlend: String, Codable { case normal, multiply, screen, overlay, darken, lighten }
 
 struct StudioCommandLayerSettings: Codable {
@@ -285,6 +286,7 @@ struct StudioCommandContext {
     let editableAudioClips: [AudioClip]
     let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades"]
     let supportedTools: [DrawingTool]
+    let supportedBrushFamilies = StudioBrushFamily.allCases
     let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
 
     init(document: StudioDocument) {
@@ -401,18 +403,25 @@ enum StudioCommandExecutor {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
                 for value in values {
-                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser", "text"])
+                    let stroke = try object(value, keys: ["id", "tool", "points", "color", "width", "opacity", "shape", "eraser", "text", "brush"])
                     if let text = stroke["text"] { try textDescriptor(text) }
+                    if let brush = stroke["brush"] {
+                        let fields = try object(brush, keys: ["version", "family", "seed", "smoothing", "pressureEnabled", "tipAngleDegrees", "texture", "grain", "gradientEndColor", "tiltEnabled"])
+                        if let endpoint = fields["gradientEndColor"] { _ = try object(endpoint, keys: ["red", "green", "blue", "alpha"]) }
+                    }
                     if let eraser = stroke["eraser"] {
                         _ = try object(eraser, keys: ["version", "mode"])
                     }
                     if let shape = stroke["shape"] {
-                        _ = try object(shape, keys: ["version", "fillColor", "cornerRadius"])
+                        _ = try object(shape, keys: ["version", "fillColor", "cornerRadius", "arrowEnds", "arrowLength"])
                     }
                     guard let points = stroke["points"] as? [Any] else { throw StudioCommandError.malformed }
                     guard points.count <= maximumPointsPerStroke, points.count <= maximumInputPoints - inputPoints else { throw StudioCommandError.limitExceeded }
                     inputPoints += points.count
-                    for point in points { _ = try object(point, keys: ["x", "y", "pressure", "timestamp"]) }
+                    for point in points {
+                        let fields = try object(point, keys: ["x", "y", "pressure", "timestamp", "tilt"])
+                        if let tilt = fields["tilt"] { _ = try object(tilt, keys: ["altitude", "azimuth"]) }
+                    }
                 }
             }
         }
@@ -553,12 +562,18 @@ enum StudioCommandExecutor {
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                           point.timestamp.map({ $0.isFinite && $0 >= 0 }) ?? true else { throw StudioCommandError.invalidGeometry }
                 }
+                if let brush = stroke.brush {
+                    guard [.pencil, .pen, .brush, .marker, .crayon].contains(stroke.tool),
+                          stroke.shape == nil, stroke.eraser == nil, stroke.text == nil else { throw StudioCommandError.invalidSettings }
+                    do { _ = try brush.settings(width: stroke.width, opacity: stroke.opacity) }
+                    catch { throw StudioCommandError.invalidSettings }
+                } else if stroke.points.contains(where: { $0.tilt != nil }) { throw StudioCommandError.invalidSettings }
                 if let shape = stroke.shape {
                     do { try shape.validate(tool: stroke.tool) }
                     catch { throw StudioCommandError.invalidSettings }
                 }
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
-                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, shape: stroke.shape, eraser: stroke.eraser, text: stroke.text)
+                    width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, brush: stroke.brush, shape: stroke.shape, eraser: stroke.eraser, text: stroke.text)
                 try budget.generate([element])
                 try editor.commit(element, frameID: frameID)
             }

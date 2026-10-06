@@ -101,7 +101,7 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
     static func main() {
         do {
             let families = StudioBrushFamily.allCases
-            try require(families.count == 10, "Reference library entry missing")
+            try require(families.count == 13, "Reference library entry missing")
             var rasters: [[UInt8]] = []
             for family in families {
                 let settings = StudioBrushSettings(family: family, size: 16, gradientEndColor: family == .gradient ? blue : nil)
@@ -115,7 +115,21 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
                 try require(settings == JSONDecoder().decode(StudioBrushSettings.self, from: JSONEncoder().encode(settings)), "Settings roundtrip failed")
                 try write(image.image, family.rawValue)
             }
-            pass("all ten reference families have distinct visible native pixels, deterministic geometry/replay and Codable roundtrip")
+            pass("all thirteen brush families have distinct visible native pixels, deterministic geometry/replay and Codable roundtrip")
+            for family in [StudioBrushFamily.airbrush, .watercolor, .neon] {
+                var low = StudioBrushSettings(family: family, size: 30, smoothing: 0, texture: 0)
+                var high = low; high.texture = 1
+                try require(bitmap(geometry(low)).bytes != bitmap(geometry(high)).bytes, "Family-specific Flow/Pigment/Glow does not affect pixels: \(family)")
+                low.opacity = 0
+                try require(bitmap(geometry(low)).alphaSum == 0, "New family ignores zero opacity")
+            }
+            var water = StudioBrushSettings(family: .watercolor, size: 30, smoothing: 0, grain: 0)
+            let fineWater = try bitmap(geometry(water)); water.grain = 1
+            try require(fineWater.bytes != bitmap(geometry(water)).bytes, "Watercolor grain does not change pigment pixels")
+            let neon = try bitmap(geometry(StudioBrushSettings(family: .neon, size: 30, smoothing: 0), points: line()))
+            let neonCore = neon.pixel(128,128)
+            try require(neonCore[1] > 0 && neonCore[2] > 0 && neonCore[3] > 0, "Neon lacks its bright tinted core")
+            pass("Airbrush Flow, Watercolor Pigment/Grain and Neon Glow/core alter real pixels with bounded shared geometry")
             let defaults = try JSONDecoder().decode(StudioBrushSettings.self, from: Data("{}".utf8))
             try require(defaults == StudioBrushSettings(), "Explicit historical setting defaults changed")
             for json in ["{\"version\":2}", "{\"family\":\"missing\"}", "{\"size\":0}", "{\"family\":\"gradient\"}"] {

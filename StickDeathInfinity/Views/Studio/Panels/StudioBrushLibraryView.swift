@@ -13,6 +13,9 @@ extension StudioBrushFamily {
         case .hatchRight: return "Hatch /"
         case .hatchLeft: return "Hatch \\"
         case .gradient: return "Gradient"
+        case .airbrush: return "Airbrush"
+        case .watercolor: return "Watercolor"
+        case .neon: return "Neon"
         }
     }
 }

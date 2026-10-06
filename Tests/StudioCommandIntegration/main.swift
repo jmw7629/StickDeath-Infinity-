@@ -87,6 +87,21 @@ private final class NetworkTrap: URLProtocol {
                 }
                 try require(vm.document == before && !vm.isEditing && vm.savedProjects.isEmpty, "rejected library command created or changed a project")
             }
+            try await test("styled brush wire commands persist through actual VM cold reopen without network") {
+                let storage = store("styled-brush"), vm = StudioViewModel(storage: storage)
+                try require(await vm.createProject(name: "Styled commands", width: 64, height: 64, fps: 12), "Styled project creation failed")
+                let descriptor = StudioBrushDescriptor(family: .watercolor, seed: UInt64.max, smoothing: 1, pressureEnabled: true, texture: 0.8, grain: 0.4)
+                let operation = StudioCommand.draw(.init(frame: .id(vm.currentFrame.id), layer: .id(vm.activeLayerID), strokes: [
+                    .init(id: "typed-watercolor", tool: .brush, points: [.init(x: 10, y: 20, pressure: 0.3), .init(x: 48, y: 44, pressure: 0.9)], color: "#0066CC", width: 12, opacity: 0.6, brush: descriptor)]))
+                let receipt = try vm.applyStudioCommands(JSONEncoder().encode(command(vm, .apply([operation]))))
+                try require(receipt.createdElementIDs == ["typed-watercolor"] && vm.currentFrame.elements.last?.brush == descriptor && vm.document.schemaVersion == 25, "Styled command did not reach actual canonical editor")
+                try require(await vm.save(), "Styled command save failed")
+                let metadata = storage.listAnimations().first!
+                let reopened = StudioViewModel(storage: storage)
+                try require(await reopened.openProject(metadata), "Styled command cold reopen failed")
+                try require(reopened.currentFrame.elements.last?.brush == descriptor, "Cold reopen lost typed brush settings")
+                try require(NetworkTrap.count == 0, "Local styled command made a cloud request")
+            }
             try await test("wire commands through actual VM persist full document and share UI undo/redo") {
                 let storage = store("roundtrip"), vm = StudioViewModel(storage: store("roundtrip"))
                 try require(await vm.createProject(name: "Commands A", width: 64, height: 64, fps: 12), "create failed")

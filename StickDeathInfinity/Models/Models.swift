@@ -98,6 +98,8 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Schema19: ordered RGB unsharp mask with preserved original alpha.
     var sharpen: StudioSharpenDescriptor? = nil
     var dodgeBurn: StudioDodgeBurnDescriptor? = nil
+    /// Schema24: paint RGB over preceding raw-layer coverage without changing its alpha.
+    var preservesLayerAlpha: Bool? = nil
 
     var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil || dodgeBurn != nil }
 
@@ -116,6 +118,11 @@ struct DrawnElement: Codable, Identifiable, Equatable {
             guard let first = mask.spans.first, let last = mask.spans.last,
                   let left = mask.spans.map(\.start).min(), let right = mask.spans.map(\.end).max() else { return nil }
             bounds = CGRect(x: left, y: first.row, width: right - left, height: last.row - first.row + 1)
+        } else if tool == .line, let shape, points.count == 2 {
+            let vertices = points.map { CGPoint(x: $0.x, y: $0.y) } + shape.arrowTriangles(from: CGPoint(x: points[0].x, y: points[0].y), to: CGPoint(x: points[1].x, y: points[1].y)).flatMap { $0 }
+            let left = vertices.map(\.x).min()!, right = vertices.map(\.x).max()!
+            let top = vertices.map(\.y).min()!, bottom = vertices.map(\.y).max()!
+            bounds = CGRect(x: left, y: top, width: right-left, height: bottom-top).insetBy(dx: -width/2, dy: -width/2)
         } else {
             guard let left = points.map(\.x).min(), let right = points.map(\.x).max(),
                   let top = points.map(\.y).min(), let bottom = points.map(\.y).max() else { return nil }
@@ -343,13 +350,23 @@ struct StudioFillMask: Codable, Equatable, Sendable {
     }
 }
 
+enum StudioArrowEnds: String, Codable, CaseIterable { case none, start, end, both }
+
 struct StudioShapeDescriptor: Codable, Equatable {
     var version = 1
     var fillColor: String? = nil
     var cornerRadius: Double = 0
+    var arrowEnds: StudioArrowEnds? = nil
+    var arrowLength: Double? = nil
 
     func validate(tool: DrawingTool) throws {
-        guard version == 1, [.rectangle, .circle].contains(tool),
+        if tool == .line {
+            guard version == 2, let arrowEnds, arrowEnds != .none,
+                  let arrowLength, arrowLength.isFinite, (1...100).contains(arrowLength),
+                  fillColor == nil, cornerRadius == 0 else { throw Failure.invalid }
+            return
+        }
+        guard version == 1, arrowEnds == nil, arrowLength == nil, [.rectangle, .circle].contains(tool),
               cornerRadius.isFinite, (0...50).contains(cornerRadius),
               tool == .rectangle || cornerRadius == 0 else { throw Failure.invalid }
         if let fillColor {
@@ -358,6 +375,25 @@ struct StudioShapeDescriptor: Codable, Equatable {
                 (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
             }) else { throw Failure.invalid }
         }
+    }
+    /// Canvas-space filled heads, capped to the shaft so short arrows never
+    /// reverse direction. Both-head arrows reserve half the shaft per head.
+    func arrowTriangles(from start: CGPoint, to end: CGPoint) -> [[CGPoint]] {
+        guard let arrowEnds, arrowEnds != .none, let arrowLength,
+              start.x.isFinite, start.y.isFinite, end.x.isFinite, end.y.isFinite else { return [] }
+        let distance = hypot(end.x-start.x, end.y-start.y)
+        guard distance > 0, arrowLength.isFinite, arrowLength > 0 else { return [] }
+        let length = min(CGFloat(arrowLength), distance / (arrowEnds == .both ? 2 : 1))
+        func head(_ tip: CGPoint, _ toward: CGPoint) -> [CGPoint] {
+            let ux = (toward.x-tip.x)/distance, uy = (toward.y-tip.y)/distance
+            let base = CGPoint(x: tip.x + ux*length, y: tip.y + uy*length)
+            return [tip, CGPoint(x: base.x - uy*length*0.5, y: base.y + ux*length*0.5),
+                    CGPoint(x: base.x + uy*length*0.5, y: base.y - ux*length*0.5)]
+        }
+        var result: [[CGPoint]] = []
+        if arrowEnds == .start || arrowEnds == .both { result.append(head(start, end)) }
+        if arrowEnds == .end || arrowEnds == .both { result.append(head(end, start)) }
+        return result
     }
     enum Failure: LocalizedError {
         case invalid
@@ -447,7 +483,7 @@ struct StudioMirrorCapture: Equatable {
                 opacity: source.opacity, fillColor: source.fillColor, layerID: source.layerID,
                 brush: source.brush, shape: source.shape,
                 translation: .init(x: x ? width : 0, y: y ? height : 0),
-                reflection: .init(horizontal: x, vertical: y)))
+                reflection: .init(horizontal: x, vertical: y), preservesLayerAlpha: source.preservesLayerAlpha))
         }
         return result
     }
@@ -474,9 +510,37 @@ struct StudioStrokeInput {
     var rulerAngleDegrees: Double? = nil
     var rulerLength: Double? = nil
     var mirror: StudioMirrorCapture? = nil
+    var preservesLayerAlpha = false
     private(set) var points: [StrokePoint] = []
+    private(set) var estimatedSampleIndices: [Int64: Int] = [:]
+    private(set) var estimatedUpdatesClosed = false
 
-    mutating func append(location: CGPoint, time: Date, pressure: CGFloat? = nil, tilt: StudioPencilTilt? = nil) throws {
+    /// Updates only this live capture. No document/history entry is edited.
+    @discardableResult
+    mutating func updateEstimatedSample(strokeID: String, estimationIndex: Int64,
+        location: CGPoint, pressure: CGFloat?, tilt: StudioPencilTilt?, expectsMoreUpdates: Bool) throws -> Bool {
+        guard !estimatedUpdatesClosed, strokeID == id, brush != nil,
+              let index = estimatedSampleIndices[estimationIndex], points.indices.contains(index) else { return false }
+        let original = points[index]
+        // Reuse capture validation and coordinate conversion before any mutation.
+        var probe = self
+        probe.points = []; probe.estimatedSampleIndices = [:]
+        try probe.append(location: location, time: startedAt.addingTimeInterval(original.timestamp ?? 0), pressure: pressure, tilt: tilt)
+        var corrected = probe.points[0]; corrected.timestamp = original.timestamp
+        points[index] = corrected
+        if !expectsMoreUpdates { estimatedSampleIndices.removeValue(forKey: estimationIndex) }
+        return true
+    }
+    /// Finger-up finalizes with the latest received values, never waits forever
+    /// and never permits a late OS update to rewrite committed artwork.
+    @discardableResult
+    mutating func finishEstimatedUpdates() -> Int {
+        let unresolved = estimatedSampleIndices.count
+        estimatedSampleIndices.removeAll(); estimatedUpdatesClosed = true
+        return unresolved
+    }
+
+    mutating func append(location: CGPoint, time: Date, pressure: CGFloat? = nil, tilt: StudioPencilTilt? = nil, estimationIndex: Int64? = nil) throws {
         guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
             throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
         }
@@ -529,6 +593,12 @@ struct StudioStrokeInput {
                 point = CGPoint(x: start.x+dx*fraction, y: start.y+dy*fraction)
             }
         }
+        if let estimationIndex, brush != nil, !estimatedUpdatesClosed {
+            guard estimatedSampleIndices[estimationIndex] == nil, estimatedSampleIndices.count < 8_192 else {
+                throw StudioBrushError.invalidSettings("Estimated sample identity is duplicated or exceeds the capture limit.")
+            }
+            estimatedSampleIndices[estimationIndex] = points.count
+        }
         points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed, tilt: tilt))
     }
     /// Editor-only ruler guide, never part of a DrawnElement or export.
@@ -551,7 +621,8 @@ struct StudioStrokeInput {
         let shape = [.line, .rectangle, .circle].contains(tool)
         let rendered = shape && points.count > 1 ? [points[0], points[points.count - 1]] : points
         return DrawnElement(id: id, tool: tool, points: rendered, color: color,
-            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape, eraser: eraser)
+            width: width, opacity: opacity, layerID: layerID, brush: brush, shape: self.shape, eraser: eraser,
+            preservesLayerAlpha: preservesLayerAlpha ? true : nil)
     }
 }
 

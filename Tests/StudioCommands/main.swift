@@ -45,6 +45,74 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            try test("all native brush families pass strict typed wire and one reversible canonical transaction") {
+                for family in StudioBrushFamily.allCases {
+                    var editor = try fresh(); let before = content(editor.document)
+                    var styled = stroke(id: "typed-" + family.rawValue)
+                    styled.brush = .init(family: family, seed: UInt64.max, gradientEndColor: family == .gradient ? .init(red: 0, green: 0, blue: 1) : nil)
+                    let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([draw(editor, [styled])]))))
+                    let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                    try require(editor.document.frames[0].elements[0].brush == styled.brush && receipt.createdElementIDs == [styled.id], "Typed brush descriptor/seed or factual receipt changed")
+                    let after = content(editor.document)
+                    _ = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
+                    try require(content(editor.document) == before, "Styled request undo lost original document")
+                    _ = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
+                    try require(content(editor.document) == after, "Styled request redo changed captured settings")
+                    try require(StudioCommandContext(document: editor.document).supportedBrushFamilies.contains(family), "Command context omits supported family")
+                }
+            }
+            try test("typed alpha lock and Pencil tilt use actual canonical paint semantics") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "base")])])), editor: &editor)
+                var tilted = stroke(id: "tilted", points: [.init(x: 20, y: 30, pressure: 0.4, timestamp: 0, tilt: .init(altitude: 0.5, azimuth: 1))])
+                tilted.brush = .init(version: 2, family: .calligraphy, seed: 12, pressureEnabled: true, tiltEnabled: true)
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([
+                    .updateLayer(.init(layer: .id(editor.document.activeLayerID), settings: .init(lock: .alpha))), draw(editor, [tilted])]))))
+                _ = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                let actual = editor.document.frames[0].elements.last!
+                try require(actual.preservesLayerAlpha == true && actual.points == tilted.points && actual.brush == tilted.brush && editor.document.schemaVersion == 24, "Typed capture lost canonical alpha/tilt metadata")
+            }
+            try test("invalid brush settings mixed descriptors and geometry budgets roll back entire transactions") {
+                for invalidCase in 0..<5 {
+                    var editor = try fresh(); var bad = stroke(id: "bad")
+                    bad.brush = .init(family: .neon, seed: 1)
+                    if invalidCase == 0 { bad.brush?.texture = 2 }
+                    if invalidCase == 1 { bad.brush?.version = 99 }
+                    if invalidCase == 2 { bad.shape = .init() }
+                    if invalidCase == 3 { bad.brush?.tiltEnabled = true }
+                    if invalidCase == 4 {
+                        bad = stroke(id: "bad", points: (0..<4096).map { .init(x: $0 % 2 == 0 ? 0 : 512, y: 20) }, width: 1)
+                        bad.brush = .init(family: .neon, seed: 1, smoothing: 0)
+                    }
+                    try rejected(request(editor, .apply([draw(editor, [stroke(id: "must-rollback"), bad])])), editor: &editor)
+                }
+            }
+            try test("strict brush nested fields reject injected capabilities instead of silently ignoring them") {
+                let editor = try fresh(); var styled = stroke(id: "strict")
+                styled.brush = .init(family: .neon, seed: 1)
+                let original = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([draw(editor, [styled])])))) as! [String:Any]
+                for field in ["shell", "texturePath", "providerKey"] {
+                    var object = original
+                    var action = object["action"] as! [String:Any]; var operations = action["apply"] as! [[String:Any]]
+                    var draw = operations[0]["draw"] as! [String:Any]; var values = draw["strokes"] as! [[String:Any]]
+                    var brush = values[0]["brush"] as! [String:Any]; brush[field] = "untrusted input"
+                    values[0]["brush"] = brush; draw["strokes"] = values; operations[0]["draw"] = draw; action["apply"] = operations; object["action"] = action
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Unknown brush field accepted") }
+                    catch StudioCommandError.malformed { }
+                }
+            }
+            try test("strict arrowhead command shares schema26 and preserves one reversible transaction") {
+                var editor = try fresh(); let before = content(editor.document)
+                var arrow = stroke(id: "typed-arrow", tool: .line)
+                arrow.shape = .init(version: 2, arrowEnds: .both, arrowLength: 25)
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([draw(editor, [arrow])]))))
+                _ = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                try require(editor.document.schemaVersion == 26 && editor.document.frames[0].elements[0].shape == arrow.shape, "Arrow command lost canonical geometry")
+                _ = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
+                try require(content(editor.document) == before, "Arrow command undo lost original document")
+                arrow.shape?.arrowLength = 101
+                try rejected(request(editor, .apply([draw(editor, [stroke(id: "rollback-arrow"), arrow])])), editor: &editor)
+            }
             func audioEditor() throws -> StudioDocumentEditor {
                 var value = try StudioDocument.new(name: "Audio command fixture", width: 512, height: 512, fps: 12)
                 value.schemaVersion = 13

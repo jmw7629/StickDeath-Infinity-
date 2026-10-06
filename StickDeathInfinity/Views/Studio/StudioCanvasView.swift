@@ -289,6 +289,8 @@ struct StudioCanvasView: View {
                     StudioTouchSurface(onChanged: { value in
                         gestureActive = true
                         inputChanged(value, size: size)
+                    }, onEstimated: { value in
+                        inputEstimated(value)
                     }, onEnded: { value in
                         inputEnded(value, size: size)
                         gestureActive = false
@@ -406,7 +408,7 @@ struct StudioCanvasView: View {
                     guard [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle].contains(vm.selectedTool), !vm.isPlaying else { return }
                     guard let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible, !layer.isFullyLocked else { return }
                     do {
-                        let id = UUID().uuidString
+                        let id = value.strokeID
                         let styled = [.pencil, .pen, .brush, .marker, .crayon].contains(vm.selectedTool)
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
                         let shape = try vm.shapeDescriptor()
@@ -423,11 +425,29 @@ struct StudioCanvasView: View {
                             rulerAngleDegrees: vm.selectedTool == .line && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
                             rulerLength: vm.selectedTool == .line && vm.lineRulerEnabled && vm.lineRulerFixedLength ? vm.lineRulerLength : nil,
                             mirror: vm.selectedTool != .eraser && vm.mirrorMode != .off ?
-                                .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil)
+                                .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil,
+                            preservesLayerAlpha: styled && layer.lockMode == "alpha")
                     } catch { vm.message = error.localizedDescription; return }
                 }
-                do { try input?.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt) }
+                do { try input?.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt,
+                    estimationIndex: value.expectsUpdates ? value.estimationIndex : nil) }
                 catch { inputFailure = error.localizedDescription; return }
+                refreshInputPreview()
+    }
+    private func inputEstimated(_ value: StudioTouchValue) {
+        guard gestureActive, scenePhase == .active, inputFailure == nil,
+              var captured = input, captured.id == value.strokeID,
+              vm.activeStrokeID == captured.id, captured.frameID == vm.currentFrame.id,
+              captured.layerID == vm.activeLayerID, captured.tool == vm.selectedTool,
+              let estimationIndex = value.estimationIndex else { return }
+        do {
+            guard try captured.updateEstimatedSample(strokeID: value.strokeID, estimationIndex: estimationIndex,
+                location: value.location, pressure: value.pressure, tilt: value.tilt,
+                expectsMoreUpdates: value.expectsUpdates) else { return }
+            input = captured; refreshInputPreview()
+        } catch { inputFailure = error.localizedDescription }
+    }
+    private func refreshInputPreview() {
                 let now = ProcessInfo.processInfo.systemUptime
                 // Capture every supported sample; only preview regeneration is
                 // coalesced to 30Hz. Commit always prepares the complete input.
@@ -558,6 +578,7 @@ struct StudioCanvasView: View {
                     } else {
                         do {
                             try captured.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt)
+                            captured.finishEstimatedUpdates()
                             _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
                         } catch {
                             vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
@@ -873,6 +894,9 @@ struct GridOverlay: View {
 // UIKit provides real coalesced Pencil samples; SwiftUI's DragGesture does not
 // expose pressure. Both Pencil and finger now use the same Studio transaction.
 private struct StudioTouchValue {
+    let strokeID: String
+    let estimationIndex: Int64?
+    let expectsUpdates: Bool
     let location: CGPoint
     let startLocation: CGPoint
     let time: Date
@@ -883,6 +907,7 @@ private struct StudioTouchValue {
 
 private struct StudioTouchSurface: UIViewRepresentable {
     var onChanged: (StudioTouchValue) -> Void
+    var onEstimated: (StudioTouchValue) -> Void
     var onEnded: (StudioTouchValue) -> Void
     var onCancelled: () -> Void
     func makeUIView(context: Context) -> StudioTouchView {
@@ -894,16 +919,18 @@ private struct StudioTouchSurface: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: StudioTouchView, context: Context) {
-        view.changed = onChanged; view.ended = onEnded; view.cancelled = onCancelled
+        view.changed = onChanged; view.estimated = onEstimated; view.ended = onEnded; view.cancelled = onCancelled
     }
     static func dismantleUIView(_ view: StudioTouchView, coordinator: ()) { view.cancelStroke() }
 }
 
 private final class StudioTouchView: UIView {
     var changed: ((StudioTouchValue) -> Void)?
+    var estimated: ((StudioTouchValue) -> Void)?
     var ended: ((StudioTouchValue) -> Void)?
     var cancelled: (() -> Void)?
     private var active: UITouch?
+    private var strokeID = UUID().uuidString
     private var held = Set<UITouch>()
     private var start = CGPoint.zero
     private var startTime: TimeInterval = 0
@@ -922,6 +949,7 @@ private final class StudioTouchView: UIView {
               touch.type == .pencil || touch.type == .direct else { return }
         // Do not restart a cancelled multi-touch gesture until all contacts lift.
         guard held.count == 1 || touch.type == .pencil else { return }
+        strokeID = UUID().uuidString
         active = touch; start = touch.preciseLocation(in: self)
         startTime = touch.timestamp; startDate = Date(); lastTime = -.infinity
         emit(touch, event: event)
@@ -929,6 +957,13 @@ private final class StudioTouchView: UIView {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let active, touches.contains(active) else { return }
         emit(active, event: event)
+    }
+    override func touchesEstimatedPropertiesUpdated(_ touches: Set<UITouch>) {
+        guard active?.type == .pencil else { return }
+        for touch in touches where touch.type == .pencil && touch.estimationUpdateIndex != nil {
+            guard touch.timestamp >= startTime, touch.timestamp <= lastTime else { continue }
+            estimated?(value(touch))
+        }
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         defer { held.subtract(touches) }
@@ -969,7 +1004,9 @@ private final class StudioTouchView: UIView {
                 azimuth: azimuth < 0 ? azimuth + .pi * 2 : azimuth)
             tilt = measuredTilt.isValid ? measuredTilt : nil
         }
-        return StudioTouchValue(location: touch.preciseLocation(in: self), startLocation: start,
+        return StudioTouchValue(strokeID: strokeID, estimationIndex: touch.estimationUpdateIndex?.int64Value,
+            expectsUpdates: !touch.estimatedPropertiesExpectingUpdates.isEmpty,
+            location: touch.preciseLocation(in: self), startLocation: start,
             time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure, tilt: tilt)
     }
 }

@@ -215,6 +215,19 @@ struct StudioFrameRenderer {
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
             context.blendMode = .normal
             context.draw(Image(decorative: image, scale: 1), in: CGRect(origin: .zero, size: size))
+        } else if element.preservesLayerAlpha == true {
+            guard element.brush != nil else { throw StudioDocumentError.invalid("Alpha-preserving paint requires a brush.") }
+            // Composite the complete brush once over the preceding raw layer.
+            // Source-atop preserves destination alpha, including antialiased edges.
+            // Layer opacity, blend and glow are applied only by the outer compositor.
+            context.blendMode = .sourceAtop
+            var failure: Error?
+            context.drawLayer { drawing in
+                drawing.blendMode = .normal
+                do { try drawElement(context: &drawing, element: element, size: size, canvasSize: canvasSize, brush: brush) }
+                catch { failure = error }
+            }
+            if let failure { throw failure }
         } else {
             try drawElement(context: &context, element: element, size: size, canvasSize: canvasSize, brush: brush)
         }
@@ -355,6 +368,20 @@ struct StudioFrameRenderer {
             guard element.brush == nil else { throw StudioShapeDescriptor.Failure.invalid }
             guard element.points.count >= 2 else { return }
             let first = element.points[0], last = element.points[1]
+            if element.tool == .line {
+                context.scaleBy(x: scaleX, y: scaleY); context.opacity = element.opacity
+                let start = CGPoint(x: first.x, y: first.y), end = CGPoint(x: last.x, y: last.y)
+                context.drawLayer { drawing in
+                    drawing.opacity = 1
+                    var shaft = Path(); shaft.move(to: start); shaft.addLine(to: end)
+                    drawing.stroke(shaft, with: .color(color), lineWidth: element.width)
+                    for triangle in shape.arrowTriangles(from: start, to: end) {
+                        var head = Path(); head.move(to: triangle[0]); head.addLine(to: triangle[1]); head.addLine(to: triangle[2]); head.closeSubpath()
+                        drawing.fill(head, with: .color(color))
+                    }
+                }
+                return
+            }
             let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
                 width: abs(last.x - first.x), height: abs(last.y - first.y))
             let path: Path

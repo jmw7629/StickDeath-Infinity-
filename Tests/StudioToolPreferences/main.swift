@@ -161,6 +161,70 @@ private struct Failure: Error { let message: String }
         try require(vm.document == original && !vm.canUndo, "Reset changed actual document")
         pass("reset affects only the selected tool and is persisted without history")
 
+        for family in [StudioBrushFamily.airbrush, .watercolor, .neon] {
+            vm.selectDrawingTool(.brush); vm.brushFamily = family
+            vm.brushTexture = 0.73; vm.brushGrain = 0.41
+            let captured = try vm.brushDescriptor(elementID: "extended-" + family.rawValue, seed: 76)
+            vm.selectDrawingTool(.pen)
+            let cold = StudioViewModel(toolDefaults: UserDefaults(suiteName: suite))
+            cold.selectDrawingTool(.brush)
+            try require(cold.brushFamily == family && cold.brushTexture == 0.73 && cold.brushGrain == 0.41, "Extended family settings did not survive cold per-tool restore")
+            try require(try cold.brushDescriptor(elementID: "extended-" + family.rawValue, seed: 76) == captured, "Restored extended brush capture differs")
+            try require(vm.brushFamily == .dipPen, "New family changed independent Pen settings")
+        }
+        pass("Airbrush, Watercolor and Neon settings persist independently and restore identical capture descriptors")
+
+        var arrowPixels = Set<Data>()
+        for ends in [StudioArrowEnds.start, .end, .both] {
+            var d = try StudioDocument.new(name: "Arrow", width: 128, height: 128, fps: 12)
+            let descriptor = StudioShapeDescriptor(version: 2, arrowEnds: ends, arrowLength: 24)
+            let element = DrawnElement(id: "arrow", tool: .line, points: [.init(x: 16, y: 64), .init(x: 112, y: 64)],
+                color: "#FF0000", width: 4, opacity: 0.5, layerID: d.activeLayerID, shape: descriptor)
+            var editor = try StudioDocumentEditor(document: d); try editor.commit(element, frameID: d.activeFrameID); d = editor.document
+            try require(d.schemaVersion == 26 && (element.selectionBounds?.height ?? 0) >= 24, "Arrow version or selectable head bounds missing")
+            let actual = try render(d); arrowPixels.insert(Data(actual))
+            try require(stride(from: 3, to: actual.count, by: 4).map { actual[$0] }.max()! <= 129, "Arrow shaft/head overlap compounded opacity")
+            let output = try await StudioExportService().export(document: d, format: .pngSequence, outputParent: root, background: .transparent)
+            let source = CGImageSourceCreateWithURL(output.imageURLs[0] as CFURL, nil)!
+            guard let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Arrow PNG could not reopen") }
+            try require(try pixels(decoded) == actual, "Arrow PNG differs from actual canvas pixels")
+            let archive = try StudioDocumentArchive(document: d, rasterFrameIndices: [:]).encoded()
+            try require(StudioDocumentArchive.decode(archive).document == d, "Arrow archive changed")
+            var old = d; old.schemaVersion = 25; try rejects { try old.validate() }
+            editor.undo(); try require(editor.document.frames[0].elements.isEmpty, "Arrow undo failed")
+            editor.redo(); try require(try render(editor.document) == actual, "Arrow redo changed actual pixels")
+        }
+        try require(arrowPixels.count == 3, "Start/end/both arrowheads render identically")
+        let shortHeads = StudioShapeDescriptor(version: 2, arrowEnds: .both, arrowLength: 100)
+        let triangles = shortHeads.arrowTriangles(from: .zero, to: .init(x: 4, y: 0))
+        try require(triangles.count == 2 && triangles.flatMap { $0 }.allSatisfy { $0.x >= 0 && $0.x <= 4 && abs($0.y) <= 1 }, "Short arrow heads reverse or exceed the shaft")
+        try require(shortHeads.arrowTriangles(from: .zero, to: .zero).isEmpty, "Zero-length arrow created invalid head geometry")
+        var badHead = shortHeads; badHead.arrowLength = .nan
+        try rejects { try badHead.validate(tool: .line) }
+        try rejects { try shortHeads.validate(tool: .rectangle) }
+        vm.selectDrawingTool(.line); vm.lineArrowEnds = .both; vm.lineArrowLength = 32
+        let savedArrowDescriptor = try vm.shapeDescriptor()
+        vm.selectDrawingTool(.rectangle); try require(vm.lineArrowEnds == .none, "Arrow options leaked to Rectangle")
+        let coldArrow = StudioViewModel(toolDefaults: UserDefaults(suiteName: suite)); coldArrow.selectDrawingTool(.line)
+        try require(coldArrow.lineArrowEnds == .both && coldArrow.lineArrowLength == 32 && coldArrow.shapeDescriptor() == savedArrowDescriptor, "Arrow options failed cold per-tool restore")
+        let arrowStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("arrows"))
+        let arrowVM = StudioViewModel(storage: arrowStore)
+        let arrowCreated = await arrowVM.createProject(name: "Saved arrow", width: 128, height: 128, fps: 12); try require(arrowCreated, "Arrow create failed")
+        arrowVM.selectedTool = .line; arrowVM.lineArrowEnds = .end; arrowVM.lineArrowLength = 20
+        var arrowInput = StudioStrokeInput(id: "captured-arrow", frameID: arrowVM.currentFrame.id, layerID: arrowVM.activeLayerID,
+            tool: .line, color: "#FF0000", width: 4, opacity: 0.5, brush: nil, documentSize: .init(width: 128, height: 128),
+            viewportSize: .init(width: 128, height: 128), startedAt: Date(timeIntervalSince1970: 0), shape: try arrowVM.shapeDescriptor(), angleSnapDegrees: 45)
+        try arrowInput.append(location: .init(x: 16, y: 16), time: Date(timeIntervalSince1970: 0))
+        try arrowInput.append(location: .init(x: 96, y: 78), time: Date(timeIntervalSince1970: 1))
+        arrowVM.lineArrowEnds = .none
+        try require(arrowInput.element.shape?.arrowEnds == .end && arrowVM.commitElement(arrowInput.element), "Captured arrow changed after settings edit")
+        let savedArrowPixels = try render(arrowVM.document)
+        let arrowSaved = await arrowVM.save(); try require(arrowSaved, "Actual arrow save failed")
+        let coldArrowProject = StudioViewModel(storage: arrowStore)
+        let arrowReopened = await coldArrowProject.openProject(arrowStore.listAnimations()[0]); try require(arrowReopened, "Arrow cold reopen failed")
+        try require(try render(coldArrowProject.document) == savedArrowPixels, "Arrow pixels changed across actual cold reopen")
+        pass("Arrowhead geometry, alpha, schema26, Undo/Redo, selectable bounds, per-tool cold preferences and actual save/reopen")
+
         // A settings edit after capture cannot rewrite the in-progress operation.
         vm.selectDrawingTool(.brush); vm.strokeWidth = 4; vm.strokeOpacity = 1; vm.brushFamily = .round
         func capturedStroke(id: String, y: CGFloat) throws -> StudioStrokeInput {
