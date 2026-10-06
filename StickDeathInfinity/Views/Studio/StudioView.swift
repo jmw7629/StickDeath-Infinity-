@@ -557,7 +557,7 @@ struct StudioMenuSheet: View {
                     }
                 }
                 
-                MenuSheetRow(icon: "🗣️", label: "AI Voice Maker") {
+                MenuSheetRow(icon: "🗣️", label: "Voice Maker") {
                     dismiss()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         vm.activePanel = .aiVoice
@@ -651,143 +651,132 @@ struct MenuSheetToggleRow: View {
 // MARK: - AI Voice Maker Sheet (Purple theme)
 struct AIVoiceMakerSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @StateObject private var voice = StudioVoiceSession()
     @State private var scriptText = ""
-    @State private var selectedVoice = "Alex"
-    @State private var speed: Double = 1.0
-    @State private var pitch: Double = 1.0
-    @Environment(\.dismiss) var dismiss
-    
-    let voices = [
-        ("Alex", "🎙️"), ("Sarah", "👩"), ("James", "🧔"),
-        ("Luna", "🌙"), ("Max", "💪"), ("Zoe", "✨"),
-        ("Robot", "🤖"), ("Narrator", "📖"),
-    ]
-    
+    @State private var selectedVoice = ""
+    @State private var speed = 1.0
+    @State private var pitch = 1.0
+    @State private var track = 1
+    @State private var target: (project: UUID, revision: Int, frame: String, account: String?)?
+    @State private var error: String?
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
+
+    private var targetIsCurrent: Bool {
+        guard let target else { return false }
+        return scenePhase == .active && vm.isEditing && !vm.isSaving && !vm.isPlaying
+            && vm.document.id == target.project && vm.document.revision == target.revision
+            && vm.document.activeFrameID == target.frame && authVM.userId == target.account
+    }
+    private func invalidate() { voice.cancel(); target = nil; error = nil }
+    private func generate() {
+        guard scenePhase == .active, vm.isEditing, !vm.isSaving else { return }
+        vm.stopPlayback()
+        target = (vm.document.id, vm.document.revision, vm.document.activeFrameID, authVM.userId)
+        error = nil
+        voice.generate(text: scriptText, voiceID: selectedVoice, speed: speed, pitch: pitch)
+    }
+    private func add() {
+        guard targetIsCurrent, let target, let audio = voice.prepared else {
+            error = "The project changed. Generate the voice again before adding it."
+            return
+        }
+        do {
+            _ = try vm.attachImportedAudio(audio.track, expectedProjectID: target.project,
+                expectedRevision: target.revision, frameID: target.frame, trackNumber: track)
+            voice.cancel(); dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
     var body: some View {
         ZStack {
             Color(hex: "1A0A2E").ignoresSafeArea()
-            
             VStack(spacing: 16) {
-                // Header
                 HStack {
-                    Text("🗣️ AI Voice Maker")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "A78BFA"))
+                    Text("Voice Maker").font(.system(size: 18, weight: .bold, design: .monospaced))
                     Spacer()
-                    Button("Done") { dismiss() }
-                        .foregroundColor(Color(hex: "A78BFA"))
+                    Button("Done") { invalidate(); dismiss() }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                
-                // Script / Dialogue label
-                Text("Script / Dialogue")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "A78BFA").opacity(0.6))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                
-                // Text input
-                TextEditor(text: $scriptText)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
-                    .scrollContentBackground(.hidden)
-                    .frame(height: 80)
-                    .padding(12)
-                    .background(Color(hex: "2A1A3E"))
-                    .cornerRadius(12)
-                    .padding(.horizontal, 16)
-                    .overlay(
-                        Group {
-                            if scriptText.isEmpty {
-                                Text("Type your voiceover text here...")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.white.opacity(0.3))
-                                    .padding(.leading, 28)
-                                    .padding(.top, 24)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            }
+                .foregroundColor(Color(hex: "A78BFA"))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("On-device system voices · no microphone or cloud AI")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        Text("Script / Dialogue · \(scriptText.count)/1,500")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        TextEditor(text: $scriptText)
+                            .font(.system(size: 14)).foregroundColor(.white)
+                            .scrollContentBackground(.hidden).frame(height: 110)
+                            .padding(12).background(Color(hex: "2A1A3E")).cornerRadius(12)
+                            .accessibilityLabel("Voiceover script")
+                            .accessibilityIdentifier("studio.voice.script")
+                        if voice.voices.isEmpty {
+                            Text("No system voices are available on this device.").font(.caption)
+                        } else {
+                            Picker("Installed voice", selection: $selectedVoice) {
+                                Text("Choose a voice").tag("")
+                                ForEach(voice.voices) { item in
+                                    Text("\(item.name) · \(item.language)").tag(item.id)
+                                }
+                            }.tint(Color(hex: "A78BFA"))
                         }
-                    )
-                
-                // Voice selection
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
-                    ForEach(voices, id: \.0) { voice in
-                        Button(action: { selectedVoice = voice.0 }) {
-                            VStack(spacing: 4) {
-                                Text(voice.1)
-                                    .font(.system(size: 20))
-                                Text(voice.0)
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        HStack {
+                            Text("Speed")
+                            Slider(value: $speed, in: 0.5...2).tint(Color(hex: "A78BFA"))
+                            Text(String(format: "%.1fx", speed))
+                        }.font(.caption)
+                        HStack {
+                            Text("Pitch")
+                            Slider(value: $pitch, in: 0.5...2).tint(Color(hex: "A78BFA"))
+                            Text(String(format: "%.1fx", pitch))
+                        }.font(.caption)
+                        Picker("Audio track", selection: $track) {
+                            ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
+                        }.tint(Color(hex: "A78BFA"))
+                        Text("Adds at the selected frame. Audio stays in your project and can be trimmed, moved, mixed, exported or undone. Up to 2 minutes / 15 MB per voice clip.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        if voice.isBusy {
+                            HStack {
+                                ProgressView().tint(.white)
+                                Text("Generating voice…")
+                                Spacer()
+                                Button("Cancel") { invalidate() }
                             }
-                            .foregroundColor(selectedVoice == voice.0 ? .white : .white.opacity(0.4))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(selectedVoice == voice.0 ? Color(hex: "7C3AED") : Color(hex: "2A1A3E"))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(selectedVoice == voice.0 ? Color(hex: "A78BFA") : Color.clear, lineWidth: 1)
-                            )
+                        } else {
+                            Button(voice.prepared == nil ? "Generate voice" : "Regenerate voice", action: generate)
+                                .disabled(selectedVoice.isEmpty || scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || scriptText.count > 1_500 || !vm.isEditing || vm.isSaving)
+                                .accessibilityIdentifier("studio.voice.generate")
+                        }
+                        if let notice = error ?? voice.notice {
+                            Text(notice).font(.caption).accessibilityIdentifier("studio.voice.notice")
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                
-                // Speed slider
-                HStack {
-                    Text("Speed")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                    Slider(value: $speed, in: 0.5...2.0)
-                        .tint(Color(hex: "A78BFA"))
-                    Text(String(format: "%.1fx", speed))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.horizontal, 16)
-                
-                // Pitch slider
-                HStack {
-                    Text("Pitch")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                    Slider(value: $pitch, in: 0.5...2.0)
-                        .tint(Color(hex: "A78BFA"))
-                    Text(String(format: "%.1fx", pitch))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.horizontal, 16)
-                
-                Spacer()
-                
-                // Action buttons
                 HStack(spacing: 12) {
-                    Button(action: {}) {
-                        Text("Preview")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(hex: "A78BFA"))
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(hex: "2A1A3E"))
-                            .cornerRadius(14)
-                    }
-                    
-                    Button(action: { dismiss() }) {
-                        Text("🎙️ Add to Timeline")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(hex: "7C3AED"))
-                            .cornerRadius(14)
-                    }
+                    Button(voice.isPlaying ? "Stop preview" : "Preview") { voice.preview() }
+                        .disabled(voice.prepared == nil || !targetIsCurrent)
+                        .accessibilityIdentifier("studio.voice.preview")
+                    Spacer()
+                    Button("Add to Timeline", action: add)
+                        .disabled(voice.prepared == nil || !targetIsCurrent)
+                        .accessibilityIdentifier("studio.voice.add")
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .buttonStyle(.borderedProminent).tint(Color(hex: "7C3AED"))
             }
+            .foregroundColor(.white).padding(16)
         }
+        .onChange(of: scriptText) { _ in invalidate() }
+        .onChange(of: selectedVoice) { _ in invalidate() }
+        .onChange(of: speed) { _ in invalidate() }
+        .onChange(of: pitch) { _ in invalidate() }
+        .onChange(of: vm.document.id) { _ in invalidate() }
+        .onChange(of: vm.document.revision) { _ in invalidate() }
+        .onChange(of: vm.document.activeFrameID) { _ in invalidate() }
+        .onChange(of: authVM.userId) { _ in invalidate(); scriptText = ""; dismiss() }
+        .onChange(of: scenePhase) { if $0 != .active { invalidate() } }
+        .onDisappear { invalidate() }
     }
 }
 
@@ -906,85 +895,161 @@ struct SpatterAISheet: View {
 // MARK: - Magic Cut Sheet
 struct MagicCutSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var allFrames = false
+    @State private var background: Color = .white
+    @State private var tolerance = 8.0
+    @State private var capture: StudioViewModel.ImageCutCapture?
+    @State private var accountID: String?
+    @State private var replacements: [String: Data] = [:]
+    @State private var preview: UIImage?
+    @State private var notice: String?
     @State private var isProcessing = false
-    @Environment(\.dismiss) var dismiss
-    
+    @State private var task: Task<Void, Never>?
+    @State private var token = UUID()
+    @State private var confirmAll = false
+
+    private func cancel() {
+        token = UUID(); task?.cancel(); task = nil; isProcessing = false
+        replacements = [:]; preview = nil; capture = nil; notice = nil; confirmAll = false
+    }
+    private var current: Bool {
+        guard let capture else { return false }
+        return scenePhase == .active && authVM.userId == accountID
+            && (try? vm.prepareImageCut(allFrames: allFrames)) == capture
+    }
+    private func generate() {
+        cancel(); vm.stopPlayback()
+        guard scenePhase == .active else { return }
+        do {
+            let target = try vm.prepareImageCut(allFrames: allFrames)
+            var inputs: [String: Data] = [:]
+            for id in Set(target.assetsByFrame.values) {
+                guard let data = vm.rasterData(id) else { throw StudioRasterImage.Failure.missing }
+                inputs[id] = data
+            }
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            guard UIColor(background).getRed(&r, green: &g, blue: &b, alpha: &a) else {
+                throw StudioDocumentError.invalid("Choose an RGB background color.")
+            }
+            let red = UInt8((min(1, max(0, r)) * 255).rounded())
+            let green = UInt8((min(1, max(0, g)) * 255).rounded())
+            let blue = UInt8((min(1, max(0, b)) * 255).rounded())
+            let threshold = Int(tolerance.rounded()), request = token
+            let previewID = target.assetsByFrame[vm.currentFrame.id] ?? inputs.keys.sorted().first!
+            capture = target; accountID = authVM.userId; isProcessing = true
+            let immutableInputs = inputs
+            task = Task {
+                let worker = Task.detached(priority: .userInitiated) { () throws -> [String: StudioBackgroundCut.Result] in
+                    var results: [String: StudioBackgroundCut.Result] = [:]
+                    for id in immutableInputs.keys.sorted() {
+                        try Task.checkCancellation()
+                        results[id] = try StudioBackgroundCut.remove(from: immutableInputs[id]!, red: red,
+                            green: green, blue: blue, tolerance: threshold)
+                    }
+                    return results
+                }
+                do {
+                    let results = try await withTaskCancellationHandler(operation: { try await worker.value },
+                                                                         onCancel: { worker.cancel() })
+                    try Task.checkCancellation()
+                    guard token == request, current else { if token == request { cancel() }; return }
+                    replacements = results.filter { $0.value.removedPixels > 0 }.mapValues { $0.png }
+                    preview = results[previewID].flatMap { UIImage(data: $0.png) }
+                    let changed = target.assetsByFrame.values.filter { replacements[$0] != nil }.count
+                    notice = changed == 0 ? "No matching edge-connected background found. Nothing changed."
+                        : "Preview ready · \(changed) frame(s). Apply changes all affected frames in one Undo step."
+                    isProcessing = false; task = nil
+                } catch {
+                    guard token == request else { return }
+                    isProcessing = false; replacements = [:]; preview = nil; task = nil
+                    notice = error is CancellationError ? "Cancelled. The project is unchanged." : error.localizedDescription
+                }
+            }
+        } catch { notice = error.localizedDescription }
+    }
+    private func apply() {
+        guard current, let capture else { cancel(); notice = "The project changed. Preview again."; return }
+        do {
+            let changed = try vm.applyImageCut(capture, replacements: replacements)
+            cancel(); vm.message = "Background removed from \(changed) frame(s). Undo restores the previous images."
+            dismiss()
+        } catch { notice = error.localizedDescription }
+    }
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 20) {
+            VStack(spacing: 16) {
                 HStack {
-                    Text("✨ Magic Cut")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
+                    Text("Magic Cut").font(.system(size: 18, weight: .bold, design: .monospaced))
                     Spacer()
-                    Button("Done") { dismiss() }
+                    Button("Done") { cancel(); dismiss() }
                 }
-                .padding(16)
-                
-                VStack(spacing: 12) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 48))
-                        .foregroundColor(.red)
-                    
-                    Text("AI-Powered Background Removal")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    
-                    Text("Automatically removes backgrounds from your frames using AI. Works best with clear stick figure outlines.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Edge-connected color removal").font(.headline)
+                        Text("Removes the chosen background color from the original imported image's edges. Enclosed areas, drawing layers and original files are preserved. This is color-based removal, not AI subject recognition.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        Picker("Scope", selection: $allFrames) {
+                            Text("Current frame").tag(false)
+                            Text("All imported frames").tag(true)
+                        }.pickerStyle(.segmented)
+                        ColorPicker("Background color", selection: $background, supportsOpacity: false)
+                        HStack {
+                            Text("Tolerance")
+                            Slider(value: $tolerance, in: 0...100, step: 1)
+                            Text("\(Int(tolerance))%").monospacedDigit()
+                        }
+                        Text("Higher tolerance removes a wider color range. Transparent squares below show the removed area. Preview shows the source image before canvas crop or rotation.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        if let preview {
+                            ZStack {
+                                Canvas { context, size in
+                                    for y in stride(from: 0.0, to: size.height, by: 12) {
+                                        for x in stride(from: 0.0, to: size.width, by: 12) {
+                                            let alternate = (Int(x / 12) + Int(y / 12)) % 2 == 0
+                                            context.fill(Path(CGRect(x: x, y: y, width: 12, height: 12)),
+                                                with: .color(alternate ? .gray.opacity(0.5) : .white.opacity(0.8)))
+                                        }
+                                    }
+                                }
+                                Image(uiImage: preview).resizable().scaledToFit()
+                            }.frame(height: 200).clipped().accessibilityLabel("Background removal preview")
+                        }
+                        if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.cut.notice") }
+                        Text("Limit: 64 image frames, 16 distinct images / 16 megapixels per batch; 4 megapixels per image. Hidden or locked image layers must be shown and unlocked first.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                HStack {
                     if isProcessing {
-                        ProgressView()
-                            .tint(.red)
-                            .padding()
-                        Text("Processing frame \(vm.currentFrameIndex + 1)...")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.4))
+                        ProgressView().tint(.red)
+                        Button("Cancel") { cancel() }
+                    } else {
+                        Button("Preview Cut", action: generate).accessibilityIdentifier("studio.cut.preview")
                     }
-                    
-                    Button(action: {
-                        isProcessing = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            isProcessing = false
-                        }
-                    }) {
-                        Text("Cut Current Frame")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red)
-                            .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    .disabled(isProcessing)
-                    
-                    Button(action: {
-                        isProcessing = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                            isProcessing = false
-                        }
-                    }) {
-                        Text("Cut All Frames (\(vm.frames.count))")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    .disabled(isProcessing)
-                }
-                
-                Spacer()
-            }
+                    Spacer()
+                    Button("Apply Cut") { if allFrames { confirmAll = true } else { apply() } }
+                        .disabled(isProcessing || replacements.isEmpty || !current)
+                        .accessibilityIdentifier("studio.cut.apply")
+                }.buttonStyle(.borderedProminent).tint(.red)
+            }.foregroundColor(.white).padding(16)
         }
+        .confirmationDialog("Apply the previewed cut to all affected imported frames?", isPresented: $confirmAll, titleVisibility: .visible) {
+            Button("Apply to previewed frames", action: apply)
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("Original files stay intact. Undo restores every affected frame together.") }
+        .onChange(of: background) { _ in cancel() }
+        .onChange(of: tolerance) { _ in cancel() }
+        .onChange(of: allFrames) { _ in cancel() }
+        .onChange(of: vm.document.id) { _ in cancel() }
+        .onChange(of: vm.document.revision) { _ in cancel() }
+        .onChange(of: vm.document.activeFrameID) { _ in cancel() }
+        .onChange(of: authVM.userId) { _ in cancel(); dismiss() }
+        .onChange(of: scenePhase) { if $0 != .active { cancel() } }
+        .onDisappear { cancel() }
     }
 }
 

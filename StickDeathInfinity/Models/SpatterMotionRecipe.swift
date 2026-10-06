@@ -243,3 +243,144 @@ struct SpatterAudioInstruction: Equatable {
             action: .apply([.updateAudioClip(.init(clipID: clip.id, settings: settings))]))
     }
 }
+
+/// Original procedural stick-figure motion, with explicit bounded syntax. This
+/// creates editable line/circle frames, not an AI-generated or publishable movie.
+struct SpatterStickFigureRecipe: Equatable {
+    enum Action: String, CaseIterable, Identifiable {
+        case walking, running, jumping, waving
+        var id: String { rawValue }
+        var example: String {
+            let end = self == .waving ? "25%" : "75%"
+            return "Append 20 frames of a black stick figure \(rawValue) from (25%, 80%) to (\(end), 80%), height 35%, line width 3 px."
+        }
+    }
+    struct Point: Equatable { let x: Double; let y: Double }
+    let frameCount: Int
+    let color: String
+    let action: Action
+    let start: Point
+    let end: Point
+    let heightPercent: Double
+    let lineWidth: Double
+    enum Failure: LocalizedError {
+        case syntax, limits, bounds, context
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use a complete stick figure example: walking, running, jumping or waving, with frame count, start/end percentages, height and line width. Other actions are unavailable. Nothing changed."
+            case .limits: return "Choose 8–20 frames, a named or #RRGGBB color, coordinates 0–100%, height 5–70%, and line width 0.5–32 px. Nothing changed."
+            case .bounds: return "The complete animated figure must fit inside the canvas in every frame. Reduce height or move the feet-baseline coordinates inward. Nothing changed."
+            case .context: return "Open a current Studio project with line/circle support and room for the new frames and layer. Nothing changed."
+            }
+        }
+    }
+    static func isStickFigureInstruction(_ text: String) -> Bool {
+        text.lowercased().split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").contains("stick figure")
+    }
+    private static let syntax = try? NSRegularExpression(pattern:
+        #"\A\s*append\s+(\d+)\s+frames\s+of\s+(?:a|an)\s+([^\s]+)\s+stick\s+figure\s+(walking|running|jumping|waving)\s+from\s*\(\s*([^\s%,()]+)\s*%\s*,\s*([^\s%,()]+)\s*%\s*\)\s+to\s*\(\s*([^\s%,()]+)\s*%\s*,\s*([^\s%,()]+)\s*%\s*\)\s*,\s*height\s+([^\s%,()]+)\s*%\s*,\s*line\s+width\s+([^\s%,()]+)\s+px\.?\s*\z"#, options: [.caseInsensitive])
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard let syntax, let match = syntax.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)), match.numberOfRanges == 10 else { throw Failure.syntax }
+        func token(_ index: Int) -> String { String(text[Range(match.range(at: index), in: text)!]) }
+        let named = ["black": "#000000", "white": "#FFFFFF", "red": "#FF0000", "green": "#00FF00", "blue": "#0000FF",
+                     "yellow": "#FFFF00", "cyan": "#00FFFF", "magenta": "#FF00FF", "orange": "#FF8000", "purple": "#800080"]
+        let color = named[token(2).lowercased()] ?? token(2).uppercased()
+        guard let count = Int(token(1)), (8...20).contains(count), let action = Action(rawValue: token(3).lowercased()),
+              color.utf8.count == 7, color.first == "#", color.dropFirst().allSatisfy({ $0.isASCII && $0.isHexDigit }),
+              let x0 = Double(token(4)), let y0 = Double(token(5)), let x1 = Double(token(6)), let y1 = Double(token(7)),
+              let height = Double(token(8)), let width = Double(token(9)),
+              [x0, y0, x1, y1, height, width].allSatisfy(\.isFinite),
+              [x0, y0, x1, y1].allSatisfy({ (0...100).contains($0) }),
+              (5...70).contains(height), (0.5...32).contains(width) else { throw Failure.limits }
+        return .init(frameCount: count, color: color, action: action, start: .init(x: x0, y: y0),
+                     end: .init(x: x1, y: y1), heightPercent: height, lineWidth: width)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
+        try checkCancellation()
+        guard (16...4096).contains(context.width), (16...4096).contains(context.height), (1...60).contains(context.fps),
+              context.revision >= 0, context.supportedTools.contains(.line), context.supportedTools.contains(.circle),
+              context.frames.count <= 1000 - frameCount, context.layers.count < 128,
+              context.frames.contains(where: { $0.id == context.activeFrameID }),
+              context.layers.contains(where: { $0.id == context.activeLayerID }),
+              let last = context.frames.last else { throw Failure.context }
+        let width = Double(context.width), height = Double(context.height)
+        let h = Double(min(context.width, context.height)) * heightPercent / 100
+        let first = Point(x: start.x * width / 100, y: start.y * height / 100)
+        let final = Point(x: end.x * width / 100, y: end.y * height / 100)
+        let facing = final.x < first.x ? -1.0 : 1.0
+        let layer = "stick_layer", firstAlias = "stick_frame_0"
+        var commands: [StudioCommand] = [.addLayer(.init(name: "Spatter · " + action.rawValue, result: layer))]
+        var after: StudioCommandReference = .id(last.id)
+        // Two-bone inverse kinematics keeps limb segment lengths consistent.
+        func joint(_ root: Point, _ tip: Point, length: Double, bend: Double) throws -> Point {
+            let dx = tip.x - root.x, dy = tip.y - root.y
+            let distance = max(0.000001, hypot(dx, dy))
+            guard distance <= length * 2 else { throw Failure.bounds }
+            let along = distance / 2
+            let offset = sqrt(max(0, length * length - along * along))
+            return .init(x: root.x + dx * 0.5 - dy / distance * offset * bend,
+                         y: root.y + dy * 0.5 + dx / distance * offset * bend)
+        }
+        for index in 0..<frameCount {
+            try checkCancellation()
+            let t = Double(index) / Double(frameCount - 1)
+            let phase = t * .pi * (action == .running ? 4 : 2)
+            let jump = action == .jumping ? 4 * t * (1 - t) : 0
+            let bob = (action == .walking || action == .running) ? cos(phase * 2) * h * 0.012 : 0
+            let x = first.x + (final.x - first.x) * t
+            let baseline = first.y + (final.y - first.y) * t - jump * h * 0.35
+            func p(_ dx: Double, _ dy: Double) -> Point { .init(x: x + dx * h * facing, y: baseline + dy * h + bob) }
+            let hip = p(0, -0.44), shoulder = p(0, -0.72), head = p(0, -0.865), radius = h * 0.095
+            var segments: [(Point, Point)] = [(hip, p(0, -0.77))]
+            for side in [-1.0, 1.0] {
+                let gait = phase + (side < 0 ? .pi : 0)
+                let moving = action == .walking || action == .running
+                let stride = moving ? sin(gait) * 0.15 : 0
+                let lift = moving ? max(0, cos(gait)) * (action == .running ? 0.16 : 0.10) : jump * 0.08
+                let legRoot = hip
+                let foot = p(side * 0.10 + stride, -0.02 - lift)
+                let knee = try joint(legRoot, foot, length: h * 0.25, bend: -facing)
+                segments += [(legRoot, knee), (knee, foot)]
+                let armRoot = shoulder
+                let hand: Point
+                if action == .waving && side > 0 {
+                    hand = p(0.25 + sin(t * .pi * 4) * 0.06, -0.92 + cos(t * .pi * 4) * 0.025)
+                } else if action == .jumping {
+                    hand = p(side * (0.13 + jump * 0.10), -0.43 - jump * 0.42)
+                } else {
+                    hand = p(side * 0.10 - stride, -0.43 + (moving ? cos(gait) * 0.025 : 0))
+                }
+                let elbow = try joint(armRoot, hand, length: h * 0.20, bend: side * facing)
+                segments += [(armRoot, elbow), (elbow, hand)]
+            }
+            let margin = lineWidth / 2
+            func fits(_ point: Point) -> Bool {
+                point.x.isFinite && point.y.isFinite && point.x >= margin && point.x <= width - margin
+                    && point.y >= margin && point.y <= height - margin
+            }
+            let headStart = Point(x: head.x - radius, y: head.y - radius)
+            let headEnd = Point(x: head.x + radius, y: head.y + radius)
+            guard fits(headStart), fits(headEnd), segments.allSatisfy({ fits($0.0) && fits($0.1) }) else { throw Failure.bounds }
+            var strokes = segments.enumerated().map { part, segment in
+                StudioCommandStroke(id: "stick-\(requestID.uuidString)-\(index)-\(part)", tool: .line,
+                    points: [.init(x: CGFloat(segment.0.x), y: CGFloat(segment.0.y)), .init(x: CGFloat(segment.1.x), y: CGFloat(segment.1.y))],
+                    color: color, width: lineWidth, opacity: 1)
+            }
+            strokes.append(.init(id: "stick-\(requestID.uuidString)-\(index)-head", tool: .circle,
+                points: [.init(x: CGFloat(headStart.x), y: CGFloat(headStart.y)), .init(x: CGFloat(headEnd.x), y: CGFloat(headEnd.y))],
+                color: color, width: lineWidth, opacity: 1))
+            let alias = "stick_frame_\(index)"
+            commands.append(.addFrame(.init(after: after, result: alias)))
+            commands.append(.draw(.init(frame: .created(alias), layer: .created(layer), strokes: strokes)))
+            after = .created(alias)
+        }
+        commands.append(.selectFrame(.created(firstAlias)))
+        guard commands.count <= StudioCommandExecutor.maximumCommands else { throw StudioCommandError.limitExceeded }
+        try checkCancellation()
+        return .init(request: .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply(commands)), framesToAdd: frameCount, durationSeconds: Double(frameCount) / Double(context.fps),
+            appendedAfterFrameID: last.id, firstNewFrameAlias: firstAlias)
+    }
+}

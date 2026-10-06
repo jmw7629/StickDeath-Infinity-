@@ -100,7 +100,7 @@ final class StudioViewModel: ObservableObject {
     @Published var selectedTool: DrawingTool = .brush {
         didSet { if selectedTool != oldValue { imageMoveTarget = nil; restoreDrawingToolPreferences() } }
     }
-    @Published var strokeColor: Color = .red
+    @Published var strokeColor: Color = .red { didSet { rememberRecentColor(Self.hex(strokeColor)) } }
     @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     @Published var strokeOpacity: Double = 1 { didSet { rememberDrawingToolPreferences() } }
     @Published var eraserMode: StudioEraserMode = .hard { didSet { rememberDrawingToolPreferences() } }
@@ -510,21 +510,44 @@ final class StudioViewModel: ObservableObject {
         guard units <= maximumWork / (edits + 6) else { throw exceeded() }
     }
 
+    static let recentColorsKey = "studio.recent-colors.v1"
+    @Published private(set) var recentColorHexes: [String] = []
+    static func normalizedColorHex(_ input: String) -> String? {
+        var value = input.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if value.hasPrefix("#") { value.removeFirst() }
+        guard value.utf8.count == 6, value.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) }) else { return nil }
+        return "#" + value
+    }
+    func rememberRecentColor(_ input: String) {
+        guard let hex = Self.normalizedColorHex(input) else { return }
+        let next = [hex] + recentColorHexes.filter { $0 != hex }.prefix(15)
+        guard next != recentColorHexes else { return }
+        recentColorHexes = next
+        toolDefaults?.set(next, forKey: Self.recentColorsKey)
+    }
+    @discardableResult
+    func applyCustomColorHex(_ input: String, gradientEnd: Bool = false) -> Bool {
+        guard let hex = Self.normalizedColorHex(input), let rgb = UInt32(hex.dropFirst(), radix: 16) else { return false }
+        let color = Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
+                          green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
+        if gradientEnd { brushGradientEndColor = color; rememberRecentColor(hex) }
+        else { strokeColor = color }
+        return true
+    }
+
     private static func hex(_ color: Color) -> String {
-        #if canImport(UIKit)
-        let value = UIColor(color)
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        value.getRed(&r, green: &g, blue: &b, alpha: &a)
-        // UIColor may return a component just below its original byte value.
-        // Truncation darkens palette colors (for example #666666 became #656565).
+        #if canImport(UIKit)
+        guard UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) else { return "#FF0000" }
+        #elseif canImport(AppKit)
+        guard let value = NSColor(color).usingColorSpace(.sRGB) else { return "#FF0000" }
+        r = value.redComponent; g = value.greenComponent; b = value.blueComponent
+        #endif
         func byte(_ component: CGFloat) -> Int {
             guard component.isFinite else { return 0 }
             return Int((min(1, max(0, component)) * 255).rounded())
         }
         return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
-        #else
-        return "#FF0000"
-        #endif
     }
     init(storage: DeviceStorageManager = .shared, toolDefaults: UserDefaults? = nil) {
         self.storage = storage
@@ -534,6 +557,12 @@ final class StudioViewModel: ObservableObject {
             do { toolPreferences = try StudioDrawingToolPreferences.decode(data) }
             catch { toolPreferencesWarning = "Saved tool preferences could not be read. Default settings are available; your projects are unchanged." }
         }
+        var restoredColors: [String] = []
+        for input in (toolDefaults?.stringArray(forKey: Self.recentColorsKey) ?? []).prefix(64) {
+            if let hex = Self.normalizedColorHex(input), !restoredColors.contains(hex) { restoredColors.append(hex) }
+            if restoredColors.count == 16 { break }
+        }
+        recentColorHexes = restoredColors
         restoreDrawingToolPreferences()
     }
     func loadProjects() async {
@@ -1400,6 +1429,46 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    struct SelectionLayerLockCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let elementIDs: Set<String>
+        let layerIDs: [String]
+    }
+    func prepareSelectionLayerLock() -> SelectionLayerLockCapture? {
+        guard isEditing, selectedTool == .move, !isPlaying, !isSaving,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
+        let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+        guard selected.count == selectedElementIDs.count else { return nil }
+        let ids = Set(selected.compactMap(\.layerID))
+        guard !ids.isEmpty, ids.count <= StudioCommandExecutor.maximumCommands,
+              selected.allSatisfy({ $0.layerID != nil }),
+              ids.allSatisfy({ id in layers.contains { $0.id == id && $0.visible && $0.opacity > 0 && !$0.isFullyLocked } }) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+                     elementIDs: selectedElementIDs, layerIDs: ids.sorted())
+    }
+    /// Explicitly locks whole layers, across frames, after the UI discloses that
+    /// scope. One typed transaction makes every affected layer one Undo step.
+    @discardableResult
+    func lockSelectedLayers(_ capture: SelectionLayerLockCapture,
+                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareSelectionLayerLock() == capture else { throw StudioCommandError.staleRevision }
+            let commands: [StudioCommand] = capture.layerIDs.map {
+                .updateLayer(.init(layer: .id($0), settings: .init(lock: .full)))
+            }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply(commands)), checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareSelectionLayerLock() == capture else { throw StudioCommandError.staleRevision }
+                })
+            editor.selectedElementIDs.removeAll()
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func clearElementSelection() { editor.selectedElementIDs.removeAll() }
     func clearCanvas() { message = "Select elements explicitly before deleting. The canvas has not changed." }
     func selectLayer(_ id: String) {
@@ -1488,6 +1557,47 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
     func duplicateLayer(_ id: String) { command { try $0.duplicateLayer(id) } }
+    struct LayerReorderCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let order: [String]
+    }
+    func prepareLayerReorder(_ id: String) -> LayerReorderCapture? {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+              textDraft == nil, layers.count > 1, layers.count <= 64,
+              layers.contains(where: { $0.id == id }) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, frameID: document.activeFrameID,
+                     layerID: id, order: layers.map(\.id))
+    }
+    /// Dragging across several rows is one atomic typed command transaction.
+    @discardableResult
+    func reorderLayer(_ capture: LayerReorderCapture, relativeTo targetID: String, after: Bool,
+                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
+        try checkCancellation()
+        guard prepareLayerReorder(capture.layerID) == capture else { throw StudioCommandError.staleRevision }
+        guard targetID != capture.layerID else { return false }
+        guard let source = capture.order.firstIndex(of: capture.layerID), capture.order.contains(targetID) else {
+            throw StudioCommandError.invalidReference
+        }
+        var remaining = capture.order.filter { $0 != capture.layerID }
+        guard let target = remaining.firstIndex(of: targetID) else { throw StudioCommandError.invalidReference }
+        let destination = target + (after ? 1 : 0)
+        remaining.insert(capture.layerID, at: destination)
+        guard remaining != capture.order else { return false }
+        let direction: StudioCommandDirection = destination < source ? .earlier : .later
+        let commands = (0..<abs(destination - source)).map { _ in
+            StudioCommand.moveLayer(.init(target: .id(capture.layerID), direction: direction))
+        }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+            expectedRevision: capture.revision, action: .apply(commands)), checkCancellation: {
+                try checkCancellation()
+                guard self.prepareLayerReorder(capture.layerID) == capture else { throw StudioCommandError.staleRevision }
+            })
+        return true
+    }
+
     func moveLayerUp(_ id: String) { command { try $0.moveLayer(id, offset: -1) } }
     func moveLayerDown(_ id: String) { command { try $0.moveLayer(id, offset: 1) } }
     func addLayer() { command { try $0.addLayer() } }
@@ -1920,6 +2030,94 @@ final class StudioViewModel: ObservableObject {
         scheduleSave()
         return assetID
     }
+    struct ImageCutCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let activeFrameID: String
+        let allFrames: Bool
+        let assetsByFrame: [String: String]
+    }
+    func prepareImageCut(allFrames: Bool) throws -> ImageCutCapture {
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil,
+              pendingBrushStroke == nil, textDraft == nil else {
+            throw StudioDocumentError.unavailable("Finish the current edit before cutting an image background.")
+        }
+        let targets = allFrames ? document.frames.filter { $0.rasterAssetID != nil } : [currentFrame]
+        guard !targets.isEmpty, targets.count <= 64 else {
+            throw StudioDocumentError.unavailable("Choose 1–64 frames with imported images. Drawing-only frames are unchanged.")
+        }
+        var mapping: [String: String] = [:], assets = Set<String>(), pixels = 0
+        for frame in targets {
+            guard let id = frame.rasterAssetID, let record = retainedRasterFrames[id],
+                  let source = record.sourceImage, let png = record.imageData, frame.rasterPlacement != nil else {
+                throw StudioDocumentError.unavailable("Background Cut currently works on imported images. Historical raster originals and drawing-only frames are not converted.")
+            }
+            guard let layer = layers.first(where: { $0.id == frame.rasterLayerID }),
+                  layer.visible, layer.opacity > 0, layer.lockMode == "free", !layer.isFullyLocked else {
+                throw StudioDocumentError.unavailable("Show and unlock each imported image layer before cutting its background.")
+            }
+            guard source.normalizedWidth * source.normalizedHeight <= 4_194_304, png.count <= 16 * 1024 * 1024 else {
+                throw StudioDocumentError.unavailable("Background Cut supports imported images up to 4 megapixels and 16 MB each.")
+            }
+            if assets.insert(id).inserted { pixels += source.normalizedWidth * source.normalizedHeight }
+            guard assets.count <= 16, pixels <= 16_777_216 else {
+                throw StudioDocumentError.unavailable("Cut at most 16 distinct images / 16 megapixels per batch. Use Current frame for larger projects.")
+            }
+            mapping[frame.id] = id
+        }
+        return .init(projectID: document.id, revision: document.revision, activeFrameID: currentFrame.id,
+                     allFrames: allFrames, assetsByFrame: mapping)
+    }
+    /// New immutable normalized renditions retain original bytes and provenance.
+    /// Every affected frame is changed in one history transaction after preflight.
+    func applyImageCut(_ capture: ImageCutCapture, replacements: [String: Data],
+                       checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Int {
+        try checkCancellation()
+        guard try prepareImageCut(allFrames: capture.allFrames) == capture else { throw StudioCommandError.staleRevision }
+        guard !replacements.isEmpty, Set(replacements.keys).isSubset(of: Set(capture.assetsByFrame.values)) else {
+            throw StudioDocumentError.invalid("The background preview does not belong to these frames.")
+        }
+        var next = retainedRasterFrames
+        var updatedIDs: [String: String] = [:]
+        for oldID in replacements.keys.sorted() {
+            try checkCancellation()
+            guard let png = replacements[oldID], let old = retainedRasterFrames[oldID], let source = old.sourceImage else {
+                throw StudioRasterImage.Failure.missing
+            }
+            guard png != old.imageData else { continue }
+            let newID = UUID()
+            let copiedSource = StoredImageSource(id: newID, name: source.name, container: source.container,
+                originalData: source.originalData, originalWidth: source.originalWidth, originalHeight: source.originalHeight,
+                originalOrientation: source.originalOrientation, normalizedWidth: source.normalizedWidth,
+                normalizedHeight: source.normalizedHeight, catalogueAttribution: source.catalogueAttribution)
+            try StudioRasterImage.validate(source: copiedSource, normalized: png)
+            let assetID = "image-" + newID.uuidString
+            next[assetID] = StoredAnimationFrame(imageData: png, layerData: old.layerData, sourceImage: copiedSource)
+            updatedIDs[oldID] = assetID
+        }
+        guard !updatedIDs.isEmpty else { throw StudioDocumentError.unavailable("No edge-connected pixels matched the background color. Nothing changed.") }
+        var candidate = editor
+        var affected = 0
+        try candidate.change { document in
+            for index in document.frames.indices {
+                let frame = document.frames[index]
+                if let oldID = capture.assetsByFrame[frame.id], let newID = updatedIDs[oldID] {
+                    document.frames[index].rasterAssetID = newID
+                    affected += 1
+                }
+            }
+        }
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        next = next.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
+        try validateManagedImageCapacity(next)
+        try storage.preflightAnimation(storageProject(candidate.document, rasters: next))
+        try checkCancellation()
+        guard try prepareImageCut(allFrames: capture.allFrames) == capture else { throw StudioCommandError.staleRevision }
+        retainedRasterFrames = next; editor = candidate
+        scheduleSave()
+        return affected
+    }
+
     var hasCopiedImage: Bool { imageClipboard != nil }
     @discardableResult
     func copyImage() -> Bool {

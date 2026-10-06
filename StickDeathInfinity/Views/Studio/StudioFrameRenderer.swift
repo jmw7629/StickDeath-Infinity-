@@ -3,11 +3,14 @@ import SwiftUI
 struct StudioFrameThumbnail: View {
     @ObservedObject var vm: StudioViewModel
     let frame: AnimationFrame
+    var isolatedLayerID: String? = nil
     var body: some View {
+        let content = StudioFrameRenderer.thumbnailContent(frame: frame, layers: vm.layers, isolatedLayerID: isolatedLayerID)
+        let frame = content.frame, layers = content.layers
         let prepared = Result { try StudioFrameRenderer.prepare(frame: frame) }
-        let raster = Result { try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
+        let raster = Result { try StudioFrameRenderer.prepareRaster(frame: frame, layers: layers,
             data: vm.rasterData(frame.rasterAssetID), maximumDimension: 128) }
-        let smudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers,
+        let smudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: layers,
             canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), rasterData: vm.rasterData(frame.rasterAssetID)) }
         Canvas { context, size in
             let scale = min(size.width / CGFloat(vm.canvasWidth), size.height / CGFloat(vm.canvasHeight))
@@ -16,7 +19,7 @@ struct StudioFrameThumbnail: View {
             context.fill(Path(CGRect(origin: .zero, size: fitted)), with: .color(.white))
             switch (prepared, raster, smudges) {
             case (.success(let brushes), .success(let image), .success(let effects)):
-                if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: vm.layers,
+                if let error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
                     canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: fitted,
                     rasterData: vm.rasterData(frame.rasterAssetID), preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
                     StudioFrameRenderer.drawFailure(error, context: &context, size: fitted)
@@ -30,6 +33,24 @@ struct StudioFrameThumbnail: View {
 
 /// One compositing path for the live canvas, timeline and frames viewer.
 struct StudioFrameRenderer {
+    /// Isolated thumbnails show unhidden, full-opacity contents against a neutral
+    /// background. This changes only the preview copy, never layer preferences.
+    static func thumbnailContent(frame: AnimationFrame, layers: [CanvasLayer], isolatedLayerID: String?)
+        -> (frame: AnimationFrame, layers: [CanvasLayer]) {
+        guard let id = isolatedLayerID else { return (frame, layers) }
+        var preview = frame
+        preview.elements = frame.elements.filter { $0.layerID == id }
+        if preview.rasterLayerID != id {
+            preview.rasterAssetID = nil; preview.rasterLayerID = nil; preview.rasterPlacement = nil
+            preview.rasterCrop = nil; preview.rasterQuarterTurns = nil; preview.rasterReflection = nil
+        }
+        let isolated = layers.filter { $0.id == id }.map { source -> CanvasLayer in
+            var layer = source; layer.visible = true; layer.opacity = 1; layer.blendMode = "normal"
+            return layer
+        }
+        return (preview, isolated)
+    }
+
     struct PreparedBrushes {
         fileprivate let elements: [DrawnElement]
         fileprivate let strokes: [String: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)]

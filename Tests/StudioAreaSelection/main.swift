@@ -296,6 +296,52 @@ private struct Failure: Error { let message: String }
                     "Cold reopen rewrote historical text or lost measured bounds")
         pass("historical text glyph bounds support hit testing lasso delete Undo and cold reopen without rewriting originals")
 
+        let lockStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("LockDocuments"), cachesDirectory: root.appendingPathComponent("LockCache"))
+        let lockVM = StudioViewModel(storage: lockStorage)
+        let lockCreated = await lockVM.createProject(name: "Selected layer locks", width: 128, height: 128, fps: 12)
+        try require(lockCreated, "Lock project creation")
+        let lockFirst = shape(lockVM.activeLayerID)
+        try require(lockVM.commitElement(lockFirst), "First layer artwork")
+        lockVM.addLayer(); let lockSecond = shape(lockVM.activeLayerID)
+        try require(lockVM.commitElement(lockSecond), "Second layer artwork")
+        lockVM.addLayer(); let unaffectedLayer = lockVM.activeLayerID
+        func selectLockArtwork() throws {
+            lockVM.selectedTool = .lasso
+            try require(lockVM.selectVisibleArtwork(), "Select lock artwork")
+            lockVM.selectedTool = .move
+        }
+        try selectLockArtwork()
+        guard let lockCapture = lockVM.prepareSelectionLayerLock() else { throw Failure(message: "Missing selected layer capture") }
+        try require(lockCapture.layerIDs.count == 2 && !lockCapture.layerIDs.contains(unaffectedLayer), "Wrong layers captured")
+        let beforeLock = lockVM.document, lockPixels = try render(lockVM.document)
+        var lockCheckpoints = 0
+        try require(lockVM.lockSelectedLayers(lockCapture, checkCancellation: { lockCheckpoints += 1 }), "Actual lock transaction failed")
+        try require(lockVM.layers.filter(\.isFullyLocked).count == 2 && lockVM.selectedElementIDs.isEmpty &&
+                    (try render(lockVM.document)) == lockPixels, "Lock changed rendered artwork or retained selection")
+        lockVM.undo()
+        try require(lockVM.document.layers == beforeLock.layers && lockVM.document.frames == beforeLock.frames, "One Undo did not restore every layer")
+        try selectLockArtwork()
+        guard let cancellationCapture = lockVM.prepareSelectionLayerLock() else { throw Failure(message: "No fresh lock capture") }
+        let beforeCancellation = lockVM.document, beforeIDs = lockVM.selectedElementIDs
+        for stop in 1...lockCheckpoints {
+            var calls = 0
+            try require(!lockVM.lockSelectedLayers(cancellationCapture, checkCancellation: {
+                calls += 1; if calls == stop { throw CancellationError() }
+            }) && lockVM.document == beforeCancellation && lockVM.selectedElementIDs == beforeIDs,
+                        "Cancelled layer lock partially changed live state")
+        }
+        lockVM.clearElementSelection()
+        try require(!lockVM.lockSelectedLayers(cancellationCapture) && lockVM.document == beforeCancellation, "Stale selection locked layers")
+        try selectLockArtwork()
+        try require(lockVM.lockSelectedLayers(lockVM.prepareSelectionLayerLock()!), "Final layer lock")
+        let lockedDocument = lockVM.document
+        try require(!lockVM.commitElement(shape(lockFirst.layerID!)) && lockVM.document == lockedDocument, "Full-locked layer accepted drawing")
+        let locksSaved = await lockVM.save(); try require(locksSaved, "Lock save")
+        let locksReopened = StudioViewModel(storage: lockStorage); await locksReopened.loadProjects()
+        let locksOpened = await locksReopened.openProject(locksReopened.savedProjects.first!)
+        try require(locksOpened && locksReopened.layers == lockedDocument.layers && (try render(locksReopened.document)) == lockPixels,
+                    "Cold reopen lost locks or changed pixels")
+        pass("explicit selected whole-layer locking is atomic reversible cancellation-safe and persistent without changing artwork")
         print("PASS \(passed) production area-selection groups")
     }
 }

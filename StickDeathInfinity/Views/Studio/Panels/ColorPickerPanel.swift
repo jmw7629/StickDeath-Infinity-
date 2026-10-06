@@ -11,14 +11,9 @@ struct ColorPickerPanel: View {
     private var selectedHex: String { target == .drawing ? vm.strokeColorHex : vm.brushGradientEndColorHex }
     private func setColor(_ color: Color) {
         if target == .drawing { vm.strokeColor = color }
-        else { vm.brushGradientEndColor = color }
+        else { vm.brushGradientEndColor = color; vm.rememberRecentColor(vm.brushGradientEndColorHex) }
     }
-    private var validCustomHex: String? {
-        var value = customHex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        if value.hasPrefix("#") { value.removeFirst() }
-        guard value.count == 6, value.allSatisfy({ "0123456789ABCDEF".contains($0) }) else { return nil }
-        return "#" + value
-    }
+    private var validCustomHex: String? { StudioViewModel.normalizedColorHex(customHex) }
 
     static let palettes: [(name: String, colors: [String])] = [
         ("Basic", ["#5AC8FA","#7EC8D9","#C4C9A8","#F39C12","#E67E22","#FFFFFF","#000000"]),
@@ -47,6 +42,8 @@ struct ColorPickerPanel: View {
 
             PanelHeader(title: target == .drawing ? "Color" : "Gradient end color", icon: "🎨", onClose: { customHexFocused = false; vm.activePanel = target == .drawing ? .none : .toolSettings })
 
+            ScrollView {
+            VStack(spacing: 0) {
             // Current color preview
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 10)
@@ -67,18 +64,19 @@ struct ColorPickerPanel: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
 
-            if target == .gradientEnd {
+            Group {
                 HStack(spacing: 10) {
                     Text("Custom hex").font(.system(size: 11, design: .monospaced))
                     TextField("RRGGBB", text: $customHex)
                         .font(.system(size: 13, design: .monospaced))
                         .textInputAutocapitalization(.characters).autocorrectionDisabled()
                         .keyboardType(.asciiCapable).focused($customHexFocused)
-                        .accessibilityLabel("Custom gradient end color hex")
+                        .accessibilityLabel(target == .drawing ? "Custom drawing color hex" : "Custom gradient end color hex")
                         .accessibilityIdentifier("studio.color.hex")
                     Button("Apply") {
                         guard let hex = validCustomHex else { return }
-                        setColor(Color(hex: hex)); customHex = ""; customHexFocused = false
+                        guard vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) else { return }
+                        customHex = ""; customHexFocused = false
                     }
                     .disabled(validCustomHex == nil)
                     .accessibilityIdentifier("studio.color.hex.apply")
@@ -148,6 +146,26 @@ struct ColorPickerPanel: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 20)
+            if !vm.recentColorHexes.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("RECENT COLORS").font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(vm.recentColorHexes, id: \.self) { hex in
+                                Button { _ = vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) } label: {
+                                    Circle().fill(Color(hex: hex)).frame(width: 30, height: 30)
+                                        .overlay(Circle().stroke(.white.opacity(0.4), lineWidth: 1))
+                                        .frame(width: 44, height: 44)
+                                }
+                                .accessibilityLabel("Recent color " + hex)
+                                .accessibilityIdentifier("studio.color.recent." + hex)
+                            }
+                        }
+                    }
+                }.padding(.horizontal, 16).padding(.bottom, 16)
+            }
+            }
+            }.accessibilityIdentifier("studio.color.scroll")
         }
         .background(Color(hex: "1a1a24"))
         .cornerRadius(16, corners: [.topLeft, .topRight])

@@ -17,6 +17,8 @@ struct FloatingToolSettingsPanel: View {
     @State private var imageCrop: StudioViewModel.ImagePlacementCapture?
     @State private var imageDeletion: StudioViewModel.ImagePlacementCapture?
     @State private var showingImageDeletion = false
+    @State private var selectionLayerLock: StudioViewModel.SelectionLayerLockCapture?
+    @State private var showingSelectionLayerLock = false
     // The popup owns both draft values and distinct field focus. Keyboard
     // and viewport changes must not recreate an interactive input.
     @State private var imageX = ""
@@ -110,9 +112,18 @@ struct FloatingToolSettingsPanel: View {
         }
         .onChange(of: vm.selectedTool) { _, _ in
             imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+            selectionLayerLock = nil; showingSelectionLayerLock = false
         }
         .onDisappear {
             imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+            selectionLayerLock = nil; showingSelectionLayerLock = false
+        }
+        .confirmationDialog("Lock entire selected layers?", isPresented: $showingSelectionLayerLock,
+            titleVisibility: .visible, presenting: selectionLayerLock) { capture in
+            Button("Lock selected layers") { _ = vm.lockSelectedLayers(capture) }
+            Button("Cancel", role: .cancel) { }
+        } message: { capture in
+            Text("All artwork on these \(capture.layerIDs.count) layers will be locked across every frame, including unselected artwork. Undo restores all locks in one step, or unlock them in Layers.")
         }
         .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
             titleVisibility: .visible, presenting: imageDeletion) { capture in
@@ -571,7 +582,7 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock", "✂️ Deselect"], id: \.self) { action in
+                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock layers", "✂️ Deselect"], id: \.self) { action in
                         Button(action: {
                             if action.contains("Copy") { _ = vm.copySelected() }
                             else if action.contains("Delete") { vm.deleteSelected() }
@@ -580,6 +591,10 @@ struct FloatingToolSettingsPanel: View {
                             else if action.contains("Flip V") { _ = vm.reflectSelected(axis: .vertical) }
                             else if action.contains("Fwd") { _ = vm.orderSelected(forward: true) }
                             else if action.contains("Back") { _ = vm.orderSelected(forward: false) }
+                            else if action.contains("Lock") {
+                                selectionLayerLock = vm.prepareSelectionLayerLock()
+                                showingSelectionLayerLock = selectionLayerLock != nil
+                            }
                             else { vm.message = "This selection action is unfinished. The artwork has not changed." }
                         }) {
                             VStack(spacing: 2) {
@@ -595,13 +610,13 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(action.contains("Lock") || (action.contains("Copy") && vm.selectedElementIDs.isEmpty))
-                        .accessibilityHint(action.contains("Lock") ? "Selection locking is unavailable. Open Layers to choose a layer lock." : "")
+                        .disabled((action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (action.contains("Copy") && vm.selectedElementIDs.isEmpty))
+                        .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
-                Text("Selection locking is unavailable. Open Layers to choose a layer lock.")
+                Text("Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
-                    .accessibilityIdentifier("studio.selection.lock-unavailable")
+                    .accessibilityIdentifier("studio.selection.lock-scope")
                 Divider().background(Color.white.opacity(0.08))
                 Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 SettingsSlider(label: "Scale", value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
@@ -628,7 +643,7 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enclose whole drawings, then choose Move to drag them. To position an imported image, choose Move image on canvas or Position image. Lasso selection of images and legacy text is unfinished.")
+                Text("Enclose whole drawings, then choose Move to drag them. To position an imported image, choose Move image on canvas or Position image. Lasso includes editable and historical text. Image lasso selection is unfinished.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text("\(vm.selectedElementIDs.count) drawings selected")
                     .font(.specialElite(11)).foregroundColor(.sdStudioActionText)

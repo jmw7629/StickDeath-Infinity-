@@ -18,18 +18,21 @@ struct SpatterMotionRecipePanel: View {
     private let example = "Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px."
     // Match the production session's audio dispatch without parsing, editing or
     // making a provider request. Partially typed instructions remain editable.
+    private var isStickDraft: Bool { SpatterStickFigureRecipe.isStickFigureInstruction(draft) }
     private var isAudioDraft: Bool { SpatterAudioInstruction.isAudioInstruction(draft) }
     private var exampleText: String {
-        isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : example
+        isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
         isAudioDraft
             ? "Edit the selected clip's volume, mute state or fades. Its source, placement and track settings stay unchanged. One Undo reverses the edit."
+            : isStickDraft ? "Procedural walking, running, jumping and waving append 8–20 editable stick-figure frames on a new layer. This is a local motion recipe, not open-ended AI video generation. Current project FPS and existing frames are preserved; one Undo reverses the edit."
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
         isAudioDraft
             ? "Volume uses 0–100%. Fade durations use seconds and must fit the selected clip. Choose a complete audio example, edit its values, then Apply."
+            : isStickDraft ? "Start/end positions are the figure's feet baseline in canvas percentages. Height uses the shorter canvas side; every pose must fit. Edit the example's action, frame count, color, positions and size."
             : "Positions use canvas percentages. Radius uses the shorter canvas side; line width is in pixels. The full outline must fit inside the canvas."
     }
     private var scope: SpatterStudioEditSession.Scope {
@@ -61,13 +64,13 @@ struct SpatterMotionRecipePanel: View {
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
-                    Text("Use a complete motion or selected-audio instruction. Other shapes, free-form briefs, video and audio generation are unfinished. These edits stay on this device.")
+                    Text("Use a complete example. These bounded recipes create editable motion or change selected audio; open-ended AI briefs remain unfinished. Export renders the resulting project. Nothing publishes automatically.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
                     Text(exampleText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
-                    Button(isAudioDraft ? "Use motion example in draft" : "Use example in draft") { draft = example }
+                    Button(isAudioDraft ? "Use motion example in draft" : "Use example in draft") { draft = isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
                     Menu("Use an audio instruction") {
@@ -87,6 +90,14 @@ struct SpatterMotionRecipePanel: View {
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("spatter.local-edit.guidance")
 
+                    Menu("Stick figure examples") {
+                        ForEach(SpatterStickFigureRecipe.Action.allCases) { action in
+                            Button(action.rawValue.capitalized) { draft = action.example }
+                        }
+                    }
+                    .disabled(session.isWorking || session.isClosed)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("spatter.motion.stick-examples")
                     TextEditor(text: $draft)
                         .font(.system(.body, design: .monospaced))
                         .scrollContentBackground(.hidden)

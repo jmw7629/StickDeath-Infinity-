@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // ═══════════════════════════════════════════════════════════════════
 // Layer Panel — Bottom sheet with drag handle
@@ -21,6 +22,11 @@ import SwiftUI
 struct LayerPanel: View {
     @ObservedObject var vm: StudioViewModel
     @State private var expandedLayer: String? = nil
+    @State private var drag: StudioLayerDrag?
+    @State private var hoveredLayer: String?
+    @State private var hoverAfter = false
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
     
     var body: some View {
         VStack(spacing: 0) {
@@ -45,6 +51,25 @@ struct LayerPanel: View {
                     VStack(spacing: 0) {
                         ForEach(vm.studioLayers) { layer in
                             LayerRow(vm: vm, layer: layer, isExpanded: expandedLayer == layer.id)
+                                .overlay(alignment: hoverAfter ? .bottom : .top) {
+                                    if hoveredLayer == layer.id { Rectangle().fill(Color.red).frame(height: 2) }
+                                }
+                                .onDrag {
+                                    guard let capture = vm.prepareLayerReorder(layer.id), scenePhase == .active else {
+                                        return NSItemProvider()
+                                    }
+                                    let item = StudioLayerDrag(capture: capture, accountID: authVM.userId)
+                                    drag = item
+                                    let provider = NSItemProvider()
+                                    let payload = Data(item.token.uuidString.utf8)
+                                    provider.registerDataRepresentation(forTypeIdentifier: StudioLayerDrag.contentType.identifier,
+                                        visibility: .ownProcess) { completion in completion(payload, nil); return nil }
+                                    provider.suggestedName = layer.name
+                                    return provider
+                                }
+                                .onDrop(of: [StudioLayerDrag.contentType], delegate: StudioLayerDropDelegate(
+                                    vm: vm, targetID: layer.id, drag: $drag, hoveredLayer: $hoveredLayer,
+                                    hoverAfter: $hoverAfter, account: { authVM.userId }, isActive: { scenePhase == .active }))
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.2)) {
                                         vm.selectLayer(layer.id)
@@ -83,6 +108,59 @@ struct LayerPanel: View {
             .clipShape(RoundedCorner(radius: 16, corners: [.topLeft, .topRight]))
         }
         .ignoresSafeArea()
+        .onChange(of: vm.document.id) { _ in clearDrag() }
+        .onChange(of: vm.document.revision) { _ in clearDrag() }
+        .onChange(of: vm.document.activeFrameID) { _ in clearDrag() }
+        .onChange(of: authVM.userId) { _ in clearDrag() }
+        .onChange(of: scenePhase) { if $0 != .active { clearDrag() } }
+        .onDisappear { clearDrag() }
+    }
+    private func clearDrag() { drag = nil; hoveredLayer = nil; hoverAfter = false }
+}
+
+private struct StudioLayerDrag {
+    static let contentType = UTType(exportedAs: "com.willisnmb.stickdeathinfinity.layer-reorder", conformingTo: .data)
+    let token = UUID()
+    let capture: StudioViewModel.LayerReorderCapture
+    let accountID: String?
+}
+
+private struct StudioLayerDropDelegate: DropDelegate {
+    let vm: StudioViewModel
+    let targetID: String
+    @Binding var drag: StudioLayerDrag?
+    @Binding var hoveredLayer: String?
+    @Binding var hoverAfter: Bool
+    let account: () -> String?
+    let isActive: () -> Bool
+    func validateDrop(info: DropInfo) -> Bool {
+        guard let drag, isActive(), account() == drag.accountID else { return false }
+        return info.hasItemsConforming(to: [StudioLayerDrag.contentType])
+            && vm.prepareLayerReorder(drag.capture.layerID) == drag.capture
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        guard validateDrop(info: info) else { return DropProposal(operation: .cancel) }
+        hoveredLayer = targetID; hoverAfter = info.location.y >= 26
+        return DropProposal(operation: .move)
+    }
+    func dropExited(info: DropInfo) { if hoveredLayer == targetID { hoveredLayer = nil } }
+    func performDrop(info: DropInfo) -> Bool {
+        guard validateDrop(info: info), let expected = drag else { return false }
+        let providers = info.itemProviders(for: [StudioLayerDrag.contentType])
+        guard providers.count == 1, let provider = providers.first else { return false }
+        let after = info.location.y >= 26
+        hoveredLayer = nil
+        provider.loadDataRepresentation(forTypeIdentifier: StudioLayerDrag.contentType.identifier) { data, error in
+            Task { @MainActor in
+                guard drag?.token == expected.token else { return }
+                defer { drag = nil; hoveredLayer = nil }
+                guard error == nil, data == Data(expected.token.uuidString.utf8),
+                      isActive(), account() == expected.accountID else { return }
+                do { _ = try vm.reorderLayer(expected.capture, relativeTo: targetID, after: after) }
+                catch { vm.message = error.localizedDescription }
+            }
+        }
+        return true
     }
 }
 
@@ -114,9 +192,11 @@ struct LayerRow: View {
             .frame(width: 24)
             
             // Thumbnail
-            RoundedRectangle(cornerRadius: 4)
-                .fill(Color.white.opacity(0.08))
+            StudioFrameThumbnail(vm: vm, frame: vm.currentFrame, isolatedLayerID: layer.id)
                 .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.white.opacity(0.15), lineWidth: 0.5)

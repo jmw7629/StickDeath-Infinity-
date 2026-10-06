@@ -143,6 +143,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
                         selectedClipID: captured.selectedAudioClipID, requestID: submissionID)
+                } else if SpatterStickFigureRecipe.isStickFigureInstruction(draft) {
+                    let recipe = try SpatterStickFigureRecipe.parse(draft)
+                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request
                 } else {
                     let recipe = try SpatterMotionRecipe.parse(draft)
                     preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request

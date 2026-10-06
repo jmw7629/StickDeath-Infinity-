@@ -197,6 +197,31 @@ private struct Failure: Error { let message: String }
         let recoveredOpen = await recovered.openProject(listed.first { $0.id == vm.document.id }!)
         try require(recoveredOpen && (try render(recovered.document)) == widePixels, "Corrupt device preferences damaged saved artwork")
         pass("bounded strict preference decoding falls back without overwriting corrupt bytes or project artwork")
+        let paletteStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("PaletteDocuments"), cachesDirectory: root.appendingPathComponent("PaletteCache"))
+        let palette = StudioViewModel(storage: paletteStorage, toolDefaults: constraintDefaults)
+        let paletteMade = await palette.createProject(name: "Real custom color", width: 128, height: 128, fps: 12)
+        try require(paletteMade, "Palette project creation")
+        let cleanPaletteDocument = palette.document
+        try require(palette.applyCustomColorHex("  1280fe  ") && palette.strokeColorHex == "#1280FE", "Custom drawing color did not apply exact bytes")
+        try require(palette.applyCustomColorHex("#34A057", gradientEnd: true) && palette.brushGradientEndColorHex == "#34A057" && palette.strokeColorHex == "#1280FE", "Gradient endpoint changed drawing color")
+        let recentBeforeInvalid = palette.recentColorHexes
+        for invalid in ["", "#12", "#12345678", "GG0000", "12345🙂"] {
+            try require(!palette.applyCustomColorHex(invalid) && palette.recentColorHexes == recentBeforeInvalid && palette.strokeColorHex == "#1280FE", "Invalid custom color changed state")
+        }
+        try require(palette.document == cleanPaletteDocument && !palette.isDirty && !palette.canUndo, "Color choices created document edits")
+        for i in 0..<24 { palette.rememberRecentColor(String(format: "#%06X", i)) }
+        palette.rememberRecentColor("#000016")
+        try require(palette.recentColorHexes.count == 16 && Set(palette.recentColorHexes).count == 16 && palette.recentColorHexes.first == "#000016", "Recent colors were not bounded and deduplicated")
+        let restoredPalette = StudioViewModel(storage: paletteStorage, toolDefaults: constraintDefaults)
+        try require(restoredPalette.recentColorHexes == palette.recentColorHexes, "Recent swatches did not survive relaunch")
+        let colorStroke = DrawnElement(id: "custom-color", tool: .line, points: [.init(x:16,y:64),.init(x:112,y:64)], color: palette.strokeColorHex, width: 8, opacity: 1, layerID: palette.activeLayerID)
+        try require(palette.commitElement(colorStroke), "Custom color stroke failed")
+        let colorPixels = try render(palette.document)
+        try require(abs(Int(channel(colorPixels,64,64,0))-18)<=1 && abs(Int(channel(colorPixels,64,64,1))-128)<=1 && abs(Int(channel(colorPixels,64,64,2))-254)<=1, "Custom color bytes did not reach canonical rendered pixels")
+        constraintDefaults.set(["bad", "#ffffff", "FFFFFF", "#102030"], forKey: StudioViewModel.recentColorsKey)
+        let sanitizedPalette = StudioViewModel(storage: paletteStorage, toolDefaults: constraintDefaults)
+        try require(sanitizedPalette.recentColorHexes == ["#FFFFFF", "#102030"], "Stored swatches were not normalized and deduplicated")
+        pass("custom drawing and gradient colors validate exact bytes; recent swatches persist bounded without document edits and render real pixels")
         print("PASS \(passed) production tool-preference groups")
     }
 }
