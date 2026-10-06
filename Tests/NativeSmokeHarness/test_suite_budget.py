@@ -29,22 +29,24 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertIn("testGradientBrushPixelsUndoAndColdReopen", value["testNames"])
         self.assertIn("testGradientBrushRealPNGExport", value["testNames"])
         self.assertIn("testGradientCustomEndpointValidationRenderAndColdReopen", value["testNames"])
+        self.assertIn("testRotoscopeFilesPickerCancelPreservesProject", value["testNames"])
+        self.assertIn("testRotoscopePhotosActualPlayheadUndoAndColdReopen", value["testNames"])
         self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 180)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
-        self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 225 * 60)
+        self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 231 * 60)
         for name in ("testDodgePixelsUndoAndColdReopen", "testBurnPixelsUndoAndColdReopen",
                      "testDodgeSettingsPersistAndReset", "testBurnSettingsPersistAndReset"):
             self.assertIn(name, value["testNames"])
 
     def test_per_case_capacity_is_available_and_global_bound_stays_finite(self):
-        for count in (1, 49, 50, 60, 61, 62, 63, 64):
+        for count in (1, 49, 50, 60, 61, 62, 63, 64, 65, 66):
             value = budget.build_test_budget(fixture(count), COMMAND)
             self.assertEqual(value["suiteSeconds"], count * 180 + 300)
-            self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 225 * 60)
+            self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 231 * 60)
         self.assertEqual(budget.build_test_budget(fixture(50), COMMAND)["suiteSeconds"], 9300)
 
     def test_empty_excess_duplicate_or_additional_suites_reject(self):
-        for source in (fixture(0), fixture(65), fixture(2).replace("testCase1", "testCase0"),
+        for source in (fixture(0), fixture(67), fixture(2).replace("testCase1", "testCase0"),
                        fixture(1) + "\nclass AnotherSuite: XCTestCase {}"):
             with self.subTest(source=source[:60]), self.assertRaises(ValueError):
                 budget.build_test_budget(source, COMMAND)

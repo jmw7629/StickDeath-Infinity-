@@ -85,6 +85,20 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(disk.sha256 == SHA256.hash(data: Data(contentsOf: urls[0])).map { String(format: "%02x", $0) }.joined(), "actual receipt hashes completed file")
             try output.cleanup(); try output.cleanup(); try empty(p); try inputsIntact()
         }
+        try await run("held cels preserve variable frame timing and full mixed audio duration") {
+            var held = document; held.schemaVersion = 21
+            held.frames[0].holdTicks = 3; held.frames[1].holdTicks = 6
+            let heldCapture = try StudioMuxCapture.capture(.init(document: held, retainedAudioTracks: [track], rasterDataByID: [:]))
+            let visual = try await StudioMovieExportService().exportVisualComponent(capture: heldCapture, outputParent: videoParent)
+            let sound = try await service.mixAudioComponent(capture: heldCapture, outputParent: audioParent)
+            let output = try await service.mux(video: visual, audio: sound, outputParent: parent("held-cels"))
+            let asset = AVURLAsset(url: try output.checkedURLs()[0])
+            let duration = try await asset.load(.duration)
+            try require(CMTimeCompare(duration, CMTime(value: 19, timescale: 12)) == 0
+                && output.receipt.decodedAudioFrames == 76_000 && output.receipt.videoFrames == 12,
+                "Held movie/audio duration or cel count changed")
+            try output.cleanup(); try visual.cleanup(); try sound.cleanup()
+        }
         try await run("equal content proofs from separate captures cannot substitute origin") {
             let other = try StudioMuxCapture.capture(snapshot), otherAudio = try await service.mixAudioComponent(capture: other, outputParent: audioParent)
             try require(other.proof == capture.proof && other !== capture, "fixture same proof distinct origin")

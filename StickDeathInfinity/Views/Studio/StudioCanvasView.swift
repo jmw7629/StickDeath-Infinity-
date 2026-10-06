@@ -10,6 +10,7 @@ struct StudioCanvasView: View {
     @State private var imageMoveFrame: AnimationFrame?
     @State private var startedAsImageMove = false
     @State private var imageMoveCancelled = false
+    @State private var imageResizeCorner: StudioSelectionHandleGeometry.Kind?
     @State private var moveCapture: StudioViewModel.MoveCapture?
     @State private var moveLayout: StudioColorSampleGesture.Layout?
     @State private var moveFrame: AnimationFrame?
@@ -181,6 +182,15 @@ struct StudioCanvasView: View {
                                 height: placement.height / Double(vm.canvasHeight) * actual.height)
                             context.stroke(Path(rect.insetBy(dx: 1, dy: 1)), with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
+                            if let geometry = imageHandles(frame: displayedFrame, size: actual) {
+                                for handle in geometry.handles where handle.kind != .rotate {
+                                    let radius = geometry.visualRadius
+                                    let circle = Path(ellipseIn: CGRect(x: handle.point.x-radius, y: handle.point.y-radius,
+                                        width: 2*radius, height: 2*radius))
+                                    context.fill(circle, with: .color(.white))
+                                    context.stroke(circle, with: .color(.red), lineWidth: 2 / geometry.zoom)
+                                }
+                            }
                         }
                         if let handles {
                             for handle in handles.handles {
@@ -250,7 +260,7 @@ struct StudioCanvasView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
-                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Position image in the Move popup changes its size." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize while keeping its proportions. Position image offers numeric dimensions." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
                     if vm.gridEnabled { GridOverlay().allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -311,7 +321,15 @@ struct StudioCanvasView: View {
                     startedAsMove = vm.selectedTool == .move && !startedAsImageMove; moveCancelled = false
                     if startedAsImageMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
-                        imageMoveCapture = vm.beginImageMove(at: documentPoint(value.startLocation, size: size))
+                        imageResizeCorner = nil
+                        if let geometry = imageHandles(frame: vm.currentFrame, size: size) {
+                            imageResizeCorner = geometry.handles.filter { $0.kind != .rotate &&
+                                hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <= geometry.hitRadius }
+                                .min { hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <
+                                    hypot($1.point.x-value.startLocation.x, $1.point.y-value.startLocation.y) }?.kind
+                        }
+                        imageMoveCapture = imageResizeCorner == nil
+                            ? vm.beginImageMove(at: documentPoint(value.startLocation, size: size)) : vm.currentImageMoveCapture()
                     }
                     startedAsArea = vm.selectedTool == .lasso; areaCancelled = false
                     if let geometry = selectionHandles(frame: vm.currentFrame, size: size),
@@ -444,7 +462,9 @@ struct StudioCanvasView: View {
                 }
                 if startedAsImageMove {
                     guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
-                    _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size))
+                    if let corner = imageResizeCorner {
+                        _ = vm.finishImageResize(capture, corner: corner, delta: documentDelta(value.translation, size: size))
+                    } else { _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size)) }
                     return
                 }
                 if startedAsHandle {
@@ -699,6 +719,11 @@ struct StudioCanvasView: View {
             return true
         } catch { cancelHandlePreview(); vm.message = error.localizedDescription; return false }
     }
+    private func imageHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
+        guard vm.currentImageMoveCapture() != nil, let p = frame.rasterPlacement else { return nil }
+        return .init(bounds: CGRect(x: p.x, y: p.y, width: p.width, height: p.height),
+            documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewport: size, zoom: vm.canvasScale)
+    }
     private func cancelImageMovePreview() {
         if startedAsImageMove { imageMoveCancelled = true; imageMoveFrame = nil }
     }
@@ -709,7 +734,12 @@ struct StudioCanvasView: View {
               moveLayout == .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset) else {
             cancelImageMovePreview(); return false
         }
-        do { imageMoveFrame = try vm.imageMovePreview(capture, delta: documentDelta(delta, size: size)); return true }
+        do {
+            if let corner = imageResizeCorner {
+                imageMoveFrame = try vm.imageResizePreview(capture, corner: corner, delta: documentDelta(delta, size: size))
+            } else { imageMoveFrame = try vm.imageMovePreview(capture, delta: documentDelta(delta, size: size)) }
+            return true
+        }
         catch { cancelImageMovePreview(); vm.message = error.localizedDescription; return false }
     }
     private func cancelMovePreview() {
@@ -752,7 +782,7 @@ struct StudioCanvasView: View {
             blurInput = nil; startedAsBlur = false
             sharpenInput = nil; startedAsSharpen = false
             dodgeBurnInput = nil; startedAsDodgeBurn = false
-            imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
+            imageResizeCorner = nil; imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
             handleValues = .init(); startedAsHandle = false; handleCancelled = false

@@ -68,12 +68,30 @@ struct StudioTimeline: View {
                             .id(frame.id)
                             .accessibilityLabel("Frame \(i + 1)")
                             .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
+                            .accessibilityHint("Exposure: \(frame.durationTicks) ticks at \(vm.fps) FPS")
                             .accessibilityIdentifier("studio.frame." + frame.id)
                             .contextMenu {
                                 Button("Copy frame") { vm.copyFrame(frame.id) }
                                     .accessibilityIdentifier("studio.frame-menu.copy")
                                 Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
                                     .accessibilityIdentifier("studio.frame-menu.duplicate")
+                                Menu("Frame exposure") {
+                                    ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
+                                        Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
+                                            vm.setFrameHold(frame.id, ticks: ticks)
+                                        }.accessibilityIdentifier("studio.frame-menu.hold.\(ticks)")
+                                    }
+                                }
+                                Menu("Repeat frame") {
+                                    ForEach([2, 4, 8, 12, 24], id: \.self) { copies in
+                                        Button("Add \(copies) copies (\(String(format: "%.2f", Double(copies * frame.durationTicks) / Double(vm.fps)))s)") {
+                                            _ = vm.repeatFrame(frame.id, additionalCopies: copies)
+                                        }
+                                        .disabled(vm.frames.count + copies > 1000)
+                                        .accessibilityIdentifier("studio.frame-menu.repeat.\(copies)")
+                                    }
+                                }
+                                .accessibilityIdentifier("studio.frame-menu.repeat")
                                 Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
                                     .disabled(i == 0)
                                     .accessibilityIdentifier("studio.frame-menu.earlier")
@@ -87,7 +105,10 @@ struct StudioTimeline: View {
                         }
                     }
                 }
-                .onChange(of: [vm.currentFrame.id, String(vm.currentFrameIndex)]) { _ in
+                .accessibilityIdentifier("studio.frame-timeline")
+                .onChange(of: [vm.currentFrame.id, String(vm.currentFrameIndex)], initial: true) { _, _ in
+                    // Reopened projects already have their selected frame. Scroll on
+                    // initial presentation too, so that frame is visible immediately.
                     withAnimation { proxy.scrollTo(vm.currentFrame.id, anchor: .center) }
                 }
             }

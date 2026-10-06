@@ -164,8 +164,8 @@ import Darwin
                             try validateEmptyMarker(sample, count: &videoMarkers)
                         } else {
                         guard frames < proof.frameIDs.count, CMSampleBufferGetNumSamples(sample) == 1,
-                              CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(frames), timescale: CMTimeScale(proof.durationDenominator))) == 0,
-                              CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: 1, timescale: CMTimeScale(proof.durationDenominator))) == 0 else { throw MuxError.timing("source video sample timing") }
+                              CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(proof.frameStartTicks[frames]), timescale: CMTimeScale(proof.durationDenominator))) == 0,
+                              CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: Int64(proof.frameDurationTicks[frames]), timescale: CMTimeScale(proof.durationDenominator))) == 0 else { throw MuxError.timing("source video sample timing") }
                         try updateDigest(sample, digest: &sourceVideoPCM)
                         guard vi.append(sample) else { throw MuxError.writerFailed }; frames += 1
                         }
@@ -309,8 +309,8 @@ import Darwin
             try checkpoint(started)
             if CMSampleBufferGetNumSamples(sample) == 0 { try validateEmptyMarker(sample, count: &markers); continue }
             guard count < proof.frameIDs.count, CMSampleBufferGetNumSamples(sample) == 1,
-                  CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(count), timescale: CMTimeScale(proof.durationDenominator))) == 0,
-                  CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: 1, timescale: CMTimeScale(proof.durationDenominator))) == 0 else { throw MuxError.verificationFailed }
+                  CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(proof.frameStartTicks[count]), timescale: CMTimeScale(proof.durationDenominator))) == 0,
+                  CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: Int64(proof.frameDurationTicks[count]), timescale: CMTimeScale(proof.durationDenominator))) == 0 else { throw MuxError.verificationFailed }
             try updateDigest(sample, digest: &digest); count += 1; await Task.yield()
         }
         guard timingReader.status == .completed, count == proof.frameIDs.count, digest.finalize() == expectedVideo else { throw MuxError.verificationFailed }

@@ -61,6 +61,17 @@ final class StudioGIFEncoder {
         }
     }
 
+    static func timing(document: StudioDocument) throws -> [Int] {
+        try document.validate()
+        _ = try timing(frameCount: document.frames.count, fps: document.fps)
+        var tick = 0
+        return document.frames.map { frame in
+            let start = tick; tick += frame.durationTicks
+            return (tick * 100 + document.fps / 2) / document.fps
+                - (start * 100 + document.fps / 2) / document.fps
+        }
+    }
+
     func encode(_ snapshot: Snapshot, progress: (Progress) throws -> Void = { _ in }) async throws -> Encoded {
         try Task.checkCancellation()
         guard !Self.inProgress else { throw Failure.alreadyEncoding }
@@ -69,7 +80,7 @@ final class StudioGIFEncoder {
         let document = snapshot.document
         let renderer = StudioExportService()
         try renderer.validate(document)
-        let delays = try Self.timing(frameCount: document.frames.count, fps: document.fps)
+        let delays = try Self.timing(document: document)
         guard document.width * document.height * document.frames.count <= Self.maximumPixels,
               snapshot.rasterDataByID.count <= 240 else { throw Failure.limit }
         var sourceBytes = 0

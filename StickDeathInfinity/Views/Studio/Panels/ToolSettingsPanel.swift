@@ -14,6 +14,7 @@ struct FloatingToolSettingsPanel: View {
     var alignToBottom = false
     @State private var showBrushLibrary = false
     @State private var imagePlacement: StudioViewModel.ImagePlacementCapture?
+    @State private var imageCrop: StudioViewModel.ImagePlacementCapture?
     @State private var imageDeletion: StudioViewModel.ImagePlacementCapture?
     @State private var showingImageDeletion = false
     // The popup owns both draft values and distinct field focus. Keyboard
@@ -108,10 +109,10 @@ struct FloatingToolSettingsPanel: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignToBottom ? .bottom : .top)
         }
         .onChange(of: vm.selectedTool) { _, _ in
-            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+            imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
         }
         .onDisappear {
-            imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
+            imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
         }
         .confirmationDialog("Delete this frame's image?", isPresented: $showingImageDeletion,
             titleVisibility: .visible, presenting: imageDeletion) { capture in
@@ -442,7 +443,12 @@ struct FloatingToolSettingsPanel: View {
             
         // ── MOVE ──
         case .move:
-            if let capture = imagePlacement {
+            if let capture = imageCrop {
+                StudioImageCropControls(vm: vm, capture: capture, focused: $imageFocusedField,
+                    x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
+                    imageFocusedField = nil; imageCrop = nil
+                }
+            } else if let capture = imagePlacement {
                 StudioImagePlacementControls(vm: vm, capture: capture, focused: $imageFocusedField,
                     x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
                     imageFocusedField = nil; imagePlacement = nil
@@ -478,6 +484,15 @@ struct FloatingToolSettingsPanel: View {
                     .background(Color.red.opacity(0.75)).cornerRadius(8)
                     .accessibilityIdentifier("studio.image-placement.open")
                     .disabled(vm.prepareImagePlacement() == nil)
+                    Button("Crop image") {
+                        guard let capture = vm.prepareImagePlacement() else { return }
+                        let crop = vm.currentFrame.rasterCrop ?? .full
+                        imageX = String(crop.x * 100); imageY = String(crop.y * 100)
+                        imageWidth = String(crop.width * 100); imageHeight = String(crop.height * 100)
+                        imageCrop = capture
+                    }.font(.specialElite(12)).frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier("studio.image-crop.open")
+                        .disabled(vm.prepareImagePlacement() == nil)
                     HStack(spacing: 8) {
                         imageFlipButton("Flip image H", axis: .horizontal, id: "horizontal")
                         imageFlipButton("Flip image V", axis: .vertical, id: "vertical")
@@ -830,7 +845,7 @@ private struct StudioImagePlacementControls: View {
                 Text("Use positive dimensions and keep the image inside the canvas.")
                     .foregroundColor(.orange).font(.specialElite(10))
             }
-            Text("Apply changes position and size in one Undo step. Originals stay intact. Use Move options to rotate by 90°. Arbitrary-angle rotation and image handles are unfinished.")
+            Text("Apply changes position and size in one Undo step. Originals stay intact. Drag white corner handles in Move image mode to resize with fixed proportions. Use Move options to rotate by 90°. Arbitrary-angle rotation is unfinished.")
                 .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             HStack {
                 Button("Apply image") {
@@ -846,5 +861,55 @@ private struct StudioImagePlacementControls: View {
                     .font(.specialElite(10)).foregroundColor(.orange)
             }
         }.font(.specialElite(11)).foregroundColor(.white.opacity(0.85))
+    }
+}
+
+private struct StudioImageCropControls: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.ImagePlacementCapture
+    @FocusState.Binding var focused: StudioImagePlacementField?
+    @Binding var x: String
+    @Binding var y: String
+    @Binding var width: String
+    @Binding var height: String
+    let dismiss: () -> Void
+
+    private var proposed: StudioImageCrop? {
+        guard let x = Double(x), let y = Double(y), let width = Double(width), let height = Double(height) else { return nil }
+        let crop = StudioImageCrop(x: x / 100, y: y / 100, width: width / 100, height: height / 100)
+        return (try? crop.validate()) != nil ? crop : nil
+    }
+    private func field(_ name: String, _ value: Binding<String>, _ key: StudioImagePlacementField) -> some View {
+        HStack {
+            Text(name).frame(width: 52, alignment: .leading)
+            TextField(name, text: value).keyboardType(.decimalPad).focused($focused, equals: key)
+                .textFieldStyle(.roundedBorder).foregroundColor(.primary)
+                .accessibilityIdentifier("studio.image-crop." + name.lowercased())
+            Text("%").foregroundColor(.sdStudioSecondaryText)
+        }.font(.system(size: 12, design: .monospaced))
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("CROP ORIGINAL IMAGE").font(.specialElite(12)).foregroundColor(.white)
+            field("Left", $x, .x); field("Top", $y, .y)
+            field("Width", $width, .width); field("Height", $height, .height)
+            Text("Percentages refer to the upright original before flips and rotation. Apply keeps the image centered and preserves proportions. Originals remain available for Undo or restoring the full image.")
+                .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            Button("Full image") { x = "0"; y = "0"; width = "100"; height = "100" }
+                .frame(minHeight: 44).accessibilityIdentifier("studio.image-crop.full")
+            if proposed == nil { Text("Keep the crop inside 100%, at least 1% wide and high.").font(.caption).foregroundColor(.orange) }
+            HStack {
+                Button("Apply crop") {
+                    guard let crop = proposed else { return }
+                    if vm.cropImage(capture, crop: crop) { dismiss() }
+                }.disabled(proposed == nil || vm.prepareImagePlacement() != capture)
+                    .accessibilityIdentifier("studio.image-crop.apply")
+                Spacer()
+                Button("Cancel", action: dismiss).accessibilityIdentifier("studio.image-crop.cancel")
+            }.frame(minHeight: 44)
+            if vm.prepareImagePlacement() != capture {
+                Text("Studio changed. Cancel and open Crop image again.").font(.caption).foregroundColor(.orange)
+            }
+        }
     }
 }

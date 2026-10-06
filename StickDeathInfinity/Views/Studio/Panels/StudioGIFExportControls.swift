@@ -32,7 +32,7 @@ struct StudioGIFExportControls: View {
                 .foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-            Text("\(vm.document.frames.count) frames · \(vm.document.fps) fps. Loops continuously, with a white background and no audio. GIF reduces colors; use MP4 for sound or longer animations. Grid and onion skin are not exported.")
+            Text("\(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. Loops continuously, with a white background and no audio. GIF reduces colors; use MP4 for sound or longer animations. Grid and onion skin are not exported.")
                 .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
             Text("Up to 240 frames at 1–50 fps, within 8.4 million total frame pixels. A 1080 × 1920 project fits up to four frames. Larger exports report a limit error.")
                 .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))

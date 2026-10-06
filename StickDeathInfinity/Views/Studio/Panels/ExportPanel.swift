@@ -54,7 +54,7 @@ struct ExportPanel: View {
                             sectionLabel("IMAGE QUALITY")
                             Text("Original canvas · \(document.width) × \(document.height)")
                                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-                            Text("Lossless PNG · \(document.frames.count) frames · \(document.fps) fps in the timing manifest. Audio, editor grid and onion skin are not included.")
+                            Text("Lossless PNG · \(document.frames.count) frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid and onion skin are not included.")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.6))
                             sectionLabel("BACKGROUND")

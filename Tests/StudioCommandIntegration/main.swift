@@ -237,6 +237,78 @@ private final class NetworkTrap: URLProtocol {
                 try require(reopened.frames.count == 2 && reopened.frames.allSatisfy({ $0.elements.count == 1 })
                             && reopened.rasterData(reopened.frames[0].rasterAssetID) == png, "reopen lost editable or original content")
             }
+            try await test("frame repeat keeps unique identities and commits one reversible persisted edit") {
+                let storage = store("repeat-frame"), vm = StudioViewModel(storage: store("repeat-frame"))
+                try require(await vm.createProject(name: "Repeat pose", width: 64, height: 64, fps: 12), "Create failed")
+                try vm.applyStudioCommands(command(vm, .apply([draw(vm, id: "pose")])))
+                let source = vm.document.activeFrameID
+                vm.addFrame()
+                let before = vm.document
+                try require(vm.repeatFrame(source, additionalCopies: 4), "Repeat refused valid source")
+                let after = vm.document
+                try require(after.frames.count == 6 && after.revision == before.revision + 1,
+                            "Repeat did not commit exactly one revision")
+                let poses = after.frames.filter { !$0.elements.isEmpty }
+                try require(poses.count == 5 && Set(after.frames.map(\.id)).count == 6
+                    && Set(poses.flatMap { $0.elements.map(\.id) }).count == 5,
+                    "Repeated content lost editable identity")
+                try require(poses.allSatisfy { $0.elements[0].points == poses[0].elements[0].points }, "Repeat changed the pose")
+                vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore original frame selection/content")
+                vm.redo(); try require(content(vm.document) == content(after), "Redo did not restore repeat")
+                let beforeRejection = vm.document
+                try require(!vm.repeatFrame("missing", additionalCopies: 4) && !vm.repeatFrame(source, additionalCopies: 25)
+                    && vm.document == beforeRejection, "Rejected repeat changed the project")
+                await vm.flush()
+                let reopened = StudioViewModel(storage: storage)
+                try require(await reopened.openProject(storage.loadAnimation(id: after.id)!.metadata), "Repeated project reopen failed")
+                try require(content(reopened.document) == content(after), "Repeat did not persist")
+            }
+            try await test("frame exposures persist and drive real playback and audio scrubbing") {
+                let storage = store("frame-holds"), vm = StudioViewModel(storage: store("frame-holds"))
+                try require(await vm.createProject(name: "Exposure", width: 64, height: 64, fps: 12), "Create failed")
+                let first = vm.document.activeFrameID; vm.addFrame()
+                let second = vm.document.activeFrameID, before = vm.document
+                vm.setFrameHold(first, ticks: 3)
+                let after = vm.document
+                try require(after.schemaVersion == 21 && after.totalTimelineTicks == 4
+                    && after.startTick(ofFrame: 1) == 3 && abs(vm.audioDuration - 1.0 / 3.0) < 0.000001,
+                    "Canonical exposure timeline is wrong")
+                vm.undo(); try require(content(vm.document) == content(before), "Hold Undo failed")
+                vm.redo(); try require(content(vm.document) == content(after), "Hold Redo failed")
+                vm.selectFrame(first); vm.togglePlayback()
+                vm.advancePlaybackFrame(); try require(vm.currentFrame.id == first, "Hold advanced too early")
+                vm.advancePlaybackFrame(); try require(vm.currentFrame.id == first, "Hold skipped its final tick")
+                vm.advancePlaybackFrame(); try require(vm.currentFrame.id == second, "Playback missed hold boundary")
+                vm.stopPlayback(); vm.displayAudioPlaybackTime(2.0 / 12.0, playing: true)
+                try require(vm.currentFrame.id == first, "Audio scrub ignored exposure")
+                vm.displayAudioPlaybackTime(3.0 / 12.0, playing: true)
+                try require(vm.currentFrame.id == second, "Audio scrub boundary was wrong")
+                vm.stopPlayback(); vm.copyFrame(first); vm.pasteFrame()
+                try require(vm.currentFrame.durationTicks == 3, "Copy/paste lost exposure")
+                await vm.flush()
+                let loaded = try storage.loadAnimation(id: vm.document.id)!
+                let reopened = StudioViewModel(storage: storage)
+                try require(await reopened.openProject(loaded.metadata) && reopened.document.frames.map(\.durationTicks) == vm.document.frames.map(\.durationTicks), "Exposure did not survive reopen")
+                let request = command(vm, .apply([.setFrameHold(.init(frame: .id(first), ticks: 6))]))
+                _ = try vm.applyStudioCommands(JSONEncoder().encode(request))
+                try require(vm.document.frames.first { $0.id == first }?.durationTicks == 6
+                    && vm.commandScreenContext.document?.frames.first { $0.id == first }?.durationTicks == 6, "Wire exposure/context mismatch")
+                let beforeInvalid = vm.document
+                do {
+                    _ = try vm.applyStudioCommands(command(vm, .apply([.setFrameHold(.init(frame: .id(first), ticks: 601))])))
+                    throw Failure(message: "Invalid typed exposure accepted")
+                } catch StudioCommandError.invalidSettings { }
+                try require(vm.document == beforeInvalid, "Rejected exposure mutated document")
+                var clipboardEditor = try StudioDocumentEditor(document: before)
+                try clipboardEditor.change { $0.frames[0].holdTicks = 3; $0.schemaVersion = 21 }
+                try clipboardEditor.copyFrame(first); clipboardEditor.undo()
+                try clipboardEditor.pasteFrame()
+                try require(clipboardEditor.document.schemaVersion == 21
+                    && clipboardEditor.document.frames.last?.durationTicks == 3, "Clipboard exposure after Undo lost schema")
+                var malformed = vm.document; malformed.frames[0].holdTicks = Int.max
+                do { try malformed.validate(); throw Failure(message: "Invalid exposure accepted") }
+                catch is StudioDocumentError { }
+            }
             try await test("audio selection context remains canonical through command undo and redo") {
                 let vm = StudioViewModel(storage: store("audio-selection"))
                 try require(await vm.createProject(name: "Audio context", width: 64, height: 64, fps: 12), "create failed")

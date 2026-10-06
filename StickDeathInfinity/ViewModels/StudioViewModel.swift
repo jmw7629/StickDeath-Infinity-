@@ -141,7 +141,7 @@ final class StudioViewModel: ObservableObject {
     var showOnionSkin: Bool { get { document.onionEnabled } set { change { $0.onionEnabled = newValue } } }
     var gridEnabled: Bool { get { document.gridEnabled } set { change { $0.gridEnabled = newValue } } }
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
-    var audioDuration: Double { max(Double(frames.count) / Double(fps), document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
+    var audioDuration: Double { max(document.durationSeconds, document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
     var brushGradientEndColorHex: String { Self.hex(brushGradientEndColor) }
     @discardableResult
@@ -672,6 +672,37 @@ final class StudioViewModel: ObservableObject {
                 action: .apply([.duplicateFrame(.init(source: .id(id), result: "duplicate"))])))
         } catch { message = error.localizedDescription }
     }
+    func setFrameHold(_ id: String, ticks: Int) {
+        guard (1...600).contains(ticks), frames.contains(where: { $0.id == id }) else {
+            message = "Choose an existing frame and an exposure of 1–600 ticks."; return
+        }
+        guard frames.first(where: { $0.id == id })?.durationTicks != ticks else { return }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.setFrameHold(.init(frame: .id(id), ticks: ticks))])))
+        } catch { message = error.localizedDescription }
+    }
+
+    /// Extend a pose with independently editable copies. The existing typed
+    /// transaction preserves raster originals/effects and commits one Undo step.
+    @discardableResult
+    func repeatFrame(_ id: String, additionalCopies: Int) -> Bool {
+        guard (1...24).contains(additionalCopies), frames.count <= 1000 - additionalCopies,
+              frames.contains(where: { $0.id == id }) else {
+            message = "Choose an existing frame and 1–24 copies within the 1,000-frame project limit."
+            return false
+        }
+        stopPlayback()
+        let commands: [StudioCommand] = (0..<additionalCopies).map { index in
+            .duplicateFrame(.init(source: .id(id), result: "repeat\(index)"))
+        }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply(commands)))
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
     func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
     func copyFrame(_ id: String) {
         guard allowDocumentEditDuringInput() else { return }
@@ -1009,6 +1040,48 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
 
+    /// Corner drags keep the opposite corner fixed and preserve the displayed
+    /// aspect ratio. Preview retains the original asset and creates no history.
+    func imageResizePreview(_ capture: ImageMoveCapture, corner: StudioSelectionHandleGeometry.Kind,
+                            delta: CGSize) throws -> AnimationFrame {
+        guard currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+        guard corner != .rotate, delta.width.isFinite, delta.height.isFinite,
+              abs(delta.width) <= 131_072, abs(delta.height) <= 131_072 else {
+            throw StudioDocumentError.invalid("The image resize has invalid coordinates.")
+        }
+        if delta == .zero { return currentFrame }
+        let p = capture.placement.original
+        let left = corner == .topLeft || corner == .bottomLeft
+        let top = corner == .topLeft || corner == .topRight
+        let anchorX = left ? p.x + p.width : p.x
+        let anchorY = top ? p.y + p.height : p.y
+        let dx = (left ? -1.0 : 1.0) * Double(delta.width)
+        let dy = (top ? -1.0 : 1.0) * Double(delta.height)
+        let scale = 1 + (dx * p.width + dy * p.height) / (p.width * p.width + p.height * p.height)
+        let maximum = min((left ? anchorX : Double(capture.placement.canvasWidth) - anchorX) / p.width,
+                          (top ? anchorY : Double(capture.placement.canvasHeight) - anchorY) / p.height)
+        let minimum = min(1, max(1 / p.width, 1 / p.height))
+        let bounded = min(maximum, max(minimum, scale))
+        guard bounded.isFinite, bounded > 0 else { throw StudioCommandError.invalidGeometry }
+        let width = p.width * bounded, height = p.height * bounded
+        var frame = currentFrame
+        frame.rasterPlacement = .init(x: left ? anchorX - width : anchorX,
+            y: top ? anchorY - height : anchorY, width: width, height: height)
+        return frame
+    }
+    @discardableResult
+    func finishImageResize(_ capture: ImageMoveCapture, corner: StudioSelectionHandleGeometry.Kind,
+                           delta: CGSize, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            let preview = try imageResizePreview(capture, corner: corner, delta: delta)
+            guard let placement = preview.rasterPlacement else { throw StudioCommandError.invalidReference }
+            return placeImage(capture.placement, at: placement, checkCancellation: {
+                try checkCancellation()
+                guard self.currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+            })
+        } catch { message = error.localizedDescription; return false }
+    }
+
     struct ImagePlacementCapture: Equatable {
         let projectID: UUID
         let revision: Int
@@ -1027,12 +1100,18 @@ final class StudioViewModel: ObservableObject {
               let source = originalImageSource(assetID),
               let layer = layers.first(where: { $0.id == currentFrame.rasterLayerID }),
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
+        let crop = currentFrame.rasterCrop ?? .full
+        let odd = (currentFrame.rasterQuarterTurns ?? 0) % 2 != 0
+        let sourceWidth = Double(source.normalizedWidth) * crop.width
+        let sourceHeight = Double(source.normalizedHeight) * crop.height
+        let width = odd ? sourceHeight : sourceWidth, height = odd ? sourceWidth : sourceHeight
+        let fit = min(Double(document.width) / width, Double(document.height) / height)
+        let fittedWidth = min(Double(document.width), width * fit)
+        let fittedHeight = min(Double(document.height), height * fit)
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             assetID: assetID, layerID: layer.id, original: original,
-            fitted: .aspectFit(
-                imageWidth: (currentFrame.rasterQuarterTurns ?? 0) % 2 == 0 ? source.normalizedWidth : source.normalizedHeight,
-                imageHeight: (currentFrame.rasterQuarterTurns ?? 0) % 2 == 0 ? source.normalizedHeight : source.normalizedWidth,
-                canvasWidth: document.width, canvasHeight: document.height),
+            fitted: .init(x: (Double(document.width) - fittedWidth) / 2,
+                y: (Double(document.height) - fittedHeight) / 2, width: fittedWidth, height: fittedHeight),
             canvasWidth: document.width, canvasHeight: document.height)
     }
     @discardableResult
@@ -1044,6 +1123,22 @@ final class StudioViewModel: ObservableObject {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
                     frame: .id(capture.frameID), assetID: capture.assetID, placement: placement))])),
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+                })
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
+    func cropImage(_ capture: ImagePlacementCapture, crop: StudioImageCrop,
+                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
+                action: .apply([.cropImage(.init(frame: .id(capture.frameID), assetID: capture.assetID, crop: crop))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1301,7 +1396,7 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.invalid("The decoded audio asset has invalid metadata or conflicts with an existing asset.")
         }
         let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
-            startTime: Double(frame) / Double(fps), duration: track.duration, assetID: track.id)
+            startTime: Double(document.startTick(ofFrame: frame)) / Double(fps), duration: track.duration, assetID: track.id)
         var candidate = editor
         try candidate.change { $0.audioClips.append(clip) }
         let liveIDs = candidate.referencedAudioAssetIDsIncludingHistory
@@ -1633,7 +1728,7 @@ final class StudioViewModel: ObservableObject {
         guard seconds.isFinite, seconds >= 0, seconds <= audioDuration, !frames.isEmpty else { return }
         playbackTimer?.invalidate(); playbackTimer = nil
         audioPlayheadTime = seconds
-        let target = min(frames.count - 1, max(0, Int((seconds * Double(fps)).rounded(.down))))
+        let target = document.frameIndex(atTick: Int(min(Double(document.totalTimelineTicks), max(0, seconds * Double(fps))).rounded(.down)))
         if playing {
             playbackFrameIndex = target; isPlaying = true
         } else {
@@ -1761,9 +1856,11 @@ final class StudioViewModel: ObservableObject {
     func undo() { stopPlayback(); command { $0.undo() } }
     func redo() { stopPlayback(); command { $0.redo() } }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
+    private var playbackTick: Int?
     private func startPlayback() {
         guard allowDocumentEditDuringInput() else { return }
-        guard frames.count > 1 else { return }
+        guard document.totalTimelineTicks > 1 else { return }
+        playbackTick = document.startTick(ofFrame: currentFrameIndex)
         playbackFrameIndex = currentFrameIndex; isPlaying = true
         playbackTimer = Timer.scheduledTimer(withTimeInterval: 1 / Double(fps), repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -1774,10 +1871,12 @@ final class StudioViewModel: ObservableObject {
     }
     func advancePlaybackFrame() {
         guard isPlaying else { return }
-        playbackFrameIndex = (currentFrameIndex + 1) % frames.count
-        audioPlayheadTime = Double(currentFrameIndex) / Double(fps)
+        let tick = ((playbackTick ?? document.startTick(ofFrame: currentFrameIndex)) + 1) % document.totalTimelineTicks
+        playbackTick = tick
+        playbackFrameIndex = document.frameIndex(atTick: tick)
+        audioPlayheadTime = Double(tick) / Double(fps)
     }
-    func stopPlayback() { isPlaying = false; playbackTimer?.invalidate(); playbackTimer = nil; playbackFrameIndex = nil }
+    func stopPlayback() { isPlaying = false; playbackTimer?.invalidate(); playbackTimer = nil; playbackFrameIndex = nil; playbackTick = nil }
 }
 
 enum StudioPanelType: String {

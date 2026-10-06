@@ -10,6 +10,7 @@ import sys
 import time
 
 from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
+from seed_video_fixture import seed_video_fixture
 from test_budget import build_test_budget
 
 
@@ -71,6 +72,17 @@ def main() -> int:
         fixture_error = type(error).__name__
         print(json.dumps({"photoFixtureSeeded": False, "failureClass": fixture_error,
                           "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
+
+    # This new journey uses the real video-only Photos picker. Setup never
+    # injects a project or bypasses the app's actual import commands.
+    video_fixture_error = 'imageSetupFailed' if fixture_error else None
+    if fixture_error is None:
+        try:
+            seed_video_fixture(args.udid, output)
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            video_fixture_error = type(error).__name__
+            print(json.dumps({"videoFixtureSeeded": False, "failureClass": video_fixture_error,
+                              "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -138,14 +150,15 @@ def main() -> int:
               "uiTestExitCode": test_exit, "recordingExitCode": recording_exit,
               "recordingError": recording_error, "uiProcessExitCode": test_process_exit,
               "uiSuiteTimeoutSeconds": test_timeout_seconds,
-              "photoFixtureSeeded": fixture_error is None, "photoFixtureFailureClass": fixture_error}
+              "photoFixtureSeeded": fixture_error is None, "photoFixtureFailureClass": fixture_error,
+              "videoFixtureSeeded": video_fixture_error is None, "videoFixtureFailureClass": video_fixture_error}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     if test_exit != 0:
         return test_exit if test_exit > 0 else 1
     if recording_error:
         return 3
-    return 4 if fixture_error else 0
+    return 4 if fixture_error or video_fixture_error else 0
 
 
 if __name__ == "__main__":

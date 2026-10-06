@@ -114,6 +114,17 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try require(manifest.projectID == doc.id && manifest.documentRevision == 7 && manifest.fps == 24 && manifest.frames.map(\.id) == doc.frames.map(\.id), "Timing/identity/order metadata lost")
             try require(!manifest.audioIncluded && !manifest.editorGuidesIncluded && progress == [1, 2, 3] && doc == original, "Export changed document or claimed unsupported media")
         }
+        await test("held cels retain timing in PNG sequence and spritesheet manifests") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: doc, format: format, outputParent: parent(root, "holds-" + format.rawValue))
+                let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(manifest.version == 2 && manifest.frames.map(\.startTick) == [0, 3, 9]
+                    && manifest.frames.map(\.durationTicks) == [3, 6, 1], "Image export lost canonical exposures")
+                _ = try decode(output.imageURLs[0])
+            }
+        }
         await test("spritesheet real decoded row-major cells and manifest rectangles") {
             let folder = try parent(root, "sheet"); let doc = try document()
             let output = try await service.export(document: doc, format: .spritesheet, outputParent: folder)
@@ -177,6 +188,30 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
                 }
             }
             try require(try Data(contentsOf: folder.appendingPathComponent("original.png")) == original, "Original asymmetric asset changed")
+        }
+        await test("normalized crop exports only the chosen source quadrant before rotation and flips") {
+            let folder = try parent(root, "crop-quadrants"), original = try asymmetricPNG()
+            var doc = try document(colors: ["#FF0000"], width: 64, height: 64)
+            doc.schemaVersion = 22; doc.frames[0].elements = []
+            doc.frames[0].rasterAssetID = "crop"; doc.frames[0].rasterLayerID = doc.activeLayerID
+            doc.frames[0].rasterPlacement = .init(x: 16, y: 16, width: 32, height: 32)
+            do {
+                _ = try StudioFrameRenderer.prepareRaster(frame: doc.frames[0], layers: doc.layers, data: original, maximumDimension: Int.max)
+                throw Failure(message: "Unbounded crop resolution accepted")
+            } catch StudioRasterImage.Failure.limit { }
+            for (x,y,expected) in [(0.0,0.0,[255,0,0,255]), (0.5,0.0,[0,0,255,255]),
+                                   (0.0,0.5,[255,255,0,255]), (0.5,0.5,[0,255,0,255])] as [(Double,Double,[UInt8])] {
+                doc.frames[0].rasterCrop = .init(x: x, y: y, width: 0.5, height: 0.5)
+                for turns in [nil,1,2,3] as [Int?] {
+                    doc.frames[0].rasterQuarterTurns = turns
+                    doc.frames[0].rasterReflection = .init(horizontal: true, vertical: false)
+                    let output = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                        background: .transparent, rasterData: { _ in original })
+                    let image = try decode(output.imageURLs[0])
+                    try pixel(image.pixel(32,32),expected); try pixel(image.pixel(20,20),expected)
+                    try pixel(image.pixel(8,8),[0,0,0,0])
+                }
+            }
         }
         await test("hidden and zero-opacity layers omit unavailable raster and unsupported operations") {
             let folder = try parent(root, "hidden-content"); var doc = try document(colors: ["#FF0000"])

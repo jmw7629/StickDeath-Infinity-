@@ -9,7 +9,7 @@ EXTENDED_CASE_SECONDS = {
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
     "testImageQuarterTurnsUndoAndColdReopen": 240,
 }
-MAXIMUM_CASES = 64
+MAXIMUM_CASES = 66
 SUITE_OVERHEAD_SECONDS = 300
 
 
@@ -17,7 +17,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
     classes = re.findall(r"\bclass\s+(\w+)\s*:\s*XCTestCase\b", source)
     names = re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE)
     if classes != ["StudioSmokeUITests"] or not 1 <= len(names) <= MAXIMUM_CASES:
-        raise ValueError("Expected one native suite with 1...64 cases; split a larger suite explicitly")
+        raise ValueError("Expected one native suite with 1...66 cases; split a larger suite explicitly")
     if len(names) != len(set(names)):
         raise ValueError("Duplicate native test names cannot define a complete inventory")
     for prefix in ("-only-testing", "-skip-testing", "-test-iterations", "-retry-tests-on-failure",

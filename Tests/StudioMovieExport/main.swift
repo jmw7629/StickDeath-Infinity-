@@ -170,6 +170,20 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(manifest.frameIDs == doc.frames.map(\.id) && manifest.projectID == doc.id && manifest.documentRevision == 7 && manifest.fps == 24, "Manifest lost canonical identity/timing")
             try require(!manifest.audioIncluded && !manifest.editorGuidesIncluded && manifest.encodedBytes == Data(contentsOf: output.movieURL).count, "Manifest claimed unavailable work")
         }
+        await test("held cels encode exact variable H264 sample timing") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6
+            let output = try await Service().export(snapshot: snapshot(doc), outputParent: parent(root, "held-cels"), background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames.count == 3, "Exposure duplicated or lost stored cels")
+            for (index, tick) in [0,3,9].enumerated() {
+                try require(CMTimeCompare(decoded.pts[index], CMTime(value: Int64(tick), timescale: 24)) == 0,
+                            "Exposure PTS ignored held ticks")
+            }
+            try require(CMTimeCompare(decoded.duration, CMTime(value: 10, timescale: 24)) == 0,
+                        "Held final duration changed")
+            try output.cleanup()
+        }
         await test("one frame and nondivisor FPS retain exact complete duration without duplicate frames") {
             let folder = try parent(root, "timing")
             for fps in [1, 7, 30, 60] {

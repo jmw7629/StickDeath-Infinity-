@@ -19,6 +19,8 @@ final class StudioExportService {
         let y: Int
         let width: Int
         let height: Int
+        var startTick: Int? = nil
+        var durationTicks: Int? = nil
     }
     struct Manifest: Codable {
         let version: Int
@@ -116,7 +118,9 @@ final class StudioExportService {
                     }
                 }
                 records.append(FrameRecord(index: index, id: frame.id, filename: name, x: x, y: y,
-                    width: document.width, height: document.height))
+                    width: document.width, height: document.height,
+                    startTick: document.schemaVersion >= 21 ? document.startTick(ofFrame: index) : nil,
+                    durationTicks: document.schemaVersion >= 21 ? frame.durationTicks : nil))
                 if format == .pngSequence { filenames.append(name) }
                 progress(index + 1, document.frames.count)
                 // The UI can cancel between frames; completed render resources
@@ -132,7 +136,7 @@ final class StudioExportService {
                 }
                 filenames = ["spritesheet.png"]
             }
-            let manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
+            let manifest = Manifest(version: document.schemaVersion >= 21 ? 2 : 1, projectID: document.id, documentRevision: document.revision,
                 format: format, background: background, fps: document.fps,
                 canvasWidth: document.width, canvasHeight: document.height,
                 imageWidth: width, imageHeight: height, audioIncluded: false,

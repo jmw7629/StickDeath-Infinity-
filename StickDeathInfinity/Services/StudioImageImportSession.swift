@@ -62,9 +62,12 @@ final class StudioImageImportSession: ObservableObject {
         let revision: Int
         let frameID: String
         let layerID: String
+        let frameIndex: Int
+        let fps: Int
+        let videoMapping: StudioVideoFrameImportService.Mapping
     }
     private enum Source {
-        case file(URL), photo(NSItemProvider)
+        case file(URL), photo(NSItemProvider), videoPhoto(NSItemProvider), videoFrame(URL)
         case library(StudioImageCatalogue, StudioImageCatalogue.Image)
     }
     private enum SessionError: LocalizedError {
@@ -107,7 +110,8 @@ final class StudioImageImportSession: ObservableObject {
     /// Capture before presenting either picker. A returned token authorizes this
     /// selection only, and is neither an image result nor a document mutation.
     @discardableResult
-    func beginPicker(in studio: StudioViewModel, scope: Scope) -> UUID? {
+    func beginPicker(in studio: StudioViewModel, scope: Scope,
+                     videoMapping: StudioVideoFrameImportService.Mapping = .init()) -> UUID? {
         guard !isClosed, !isWorking, status != .picking else { return nil }
         if let capture, capture.accountID != scope.accountID {
             close(); notice = SessionError.accountChanged.localizedDescription; return nil
@@ -121,7 +125,7 @@ final class StudioImageImportSession: ObservableObject {
         self.studio = studio
         capture = Capture(accountID: scope.accountID, projectID: studio.document.id,
             revision: studio.document.revision, frameID: studio.document.activeFrameID,
-            layerID: studio.document.activeLayerID)
+            layerID: studio.document.activeLayerID, frameIndex: studio.document.startTick(ofFrame: studio.currentFrameIndex), fps: studio.fps, videoMapping: videoMapping)
         let next = UUID(); token = next; status = .picking
         return next
     }
@@ -131,8 +135,16 @@ final class StudioImageImportSession: ObservableObject {
         start(.file(url), token: token, currentScope: currentScope)
     }
     @discardableResult
+    func receiveVideoFrame(_ url: URL, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.videoFrame(url), token: token, currentScope: currentScope)
+    }
+    @discardableResult
     func receivePhoto(_ provider: NSItemProvider, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
         start(.photo(provider), token: token, currentScope: currentScope)
+    }
+    @discardableResult
+    func receiveVideoPhoto(_ provider: NSItemProvider, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.videoPhoto(provider), token: token, currentScope: currentScope)
     }
     @discardableResult
     func receiveLibraryImage(_ image: StudioImageCatalogue.Image, from catalogue: StudioImageCatalogue,
@@ -160,13 +172,31 @@ final class StudioImageImportSession: ObservableObject {
                 let url: URL, name: String?
                 var expectedLibraryBytes: Data?
                 var attribution: [String: String]?
+                var extracted: StudioVideoFrameImportService.Frame?
                 switch source {
                 case .file(let selected): url = selected; name = nil
+                case .videoFrame(let selected):
+                    guard let captured = self.capture else { throw SessionError.contextChanged }
+                    self.progressText = "Extracting the video frame at the Studio playhead…"
+                    extracted = try await StudioVideoFrameImportService.shared.extract(from: selected,
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, mapping: captured.videoMapping, scratchParent: self.scratchParent)
+                    url = selected; name = nil
                 case .photo(let provider):
                     let handle = try await StudioImagePickerTransfer.load(from: provider, scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
                     owned = handle
                     try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                     url = try handle.url(); name = handle.displayName
+                case .videoPhoto(let provider):
+                    self.progressText = "Transferring the selected video from Photos…"
+                    let handle = try await StudioImagePickerTransfer.load(from: provider, media: .video,
+                        scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
+                    owned = handle
+                    try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
+                    guard let captured = self.capture else { throw SessionError.contextChanged }
+                    url = try handle.url(); name = handle.displayName
+                    self.progressText = "Extracting the video frame at the Studio playhead…"
+                    extracted = try await StudioVideoFrameImportService.shared.extract(from: url,
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, mapping: captured.videoMapping, scratchParent: self.scratchParent)
                 case .library(let catalogue, let image):
                     let verification = Task.detached(priority: .userInitiated) {
                         try Task.checkCancellation()
@@ -181,8 +211,12 @@ final class StudioImageImportSession: ObservableObject {
                     attribution = try catalogue.attribution(for: image)
                 }
                 self.status = .decoding
-                var result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
-                    await self?.updateProgress(progress, token: id)
+                var result: StudioImageImportService.ImportedImage
+                if let extracted { result = extracted.image }
+                else {
+                    result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
+                        await self?.updateProgress(progress, token: id)
+                    }
                 }
                 if let expectedLibraryBytes {
                     guard result.originalData == expectedLibraryBytes else { throw StudioImageCatalogue.CatalogueError.invalid }
@@ -201,7 +235,12 @@ final class StudioImageImportSession: ObservableObject {
                     normalizedByteCount: result.normalizedPNG.count, container: result.container,
                     catalogueAttribution: result.catalogueAttribution)
                 self.previewImage = thumbnail; self.status = .preview
-                self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
+                if let extracted {
+                    self.notice = String(format: "Preview only: Studio %.3fs → source %.3fs → decoded %.3fs of %.3fs (%.2f×). Add attaches this single reference frame on a separate layer. The movie and its audio are not imported.",
+                        extracted.requestedSeconds, extracted.sourceRequestedSeconds, extracted.actualSeconds, extracted.durationSeconds, extracted.mapping.speed)
+                } else {
+                    self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
+                }
             } catch {
                 var failure = error
                 if let handle = owned {

@@ -63,7 +63,7 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False):
         calls = self.calls
         waits = self.waits
         signals = self.signals
@@ -116,8 +116,22 @@ class Harness(unittest.TestCase):
             if seed_failure and cmd[:3] == ['xcrun', 'simctl', 'addmedia']:
                 return Result(-9, True, 120)
             return Result(0, False, 0)
-        with patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
+        def video(udid, output):
+            calls.append(('seed-video', udid, str(output)))
+            if video_failure: raise subprocess.TimeoutExpired('video addmedia', 120)
+        with patch.object(rec, 'seed_video_fixture', side_effect=video), patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
+
+    def test_failed_video_seed_runs_all_ui_once_and_keeps_gate_failed(self):
+        self.assertEqual(self.recording(video_failure=True), 4)
+        self.assertEqual(sum(c[0] == 'seed-video' for c in self.calls), 1)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in value or 'only-testing' in value for value in tests[0]))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertTrue(report['photoFixtureSeeded'])
+        self.assertFalse(report['videoFixtureSeeded'])
+        self.assertEqual(report['videoFixtureFailureClass'], 'TimeoutExpired')
 
     def test_integrated_path_checks_identity_boots_then_seeds_once(self):
         self.assertEqual(self.recording(), 0)

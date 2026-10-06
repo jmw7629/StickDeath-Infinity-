@@ -51,9 +51,17 @@ struct StudioToolStrip: View {
     var body: some View {
         railLayout {
             // A fixed, independently draggable grip never scrolls out of reach.
-            Image(systemName: "circle.grid.2x3.fill")
-                .font(.system(size: 13))
-                .foregroundColor(.black.opacity(0.35))
+            // Explicit dots keep the drag affordance visible on every supported
+            // OS; the former system symbol rendered as an empty 44-point area.
+            VStack(spacing: 3) {
+                ForEach(0..<3, id: \.self) { _ in
+                    HStack(spacing: 3) {
+                        Circle().frame(width: 3, height: 3)
+                        Circle().frame(width: 3, height: 3)
+                    }
+                }
+            }
+                .foregroundColor(.black.opacity(0.55))
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
                 .gesture(handleGesture)

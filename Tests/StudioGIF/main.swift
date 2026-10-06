@@ -73,6 +73,15 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(result.receipt.encodedBytes == bytes.count && result.receipt.delaysCentiseconds == [4,4,5]
                 && !result.receipt.audioIncluded && !result.receipt.editorGuidesIncluded && result.receipt.background == "white", "GIF receipt is not factual")
         }
+        await test("held frames retain exposure delays in an actual GIF") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6
+            let result = try await Encoder().encode(.init(document: doc, rasterDataByID: [:]))
+            try require(result.receipt.delaysCentiseconds == [13,25,4], "Held GIF timing differs from cumulative boundaries")
+            try same(pixel(result.data, index: 0), [255,0,0,255])
+            try require(CGImageSourceGetCount(CGImageSourceCreateWithData(result.data as CFData, nil)!) == 3,
+                        "Holding a cel must not duplicate the stored GIF frame")
+        }
         await test("all supported rates retain cumulative timing within half a centisecond") {
             for fps in 1...50 {
                 let delays = try Encoder.timing(frameCount: 240, fps: fps)

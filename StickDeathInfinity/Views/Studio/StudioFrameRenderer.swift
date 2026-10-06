@@ -60,8 +60,12 @@ struct StudioFrameRenderer {
             if frame.rasterPlacement != nil { throw StudioRasterImage.Failure.missing }
             return nil
         }
+        guard (1...8192).contains(maximumDimension) else { throw StudioRasterImage.Failure.limit }
+        let crop = frame.rasterCrop ?? .full
+        try crop.validate()
+        let detail = min(8192, Int(ceil(Double(maximumDimension) / min(crop.width, crop.height))))
         return try StudioRasterImage.prepare(assetID: asset, data: data, managed: frame.rasterPlacement != nil,
-            maximumDimension: maximumDimension)
+            maximumDimension: detail)
     }
     @discardableResult
     static func draw(context: inout GraphicsContext, frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
@@ -103,12 +107,20 @@ struct StudioFrameRenderer {
         }
         return nil
     }
+    private static func drawImage(_ image: CGImage, crop: StudioImageCrop?, in rect: CGRect, context: inout GraphicsContext) {
+        guard let crop else { context.draw(Image(decorative: image, scale: 1), in: rect); return }
+        context.clip(to: Path(rect))
+        let width = rect.width / crop.width, height = rect.height / crop.height
+        context.draw(Image(decorative: image, scale: 1), in: CGRect(x: rect.minX - crop.x * width,
+            y: rect.minY - crop.y * height, width: width, height: height))
+    }
     /// Shared raw-layer compositor, before opacity/blend/glow. Replay uses the
     /// same raster, vector, text and eraser operations as canvas and export.
     static func drawRawLayer(context: inout GraphicsContext, frame: AnimationFrame, layer: CanvasLayer,
                              canvasSize: CGSize, size: CGSize, preparedBrushes: PreparedBrushes,
                              preparedRaster: StudioRasterImage.Prepared?, baseImage: CGImage? = nil,
                              smudges: [String: CGImage] = [:], liveElement: DrawnElement? = nil) -> Error? {
+        do { try frame.rasterCrop?.validate() } catch { return error }
         if let baseImage {
             context.draw(Image(decorative: baseImage, scale: 1), in: CGRect(origin: .zero, size: size))
         } else if frame.rasterLayerID == layer.id, let image = preparedRaster {
@@ -134,15 +146,14 @@ struct StudioFrameRenderer {
                 picture.rotate(by: .degrees(Double(turns) * 90))
                 let width = turns % 2 == 0 ? placement.width : placement.height
                 let height = turns % 2 == 0 ? placement.height : placement.width
-                picture.draw(Image(decorative: image.image, scale: 1),
-                    in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height))
+                drawImage(image.image, crop: frame.rasterCrop, in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height), context: &picture)
             } else {
             if let reflection = frame.rasterReflection {
                 picture.translateBy(x: rect.midX, y: rect.midY)
                 picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                 picture.translateBy(x: -rect.midX, y: -rect.midY)
             }
-            picture.draw(Image(decorative: image.image, scale: 1), in: rect)
+            drawImage(image.image, crop: frame.rasterCrop, in: rect, context: &picture)
             }
         }
         for element in frame.elements where element.layerID == layer.id {

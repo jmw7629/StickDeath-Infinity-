@@ -856,6 +856,18 @@ jobs:
             Tests/StudioImageImport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-import-tests"
           "$RUNNER_TEMP/sdi-studio-image-import-tests"
+      - name: Verify real video-frame timing orientation cancellation and cleanup
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
+            Tests/StudioVideoFrameImport/Fixtures.swift \
+            Tests/StudioVideoFrameImport/main.swift \
+            -o "$RUNNER_TEMP/sdi-video-frame-import-tests"
+          "$RUNNER_TEMP/sdi-video-frame-import-tests"
       - name: Verify provider image file lifetime and cancellation
         shell: bash
         run: |
@@ -936,7 +948,9 @@ jobs:
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
             StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
             StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            Tests/StudioVideoFrameImport/Fixtures.swift \
             Tests/StudioImageImportSession/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-session-tests"
           "$RUNNER_TEMP/sdi-studio-image-session-tests"
@@ -968,6 +982,7 @@ jobs:
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
             StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
             StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioImageLibraryThumbnails.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1452,11 +1467,11 @@ jobs:
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 64 cases x 180 seconds, three measured
+    # Match the bounded inventory: 66 cases x 180 seconds, three measured
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
     # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 225
+    timeout-minutes: 231
     steps:
       - name: Require successful production verification
         shell: bash

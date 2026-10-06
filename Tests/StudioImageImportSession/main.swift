@@ -320,6 +320,135 @@ private final class Counter: @unchecked Sendable {
             let after = vm.document; session.cancel()
             try require(vm.document == after && session.notice?.contains("remains in the project") == true, "Dismissal silently removed or denied applied image")
         }
+        try await test("video reference uses captured project time and survives source removal undo and cold reopen") {
+            let (vm, store) = try await fixture("video-reference")
+            let movie = root.appendingPathComponent("reference.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: true)
+            for _ in 0..<17 { vm.addFrame() }
+            try require(await vm.save(), "Could not settle selected project frame")
+            try require(vm.currentFrameIndex == 17 && vm.fps == 24, "Fixture playhead is wrong")
+            let before = vm.document
+            let session = StudioImageImportSession(scratchParent: scratch)
+            let token = session.beginPicker(in: vm, scope: scope)!
+            try require(session.receiveVideoFrame(movie, token: token, currentScope: { scope }), "Video selection rejected")
+            await session.waitForCompletion()
+            try require(session.status == .preview, "No video preview: \(session.notice ?? "missing notice")")
+            try require(vm.document == before && session.preview?.width == 64 && session.preview?.height == 96,
+                        "Video preview mutated document or ignored orientation")
+            let pixel = try previewPixel(session.previewImage!, x: 32, y: 48)
+            try require(Int(pixel[1]) - Int(pixel[0]) > 140 && Int(pixel[1]) - Int(pixel[2]) > 140,
+                        "Selected playhead did not decode green source frame: \(pixel)")
+            try require(session.notice?.contains("Studio 0.708s") == true, "Preview hid actual project mapping")
+            try fm.removeItem(at: movie)
+            try require(session.apply(currentScope: scope), "Snapshot could not attach after source removal")
+            let after = vm.document, receipt = session.appliedImage!
+            try require(after.frames[17].rasterAssetID == receipt.assetID && after.frames[0].rasterAssetID == nil,
+                        "Import attached to the wrong frame")
+            let original = vm.originalImageSource(receipt.assetID)!.originalData
+            try require(after.layers.count == before.layers.count + 1, "Reference layer is not separate")
+            vm.undo(); try require(content(vm.document) == content(before), "Video reference Undo failed")
+            vm.redo(); try require(content(vm.document) == content(after), "Video reference Redo failed")
+            try require(await vm.save(), "Video reference save failed")
+            let reopened = StudioViewModel(storage: store)
+            let stored = try store.loadAnimation(id: after.id)!
+            try require(await reopened.openProject(stored.metadata), "Video reference cold reopen failed")
+            try require(content(reopened.document) == content(after)
+                && reopened.originalImageSource(receipt.assetID)?.originalData == original, "Reopened PNG/reference changed")
+            try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Video staging leaked")
+        }
+        try await test("video timing is captured before selection and its mapped pixels persist") {
+            let (vm, store) = try await fixture("video-mapping")
+            let movie = root.appendingPathComponent("mapped.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: false)
+            for _ in 0..<12 { vm.addFrame() }
+            try require(await vm.save(), "Could not save mapping fixture")
+            let session = StudioImageImportSession(scratchParent: scratch)
+            var mapping = StudioVideoFrameImportService.Mapping(sourceStartSeconds: 0.4,
+                sourceEndSeconds: 2, projectStartSeconds: 0.1, speed: 2)
+            let token = session.beginPicker(in: vm, scope: scope, videoMapping: mapping)!
+            mapping.speed = 0.25 // UI edits cannot alter the already captured request.
+            try require(session.receiveVideoFrame(movie, token: token, currentScope: { scope }), "Mapped selection rejected")
+            await session.waitForCompletion()
+            try require(session.status == .preview, "Mapped preview failed: \(session.notice ?? "")")
+            let pixel = try previewPixel(session.previewImage!, x: 48, y: 32)
+            try require(pixel[2] > 200 && pixel[0] < 40, "Captured timing failed to seek the blue source sample")
+            try require(session.notice?.contains("source 1.200s") == true, "Mapped source time is absent")
+            try require(session.apply(currentScope: scope), "Mapped PNG could not attach")
+            let after = vm.document, assetID = session.appliedImage!.assetID
+            let original = vm.originalImageSource(assetID)!.originalData
+            try require(await vm.save(), "Mapped snapshot save failed")
+            let reopened = StudioViewModel(storage: store)
+            try require(await reopened.openProject(store.loadAnimation(id: after.id)!.metadata), "Mapped snapshot reopen failed")
+            try require(reopened.originalImageSource(assetID)?.originalData == original, "Mapped pixels changed on reopen")
+            try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Mapped source leaked staging files")
+        }
+        try await test("video picker result cannot attach after frame change or cancellation") {
+            let (vm, _) = try await fixture("video-stale")
+            let movie = root.appendingPathComponent("stale.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: false)
+            let session = StudioImageImportSession(scratchParent: scratch)
+            let token = session.beginPicker(in: vm, scope: scope)!
+            vm.addFrame()
+            try require(!session.receiveVideoFrame(movie, token: token, currentScope: { scope }), "Stale video picker accepted")
+            try require(session.status == .stale && vm.document.frames.allSatisfy { $0.rasterAssetID == nil }, "Stale video mutated document")
+            let cancelled = StudioImageImportSession(scratchParent: scratch)
+            let next = cancelled.beginPicker(in: vm, scope: scope)!
+            cancelled.pickerCancelled(token: next)
+            try require(!cancelled.receiveVideoFrame(movie, token: next, currentScope: { scope }), "Cancelled video picker revived")
+            try require(!cancelled.canApply(currentScope: scope), "Cancelled video can apply")
+        }
+        try await test("Photos video provider previews actual oriented frame and persists only its PNG") {
+            let (vm, store) = try await fixture("photos-video")
+            let movie = root.appendingPathComponent("photos-video.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: true)
+            let p = NSItemProvider(); p.suggestedName = "Selected video"
+            p.registerFileRepresentation(forTypeIdentifier: "com.apple.quicktime-movie", fileOptions: [], visibility: .ownProcess) { done in
+                done(movie, false, nil); return Progress(totalUnitCount: 1)
+            }
+            for _ in 0..<17 { vm.addFrame() }
+            try require(await vm.save(), "Could not settle video playhead")
+            let before = vm.document, session = StudioImageImportSession(scratchParent: scratch)
+            let token = session.beginPicker(in: vm, scope: scope)!
+            try require(session.receiveVideoPhoto(p, token: token, currentScope: { scope }), "Photos video rejected")
+            await session.waitForCompletion()
+            try require(session.status == .preview && vm.document == before, "Photos video failed or mutated before Add: \(session.notice ?? "")")
+            try require(session.preview?.width == 64 && session.preview?.height == 96, "Photos video ignored orientation")
+            let pixel = try previewPixel(session.previewImage!, x: 32, y: 48)
+            try require(Int(pixel[1]) - Int(pixel[0]) > 140 && Int(pixel[1]) - Int(pixel[2]) > 140, "Photos decoded wrong playhead frame")
+            try fm.removeItem(at: movie)
+            try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Photos staging leaked before Add")
+            try require(session.apply(currentScope: scope), "Photos preview cannot attach after source removal")
+            let after = vm.document, assetID = session.appliedImage!.assetID
+            let bytes = vm.originalImageSource(assetID)!.originalData
+            try require(bytes.starts(with: [137, 80, 78, 71, 13, 10, 26, 10]), "Movie bytes were retained as an image")
+            vm.undo(); try require(content(vm.document) == content(before), "Photos video reference Undo changed content")
+            vm.redo(); try require(content(vm.document) == content(after), "Photos video reference Redo changed content")
+            try require(await vm.save(), "Photos video reference save failed")
+            let reopened = StudioViewModel(storage: store), stored = try store.loadAnimation(id: after.id)!
+            try require(await reopened.openProject(stored.metadata), "Photos video cold reopen failed")
+            try require(content(reopened.document) == content(after)
+                && reopened.originalImageSource(assetID)?.originalData == bytes, "Photos PNG changed after reopen")
+        }
+        try await test("cancel Photos video after decode cannot publish a preview or edit") {
+            let (vm, _) = try await fixture("photos-video-cancel")
+            let movie = root.appendingPathComponent("photos-cancel.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: false)
+            let p = NSItemProvider()
+            p.registerFileRepresentation(forTypeIdentifier: "com.apple.quicktime-movie", fileOptions: [], visibility: .ownProcess) { done in
+                done(movie, false, nil); return Progress(totalUnitCount: 1)
+            }
+            let before = vm.document, gate = Gate()
+            let session = StudioImageImportSession(scratchParent: scratch, checkpoint: { try await gate.pause() })
+            let token = session.beginPicker(in: vm, scope: scope)!
+            try require(session.receiveVideoPhoto(p, token: token, currentScope: { scope }), "Photos cancellation fixture rejected")
+            try await gate.wait(1); try gate.release(1)
+            try await gate.wait(2); session.cancel(); try gate.release(2)
+            await session.waitForCompletion()
+            try require(session.status == .cancelled && session.preview == nil && !session.canApply(currentScope: scope)
+                && vm.document == before, "Cancelled decoded video attached or published a late preview")
+            try require(try fm.contentsOfDirectory(atPath: scratch.path).isEmpty, "Cancelled Photos video staging leaked")
+            try require(fm.fileExists(atPath: movie.path), "Cancellation removed the original movie")
+        }
         try require(NetworkTrap.count == 0, "Image import issued an HTTP request")
         try require(try Data(contentsOf: source) == bytes, "Selected original file changed")
         print("STUDIO_IMAGE_IMPORT_SESSION_TESTS=PASS \(passed) actual provider/decoder/VM/persistence groups; HTTP=0")

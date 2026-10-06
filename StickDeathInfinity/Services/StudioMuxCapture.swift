@@ -15,6 +15,8 @@ import CryptoKit
         let width: Int
         let height: Int
         let frameIDs: [String]
+        let frameStartTicks: [Int]
+        let frameDurationTicks: [Int]
     }
     let snapshot: StudioMovieExportService.Snapshot
     let proof: Proof
@@ -44,11 +46,11 @@ import CryptoKit
         guard !doc.frames.isEmpty, doc.frames.count <= 240, (1...60).contains(doc.fps),
               doc.width > 0, doc.height > 0, doc.width.isMultiple(of: 2), doc.height.isMultiple(of: 2),
               doc.width * doc.height <= 4_194_304, doc.width * doc.height * doc.frames.count <= 134_217_728,
-              doc.frames.count * 48_000 % doc.fps == 0,
-              doc.frames.count * 48_000 / doc.fps <= 5_760_000,
+              doc.totalTimelineTicks * 48_000 % doc.fps == 0,
+              doc.totalTimelineTicks * 48_000 / doc.fps <= 5_760_000,
               !doc.audioClips.isEmpty, doc.audioClips.count <= 128,
               snapshot.retainedAudioTracks.count <= 16 else { throw CaptureError.unsupportedSnapshot }
-        let sampleFrames = doc.frames.count * 48_000 / doc.fps
+        let sampleFrames = doc.totalTimelineTicks * 48_000 / doc.fps
         var audio: [Asset] = [], totalBytes = 0, assetIDs = Set<UUID>()
         for asset in snapshot.retainedAudioTracks {
             guard assetIDs.insert(asset.id).inserted, asset.legacySourceFilename == nil, asset.startTime == 0,
@@ -78,8 +80,10 @@ import CryptoKit
         let canonical = try encoder.encode(Identity(document: doc, audio: audio, rasters: rasters))
         guard canonical.count <= 8 * 1024 * 1024 else { throw CaptureError.unsupportedSnapshot }
         return Proof(purpose: "video-only-component-for-same-capture-mux", projectID: doc.id, revision: doc.revision,
-                     snapshotSHA256: hash(canonical), durationNumerator: doc.frames.count, durationDenominator: doc.fps,
-                     audioSampleFrames: sampleFrames, width: doc.width, height: doc.height, frameIDs: doc.frames.map(\.id))
+                     snapshotSHA256: hash(canonical), durationNumerator: doc.totalTimelineTicks, durationDenominator: doc.fps,
+                     audioSampleFrames: sampleFrames, width: doc.width, height: doc.height, frameIDs: doc.frames.map(\.id),
+                     frameStartTicks: doc.frames.indices.map { doc.startTick(ofFrame: $0) },
+                     frameDurationTicks: doc.frames.map(\.durationTicks))
     }
     private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     enum CaptureError: Error { case unsupportedSnapshot, unresolvedAudio }

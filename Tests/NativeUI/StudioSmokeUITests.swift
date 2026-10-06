@@ -7,6 +7,144 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testRotoscopePhotosActualPlayheadUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let addFrame = app.buttons["studio.add-frame"]
+        XCTAssertTrue(addFrame.isHittable)
+        for _ in 0..<6 { addFrame.tap() }
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let before = try pixels(canvas.screenshot().image), canvasFrame = canvas.frame
+        app.buttons["studio.menu.open"].tap()
+        try waitForButton("Rotoscope / Video", in: app).tap()
+        app.buttons["studio.image.photos"].tap()
+        XCTAssertTrue(app.navigationBars.buttons["Cancel"].firstMatch.waitForExistence(timeout: 10))
+        let deadline = Date().addingTimeInterval(30)
+        var selected = false
+        repeat {
+            let videos = app.navigationBars["Videos"].firstMatch
+            let viewports = app.scrollViews.matching(NSPredicate(format: "identifier IN %@",
+                ["photosView_content_scroll_view", "content_scroll_view"]))
+                .allElementsBoundByIndex.prefix(3).filter {
+                    $0.exists && !$0.frame.intersection(app.frame).isEmpty &&
+                    $0.images.matching(identifier: "PXGGridLayout-Info").count > 0
+                }
+            if videos.exists, viewports.count == 1, let viewport = viewports.first {
+                let bounds = viewport.frame.intersection(app.frame)
+                for candidate in viewport.images.matching(identifier: "PXGGridLayout-Info").allElementsBoundByIndex.prefix(12) {
+                    guard Date() < deadline, candidate.exists else { break }
+                    let frame = candidate.frame
+                    guard frame.width > 24, frame.height > 24, bounds.contains(frame) else { continue }
+                    let raster = try pixels(candidate.screenshot().image)
+                    if videoPrimaryFraction(raster, channel: 0) > 0.45 {
+                        guard candidate.exists, candidate.frame == frame, viewport.exists,
+                              viewport.frame.intersection(app.frame).contains(frame), videos.exists else { continue }
+                        capture(app, name: "rotoscope-photos-real-video-selection")
+                        candidate.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+                        selected = true; break
+                    }
+                }
+            }
+            if !selected { RunLoop.current.run(until: Date().addingTimeInterval(0.2)) }
+        } while !selected && Date() < deadline
+        if !selected { captureHierarchy(app, name: "rotoscope-video-grid-missing-fixture") }
+        XCTAssertTrue(selected, "Original generated red video thumbnail was absent from the real Photos picker")
+        let preview = try imageControl("studio.image.preview", app: app)
+        XCTAssertGreaterThan(videoPrimaryFraction(try pixels(preview.screenshot().image), channel: 1), 0.3,
+                             "Project time 0.5s must decode the green frame, not the red Photos thumbnail")
+        XCTAssertTrue(app.staticTexts["studio.image.dimensions"].label.hasPrefix("64 × 96 pixels"), "Video orientation was lost")
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.contains("Studio 0.500s"))
+        capture(app, name: "rotoscope-photos-decoded-green-playhead")
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added "))
+        app.buttons["studio.panel.close.Rotoscope / Video"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let edited = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(videoPrimaryFraction(edited, channel: 1), 0.5)
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+        XCTAssertTrue(app.buttons["studio.redo"].isEnabled); app.buttons["studio.redo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(canvas.screenshot().image)), 4)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        capture(app, name: "rotoscope-video-reference-saved-after-redo")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: canvasFrame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4)
+        let frameTimeline = reopened.scrollViews["studio.frame-timeline"]
+        let selectedFrame = reopened.buttons.matching(NSPredicate(format: "label == %@ AND value == %@", "Frame 7", "Selected")).firstMatch
+        XCTAssertTrue(frameTimeline.waitForExistence(timeout: 5))
+        XCTAssertTrue(selectedFrame.exists)
+        let visibleSelection = expectation(for: NSPredicate { _, _ in
+            selectedFrame.exists && frameTimeline.frame.contains(selectedFrame.frame) && selectedFrame.isHittable
+        }, evaluatedWith: selectedFrame)
+        XCTAssertTrue(visibleSelection.waitUntilFulfilled(timeout: 5), "Cold reopen must reveal the complete active frame thumbnail without manual scrolling")
+        capture(reopened, name: "rotoscope-video-reference-cold-reopened")
+    }
+
+    private func videoPrimaryFraction(_ raster: Raster, channel: Int) -> Double {
+        var count = 0
+        for offset in stride(from: 0, to: raster.bytes.count, by: 4) {
+            let primary = Int(raster.bytes[offset + channel])
+            let others = (0..<3).filter { $0 != channel }.map { Int(raster.bytes[offset + $0]) }
+            if primary > 180 && others.allSatisfy({ primary - $0 > 120 }) { count += 1 }
+        }
+        return Double(count) / Double(raster.width * raster.height)
+    }
+
+    @MainActor
+    func testRotoscopeFilesPickerCancelPreservesProject() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let before = try pixels(canvas.screenshot().image)
+        app.buttons["studio.menu.open"].tap()
+        try waitForButton("Rotoscope / Video", in: app).tap()
+        let files = app.buttons["studio.image.files"]
+        XCTAssertTrue(files.waitForExistence(timeout: 8))
+        let photos = app.buttons["studio.image.photos"]
+        XCTAssertTrue(photos.exists && photos.isEnabled)
+        XCTAssertFalse(app.buttons["Record Video"].exists, "Do not expose a recording button with no operation")
+        XCTAssertFalse(app.buttons["studio.image.apply"].exists, "No decoded frame exists yet")
+        capture(app, name: "rotoscope-real-files-import-panel")
+        photos.tap()
+        let cancelPhotos = app.navigationBars.buttons["Cancel"].firstMatch
+        try waitForHittable(cancelPhotos, app: app, name: "rotoscope-photos-cancel-ready")
+        capture(app, name: "rotoscope-native-photos-video-picker")
+        captureHierarchy(app, name: "rotoscope-native-photos-video-hierarchy")
+        cancelPhotos.tap()
+        XCTAssertTrue(files.waitForExistence(timeout: 8)); XCTAssertTrue(files.isEnabled)
+        files.tap()
+        let navigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
+        let cancel = navigation.buttons["Cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.collectionViews["File View"].exists)
+        capture(app, name: "rotoscope-native-files-picker")
+        XCTAssertTrue(cancel.isHittable); cancel.tap()
+        let result = app.staticTexts["studio.image.result"]
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
+            "Image import cancelled. No image was added by this pending selection."),
+            evaluatedWith: result).waitUntilFulfilled(timeout: 8))
+        XCTAssertFalse(app.buttons["studio.image.apply"].exists)
+        app.buttons["studio.panel.close.Rotoscope / Video"].tap()
+        try waitForStableCanvas(canvas)
+        XCTAssertFalse(app.buttons["studio.undo"].isEnabled)
+        XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
+        capture(app, name: "rotoscope-picker-cancelled-unchanged-studio")
+    }
+
+    @MainActor
     func testGradientCustomEndpointValidationRenderAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -3110,6 +3248,65 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(restored, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(plainMoved, pixels(restored.screenshot().image)), 4, "Cold reopen lost dragged image pixels")
         capture(reopened, name: "image-canvas-drag-cold-reopened")
+    }
+
+    @MainActor
+    func testImageCropCancelApplyUndoAndColdReopen() throws {
+        executionTimeAllowance = 240
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        func control(_ suffix: String) throws -> XCUIElement {
+            let button = app.buttons["studio.image-crop." + suffix]
+            XCTAssertTrue(button.waitForExistence(timeout: 5))
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            for _ in 0..<4 where !button.isHittable { popup.scrollViews.firstMatch.swipeUp(velocity: .slow) }
+            XCTAssertTrue(button.isHittable)
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: button).waitUntilFulfilled(timeout: 8))
+            return button
+        }
+        func halveCrop() throws {
+            try control("open").tap()
+            let width = app.textFields["studio.image-crop.width"]
+            XCTAssertTrue(width.waitForExistence(timeout: 5)); width.tap()
+            let value = try XCTUnwrap(width.value as? String)
+            width.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: value.count) + "50")
+            let done = app.buttons["studio.text.keyboard-dismiss"]
+            XCTAssertTrue(done.waitForExistence(timeout: 5)); done.tap()
+            XCTAssertEqual(width.value as? String, "50")
+        }
+        try selectToolbarTool("move", app: app); try halveCrop()
+        capture(app, name: "image-crop-draft")
+        try control("cancel").tap(); app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Cancel changed original pixels")
+        try selectToolbarTool("move", app: app); try halveCrop(); try control("apply").tap()
+        app.buttons["studio.tool-settings.close"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let cropped = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, cropped), 100, "Crop changed controls without changing artwork")
+        capture(app, name: "image-crop-applied")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(cropped, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(cropped, pixels(restored.screenshot().image)), 4, "Cold reopen lost crop pixels")
+        capture(reopened, name: "image-crop-cold-reopened")
     }
 
     @MainActor

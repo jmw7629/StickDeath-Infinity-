@@ -95,6 +95,7 @@ struct StudioCommandLayerSettings: Codable {
 
 enum StudioCommand: Codable {
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
+    struct SetFrameHold: Codable { let frame: StudioCommandReference; let ticks: Int }
     struct AddFrame: Codable { let after: StudioCommandReference; let result: String }
     struct Duplicate: Codable { let source: StudioCommandReference; let result: String }
     struct Move: Codable { let target: StudioCommandReference; let direction: StudioCommandDirection }
@@ -107,6 +108,7 @@ enum StudioCommand: Codable {
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
+    struct CropImage: Codable { let frame: StudioCommandReference; let assetID: String; let crop: StudioImageCrop }
     struct RotateImage: Codable { let frame: StudioCommandReference; let assetID: String; let direction: StudioImageQuarterTurn }
     struct ReflectImage: Codable { let frame: StudioCommandReference; let assetID: String; let axis: StudioReflectionAxis }
     struct DeleteImage: Codable { let frame: StudioCommandReference; let assetID: String }
@@ -118,6 +120,8 @@ enum StudioCommand: Codable {
     struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
 
+    case cropImage(CropImage)
+    case setFrameHold(SetFrameHold)
     case updateAudioClip(UpdateAudioClip)
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
@@ -129,6 +133,8 @@ enum StudioCommand: Codable {
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "cropImage": self = .cropImage(try container.decode(CropImage.self, forKey: key))
+        case "setFrameHold": self = .setFrameHold(try container.decode(SetFrameHold.self, forKey: key))
         case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
         case "rotateImage": self = .rotateImage(try container.decode(RotateImage.self, forKey: key))
         case "reflectImage": self = .reflectImage(try container.decode(ReflectImage.self, forKey: key))
@@ -161,6 +167,8 @@ enum StudioCommand: Codable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
+        case .cropImage(let value): try container.encode(value, forKey: StudioWireKey("cropImage"))
+        case .setFrameHold(let value): try container.encode(value, forKey: StudioWireKey("setFrameHold"))
         case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
         case .rotateImage(let value): try container.encode(value, forKey: StudioWireKey("rotateImage"))
         case .reflectImage(let value): try container.encode(value, forKey: StudioWireKey("reflectImage"))
@@ -247,12 +255,14 @@ struct StudioCommandContext {
     struct Frame {
         let id: String
         let elementCount: Int
+        let durationTicks: Int
         let hasOriginalRecord: Bool
         let imageAssetID: String?
         let imageLayerID: String?
         let imagePlacement: StudioRasterPlacement?
         let imageReflection: StudioRasterReflection?
         let imageQuarterTurns: Int?
+        let imageCrop: StudioImageCrop?
     }
     let projectID: UUID
     let revision: Int
@@ -273,11 +283,11 @@ struct StudioCommandContext {
         projectID = document.id; revision = document.revision; name = document.name
         width = document.width; height = document.height; fps = document.fps
         activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
-        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count,
+        frames = document.frames.map { Frame(id: $0.id, elementCount: $0.elements.count, durationTicks: $0.durationTicks,
             hasOriginalRecord: $0.rasterAssetID != nil,
             imageAssetID: $0.rasterPlacement == nil ? nil : $0.rasterAssetID,
             imageLayerID: $0.rasterPlacement == nil ? nil : $0.rasterLayerID,
-            imagePlacement: $0.rasterPlacement, imageReflection: $0.rasterReflection, imageQuarterTurns: $0.rasterQuarterTurns) }
+            imagePlacement: $0.rasterPlacement, imageReflection: $0.rasterReflection, imageQuarterTurns: $0.rasterQuarterTurns, imageCrop: $0.rasterCrop) }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
     }
@@ -323,6 +333,8 @@ enum StudioCommandExecutor {
         guard let commands = action[kind] as? [Any] else { throw StudioCommandError.malformed }
         guard !commands.isEmpty, commands.count <= maximumCommands else { throw StudioCommandError.limitExceeded }
         let arguments: [String: Set<String>] = [
+            "cropImage": ["frame", "assetID", "crop"],
+            "setFrameHold": ["frame", "ticks"],
             "updateAudioClip": ["clipID", "settings"],
             "rotateImage": ["frame", "assetID", "direction"],
             "reflectImage": ["frame", "assetID", "axis"],
@@ -359,6 +371,10 @@ enum StudioCommandExecutor {
                 if let fades = values["fades"] {
                     _ = try object(fades, keys: ["fadeIn", "fadeOut"])
                 }
+            }
+            if kind == "cropImage" {
+                guard let crop = fields["crop"] else { throw StudioCommandError.malformed }
+                _ = try object(crop, keys: ["x", "y", "width", "height"])
             }
             if kind == "updateImagePlacement" {
                 guard let placement = fields["placement"] else { throw StudioCommandError.malformed }
@@ -537,6 +553,14 @@ enum StudioCommandExecutor {
         case .updateText(let value):
             try editor.updateText(frameID: frame(value.frame), elementID: value.elementID,
                 text: value.text, color: value.color, opacity: value.opacity)
+        case .setFrameHold(let value):
+            let id = try frame(value.frame)
+            guard (1...600).contains(value.ticks) else { throw StudioCommandError.invalidSettings }
+            try editor.change { document in
+                let index = document.frames.firstIndex { $0.id == id }!
+                document.frames[index].holdTicks = value.ticks == 1 ? nil : value.ticks
+                if value.ticks > 1 { document.schemaVersion = max(21, document.schemaVersion) }
+            }
         case .addFrame(let value):
             let after = try frame(value.after); try validateAlias(value.result, created: created)
             editor.selectFrame(after); try editor.addFrame()
@@ -629,6 +653,8 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
                                      checkCancellation: checkCancellation)
+        case .cropImage(let value):
+            try editor.cropImage(frameID: frame(value.frame), assetID: value.assetID, crop: value.crop, checkCancellation: checkCancellation)
         case .rotateImage(let value):
             let id = try frame(value.frame)
             guard let selected = editor.document.frames.first(where: { $0.id == id }),

@@ -43,6 +43,7 @@ struct StudioView: View {
             if vm.activePanel == .stickerEmoji { StickerEmojiPanel(vm: vm) }
             if vm.activePanel == .backgroundLibrary { BackgroundLibraryPanel(vm: vm) }
             if vm.activePanel == .addImage { AddImagePanel(vm: vm) }
+            if vm.activePanel == .rotoscope { RotoscopeSheet(vm: vm) }
         }
         .sheet(isPresented: showMenuBinding) {
             StudioMenuSheet(vm: vm)
@@ -69,9 +70,6 @@ struct StudioView: View {
         .sheet(isPresented: showMagicCutBinding) {
             MagicCutSheet(vm: vm)
         }
-        .sheet(isPresented: showRotoscopeBinding) {
-            RotoscopeSheet(vm: vm)
-        }
     }
     
     // A late dismissal belongs only to its own sheet; it must not close a
@@ -88,9 +86,6 @@ struct StudioView: View {
     }
     var showMagicCutBinding: Binding<Bool> {
         Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 && vm.activePanel == .magicCut { vm.activePanel = .none } })
-    }
-    var showRotoscopeBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 && vm.activePanel == .rotoscope { vm.activePanel = .none } })
     }
 }
 
@@ -982,71 +977,7 @@ struct MagicCutSheet: View {
 // MARK: - Rotoscope Sheet
 struct RotoscopeSheet: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var showVideoPicker = false
-    @Environment(\.dismiss) var dismiss
-    
-    var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 20) {
-                HStack {
-                    Text("🎬 Rotoscope / Video")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Button("Done") { dismiss() }
-                }
-                .padding(16)
-                
-                VStack(spacing: 16) {
-                    Image(systemName: "film.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.red)
-                    
-                    Text("Import a video to trace over")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    
-                    Text("Import a video and it will be split into frames for you to draw over. Perfect for rotoscoping and reference.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    
-                    Button(action: { showVideoPicker = true }) {
-                        HStack {
-                            Image(systemName: "video.fill")
-                            Text("Choose Video")
-                        }
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.red)
-                        .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    
-                    Button(action: {}) {
-                        HStack {
-                            Image(systemName: "camera.fill")
-                            Text("Record Video")
-                        }
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                }
-                
-                Spacer()
-            }
-        }
-    }
+    var body: some View { StudioImageImportPanel(vm: vm, videoFrameMode: true) }
 }
 
 // MARK: - Panel Header (reusable)

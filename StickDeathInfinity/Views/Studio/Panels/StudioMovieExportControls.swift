@@ -34,7 +34,7 @@ struct StudioMovieExportControls: View {
             Text("VIDEO QUALITY").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-            Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps. White background only. Saved audio is mixed as stereo AAC. Trim audio within the animation duration; missing sources and overloaded mixes report an error. Editor grid and onion skin are not included.")
+            Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. White background only. Saved audio is mixed as stereo AAC. Trim audio within the animation duration; missing sources and overloaded mixes report an error. Editor grid and onion skin are not included.")
                 .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
             Picker("MP4 background", selection: $background) {
                 Text("White").tag(StudioMovieExportService.Background.white)

@@ -427,6 +427,29 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     /// Version 16: clockwise quarter turns, 1...3. Placement is the visible
     /// axis-aligned bounding box; nil keeps the original orientation.
     var rasterQuarterTurns: Int? = nil
+    /// Version 21: exposure in project-FPS ticks. Nil preserves legacy one-tick frames.
+    var holdTicks: Int? = nil
+    /// Version 22: normalized crop in the original upright image, before flips/rotation.
+    var rasterCrop: StudioImageCrop? = nil
+    var durationTicks: Int { min(600, max(1, holdTicks ?? 1)) }
+}
+
+struct StudioImageCrop: Codable, Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+    static let full = Self(x: 0, y: 0, width: 1, height: 1)
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "Choose a crop inside the original image, at least 1% wide and high." }
+    }
+    func validate() throws {
+        guard [x, y, width, height].allSatisfy(\.isFinite), x >= 0, y >= 0,
+              width >= 0.01, height >= 0.01, x + width <= 1.000000001, y + height <= 1.000000001 else {
+            throw Failure.invalid
+        }
+    }
 }
 
 enum StudioImageQuarterTurn: String, Codable {

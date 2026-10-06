@@ -606,8 +606,8 @@ final class StudioMovieExportService {
                     // The adaptor supplies the bounded pool. Append an explicit
                     // sample duration: its convenience append(buffer, PTS) API
                     // leaves a one-frame movie's duration to codec inference.
-                    var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(document.fps)),
-                        presentationTimeStamp: CMTime(value: Int64(index), timescale: CMTimeScale(document.fps)), decodeTimeStamp: .invalid)
+                    var timing = CMSampleTimingInfo(duration: CMTime(value: Int64(frame.durationTicks), timescale: CMTimeScale(document.fps)),
+                        presentationTimeStamp: CMTime(value: Int64(document.startTick(ofFrame: index)), timescale: CMTimeScale(document.fps)), decodeTimeStamp: .invalid)
                     var sample: CMSampleBuffer?
                     guard CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: buffer,
                         formatDescription: formatDescription, sampleTiming: &timing, sampleBufferOut: &sample) == noErr,
@@ -626,7 +626,7 @@ final class StudioMovieExportService {
             try checkpoint(started)
             // The end time includes the full last frame, even for one-frame or
             // 1 FPS movies; nothing is duplicated to manufacture that duration.
-            writer!.endSession(atSourceTime: CMTime(value: Int64(document.frames.count), timescale: CMTimeScale(document.fps)))
+            writer!.endSession(atSourceTime: CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps)))
             input.markAsFinished()
             writer!.finishWriting {}
             while writer!.status == .writing {
@@ -647,7 +647,7 @@ final class StudioMovieExportService {
             let bytes = try checkOutputSize(movie, requireNonempty: true)
             var manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
                 frameIDs: document.frames.map(\.id), fps: document.fps, width: document.width, height: document.height,
-                durationNumerator: document.frames.count, durationDenominator: document.fps, codec: "H.264",
+                durationNumerator: document.totalTimelineTicks, durationDenominator: document.fps, codec: "H.264",
                 background: .white, audioIncluded: false, editorGuidesIncluded: false, encodedBytes: bytes)
             manifest.visualComponentProof = componentProof
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
@@ -857,7 +857,7 @@ final class StudioMovieExportService {
         let descriptions = try await track.load(.formatDescriptions)
         guard descriptions.count == 1, CMFormatDescriptionGetMediaSubType(descriptions[0]) == kCMVideoCodecType_H264 else { throw ExportError.verificationFailed }
         let size = CMVideoFormatDescriptionGetDimensions(descriptions[0])
-        let expectedEnd = CMTime(value: Int64(document.frames.count), timescale: CMTimeScale(document.fps))
+        let expectedEnd = CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps))
         let duration = try await asset.load(.duration)
         let range = try await track.load(.timeRange)
         guard size.width == document.width, size.height == document.height,
@@ -884,8 +884,8 @@ final class StudioMovieExportService {
                     return true
                 }
                 guard CMSampleBufferGetNumSamples(sample) == 1, timedFrames < document.frames.count,
-                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(timedFrames), timescale: CMTimeScale(document.fps))) == 0,
-                      CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: 1, timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
+                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(document.startTick(ofFrame: timedFrames)), timescale: CMTimeScale(document.fps))) == 0,
+                      CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: Int64(document.frames[timedFrames].durationTicks), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
                 timedFrames += 1
                 return true
             }
@@ -907,7 +907,7 @@ final class StudioMovieExportService {
                 guard let sample = output.copyNextSampleBuffer() else { return false }
                 guard count < document.frames.count, let buffer = CMSampleBufferGetImageBuffer(sample),
                       CVPixelBufferGetWidth(buffer) == document.width, CVPixelBufferGetHeight(buffer) == document.height,
-                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(count), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
+                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(document.startTick(ofFrame: count)), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
                 count += 1
                 return true
             }

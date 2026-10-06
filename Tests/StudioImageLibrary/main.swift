@@ -310,6 +310,107 @@ private final class NetworkTrap: URLProtocol {
             let source = reopened.originalImageSource(capture.placement.assetID)
             try require(source?.originalData == original && source?.catalogueAttribution == provenance, "Drag or save lost source bytes/rights")
         }
+        try await test("image crop is editable, reversible and survives cold reopen with original bytes and rights") {
+            let (editor, storage, capture) = try await imageMoveFixture()
+            let before = editor.document, beforePixels = try await exported(editor)
+            let crop = StudioImageCrop(x: 0, y: 0, width: 0.5, height: 1)
+            let request = StudioCommandRequest(requestID: UUID(), projectID: before.id, expectedRevision: before.revision,
+                action: .apply([.cropImage(.init(frame: .id(capture.placement.frameID), assetID: capture.placement.assetID, crop: crop))]))
+            _ = try editor.applyStudioCommands(JSONEncoder().encode(request))
+            let after = editor.document, pixels = try await exported(editor)
+            try require(after.schemaVersion == 22 && after.revision == before.revision + 1 && pixels != beforePixels
+                && editor.currentFrame.rasterCrop == crop && editor.currentFrame.rasterPlacement == .init(x: 20, y: 20, width: 20, height: 80), "Crop did not change actual source pixels/placement")
+            try require(editor.commandScreenContext.document?.frames.first?.imageCrop == crop, "Spatter crop context missing")
+            editor.undo(); try require((try await exported(editor)) == beforePixels, "Crop Undo lost pixels")
+            editor.redo(); try require((try await exported(editor)) == pixels, "Crop Redo lost pixels")
+            try require(await editor.save(), "Cropped image save failed")
+            let reopened = StudioViewModel(storage: storage), stored = try storage.loadAnimation(id: after.id)!
+            try require(await reopened.openProject(stored.metadata), "Crop reopen failed")
+            try require((try await exported(reopened)) == pixels && reopened.originalImageSource(capture.placement.assetID)?.originalData == original
+                && reopened.originalImageSource(capture.placement.assetID)?.catalogueAttribution == provenance, "Crop changed originals, rights or saved pixels")
+            reopened.selectedTool = .move
+            try require(reopened.cropImage(reopened.prepareImagePlacement()!, crop: .full), "Restoring full image failed")
+            try require((try await exported(reopened)) == beforePixels, "Restored full pixels differ")
+            editor.copyFrame(); editor.undo(); editor.pasteFrame()
+            try require(editor.currentFrame.rasterCrop == crop && editor.document.schemaVersion == 22, "Crop clipboard recovery lost metadata")
+            try require(editor.deleteImage(editor.prepareImagePlacement()!) && editor.currentFrame.rasterCrop == nil, "Image delete left crop metadata")
+        }
+        try await test("crop rejects invalid, cancelled, stale and locked changes without replacing originals") {
+            let (editor, _, capture) = try await imageMoveFixture(), before = editor.document
+            for crop in [StudioImageCrop(x: -0.1, y: 0, width: 1, height: 1), .init(x: 0, y: 0, width: 0, height: 1),
+                         .init(x: 0.5, y: 0, width: 1, height: 1), .init(x: .nan, y: 0, width: 1, height: 1)] {
+                try require(!editor.cropImage(capture.placement, crop: crop) && editor.document == before, "Invalid crop mutated document")
+            }
+            let crop = StudioImageCrop(x: 0, y: 0, width: 0.5, height: 0.5)
+            try require(!editor.cropImage(capture.placement, crop: crop, checkCancellation: { throw CancellationError() })
+                && editor.document == before, "Cancelled crop committed")
+            try require(editor.cropImage(capture.placement, crop: .full) && editor.document == before, "Full-image no-op made history")
+            try require(editor.rotateImage(capture.placement, direction: .clockwise), "Rotation fixture failed")
+            let rotated = editor.document
+            try require(!editor.cropImage(capture.placement, crop: crop) && editor.document == rotated, "Stale crop committed")
+            let current = editor.prepareImagePlacement()!
+            try require(editor.cropImage(current, crop: .init(x: 0, y: 0, width: 0.5, height: 1))
+                && editor.currentFrame.rasterPlacement?.width == current.original.width
+                && editor.currentFrame.rasterPlacement?.height == current.original.height / 2, "Rotated crop changed wrong display axis")
+            let lockedCapture = editor.prepareImagePlacement()!
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id, expectedRevision: editor.document.revision,
+                action: .apply([.updateLayer(.init(layer: .id(lockedCapture.layerID), settings: .init(lock: .position)))])))
+            let locked = editor.document
+            try require(!editor.cropImage(lockedCapture, crop: .full) && editor.document == locked, "Position lock bypassed by crop")
+        }
+        try await test("image corner resize changes exported pixels and persists with original rights and one Undo") {
+            let (editor, storage, capture) = try await imageMoveFixture()
+            let before = editor.document, beforePixels = try await exported(editor)
+            let preview = try editor.imageResizePreview(capture, corner: .bottomRight, delta: .init(width: 20, height: 40))
+            try require(preview.rasterPlacement == .init(x: 10, y: 20, width: 60, height: 120)
+                && editor.document == before, "Resize preview changed the document or aspect ratio")
+            try require(editor.finishImageResize(capture, corner: .bottomRight, delta: .init(width: 20, height: 40)), "Resize did not commit")
+            let after = editor.document, pixels = try await exported(editor)
+            try require(pixels != beforePixels && after.revision == before.revision + 1
+                && after.frames[0].rasterPlacement == preview.rasterPlacement
+                && after.frames[0].rasterAssetID == capture.placement.assetID, "Resize did not change canonical pixels exactly once")
+            editor.undo(); try require((try await exported(editor)) == beforePixels, "Resize Undo lost original pixels")
+            editor.redo(); try require((try await exported(editor)) == pixels, "Resize Redo changed pixels")
+            try require(await editor.save(), "Resize save failed")
+            let stored = try storage.loadAnimation(id: after.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Resized project did not reopen")
+            try require((try await exported(reopened)) == pixels && reopened.originalImageSource(capture.placement.assetID)?.originalData == original
+                && reopened.originalImageSource(capture.placement.assetID)?.catalogueAttribution == provenance, "Resize reopen lost pixels, original or rights")
+        }
+        try await test("image corners anchor correctly, clamp, reject stale and cancelled edits without history") {
+            let (editor, _, capture) = try await imageMoveFixture(), before = editor.document
+            for (corner, delta, expected) in [
+                (StudioSelectionHandleGeometry.Kind.topLeft, CGSize(width: 10, height: 20), StudioRasterPlacement(x: 20, y: 40, width: 30, height: 60)),
+                (.topRight, .init(width: -10, height: 20), .init(x: 10, y: 40, width: 30, height: 60)),
+                (.bottomLeft, .init(width: 10, height: -20), .init(x: 20, y: 20, width: 30, height: 60)),
+                (.bottomRight, .init(width: -10, height: -20), .init(x: 10, y: 20, width: 30, height: 60))
+            ] {
+                try require(try editor.imageResizePreview(capture, corner: corner, delta: delta).rasterPlacement == expected, "Wrong opposite anchor")
+            }
+            let edge = try editor.imageResizePreview(capture, corner: .bottomRight, delta: .init(width: 1000, height: 1000)).rasterPlacement!
+            try require(edge == .init(x: 10, y: 20, width: 70, height: 140), "Resize left canvas")
+            let tiny = try editor.imageResizePreview(capture, corner: .bottomRight, delta: .init(width: -1000, height: -1000)).rasterPlacement!
+            try require(tiny.width == 1 && tiny.height == 2, "Corner inversion created invalid size")
+            try require(editor.finishImageResize(capture, corner: .topLeft, delta: .zero) && editor.document == before, "Resize tap made history")
+            try require(!editor.finishImageResize(capture, corner: .rotate, delta: .zero)
+                && !editor.finishImageResize(capture, corner: .bottomRight, delta: .init(width: CGFloat.nan, height: 1))
+                && editor.document == before, "Invalid resize changed project")
+            try require(!editor.finishImageResize(capture, corner: .bottomRight, delta: .init(width: 10, height: 20), checkCancellation: { throw CancellationError() })
+                && editor.document == before, "Cancelled resize committed")
+            _ = editor.setImageCanvasMove(false); _ = editor.setImageCanvasMove(true)
+            try require(!editor.finishImageResize(capture, corner: .bottomRight, delta: .init(width: 10, height: 20))
+                && editor.document == before, "Reselected image accepted stale resize")
+            try require(editor.placeImage(editor.prepareImagePlacement()!, at: .init(x: 0.1, y: 0.2, width: 30.3, height: 60.6)), "Fractional placement failed")
+            let fractional = editor.document
+            try require(editor.finishImageResize(editor.currentImageMoveCapture()!, corner: .topLeft, delta: .zero)
+                && editor.document == fractional, "Zero drag rounded fractional coordinates into a new edit")
+            let active = editor.currentImageMoveCapture()!
+            _ = try editor.applyStudioCommands(.init(requestID: UUID(), projectID: editor.document.id, expectedRevision: editor.document.revision,
+                action: .apply([.updateLayer(.init(layer: .id(active.placement.layerID), settings: .init(lock: .position)))])))
+            let locked = editor.document
+            try require(!editor.finishImageResize(active, corner: .bottomRight, delta: .init(width: 10, height: 20))
+                && editor.document == locked, "Position lock bypassed by resize")
+        }
         try await test("image hit testing edge clamping and taps preserve identity and avoid no-op history") {
             let (editor, _, capture) = try await imageMoveFixture(), before = editor.document
             try require(editor.beginImageMove(at: .init(x: 2, y: 2)) == nil && editor.beginImageMove(at: .init(x: CGFloat.nan, y: 30)) == nil, "Empty or invalid hit selected image")
