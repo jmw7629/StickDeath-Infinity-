@@ -3252,7 +3252,7 @@ final class StudioSmokeUITests: XCTestCase {
 
     @MainActor
     func testImageCropCancelApplyUndoAndColdReopen() throws {
-        executionTimeAllowance = 240
+        // Measured at 133.467s; retain the standard 180s case limit.
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
