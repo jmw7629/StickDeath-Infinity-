@@ -2,6 +2,11 @@
 
 Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
+## Owner execution update (2026-10-06)
+
+- The owner now authorizes bounded parallel agents to accelerate delivery. One primary coordinator retains worktree, compiler, GitHub and deployment ownership; agents use disjoint files and may provide independent review. This supersedes older single-agent restrictions below.
+- Conserve the remaining Codex allowance with coherent implementation batches and concise updates. Do not invoke paid external AI APIs or purchase capacity. Local tests and existing GitHub checks remain available; do not describe Codex execution as free of account usage.
+
 ## Current owner scope (2026-09-19)
 
 - Studio is the first delivery priority. Keep its existing layout, snapping primary toolbar and sole dismissible options popup.

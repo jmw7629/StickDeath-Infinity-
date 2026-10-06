@@ -60,7 +60,8 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     /// `attach` is called only with a successfully decoded immutable result and
     /// must perform the VM's exact project/revision transaction, not a URL save.
     @discardableResult
-    func importFile(_ url: URL, name: String? = nil, expectedSHA256: String? = nil, stillCurrent: @escaping () -> Bool,
+    func importFile(_ url: URL, name: String? = nil, expectedSHA256: String? = nil,
+                    prepare: (() async throws -> StudioAudioImportService.ImportedAudio)? = nil, stillCurrent: @escaping () -> Bool,
                     attach: @escaping (AudioTrack) throws -> String) -> Bool {
         guard !isBusy else { return false }
         guard stillCurrent() else { state = .failed("The project changed. Select the audio file again in the current project."); return false }
@@ -71,9 +72,14 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             guard let self else { return }
             defer { self.isBusy = false; self.task = nil }
             do {
-                let result = try await self.importer.importAudio(from: url, name: name, scratchParent: self.scratchParent) { [weak self] value in
-                    try Task.checkCancellation()
-                    await self?.updateProgress(value, generation: id)
+                let result: StudioAudioImportService.ImportedAudio
+                if let prepare {
+                    result = try await prepare()
+                } else {
+                    result = try await self.importer.importAudio(from: url, name: name, scratchParent: self.scratchParent) { [weak self] value in
+                        try Task.checkCancellation()
+                        await self?.updateProgress(value, generation: id)
+                    }
                 }
                 try Task.checkCancellation()
                 guard self.generation == id else { return }

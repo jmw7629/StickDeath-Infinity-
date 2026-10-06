@@ -116,7 +116,7 @@ private struct Failure: Error { let message: String }
         pass("destination-layer paste retains original reflections translations and fresh IDs on every paste")
 
         for family in StudioBrushFamily.allCases {
-            var d=initial;d.schemaVersion=8
+            var d=initial;d.schemaVersion = [.airbrush, .watercolor, .neon].contains(family) ? 25 : 8
             let stroke=DrawnElement(id:"brush-"+family.rawValue,tool:.brush,points:[.init(x:16,y:24),.init(x:72,y:44)],color:"#FF0000",width:8,opacity:1,layerID:d.activeLayerID,brush:.init(family:family,seed:1234,gradientEndColor:family == .gradient ? .init(red:0,green:0,blue:1):nil))
             d.frames[0].elements=[stroke]
             var editor=try StudioDocumentEditor(document:d);try editor.copyElements(frameID:d.activeFrameID,ids:[stroke.id]);let ids=try editor.pasteElements(frameID:d.activeFrameID,layerID:d.activeLayerID)
@@ -130,7 +130,7 @@ private struct Failure: Error { let message: String }
         var fillEditor=try StudioDocumentEditor(document:fill);try fillEditor.copyElements(frameID:fill.activeFrameID,ids:[element.id]);let fillIDs=try fillEditor.pasteElements(frameID:fill.activeFrameID,layerID:fill.activeLayerID)
         let fillCopy=fillEditor.document.frames[0].elements.first{fillIDs.contains($0.id)}!
         try require(fillCopy.fillMask==mask && fillCopy.translation==element.translation && fillCopy.reflection==element.reflection,"Sparse fill clipboard lost its original coverage or transform")
-        pass("all ten brush families and transformed sparse fills retain samples seeds masks and canonical geometry")
+        pass("all exposed brush families and transformed sparse fills retain samples seeds masks and canonical geometry")
 
         var layered=initial;let upper=CanvasLayer(id:"upper",name:"Upper");layered.layers.insert(upper,at:0);layered.frames[0].elements[0].layerID=upper.id
         var order=try StudioDocumentEditor(document:layered);try order.copyElements(frameID:layered.activeFrameID,ids:[red.id,blue.id])

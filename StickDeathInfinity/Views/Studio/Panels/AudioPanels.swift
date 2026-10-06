@@ -790,6 +790,11 @@ private struct AudioFilesImportControls: View {
     @State private var showingFiles = false
     @State private var lease: AudioImportLease?
     @State private var track = 1
+    @State private var movieAudio = false
+    @State private var sourceStart = 0.0
+    @State private var sourceEnd = 5.0
+    @State private var movieSpeed = 1.0
+    @State private var capturedMovieMapping: StudioVideoFrameImportService.Mapping?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -797,15 +802,33 @@ private struct AudioFilesImportControls: View {
                 Button("Import from Files") {
                     lease = .init(projectID: vm.document.id, revision: vm.document.revision,
                                   frameID: vm.document.activeFrameID, track: track)
+                    capturedMovieMapping = movieAudio ? .init(sourceStartSeconds: sourceStart,
+                        sourceEndSeconds: sourceEnd,
+                        projectStartSeconds: Double(vm.document.startTick(ofFrame: vm.currentFrameIndex)) / Double(vm.fps),
+                        speed: movieSpeed) : nil
                     showingFiles = true
                 }
-                .disabled(audio.isBusy || !vm.isEditing || vm.isSaving)
+                .disabled(audio.isBusy || !vm.isEditing || vm.isSaving || (movieAudio && sourceEnd <= sourceStart))
                 .accessibilityIdentifier("studio.audio.import")
                 .font(.specialElite(12)).foregroundColor(.sdStudioActionText)
                 Spacer()
                 Picker("Track", selection: $track) {
                     ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
                 }.font(.caption).tint(.white).disabled(audio.isBusy)
+            }
+            Toggle("Extract audio from a video", isOn: $movieAudio)
+                .font(.caption).tint(.sdRed).disabled(audio.isBusy || showingFiles)
+                .accessibilityIdentifier("studio.audio.movie")
+            if movieAudio {
+                Stepper("Source start: \(sourceStart, specifier: "%.1f")s", value: $sourceStart, in: 0...3599, step: 0.5)
+                    .accessibilityIdentifier("studio.audio.movie.start")
+                Stepper("Source end: \(sourceEnd, specifier: "%.1f")s", value: $sourceEnd, in: 0.5...3600, step: 0.5)
+                    .accessibilityIdentifier("studio.audio.movie.end")
+                Picker("Video audio speed", selection: $movieSpeed) {
+                    ForEach([0.25, 0.5, 1.0, 2.0, 4.0], id: \.self) { Text("\($0, specifier: "%.2g")×").tag($0) }
+                }.accessibilityIdentifier("studio.audio.movie.speed")
+                Text("Choose MP4 or MOV. Extracts only the selected soundtrack interval; the original video stays in Files. Speed changes duration and pitch. No microphone or upload.")
+                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
                 .font(.caption2).foregroundColor(.sdStudioSecondaryText)
@@ -831,17 +854,21 @@ private struct AudioFilesImportControls: View {
             }
         }
         .padding(.horizontal, 14)
-        .fileImporter(isPresented: $showingFiles, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
+        .fileImporter(isPresented: $showingFiles, allowedContentTypes: movieAudio ? [.mpeg4Movie, .quickTimeMovie] : [.audio], allowsMultipleSelection: false) { result in
             switch result {
             case .failure(let error): audio.pickerFailed(error)
             case .success(let urls):
                 guard let url = urls.first, let target = lease else { return }
-                _ = audio.importFile(url, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
+                let mapping = capturedMovieMapping
+                let prepare: (() async throws -> StudioAudioImportService.ImportedAudio)? = mapping.map { captured in
+                    { try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured).audio }
+                }
+                _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
                         expectedRevision: target.revision, frameID: target.frameID, trackNumber: target.track)
                 })
             }
-            lease = nil
+            lease = nil; capturedMovieMapping = nil
         }
     }
 }

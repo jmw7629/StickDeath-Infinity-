@@ -225,7 +225,7 @@ private struct Failure: Error { let message: String }
         for family in StudioBrushFamily.allCases {
             var d=try document()
             let stroke=DrawnElement(id:"brush-"+family.rawValue,tool:.brush,points:[.init(x:16,y:24),.init(x:72,y:44)],color:"#FF0000",width:8,opacity:1,layerID:d.activeLayerID,brush:.init(family:family,seed:1234,gradientEndColor:family == .gradient ? .init(red:0,green:0,blue:1):nil))
-            d.frames[0].elements=[stroke];d.schemaVersion=2
+            d.frames[0].elements=[stroke];d.schemaVersion = [.airbrush, .watercolor, .neon].contains(family) ? 25 : 2
             var e=try StudioDocumentEditor(document:d);let geometry=try StudioBrushGeometryCache.geometry(for:stroke), before=try render(d)
             try e.reflectElements(frameID:d.activeFrameID,ids:[stroke.id],axis:.horizontal)
             try require(StudioBrushGeometryCache.geometry(for:e.document.frames[0].elements[0])==geometry,"Flip regenerated brush texture")
@@ -233,7 +233,7 @@ private struct Failure: Error { let message: String }
             try e.reflectElements(frameID:d.activeFrameID,ids:[stroke.id],axis:.horizontal)
             try require(e.document.frames[0].elements[0]==stroke && render(e.document)==before,"Double Flip altered brush bytes or pixels")
         }
-        pass("all ten brush families retain original geometry texture and exact double-flip pixels")
+        pass("all exposed brush families retain original geometry texture and exact double-flip pixels")
 
         for mode in ["full","position","alpha","hidden","transparent"] {
             var d=original

@@ -576,7 +576,8 @@ struct FloatingToolSettingsPanel: View {
                                 .font(.system(size: 9, weight: .bold, design: .monospaced))
                                 .foregroundColor(vm.selectionMode == mode ? .sdStudioActionText : .sdStudioSecondaryText)
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
                                 .background(
                                     RoundedRectangle(cornerRadius: 8)
                                         .fill(vm.selectionMode == mode ? Color.red.opacity(0.2) : Color.white.opacity(0.05))
@@ -586,6 +587,8 @@ struct FloatingToolSettingsPanel: View {
                                         .stroke(vm.selectionMode == mode ? Color.red.opacity(0.4) : Color.white.opacity(0.1), lineWidth: 1)
                                 )
                         }
+                        .accessibilityIdentifier("studio.selection.mode." + mode.rawValue)
+                        .accessibilityAddTraits(vm.selectionMode == mode ? .isSelected : [])
                     }
                 }
                 
@@ -617,13 +620,13 @@ struct FloatingToolSettingsPanel: View {
                                     .font(.system(size: 7, design: .monospaced))
                                     .foregroundColor(.sdStudioSecondaryText)
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .contentShape(Rectangle())
                             .background(Color.white.opacity(0.05))
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled((action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (action.contains("Copy") && vm.selectedElementIDs.isEmpty))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
@@ -678,6 +681,7 @@ struct FloatingToolSettingsPanel: View {
                             .foregroundColor(vm.selectionMode == mode ? .sdStudioActionText : .sdStudioSecondaryText)
                             .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
                             .accessibilityIdentifier("studio.selection.mode." + mode.rawValue)
+                            .accessibilityAddTraits(vm.selectionMode == mode ? .isSelected : [])
                     }
                 }
                 HStack(spacing: 8) {
@@ -807,8 +811,13 @@ struct SettingsSlider: View {
             
             Slider(value: $value, in: range)
                 .tint(accent)
-                .frame(height: 6)
+                // Keep the native thumb and its whole touch region inside the
+                // scroll content rather than constraining the control to the
+                // six-point visual track height.
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
                 .accessibilityLabel(label)
+                .accessibilityValue("\(displayedValue)\(unit)")
                 .accessibilityIdentifier("studio.setting." + label.lowercased().replacingOccurrences(of: " ", with: "-"))
         }
     }
@@ -826,9 +835,10 @@ struct SettingsToggle: View {
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.sdStudioSecondaryText)
             Spacer()
-            Toggle("", isOn: $isOn)
+            Toggle(label, isOn: $isOn)
                 .labelsHidden()
                 .tint(accent)
+                .frame(minHeight: 44)
         }
     }
 }

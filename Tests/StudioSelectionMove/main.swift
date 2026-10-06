@@ -128,7 +128,7 @@ private struct Failure: Error { let message: String }
             let brush = DrawnElement(id:"brush-" + family.rawValue,tool:.brush,
                 points:[.init(x:16,y:24),.init(x:40,y:24)],color:"#FF0000",width:8,opacity:1,layerID:brushDoc.activeLayerID,
                 brush:.init(family:family,seed:1234,gradientEndColor:family == .gradient ? .init(red:0,green:0,blue:1) : nil))
-            brushDoc.frames[0].elements=[brush];brushDoc.schemaVersion=2
+            brushDoc.frames[0].elements=[brush];brushDoc.schemaVersion = [.airbrush, .watercolor, .neon].contains(family) ? 25 : 2
             var brushes=try StudioDocumentEditor(document:brushDoc)
             let originalGeometry = try StudioBrushGeometryCache.geometry(for:brush)
             let before = try render(brushDoc)
@@ -147,7 +147,7 @@ private struct Failure: Error { let message: String }
             print("BRUSH_MOVE_DELTA \(family.rawValue) channels=\(differences) max=\(maximum) total=\(total)")
             try require(brushes.document.frames[0].elements[0].points==brush.points && brushes.document.frames[0].elements[0].brush==brush.brush,"Brush inputs changed")
         }
-        pass("all ten real brush families retain identical geometry and bounded translated pixel accuracy")
+        pass("all exposed real brush families retain identical geometry and bounded translated pixel accuracy")
 
         for lock in ["position","full","alpha"] {
             var d = original;d.layers[0].lockMode=lock

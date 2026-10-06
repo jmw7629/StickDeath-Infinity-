@@ -186,7 +186,7 @@ private struct Failure: Error { let message: String }
         for family in StudioBrushFamily.allCases {
             var d=try document()
             let brush=DrawnElement(id:"brush",tool:.brush,points:[.init(x:24,y:32),.init(x:88,y:52)],color:"#FF0000",width:8,opacity:1,layerID:d.activeLayerID,brush:.init(family:family,seed:1234,gradientEndColor:family == .gradient ? .init(red:0,green:0,blue:1):nil))
-            d.schemaVersion=2;d.frames[0].elements=[brush]
+            d.schemaVersion = [.airbrush, .watercolor, .neon].contains(family) ? 25 : 2;d.frames[0].elements=[brush]
             let geometry=try StudioBrushGeometryCache.geometry(for:brush), before=try render(d)
             var editor=try StudioDocumentEditor(document:d)
             try editor.transformElements(frameID:d.activeFrameID,ids:[brush.id],scaleX:1.1,scaleY:0.9,rotation:35)
@@ -194,7 +194,7 @@ private struct Failure: Error { let message: String }
             try require(StudioBrushGeometryCache.geometry(for:after)==geometry && after.brush==brush.brush && after.points==brush.points,"Transform regenerated texture/samples")
             try require(render(editor.document) != before,"Brush transform has no pixel effect")
         }
-        pass("all ten brush families preserve original seeded samples geometry and distinctive transformed pixels")
+        pass("all exposed brush families preserve original seeded samples geometry and distinctive transformed pixels")
 
         let fillVM=StudioViewModel(storage:store);let madeFill=await fillVM.createProject(name:"Transformed sparse fill",width:128,height:128,fps:12);try require(madeFill,"Fill project")
         let spans=(40..<72).map{StudioFillMask.Span(row:$0,start:40,end:$0<48 ? 48:72,alpha:255)}

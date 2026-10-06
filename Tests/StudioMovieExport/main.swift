@@ -223,9 +223,9 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let pixels = try await decode(hidden.movieURL).frames[0]
             try pixel(pixels.pixel(32, 32), [255, 0, 0, 255])
         }
-        await test("all schema2 seeded brush families pressure smoothing and texture use actual shared renderer") {
+        await test("all seeded brush families pressure smoothing and texture use actual shared renderer") {
             let folder = try parent(root, "brushes"); var doc = try document(colors: ["#FF0000"], height: 64)
-            doc.schemaVersion = 2
+            doc.schemaVersion = 25
             doc.frames = StudioBrushFamily.allCases.enumerated().map { index, family in
                 AnimationFrame(id: "brush-frame-\(index)", elements: [DrawnElement(id: "brush-\(index)", tool: .brush,
                     points: [StrokePoint(x: 8, y: 10, pressure: 0.3, timestamp: 0), StrokePoint(x: 32, y: 50, pressure: 0.8, timestamp: 0.2), StrokePoint(x: 56, y: 16, pressure: 1, timestamp: 0.4)],
