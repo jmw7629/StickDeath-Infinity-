@@ -217,6 +217,10 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
                 if vm.brushFamily == .calligraphy {
                     SettingsSlider(label: "Tip Angle", value: $vm.brushTipAngle, range: 0...179, unit: "°", accent: accentColor)
+                    SettingsToggle(label: "Pencil Tilt", isOn: $vm.pencilTiltEnabled, accent: accentColor)
+                        .accessibilityIdentifier("studio.brush.tilt")
+                    Text("Tilting Pencil widens the nib and follows its direction plus Tip Angle. Finger input uses the fixed nib. Saved per tool.")
+                        .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 if [.stipple, .grain, .roughPen].contains(vm.brushFamily) {
                     SettingsSlider(label: "Texture", value: Binding(get: { vm.brushTexture * 100 }, set: { vm.brushTexture = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)

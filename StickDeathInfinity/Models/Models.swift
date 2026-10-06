@@ -375,12 +375,13 @@ struct StudioBrushDescriptor: Codable, Equatable {
     var texture: Double = 0.5
     var grain: Double = 0.3
     var gradientEndColor: StudioBrushColor?
+    var tiltEnabled: Bool? = nil
 
     func settings(width: Double, opacity: Double) throws -> StudioBrushSettings {
-        guard version == 1 else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
+        guard (1...2).contains(version), tiltEnabled != true || (version == 2 && family == .calligraphy) else { throw StudioBrushError.invalidSettings("This brush document version is unavailable.") }
         let result = StudioBrushSettings(family: family, size: width, opacity: opacity,
             smoothing: smoothing, pressureEnabled: pressureEnabled, tipAngleDegrees: tipAngleDegrees,
-            texture: texture, grain: grain, gradientEndColor: gradientEndColor)
+            texture: texture, grain: grain, gradientEndColor: gradientEndColor, tiltEnabled: tiltEnabled ?? false)
         try result.validate()
         // DrawnElement's current color is opaque RGB; picker alpha is captured
         // once into its canonical opacity. Unequal endpoint alpha is unsupported.
@@ -391,11 +392,28 @@ struct StudioBrushDescriptor: Codable, Equatable {
     }
 }
 
+/// Angles in radians in the untransformed canvas coordinate system.
+struct StudioPencilTilt: Codable, Equatable {
+    var altitude: Double
+    var azimuth: Double
+    var isValid: Bool {
+        altitude.isFinite && (0...Double.pi / 2).contains(altitude) &&
+        azimuth.isFinite && (0..<Double.pi * 2).contains(azimuth)
+    }
+    func interpolated(to other: Self, fraction: Double) -> Self {
+        let delta = atan2(sin(other.azimuth - azimuth), cos(other.azimuth - azimuth))
+        let angle = (azimuth + delta * fraction).truncatingRemainder(dividingBy: .pi * 2)
+        return Self(altitude: altitude + (other.altitude - altitude) * fraction,
+                    azimuth: angle < 0 ? angle + .pi * 2 : angle)
+    }
+}
+
 struct StrokePoint: Codable, Equatable {
     var x: CGFloat
     var y: CGFloat
     var pressure: CGFloat?
     var timestamp: TimeInterval?
+    var tilt: StudioPencilTilt? = nil
 }
 
 enum StudioMirrorMode: String, Codable, CaseIterable {
@@ -458,11 +476,11 @@ struct StudioStrokeInput {
     var mirror: StudioMirrorCapture? = nil
     private(set) var points: [StrokePoint] = []
 
-    mutating func append(location: CGPoint, time: Date, pressure: CGFloat? = nil) throws {
+    mutating func append(location: CGPoint, time: Date, pressure: CGFloat? = nil, tilt: StudioPencilTilt? = nil) throws {
         guard location.x.isFinite, location.y.isFinite, viewportSize.width > 0, viewportSize.height > 0 else {
             throw StudioBrushError.invalidSettings("Touch coordinates are unavailable.")
         }
-        guard pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+        guard (pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true), tilt?.isValid ?? true else {
             throw StudioBrushError.invalidSettings("Touch pressure must be normalized from zero to one.")
         }
         let limit = brush == nil && eraser == nil ? 100_000 : 8_192
@@ -511,7 +529,7 @@ struct StudioStrokeInput {
                 point = CGPoint(x: start.x+dx*fraction, y: start.y+dy*fraction)
             }
         }
-        points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed))
+        points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed, tilt: tilt))
     }
     /// Editor-only ruler guide, never part of a DrawnElement or export.
     var rulerGuide: [CGPoint] {

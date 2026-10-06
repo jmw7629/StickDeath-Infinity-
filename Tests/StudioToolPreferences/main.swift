@@ -143,6 +143,16 @@ private struct Failure: Error { let message: String }
                     "Changing pressure modified an already captured stroke or failed to affect the next stroke")
 
 
+        vm.selectDrawingTool(.brush); vm.brushFamily = .calligraphy; vm.pencilTiltEnabled = true
+        let tiltCapture = try vm.brushDescriptor(elementID: "tilt-captured")
+        try require(tiltCapture.tiltEnabled == true && tiltCapture.version == 2, "Tilt toggle did not affect capture")
+        vm.selectDrawingTool(.pen); try require(!vm.pencilTiltEnabled, "Tilt preference leaked across tools")
+        let tiltReopened = StudioViewModel(toolDefaults: UserDefaults(suiteName: suite))
+        tiltReopened.selectDrawingTool(.brush)
+        try require(tiltReopened.pencilTiltEnabled, "Cold settings restore lost tilt")
+        vm.selectDrawingTool(.brush); vm.brushFamily = .round
+        try require(try vm.brushDescriptor(elementID: "round-no-tilt").tiltEnabled != true, "Tilt leaked into an inapplicable brush family")
+
         vm.selectDrawingTool(.brush); vm.resetCurrentDrawingToolPreferences()
         try require(vm.strokeWidth == 3 && vm.strokeOpacity == 1 && vm.brushFamily == .round, "Reset failed")
         vm.selectDrawingTool(.pen); try require(vm.strokeWidth == 6 && vm.brushFamily == .dipPen, "Reset changed another tool")

@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...22
+    static let supportedSchemaVersions = 1...23
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -210,10 +210,13 @@ struct StudioDocument: Codable, Equatable {
                 }
                 pointCount += element.points.count
                 guard pointCount <= 1_000_000 else { throw StudioDocumentError.invalid("This project exceeds the editable point limit.") }
+                if element.brush?.tiltEnabled == true || element.points.contains(where: { $0.tilt != nil }) {
+                    guard schemaVersion >= 23 else { throw StudioDocumentError.invalid("Pencil tilt requires project version 23. The original has not changed.") }
+                }
                 for point in element.points {
                     guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 100000, abs(point.y) <= 100000,
                           point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
-                          point.timestamp.map(\.isFinite) ?? true else { throw StudioDocumentError.invalid("A drawing contains invalid coordinates.") }
+                          point.timestamp.map(\.isFinite) ?? true, point.tilt?.isValid ?? true else { throw StudioDocumentError.invalid("A drawing contains invalid coordinates.") }
                 }
             }
         }
@@ -456,6 +459,9 @@ struct StudioDocumentEditor {
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The drawing frame is unavailable.") }
             value.frames[index].elements.append(element)
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
+            if element.brush?.tiltEnabled == true || element.points.contains(where: { $0.tilt != nil }) {
+                value.schemaVersion = max(value.schemaVersion, 23)
+            }
             if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
             if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
             if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }
@@ -571,6 +577,9 @@ struct StudioDocumentEditor {
                     translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn))
                 ids.insert(id)
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
+            if element.brush?.tiltEnabled == true || element.points.contains(where: { $0.tilt != nil }) {
+                value.schemaVersion = max(value.schemaVersion, 23)
+            }
                 if element.shape != nil { value.schemaVersion = max(value.schemaVersion, 5) }
                 if element.fillMask != nil { value.schemaVersion = max(value.schemaVersion, 6) }
                 if element.translation != nil { value.schemaVersion = max(value.schemaVersion, 7) }

@@ -426,7 +426,7 @@ struct StudioCanvasView: View {
                                 .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil)
                     } catch { vm.message = error.localizedDescription; return }
                 }
-                do { try input?.append(location: value.location, time: value.time, pressure: value.pressure) }
+                do { try input?.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt) }
                 catch { inputFailure = error.localizedDescription; return }
                 let now = ProcessInfo.processInfo.systemUptime
                 // Capture every supported sample; only preview regeneration is
@@ -557,7 +557,7 @@ struct StudioCanvasView: View {
                             reason: inputFailure, inputComplete: false, mirror: captured.mirror)
                     } else {
                         do {
-                            try captured.append(location: value.location, time: value.time, pressure: value.pressure)
+                            try captured.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt)
                             _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
                         } catch {
                             vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
@@ -877,6 +877,7 @@ private struct StudioTouchValue {
     let startLocation: CGPoint
     let time: Date
     let pressure: CGFloat?
+    let tilt: StudioPencilTilt?
     var translation: CGSize { CGSize(width: location.x-startLocation.x, height: location.y-startLocation.y) }
 }
 
@@ -960,7 +961,15 @@ private final class StudioTouchView: UIView {
     private func value(_ touch: UITouch) -> StudioTouchValue {
         let pressure: CGFloat? = touch.type == .pencil && touch.maximumPossibleForce > 0
             ? min(1, max(0, touch.force / touch.maximumPossibleForce)) : nil
+        var tilt: StudioPencilTilt?
+        if touch.type == .pencil {
+            let rawAzimuth = Double(touch.azimuthAngle(in: self))
+            let azimuth = rawAzimuth.truncatingRemainder(dividingBy: .pi * 2)
+            let measuredTilt = StudioPencilTilt(altitude: Double(touch.altitudeAngle),
+                azimuth: azimuth < 0 ? azimuth + .pi * 2 : azimuth)
+            tilt = measuredTilt.isValid ? measuredTilt : nil
+        }
         return StudioTouchValue(location: touch.preciseLocation(in: self), startLocation: start,
-            time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure)
+            time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure, tilt: tilt)
     }
 }

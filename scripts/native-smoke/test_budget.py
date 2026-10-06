@@ -9,7 +9,9 @@ EXTENDED_CASE_SECONDS = {
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
     "testImageQuarterTurnsUndoAndColdReopen": 240,
 }
-MAXIMUM_CASES = 67
+# Includes the project duplicate/remove/restore/cold-reopen journey. Adding a
+# journey changes the total inventory budget, never another case's allowance.
+MAXIMUM_CASES = 68
 SUITE_OVERHEAD_SECONDS = 300
 
 

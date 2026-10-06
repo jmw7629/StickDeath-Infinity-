@@ -127,6 +127,42 @@ private func rejects(_ operation: () throws -> Void) throws {
             print("PASS real pressure capture survives encoding and rejects invalid force without partial edits")
 
 
+            let flatTilt = StudioPencilTilt(altitude: 0, azimuth: 0)
+            let uprightTilt = StudioPencilTilt(altitude: .pi / 2, azimuth: .pi / 2)
+            var tiltInput = input
+            try tiltInput.append(location: CGPoint(x: 90, y: 88), time: started.addingTimeInterval(0.25), pressure: 0.5, tilt: flatTilt)
+            try require(tiltInput.points.last?.tilt == flatTilt, "Measured tilt was lost during capture")
+            let beforeTiltError = tiltInput.element
+            for invalid in [StudioPencilTilt(altitude: -.pi, azimuth: 0), .init(altitude: 0, azimuth: .pi * 2), .init(altitude: .nan, azimuth: 0)] {
+                try rejects { try tiltInput.append(location: .zero, time: started.addingTimeInterval(0.5), tilt: invalid) }
+            }
+            try require(tiltInput.element == beforeTiltError, "Invalid tilt partially changed the draft")
+            let wrap = StudioPencilTilt(altitude: 0, azimuth: 359 * .pi / 180).interpolated(to: .init(altitude: 1, azimuth: .pi / 180), fraction: 0.5)
+            try require(abs(sin(wrap.azimuth)) < 0.000001 && wrap.altitude == 0.5, "Tilt interpolation took the long arc across zero")
+            var tilted = stroke(firstLayer, family: .calligraphy)
+            tilted.brush?.version = 2; tilted.brush?.tiltEnabled = true
+            tilted.points = [.init(x: 32, y: 32, tilt: uprightTilt), .init(x: 32, y: 32, tilt: flatTilt)]
+            let tiltGeometry = try StudioBrushGeometryCache.geometry(for: tilted)
+            try require(tiltGeometry.marks.count == 2 && tiltGeometry.marks[1].width > tiltGeometry.marks[0].width * 2,
+                        "Stationary Pencil tilt did not widen the actual nib")
+            var fixedNib = tilted; fixedNib.brush?.tiltEnabled = nil; fixedNib.brush?.version = 1
+            try require(try render(.init(id: "tilted", elements: [tilted]), layers: editor.document.layers) != render(.init(id: "fixed", elements: [fixedNib]), layers: editor.document.layers),
+                        "Tilt changed metadata without changing real rendered pixels")
+            var tiltEditor = try StudioDocumentEditor(document: .new(name: "Tilt", width: 64, height: 64, fps: 12))
+            tilted.layerID = tiltEditor.document.activeLayerID
+            try tiltEditor.commit(tilted, frameID: tiltEditor.document.activeFrameID)
+            try require(tiltEditor.document.schemaVersion == 23, "Tilt did not upgrade the guarded document version")
+            let tiltArchive = try StudioDocumentArchive(document: tiltEditor.document, rasterFrameIndices: [:]).encoded()
+            try require(StudioDocumentArchive.decode(tiltArchive).document == tiltEditor.document, "Tilt archive changed the artwork")
+            var olderTilt = tiltEditor.document; olderTilt.schemaVersion = 22; try rejects { try olderTilt.validate() }
+            tiltEditor.undo(); try require(tiltEditor.document.schemaVersion == 1, "Undo did not restore original schema")
+            tiltEditor.redo(); try require(tiltEditor.document.frames[0].elements[0] == tilted, "Redo lost tilt")
+            let tiltOutput = try await StudioExportService().export(document: tiltEditor.document, format: .pngSequence, outputParent: root)
+            let tiltSource = CGImageSourceCreateWithURL(tiltOutput.imageURLs[0] as CFURL, nil)!
+            let tiltImage = CGImageSourceCreateImageAtIndex(tiltSource, 0, nil)!
+            try require(try pixels(tiltImage) == render(tiltEditor.document.frames[0], layers: tiltEditor.document.layers), "Tilt PNG differs from canvas")
+            print("PASS measured tilt validates atomically, rotates and widens real nib pixels, survives schema23/archive/Undo/Redo and PNG export")
+
             var halfLayer = CanvasLayer(id: "half", name: "Half"); halfLayer.opacity = 0.5
             let halfStroke = stroke(halfLayer.id, opacity: 0.5)
             let halfFrame = AnimationFrame(id: "half-frame", elements: [halfStroke])
@@ -152,12 +188,14 @@ private func rejects(_ operation: () throws -> Void) throws {
             let opened = await vm.openProject(metadata); try require(opened, "Actual VM could not reopen brush document")
             try require(vm.document == persisted && sortedData(vm.audioClips) == originalAudioBytes, "VM open altered brush/audio document")
             vm.addFrame(); vm.addLayer()
-            let drawn = stroke(vm.activeLayerID, family: .halftone)
+            var drawn = stroke(vm.activeLayerID, family: .calligraphy)
+            drawn.brush?.version = 2; drawn.brush?.tiltEnabled = true
+            drawn.points[0].tilt = flatTilt; drawn.points[1].tilt = uprightTilt
             try require(vm.commitElement(drawn), "Actual VM brush commit failed")
             let saved = await vm.save(); try require(saved, "Actual atomic brush save failed")
             let reopened = StudioViewModel(storage: storage)
             let reopenedOK = await reopened.openProject(metadata); try require(reopenedOK, "Saved brush project failed reopen")
-            try require(reopened.currentFrame.elements.last?.brush == drawn.brush && sortedData(reopened.audioClips) == originalAudioBytes,
+            try require(reopened.currentFrame.elements.last == drawn && sortedData(reopened.audioClips) == originalAudioBytes,
                         "Save/reopen lost brush or canonical audio data")
             try require(reopened.projectAudioTracks.first?.audioData == originalAudio.audioData,
                         "Opaque historical audio bytes were lost")

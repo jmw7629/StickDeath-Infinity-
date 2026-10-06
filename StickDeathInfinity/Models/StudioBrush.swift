@@ -30,6 +30,7 @@ struct StudioBrushSettings: Codable, Equatable {
     /// Matches the existing Studio slider's zero-through-ten range.
     var smoothing: Double = 3
     var pressureEnabled = true
+    var tiltEnabled = false
     var tipAngleDegrees: Double = 45
     /// Density/base-coat/edge variation for stipple, grain and rough pen.
     var texture: Double = 0.5
@@ -42,10 +43,11 @@ struct StudioBrushSettings: Codable, Equatable {
 
     init(family: StudioBrushFamily = .round, size: Double = 3, opacity: Double = 1,
          smoothing: Double = 3, pressureEnabled: Bool = true, tipAngleDegrees: Double = 45,
-         texture: Double = 0.5, grain: Double = 0.3, gradientEndColor: StudioBrushColor? = nil) {
+         texture: Double = 0.5, grain: Double = 0.3, gradientEndColor: StudioBrushColor? = nil, tiltEnabled: Bool = false) {
         self.family = family; self.size = size; self.opacity = opacity; self.smoothing = smoothing
         self.pressureEnabled = pressureEnabled; self.tipAngleDegrees = tipAngleDegrees
         self.texture = texture; self.grain = grain; self.gradientEndColor = gradientEndColor
+        self.tiltEnabled = tiltEnabled
     }
 
     func validate() throws {
@@ -56,6 +58,7 @@ struct StudioBrushSettings: Codable, Equatable {
               grain.isFinite, (0...1).contains(grain) else {
             throw StudioBrushError.invalidSettings("Brush settings are outside the supported finite ranges.")
         }
+        guard !tiltEnabled || family == .calligraphy else { throw StudioBrushError.invalidSettings("Pencil tilt is supported by the Calligraphy nib.") }
         try gradientEndColor?.validate()
         if family == .gradient && gradientEndColor == nil {
             throw StudioBrushError.invalidSettings("Choose an end color before using the gradient brush.")
@@ -63,7 +66,7 @@ struct StudioBrushSettings: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case version, family, size, opacity, smoothing, pressureEnabled, tipAngleDegrees, texture, grain, gradientEndColor
+        case version, family, size, opacity, smoothing, pressureEnabled, tipAngleDegrees, texture, grain, gradientEndColor, tiltEnabled
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -77,6 +80,7 @@ struct StudioBrushSettings: Codable, Equatable {
         texture = try c.decodeIfPresent(Double.self, forKey: .texture) ?? 0.5
         grain = try c.decodeIfPresent(Double.self, forKey: .grain) ?? 0.3
         gradientEndColor = try c.decodeIfPresent(StudioBrushColor.self, forKey: .gradientEndColor)
+        tiltEnabled = try c.decodeIfPresent(Bool.self, forKey: .tiltEnabled) ?? false
         try validate()
     }
     func encode(to encoder: Encoder) throws {
@@ -87,6 +91,7 @@ struct StudioBrushSettings: Codable, Equatable {
         try c.encode(smoothing, forKey: .smoothing); try c.encode(pressureEnabled, forKey: .pressureEnabled)
         try c.encode(tipAngleDegrees, forKey: .tipAngleDegrees); try c.encode(texture, forKey: .texture)
         try c.encode(grain, forKey: .grain); try c.encodeIfPresent(gradientEndColor, forKey: .gradientEndColor)
+        try c.encode(tiltEnabled, forKey: .tiltEnabled)
     }
 }
 

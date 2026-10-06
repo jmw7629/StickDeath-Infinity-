@@ -39,6 +39,7 @@ struct StudioBrushRenderer {
         var x: Double, y: Double, pressure: Double
         var speed: Double?
         var distance: Double = 0
+        var tilt: StudioPencilTilt? = nil
     }
     private struct Random {
         var state: UInt64
@@ -67,6 +68,7 @@ struct StudioBrushRenderer {
             if index % 256 == 0 { try checkCancellation() }
             guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 1_000_000, abs(point.y) <= 1_000_000,
                   point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+                  point.tilt?.isValid ?? true,
                   point.timestamp.map({ $0.isFinite && $0 >= 0 && $0 >= (lastTime ?? 0) }) ?? true else {
                 throw StudioBrushError.invalidPoint(index)
             }
@@ -93,12 +95,12 @@ struct StudioBrushRenderer {
                 let dx = Double(point.x - points[index - 1].x), dy = Double(point.y - points[index - 1].y)
                 speed = min(1_000_000, hypot(dx, dy) / (time - before))
             }
-            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed))
+            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed, tilt: point.tilt))
             previousX = x; previousY = y
         }
         // Smoothing never drops the exact final input position.
         if let end = points.last, previousX != Double(end.x) || previousY != Double(end.y) {
-            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed))
+            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed, tilt: end.tilt))
         }
         var dabs = [filtered[0]], totalDistance = 0.0, nextDistance = spacing
         for index in 1..<filtered.count {
@@ -110,7 +112,7 @@ struct StudioBrushRenderer {
             }
             // A stationary stylus can change force without advancing along
             // the path. Preserve those pressure marks within the same budget.
-            if length == 0 && settings.pressureEnabled && a.pressure != b.pressure {
+            if length == 0 && ((settings.pressureEnabled && a.pressure != b.pressure) || (settings.tiltEnabled && a.tilt != b.tilt)) {
                 guard dabs.count < maximumDabs else { throw StudioBrushError.workLimit("The stroke exceeds the pressure-dab budget.") }
                 var pressureDab = b; pressureDab.distance = totalDistance; dabs.append(pressureDab)
             }
@@ -119,13 +121,14 @@ struct StudioBrushRenderer {
                 if dabs.count % 256 == 0 { try checkCancellation() }
                 let t = (nextDistance - totalDistance) / length
                 dabs.append(Sample(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
-                    pressure: a.pressure + (b.pressure - a.pressure) * t, speed: b.speed, distance: nextDistance))
+                    pressure: a.pressure + (b.pressure - a.pressure) * t, speed: b.speed, distance: nextDistance,
+                    tilt: a.tilt.flatMap { first in b.tilt.map { first.interpolated(to: $0, fraction: t) } }))
                 nextDistance += spacing
             }
             totalDistance += length
         }
         if let end = filtered.last, let last = dabs.last,
-           hypot(end.x - last.x, end.y - last.y) > 0.000_001 || (settings.pressureEnabled && end.pressure != last.pressure) {
+           hypot(end.x - last.x, end.y - last.y) > 0.000_001 || (settings.pressureEnabled && end.pressure != last.pressure) || (settings.tiltEnabled && end.tilt != last.tilt) {
             guard dabs.count < maximumDabs else { throw StudioBrushError.workLimit("The stroke exceeds the rendering budget.") }
             var endpoint = end; endpoint.distance = totalDistance; dabs.append(endpoint)
         }
@@ -165,7 +168,10 @@ struct StudioBrushRenderer {
                 try mark(.ellipse, dab.x + (random.unit() - 0.5) * size, dab.y + (random.unit() - 0.5) * size,
                          size * 0.08, size * 0.08, 0, 0.6)
             case .calligraphy:
-                try mark(.ellipse, dab.x, dab.y, size, size * 0.2, settings.tipAngleDegrees * .pi / 180)
+                let tilt = settings.tiltEnabled ? dab.tilt : nil
+                let spread = tilt.map { 1 + 1.5 * cos($0.altitude) } ?? 1
+                let angle = settings.tipAngleDegrees * .pi / 180 + (tilt?.azimuth ?? 0)
+                try mark(.ellipse, dab.x, dab.y, size * spread, size * 0.2, angle)
             case .dipPen:
                 // Absent/equal timestamps use a documented neutral nib width;
                 // sample count is never misrepresented as measured velocity.
