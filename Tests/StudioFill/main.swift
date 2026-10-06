@@ -331,10 +331,9 @@ private struct Failure: Error { let message: String }
         let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"),cachesDirectory: root.appendingPathComponent("Cache"))
         let vm = StudioViewModel(storage: storage), session = StudioFillSession()
         let created = await vm.createProject(name:"Fill session",width:128,height:128,fps:12)
-        // The existing non-UIKit VM color projection is red. Arbitrary-color
-        // sampling/rendering is tested above with actual service inputs; native
-        // UIKit palette-to-fill behavior requires the real iOS journey.
-        try require(created,"Real session project"); vm.selectedTool = .fill; vm.strokeColor = .red
+        // Use an explicit color: semantic SwiftUI .red varies by platform.
+        // The VM now projects real AppKit colors as well as UIKit colors.
+        try require(created,"Real session project"); vm.selectedTool = .fill; vm.strokeColor = Color(.sRGB, red: 1, green: 0, blue: 0)
         vm.fillAntiAlias = false
         guard let context = StudioFillContext.current(vm) else { throw Failure(message:"Available fill context") }
         let layout = StudioFillGesture.Layout(viewport:CGSize(width:256,height:256),scale:2,offset:CGSize(width:20,height:4))
