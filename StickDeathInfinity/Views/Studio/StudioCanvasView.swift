@@ -123,39 +123,29 @@ struct StudioCanvasView: View {
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
             let currentRaster = Result { try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers,
                 data: vm.rasterData(vm.currentFrame.rasterAssetID), maximumDimension: rasterSize) }
-            let onionRaster = vm.showOnionSkin ? vm.previousFrame.map { frame in Result {
-                try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
-                    data: vm.rasterData(frame.rasterAssetID), maximumDimension: rasterSize)
-            } } : nil
-            let onionPrepared = vm.showOnionSkin ? vm.previousFrame.map { frame in Result { try StudioFrameRenderer.prepare(frame: frame) } } : nil
             let currentSmudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: displayedFrame, layers: vm.layers,
                 canvasSize: documentSize, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement) }
-            let onionSmudges = vm.showOnionSkin ? vm.previousFrame.map { frame in Result {
-                try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers, canvasSize: documentSize,
-                    rasterData: vm.rasterData(frame.rasterAssetID))
-            } } : nil
             ZStack {
                 Color.clear
                 ZStack {
                     Color.white
                     Canvas { context, actual in
-                        if vm.showOnionSkin, let previous = vm.previousFrame {
-                            var onion = context
-                            onion.opacity = 0.2
-                            if case .success(let brushes)? = onionPrepared, case .success(let image)? = onionRaster,
-                               case .success(let effects)? = onionSmudges {
-                                if let error = StudioFrameRenderer.draw(context: &onion, frame: previous, layers: vm.layers,
-                                    canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                                    rasterData: vm.rasterData(previous.rasterAssetID), preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
-                                    StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
-                                }
-                            } else if case .failure(let error)? = onionPrepared {
-                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
-                            } else if case .failure(let error)? = onionSmudges {
-                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
-                            } else if case .failure(let error)? = onionRaster {
-                                StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
-                            }
+                        // Prepare one ghost at a time: range is bounded to four,
+                        // and full-resolution effect buffers are not retained as an array.
+                        for ghost in vm.visibleOnionGhosts {
+                            do {
+                                let frame = ghost.frame
+                                let brushes = try StudioFrameRenderer.prepare(frame: frame)
+                                let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
+                                    data: vm.rasterData(frame.rasterAssetID), maximumDimension: rasterSize)
+                                let effects = try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers,
+                                    canvasSize: documentSize, rasterData: vm.rasterData(frame.rasterAssetID))
+                                var onion = StudioFrameRenderer.onionContext(context, opacity: ghost.opacity,
+                                    previous: ghost.previous, tinted: ghost.tinted)
+                                if let error = StudioFrameRenderer.draw(context: &onion, frame: frame, layers: vm.layers,
+                                    canvasSize: documentSize, size: actual, rasterData: vm.rasterData(frame.rasterAssetID),
+                                    preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) { throw error }
+                            } catch { StudioFrameRenderer.drawFailure(error, context: &context, size: actual) }
                         }
                         switch (currentPrepared, currentRaster, currentSmudges) {
                         case (.success(let brushes), .success(let image), .success(let effects)):
@@ -289,7 +279,7 @@ struct StudioCanvasView: View {
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
                     .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize while keeping its proportions. Position image offers numeric dimensions." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
-                    if vm.gridEnabled { GridOverlay().allowsHitTesting(false) }
+                    if vm.gridEnabled { GridOverlay(settings: vm.document.gridSettings ?? .init()).allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
                 .clipped()
@@ -856,23 +846,18 @@ struct StudioCanvasView: View {
 
 // MARK: - Grid Overlay
 struct GridOverlay: View {
+    var settings = StudioGridSettings()
     var body: some View {
         Canvas { context, size in
-            let spacing: CGFloat = 40
             var path = Path()
-            var x: CGFloat = 0
-            while x <= size.width {
-                path.move(to: CGPoint(x: x, y: 0))
-                path.addLine(to: CGPoint(x: x, y: size.height))
-                x += spacing
+            for x in settings.positions(length: size.width) {
+                path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: size.height))
             }
-            var y: CGFloat = 0
-            while y <= size.height {
-                path.move(to: CGPoint(x: 0, y: y))
-                path.addLine(to: CGPoint(x: size.width, y: y))
-                y += spacing
+            for y in settings.positions(length: size.height) {
+                path.move(to: CGPoint(x: 0, y: y)); path.addLine(to: CGPoint(x: size.width, y: y))
             }
-            context.stroke(path, with: .color(.blue.opacity(0.1)), lineWidth: 0.5)
+            let color: Color = settings.tint == .blue ? .blue : settings.tint == .red ? .red : .gray
+            context.stroke(path, with: .color(color.opacity(settings.opacity)), lineWidth: 0.5)
         }
     }
 }

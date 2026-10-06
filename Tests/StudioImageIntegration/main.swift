@@ -389,6 +389,41 @@ private func rejects(_ action: () throws -> Void) throws {
             let cache = DeviceStorageManager.snapshotEncodingCacheFootprint
             try require(cache.entries <= 32 && cache.bytes <= DeviceStorageManager.maximumSnapshotFrameCacheBytes, "Snapshot fragment cache exceeded bounded key/data capacity")
         }
+        try await test("image clipboard preserves transforms pixels originals and one-step history without replacing content") {
+            let (vm, store) = try await project(root)
+            let asset = try attach(image, to: vm)
+            vm.selectedTool = .move
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0.1, y: 0.1, width: 0.7, height: 0.8)), "Crop before copy")
+            try require(vm.reflectImage(vm.prepareImagePlacement()!, axis: .horizontal), "Flip before copy")
+            vm.setLayerOpacity(vm.currentFrame.rasterLayerID!, opacity: 0.5)
+            let source = vm.currentFrame, expected = try render(vm).bytes
+            let bytes = vm.managedImageByteCount
+            try require(vm.copyImage() && vm.hasCopiedImage && !vm.canPasteImage, "Copy must not allow replacing current image")
+            let beforeRejected = vm.document
+            try require(!vm.pasteImage() && vm.document == beforeRejected, "Paste replaced an existing image")
+            vm.addFrame(); let blank = vm.document
+            try require(vm.canPasteImage, "Blank frame should allow image paste")
+            try require(!vm.pasteImage(checkCancellation: { throw CancellationError() }) && vm.document == blank, "Cancelled paste changed document")
+            var intervening: StudioDocument?
+            try require(!vm.pasteImage(checkCancellation: {
+                vm.addFrame(); intervening = vm.document
+            }) && vm.document == intervening, "Reentrant change was overwritten")
+            vm.undo()
+            let beforePaste = vm.document
+            try require(vm.pasteImage(), "Actual image paste")
+            let pasted = vm.document
+            try require(pasted.revision == beforePaste.revision + 1 && vm.currentFrame.rasterAssetID == asset && vm.currentFrame.rasterLayerID != source.rasterLayerID, "Paste is not one revision with an independent layer")
+            try require(vm.currentFrame.rasterCrop == source.rasterCrop && vm.currentFrame.rasterReflection == source.rasterReflection && vm.currentFrame.rasterPlacement == source.rasterPlacement, "Paste lost transforms")
+            try require(try render(vm).bytes == expected && vm.managedImageByteCount == bytes, "Paste changed pixels or duplicated original bytes")
+            vm.undo(); try require(vm.currentFrame.rasterAssetID == nil, "Single Undo did not remove pasted image")
+            vm.redo(); try require(try render(vm).bytes == expected, "Redo lost image pixels")
+            let saved = await vm.save(); try require(saved, "Pasted image save")
+            let metadata = try store.loadAnimation(id: vm.document.id)!.metadata
+            let reopened = StudioViewModel(storage: store)
+            let opened = await reopened.openProject(metadata)
+            try require(opened && !reopened.hasCopiedImage && reopened.currentFrame.rasterCrop == source.rasterCrop, "Cold reopen lost crop or persisted transient clipboard")
+            try require(try render(reopened).bytes == expected && reopened.originalImageSource(asset)?.originalData == image.originalData, "Cold reopen altered pixels or source bytes")
+        }
         try await test("managed missing corrupt and mismatched prepared pixels return actual render/export errors") {
             let (vm, _) = try await project(root); _ = try attach(image, to: vm)
             try rejects { _ = try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers, data: nil) }

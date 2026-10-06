@@ -21,7 +21,9 @@ struct StudioDocument: Codable, Equatable {
     // Absent in historical projects means unity gain on every track.
     var audioTrackVolumes: [Double]?
     var gridEnabled = false
+    var gridSettings: StudioGridSettings?
     var onionEnabled = false
+    var onionSettings: StudioOnionSettings?
     var createdAt: Date
     var modifiedAt: Date
     var revision = 0
@@ -51,6 +53,18 @@ struct StudioDocument: Codable, Equatable {
         return max(0, frames.count - 1)
     }
 
+    var onionGhosts: [StudioOnionGhost] {
+        let settings = onionSettings ?? .init()
+        guard onionEnabled, settings.isValid, let index = frames.firstIndex(where: { $0.id == activeFrameID }) else { return [] }
+        var result: [StudioOnionGhost] = []
+        for offset: Int in [-2, 2, -1, 1] {
+            let requested = offset < 0 ? -offset <= settings.previousCount : offset <= settings.nextCount
+            guard requested, frames.indices.contains(index + offset) else { continue }
+            result.append(StudioOnionGhost(frame: frames[index + offset], opacity: settings.opacity / Double(abs(offset)), previous: offset < 0, tinted: settings.tinted))
+        }
+        return result
+    }
+
     var referencedAudioAssetIDs: Set<UUID> { Set(audioClips.compactMap(\.assetID)) }
     func isAudioTrackMuted(_ track: Int) -> Bool { mutedAudioTracks?.contains(track) == true }
     func audioTrackVolume(_ track: Int) -> Double {
@@ -60,6 +74,8 @@ struct StudioDocument: Codable, Equatable {
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
     func validate() throws {
+        guard gridSettings?.isValid ?? true else { throw StudioDocumentError.invalid("Grid spacing must be 8–160 canvas points and opacity 5–60%.") }
+        guard onionSettings?.isValid ?? true else { throw StudioDocumentError.invalid("Onion skin needs 0–2 frames on each side and 5–80% opacity.") }
         guard Self.supportedSchemaVersions.contains(schemaVersion) else { throw StudioDocumentError.invalid("This project version is not supported. The original has not been changed.") }
         guard !name.isEmpty, name.count <= 120, (16...4096).contains(width), (16...4096).contains(height),
               (1...60).contains(fps), (1...1000).contains(frames.count), (1...128).contains(layers.count),
@@ -1126,5 +1142,34 @@ enum StudioBrushGeometryCache {
                 }
             }
         }
+    }
+}
+
+/// Additive editor-only metadata. Old archives keep the original one-frame,
+/// untinted 20% preview; export never consumes these ghost descriptors.
+struct StudioOnionSettings: Codable, Equatable {
+    var previousCount = 1
+    var nextCount = 0
+    var opacity = 0.2
+    var tinted = false
+    var isValid: Bool { (0...2).contains(previousCount) && (0...2).contains(nextCount) && opacity.isFinite && (0.05...0.8).contains(opacity) }
+}
+struct StudioOnionGhost {
+    let frame: AnimationFrame
+    let opacity: Double
+    let previous: Bool
+    let tinted: Bool
+}
+
+struct StudioGridSettings: Codable, Equatable {
+    enum Tint: String, Codable, CaseIterable { case blue, gray, red }
+    var spacing = 40.0
+    var opacity = 0.1
+    var tint: Tint = .blue
+    var isValid: Bool { spacing.isFinite && (8...160).contains(spacing) && opacity.isFinite && (0.05...0.6).contains(opacity) }
+    func positions(length: Double) -> [Double] {
+        guard isValid, length.isFinite, (0...8192).contains(length) else { return [] }
+        let count = min(1025, Int(floor(length / spacing)) + 1)
+        return (0..<count).map { Double($0) * spacing }
     }
 }

@@ -21,11 +21,12 @@ private struct Failure: Error, CustomStringConvertible {
     }
 
     private static func centerPixel(layers: [CanvasLayer], elements: [DrawnElement],
-                                    outerOpacity: Double = 1) throws -> [UInt8] {
+                                    outerOpacity: Double = 1, onionPrevious: Bool? = nil) throws -> [UInt8] {
         let frame = AnimationFrame(id: "fixture", elements: elements)
         let canvas = Canvas { context, size in
             context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
             context.opacity = outerOpacity
+            if let onionPrevious { context = StudioFrameRenderer.onionContext(context, opacity: 1, previous: onionPrevious, tinted: true) }
             StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
                                      canvasSize: CGSize(width: 64, height: 64), size: size)
         }.frame(width: 64, height: 64)
@@ -111,6 +112,9 @@ private struct Failure: Error, CustomStringConvertible {
             let halfStroke = stroke(id: "r", layer: "red", color: "#FF0000", opacity: 0.5)
             try requirePixel("layer and element opacity multiply", centerPixel(layers: [half], elements: [halfStroke]), [255, 191, 191, 255])
             try requirePixel("onion opacity survives layer composition", centerPixel(layers: [red], elements: [lines[0]], outerOpacity: 0.2), [255, 204, 204, 255])
+            let black = stroke(id: "black", layer: "red", color: "#000000")
+            try requirePixel("previous ghost tints black ink red", centerPixel(layers: [red], elements: [black], outerOpacity: 0.2, onionPrevious: true), [255, 204, 204, 255])
+            try requirePixel("next ghost tints black ink blue", centerPixel(layers: [red], elements: [black], outerOpacity: 0.2, onionPrevious: false), [204, 204, 255, 255])
             let fullText = try textInkBounds(edge: 256)
             let thumbnailText = try textInkBounds(edge: 64)
             // Allow font hinting/antialiasing at small sizes, while requiring
@@ -121,7 +125,7 @@ private struct Failure: Error, CustomStringConvertible {
                 throw Failure(description: "Text ink does not scale with canvas: full \(fullText), quarter-size \(thumbnailText)")
             }
             print("PASS text scales with thumbnail geometry: full \(fullText), quarter-size \(thumbnailText)")
-            print("STUDIO_RENDERER_TESTS=PASS 8 native macOS SwiftUI pixel cases")
+            print("STUDIO_RENDERER_TESTS=PASS 10 native macOS SwiftUI pixel cases")
         } catch {
             print("STUDIO_RENDERER_TESTS=FAIL \(error)")
             exit(1)

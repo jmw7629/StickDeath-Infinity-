@@ -304,7 +304,68 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             try require(reopenOpaque && resavedOpaque && opaqueFinal.frames[0].layerData?.first?.id == originalOpaqueLayer.id,
                         "opaque frame record failed repeated editable reopen/save")
             print("PASS nil-image opaque frame metadata and deterministic legacy IDs survive open/save/reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 12 journeys")
+            let onionStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Onion"))
+            let onion = StudioViewModel(storage: onionStore)
+            let madeOnion = await onion.createProject(name: "Onion controls", width: 128, height: 128, fps: 12)
+            try require(madeOnion, "Onion project")
+            for _ in 0..<4 { onion.addFrame() }
+            onion.selectFrame(onion.frames[2].id)
+            onion.showOnionSkin = true
+            try require(onion.visibleOnionGhosts.map(\.frame.id) == [onion.frames[1].id], "Legacy one-previous default changed")
+            onion.onionPreviousCount = 2; onion.onionNextCount = 2; onion.onionOpacity = 0.6; onion.onionTinted = true
+            let ghosts = onion.visibleOnionGhosts
+            try require(ghosts.map(\.frame.id) == [0,4,1,3].map { onion.frames[$0].id } && ghosts.map(\.opacity) == [0.3,0.3,0.6,0.6], "Ghost range/order/fade wrong")
+            try require(ghosts.map(\.previous) == [true,false,true,false] && ghosts.allSatisfy(\.tinted), "Tint directions wrong")
+            onion.togglePlayback(); try require(onion.visibleOnionGhosts.isEmpty, "Playback retained editor ghosts"); onion.togglePlayback()
+            let savedOnion = await onion.save(); try require(savedOnion, "Onion save")
+            let onionMetadata = try onionStore.loadAnimation(id: onion.document.id)!.metadata
+            let reopenedOnion = StudioViewModel(storage: onionStore)
+            let loadedOnion = await reopenedOnion.openProject(onionMetadata)
+            try require(loadedOnion && reopenedOnion.document.onionSettings == onion.document.onionSettings, "Onion cold reopen lost settings")
+            onion.selectFrame(onion.frames[0].id)
+            try require(onion.visibleOnionGhosts.count == 2 && onion.visibleOnionGhosts.allSatisfy { !$0.previous }, "Ghosts wrapped around first frame")
+            onion.showOnionSkin = false; try require(onion.visibleOnionGhosts.isEmpty, "Disabled onion produced ghosts")
+            var invalidOnion = onion.document; invalidOnion.onionSettings?.previousCount = 3
+            var rejectedOnion = false
+            do { try invalidOnion.validate() } catch { rejectedOnion = true }
+            try require(rejectedOnion, "Unbounded onion range accepted")
+            print("PASS real onion range direction opacity playback suppression and cold reopen")
+            onion.gridEnabled = true; onion.gridSpacing = 24; onion.gridOpacity = 0.4; onion.gridTint = .red
+            let grid = onion.document.gridSettings!
+            try require(grid.positions(length: 80) == [0,24,48,72] && grid.positions(length: .infinity).isEmpty, "Grid geometry ignores spacing or accepts infinite work")
+            try require(StudioGridSettings(spacing: 8).positions(length: 8192).count == 1025, "Grid work is not bounded")
+            let settingsRequest = StudioCommandRequest(requestID: UUID(), projectID: onion.document.id, expectedRevision: onion.document.revision,
+                action: .apply([.canvasOptions(.init(gridSettings: .init(spacing: 32, opacity: 0.3, tint: .gray),
+                    onionSettings: .init(previousCount: 1, nextCount: 1, opacity: 0.4, tinted: true)))]))
+            let wire = try JSONEncoder().encode(settingsRequest)
+            let decodedSettings = try StudioCommandExecutor.decode(wire)
+            let beforeSettings = onion.document
+            _ = try onion.applyStudioCommands(decodedSettings)
+            try require(onion.document.revision == beforeSettings.revision + 1 && onion.gridSpacing == 32 && onion.onionNextCount == 1 && onion.frames == beforeSettings.frames, "Typed editor settings failed atomic artwork-preserving update")
+            onion.undo(); try require(onion.document.gridSettings == beforeSettings.gridSettings && onion.document.onionSettings == beforeSettings.onionSettings, "One undo did not restore both settings")
+            var malformed = try JSONSerialization.jsonObject(with: wire) as! [String: Any]
+            var action = malformed["action"] as! [String: Any]
+            var commands = action["apply"] as! [[String: Any]]
+            var options = commands[0]["canvasOptions"] as! [String: Any]
+            var fields = options["gridSettings"] as! [String: Any]
+            fields["unrecognized"] = true; options["gridSettings"] = fields; commands[0]["canvasOptions"] = options
+            action["apply"] = commands; malformed["action"] = action
+            var rejectedFields = false
+            do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: malformed)) } catch { rejectedFields = true }
+            try require(rejectedFields, "Unknown nested settings bypassed strict command decoder")
+            let beforeInvalid = onion.document
+            var invalidSettingsRejected = false
+            do {
+                _ = try onion.applyStudioCommands(.init(requestID: UUID(), projectID: onion.document.id, expectedRevision: onion.document.revision,
+                    action: .apply([.canvasOptions(.init(gridSettings: .init(spacing: 0), onionSettings: .init(nextCount: 1)))])))
+            } catch { invalidSettingsRejected = true }
+            try require(invalidSettingsRejected && onion.document == beforeInvalid, "Invalid grid partially committed editor settings")
+            let savedGrid = await onion.save(); try require(savedGrid, "Grid save failed")
+            let gridReopened = StudioViewModel(storage: onionStore)
+            let openedGrid = await gridReopened.openProject(try onionStore.loadAnimation(id: onion.document.id)!.metadata)
+            try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
+            print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
+            print("STUDIO_DOCUMENT_TESTS=PASS 14 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

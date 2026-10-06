@@ -35,6 +35,8 @@ final class StudioViewModel: ObservableObject {
     @Published var textStyle = StudioTextStyle() { didSet { rememberDrawingToolPreferences() } }
     private var savedRevision: Int?
     private let storage: DeviceStorageManager
+    @Published private var imageClipboard: AnimationFrame?
+    private var copiedImageLayer: CanvasLayer?
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
     private var retainedAudioTracks: [AudioTrack] = []
     private var managedAudioTracks: [UUID: AudioTrack] = [:]
@@ -147,6 +149,36 @@ final class StudioViewModel: ObservableObject {
     @Published var exportQuality: ExportQuality = .standard
     @Published var currentStroke: [StrokePoint] = []
     var showOnionSkin: Bool { get { document.onionEnabled } set { change { $0.onionEnabled = newValue } } }
+    var gridSpacing: Double {
+        get { (document.gridSettings ?? .init()).spacing }
+        set { var value = document.gridSettings ?? .init(); value.spacing = newValue; change { $0.gridSettings = value } }
+    }
+    var gridOpacity: Double {
+        get { (document.gridSettings ?? .init()).opacity }
+        set { var value = document.gridSettings ?? .init(); value.opacity = newValue; change { $0.gridSettings = value } }
+    }
+    var gridTint: StudioGridSettings.Tint {
+        get { (document.gridSettings ?? .init()).tint }
+        set { var value = document.gridSettings ?? .init(); value.tint = newValue; change { $0.gridSettings = value } }
+    }
+    var visibleOnionGhosts: [StudioOnionGhost] { isPlaying ? [] : document.onionGhosts }
+    var onionPreviousCount: Int {
+        get { (document.onionSettings ?? .init()).previousCount }
+        set { var value = document.onionSettings ?? .init(); value.previousCount = newValue; change { $0.onionSettings = value } }
+    }
+    var onionNextCount: Int {
+        get { (document.onionSettings ?? .init()).nextCount }
+        set { var value = document.onionSettings ?? .init(); value.nextCount = newValue; change { $0.onionSettings = value } }
+    }
+    var onionOpacity: Double {
+        get { (document.onionSettings ?? .init()).opacity }
+        set { var value = document.onionSettings ?? .init(); value.opacity = newValue; change { $0.onionSettings = value } }
+    }
+    var onionTinted: Bool {
+        get { (document.onionSettings ?? .init()).tinted }
+        set { var value = document.onionSettings ?? .init(); value.tinted = newValue; change { $0.onionSettings = value } }
+    }
+
     var gridEnabled: Bool { get { document.gridEnabled } set { change { $0.gridEnabled = newValue } } }
     var audioClips: [AudioClip] { get { document.audioClips } set { change { $0.audioClips = newValue } } }
     var audioDuration: Double { max(document.durationSeconds, document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
@@ -516,7 +548,7 @@ final class StudioViewModel: ObservableObject {
         guard !isEditing, pendingBrushStroke == nil, activeStrokeID == nil, textDraft == nil else { message = "Finish or discard any drawing draft, then save and return to projects before creating another animation."; return false }
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
-            retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
+            imageClipboard = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
             savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
             return await save()
         } catch { message = error.localizedDescription; return false }
@@ -592,7 +624,7 @@ final class StudioViewModel: ObservableObject {
             // Only records explicitly referenced by the new clip schema become
             // managed; opaque historical/unrelated records remain preserved.
             let managed = stored.audioTracks.filter { importedIDs.contains($0.id) && $0.legacySourceFilename == nil }
-            editor = nextEditor; retainedRasterFrames = rasters
+            imageClipboard = nil; copiedImageLayer = nil; editor = nextEditor; retainedRasterFrames = rasters
             let managedIDs = Set(managed.map(\.id))
             retainedAudioTracks = stored.audioTracks.filter { !managedIDs.contains($0.id) }
             managedAudioTracks = Dictionary(uniqueKeysWithValues: managed.map { ($0.id, $0) })
@@ -1031,6 +1063,31 @@ final class StudioViewModel: ObservableObject {
             // Selection is transient UI state: no document edit, revision,
             // autosave or Undo entry, and no success banner resizing the canvas.
             editor.selectedElementIDs = selected
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    /// All/Invert operate on visible editable artwork only. They never create
+    /// document history and never select an invisible or fully locked layer.
+    @discardableResult
+    func selectVisibleArtwork(inverting: Bool = false,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard let capture = beginAreaSelection(), textDraft == nil else { return false }
+            let eligible = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
+            let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
+            var ids = Set<String>()
+            for element in currentFrame.elements {
+                try checkCancellation()
+                guard let layer = element.layerID, eligible.contains(layer), element.opacity > 0,
+                      element.tool != .eraser,
+                      let bounds = try StudioSelectionRegion.drawingBounds(element),
+                      !bounds.intersection(canvas).isNull else { continue }
+                ids.insert(element.id)
+            }
+            try checkCancellation()
+            guard beginAreaSelection() == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
+            editor.selectedElementIDs = inverting ? ids.subtracting(capture.selectedIDs) : ids
+            cancelPolygonSelection()
             return true
         } catch { message = error.localizedDescription; return false }
     }
@@ -1846,7 +1903,7 @@ final class StudioViewModel: ObservableObject {
             value.frames[index].rasterLayerID = imageLayer.id
             value.frames[index].rasterPlacement = placement
         }
-        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
         var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         next[assetID] = record
         try validateManagedImageCapacity(next)
@@ -1862,6 +1919,59 @@ final class StudioViewModel: ObservableObject {
         retainedRasterFrames = next; editor = candidate
         scheduleSave()
         return assetID
+    }
+    var hasCopiedImage: Bool { imageClipboard != nil }
+    @discardableResult
+    func copyImage() -> Bool {
+        guard prepareImagePlacement() != nil,
+              let sourceLayer = layers.first(where: { $0.id == currentFrame.rasterLayerID }) else { return false }
+        // One project-scoped immutable asset reference; no duplicate encoded bytes.
+        var copied = currentFrame
+        copied.elements = []; copied.holdTicks = nil
+        copiedImageLayer = sourceLayer
+        imageClipboard = copied
+        pruneManagedImages()
+        return true
+    }
+    var canPasteImage: Bool {
+        isEditing && !isPlaying && !isSaving && selectedTool == .move &&
+        activeStrokeID == nil && pendingBrushStroke == nil && textDraft == nil &&
+        imageClipboard != nil && currentFrame.rasterAssetID == nil &&
+        layers.contains { $0.id == activeLayerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" }
+    }
+    @discardableResult
+    func pasteImage(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard canPasteImage, let copied = imageClipboard, let appearance = copiedImageLayer, let assetID = copied.rasterAssetID,
+                  let record = retainedRasterFrames[assetID], record.sourceImage != nil,
+                  let index = document.frames.firstIndex(where: { $0.id == document.activeFrameID }) else {
+                throw StudioDocumentError.unavailable("Copy an image, then choose a blank frame and an unlocked layer. Existing images are never replaced.")
+            }
+            let before = document
+            try checkCancellation()
+            guard document == before, imageClipboard == copied, copiedImageLayer == appearance, canPasteImage else { throw StudioCommandError.staleRevision }
+            var candidate = editor
+            let layer = CanvasLayer(id: UUID().uuidString, name: "Pasted image",
+                opacity: appearance.opacity, blendMode: appearance.blendMode,
+                glowEnabled: appearance.glowEnabled, glowColor: appearance.glowColor, colorLabel: appearance.colorLabel)
+            try candidate.change { value in
+                value.schemaVersion = max(value.schemaVersion, 22)
+                value.layers.append(layer)
+                value.frames[index].rasterAssetID = assetID
+                value.frames[index].rasterLayerID = layer.id
+                value.frames[index].rasterPlacement = copied.rasterPlacement
+                value.frames[index].rasterReflection = copied.rasterReflection
+                value.frames[index].rasterQuarterTurns = copied.rasterQuarterTurns
+                value.frames[index].rasterCrop = copied.rasterCrop
+            }
+            try validateManagedRaster(frame: candidate.document.frames[index], record: record)
+            try preflightRasterDocument(candidate.document)
+            try checkCancellation()
+            guard document == before, imageClipboard == copied, copiedImageLayer == appearance, canPasteImage else { throw StudioCommandError.staleRevision }
+            editor = candidate
+            scheduleSave()
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     func originalImageSource(_ assetID: String) -> StoredImageSource? { retainedRasterFrames[assetID]?.sourceImage }
     var managedImageByteCount: Int {
@@ -1913,7 +2023,7 @@ final class StudioViewModel: ObservableObject {
         try storage.preflightAnimation(storageProject(candidate, rasters: retainedRasterFrames))
     }
     private func pruneManagedImages() {
-        let needed = editor.referencedRasterAssetIDsIncludingHistoryAndClipboard
+        let needed = editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
         retainedRasterFrames = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
     }
     func rasterData(_ assetID: String?) -> Data? { assetID.flatMap { retainedRasterFrames[$0]?.imageData } }

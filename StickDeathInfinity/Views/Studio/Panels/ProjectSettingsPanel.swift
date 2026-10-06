@@ -6,8 +6,11 @@ import SwiftUI
 
 struct ProjectSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @State private var showingOnionSettings = false
+    @State private var showingGridSettings = false
     
     var body: some View {
+        ScrollView {
         VStack(spacing: 0) {
             Capsule()
                 .fill(Color.white.opacity(0.2))
@@ -64,10 +67,10 @@ struct ProjectSettingsPanel: View {
                     .foregroundColor(.white)
                 Spacer()
                 
-                Button(action: {}) {
+                Button(action: { showingOnionSettings.toggle() }) {
                     Text("Edit")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.red)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(
@@ -83,6 +86,10 @@ struct ProjectSettingsPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             
+            if showingOnionSettings {
+                StudioOnionSettingsControls(vm: vm)
+            }
+
             // Grid (toggle + Edit)
             HStack(spacing: 10) {
                 Text("⊞")
@@ -92,10 +99,10 @@ struct ProjectSettingsPanel: View {
                     .foregroundColor(.white)
                 Spacer()
                 
-                Button(action: {}) {
+                Button(action: { showingGridSettings.toggle() }) {
                     Text("Edit")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.4))
+                        .foregroundColor(.red)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                         .background(
@@ -111,6 +118,8 @@ struct ProjectSettingsPanel: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             
+            if showingGridSettings { StudioGridSettingsControls(vm: vm) }
+
             PanelSettingsRow(icon: "✨", label: "Magic Cut") {}
             PanelSettingsRow(icon: "🖼", label: "Background Library") {}
             PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") {}
@@ -128,6 +137,7 @@ struct ProjectSettingsPanel: View {
             }
             
             Spacer().frame(height: 20)
+        }
         }
         .background(Color(hex: "#1a1a24"))
         .cornerRadius(16, corners: [.topLeft, .topRight])
@@ -162,3 +172,41 @@ struct PanelSettingsRow: View {
 // ═══════════════════════════════════════════════════════════════════════
 // Frames Viewer Panel
 // ═══════════════════════════════════════════════════════════════════════
+
+struct StudioOnionSettingsControls: View {
+    @ObservedObject var vm: StudioViewModel
+    var body: some View {
+                VStack(alignment: .leading, spacing: 10) {
+                    Stepper("Previous: \(vm.onionPreviousCount)", value: $vm.onionPreviousCount, in: 0...2)
+                        .accessibilityIdentifier("studio.onion.previous")
+                    Stepper("Next: \(vm.onionNextCount)", value: $vm.onionNextCount, in: 0...2)
+                        .accessibilityIdentifier("studio.onion.next")
+                    Text("Opacity: \(Int((vm.onionOpacity * 100).rounded()))%")
+                    Slider(value: $vm.onionOpacity, in: 0.05...0.8)
+                        .accessibilityLabel("Onion opacity").accessibilityIdentifier("studio.onion.opacity")
+                    Toggle("Red previous / blue next", isOn: $vm.onionTinted)
+                        .accessibilityIdentifier("studio.onion.tint")
+                    Text("Farther frames fade. Ghosts are hidden during playback and never included in export.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }.font(.system(size: 11, design: .monospaced)).padding(.horizontal, 14).padding(.vertical, 8)
+    }
+}
+
+struct StudioGridSettingsControls: View {
+    @ObservedObject var vm: StudioViewModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Spacing: \(Int(vm.gridSpacing.rounded())) canvas points")
+            Slider(value: $vm.gridSpacing, in: 8...160, step: 1)
+                .accessibilityLabel("Grid spacing").accessibilityIdentifier("studio.grid.spacing")
+            Text("Opacity: \(Int((vm.gridOpacity * 100).rounded()))%")
+            Slider(value: $vm.gridOpacity, in: 0.05...0.6)
+                .accessibilityLabel("Grid opacity").accessibilityIdentifier("studio.grid.opacity")
+            Picker("Tint", selection: $vm.gridTint) {
+                ForEach(StudioGridSettings.Tint.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+            }.pickerStyle(.segmented).accessibilityIdentifier("studio.grid.tint")
+            Text("Grid moves and zooms with the canvas. It is a visual guide and is never included in exported artwork.")
+                .font(.caption2).foregroundColor(.secondary)
+        }.font(.system(size: 11, design: .monospaced)).padding(.horizontal, 14).padding(.vertical, 8)
+    }
+}

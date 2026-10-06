@@ -96,6 +96,27 @@ private struct Failure: Error { let message: String }
         try require(vm.selectedElementIDs.isEmpty && vm.document == initial, "Subtract changed document")
         pass("replace Add Subtract and empty regions operate on actual stable drawing IDs")
 
+        try select(left)
+        try require(vm.selectVisibleArtwork(inverting: true) && vm.selectedElementIDs == [blue.id], "Invert did not complement visible artwork")
+        try require(vm.selectVisibleArtwork() && vm.selectedElementIDs == [red.id, blue.id], "Select all lost visible artwork")
+        try require(vm.selectVisibleArtwork(inverting: true) && vm.selectedElementIDs.isEmpty, "Invert all must produce explicit empty selection")
+        try require(vm.document == initial && vm.canUndo == undoBefore && !vm.isDirty, "Selection actions created document history")
+        let selectionBeforeCancel = vm.selectedElementIDs
+        try require(!vm.selectVisibleArtwork(checkCancellation: { throw CancellationError() }) && vm.selectedElementIDs == selectionBeforeCancel, "Cancelled All changed selection")
+        vm.message = nil
+        let guarded = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Eligibility"), cachesDirectory: root.appendingPathComponent("EligibilityCache")))
+        let createdGuarded = await guarded.createProject(name: "Selection eligibility", width: 128, height: 128, fps: 12)
+        try require(createdGuarded && guarded.commitElement(shape(guarded.activeLayerID)), "Eligibility fixture")
+        guarded.selectedTool = .lasso
+        guarded.toggleLayerVisibility(guarded.activeLayerID)
+        try require(guarded.selectVisibleArtwork() && guarded.selectedElementIDs.isEmpty, "All selected hidden artwork")
+        guarded.toggleLayerVisibility(guarded.activeLayerID)
+        guarded.toggleLayerLock(guarded.activeLayerID)
+        try require(guarded.selectVisibleArtwork(inverting: true) && guarded.selectedElementIDs.isEmpty, "Invert selected locked artwork")
+        guarded.toggleLayerLock(guarded.activeLayerID)
+        try require(guarded.selectVisibleArtwork() && guarded.selectedElementIDs.count == 1, "Unlock did not restore selection eligibility")
+        pass("All and Invert respect visible editable IDs explicit emptiness and cancellation")
+
         let square = [CGPoint(x: 8,y: 8), .init(x: 40,y: 8), .init(x: 40,y: 40), .init(x: 8,y: 40), .init(x: 8,y: 8)]
         try select(square, kind: .freehand)
         try require(vm.selectedElementIDs == [red.id], "Freehand enclosure failed")
@@ -244,6 +265,37 @@ private struct Failure: Error { let message: String }
         let invalidCapture = vm.beginAreaSelection()!
         try require(!vm.finishAreaSelection(invalidCapture,points:[]) && vm.document == stable && vm.selectedElementIDs == stableIDs, "Invalid input changed actual selection")
         pass("invalid nonfinite degenerate oversized and out-of-range outlines fail without changing production state")
+        let legacyStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("LegacyDocuments"), cachesDirectory: root.appendingPathComponent("LegacyCache"))
+        let legacyVM = StudioViewModel(storage: legacyStorage)
+        let legacyCreated = await legacyVM.createProject(name: "Historical text selection", width: 128, height: 128, fps: 12)
+        try require(legacyCreated, "Legacy project creation")
+        let legacy = DrawnElement(id: "legacy-text", tool: .text,
+            points: [.init(x: 16, y: 48)], color: "#FF0000", width: 8, opacity: 1,
+            fillColor: "SDI", layerID: legacyVM.activeLayerID)
+        try require(legacyVM.commitElement(legacy), "Historical text commit")
+        let originalText = legacyVM.document
+        let originalPixels = try render(originalText)
+        guard let textBounds = legacy.selectionBounds else { throw Failure(message: "Legacy text has no bounds") }
+        try require(textBounds.width > 24 && textBounds.height > 8, "Text still uses the single origin stroke bounds")
+        legacyVM.selectedTool = .move
+        try require(legacyVM.selectElement(at: .init(x: textBounds.maxX - 2, y: textBounds.midY)) == legacy.id,
+                    "Last glyph cannot be selected")
+        legacyVM.selectedTool = .lasso; legacyVM.areaSelectionKind = .rectangle
+        guard let textCapture = legacyVM.beginAreaSelection() else { throw Failure(message: "Legacy lasso unavailable") }
+        try require(legacyVM.finishAreaSelection(textCapture, points: [.init(x: 8, y: 40), .init(x: 120, y: 110)]) &&
+                    legacyVM.selectedElementIDs == [legacy.id], "Enclosed historical text not selected")
+        legacyVM.deleteSelected(); try require(legacyVM.currentFrame.elements.isEmpty, "Selected historical text not deleted")
+        legacyVM.undo(); try require(try render(legacyVM.document) == originalPixels, "Undo changed historical text rendering")
+        let legacySaved = await legacyVM.save(); try require(legacySaved, "Historical text save")
+        let legacyOpened = StudioViewModel(storage: legacyStorage)
+        await legacyOpened.loadProjects()
+        guard let legacyMetadata = legacyOpened.savedProjects.first(where: { $0.id == originalText.id }) else { throw Failure(message: "Historical project missing from list") }
+        let openedLegacy = await legacyOpened.openProject(legacyMetadata)
+        try require(openedLegacy && legacyOpened.currentFrame.elements.first == legacy &&
+                    legacyOpened.currentFrame.elements.first?.selectionBounds == textBounds,
+                    "Cold reopen rewrote historical text or lost measured bounds")
+        pass("historical text glyph bounds support hit testing lasso delete Undo and cold reopen without rewriting originals")
+
         print("PASS \(passed) production area-selection groups")
     }
 }

@@ -118,7 +118,15 @@ enum StudioCommand: Codable {
         let placement: StudioRasterPlacement
     }
     struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
-    struct CanvasOptions: Codable { let grid: Bool?; let onion: Bool? }
+    struct CanvasOptions: Codable {
+        let grid: Bool?
+        let onion: Bool?
+        let gridSettings: StudioGridSettings?
+        let onionSettings: StudioOnionSettings?
+        init(grid: Bool? = nil, onion: Bool? = nil, gridSettings: StudioGridSettings? = nil, onionSettings: StudioOnionSettings? = nil) {
+            self.grid = grid; self.onion = onion; self.gridSettings = gridSettings; self.onionSettings = onionSettings
+        }
+    }
 
     case cropImage(CropImage)
     case setFrameHold(SetFrameHold)
@@ -350,7 +358,7 @@ enum StudioCommandExecutor {
             "orderElements": ["frame", "elementIDs", "direction"],
             "reflectElements": ["frame", "elementIDs", "axis"],
             "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
-            "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion"]
+            "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"]
         ]
         func textDescriptor(_ value: Any) throws {
             let fields = try object(value, keys: ["version", "content", "style"])
@@ -365,6 +373,10 @@ enum StudioCommandExecutor {
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
+            if kind == "canvasOptions" {
+                if let settings = fields["gridSettings"] { _ = try object(settings, keys: ["spacing", "opacity", "tint"]) }
+                if let settings = fields["onionSettings"] { _ = try object(settings, keys: ["previousCount", "nextCount", "opacity", "tinted"]) }
+            }
             if kind == "updateAudioClip" {
                 guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
                 let values = try object(settings, keys: ["volume", "isMuted", "fades"])
@@ -687,10 +699,12 @@ enum StudioCommandExecutor {
             try editor.updateImagePlacement(frameID: id, assetID: value.assetID,
                 placement: value.placement, checkCancellation: checkCancellation)
         case .canvasOptions(let value):
-            guard value.grid != nil || value.onion != nil else { throw StudioCommandError.invalidSettings }
+            guard value.grid != nil || value.onion != nil || value.gridSettings != nil || value.onionSettings != nil else { throw StudioCommandError.invalidSettings }
             try editor.change {
                 if let grid = value.grid { $0.gridEnabled = grid }
                 if let onion = value.onion { $0.onionEnabled = onion }
+                if let settings = value.gridSettings { $0.gridSettings = settings }
+                if let settings = value.onionSettings { $0.onionSettings = settings }
             }
         }
     }

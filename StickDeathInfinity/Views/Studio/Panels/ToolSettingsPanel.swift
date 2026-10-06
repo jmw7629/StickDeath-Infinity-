@@ -475,6 +475,18 @@ struct FloatingToolSettingsPanel: View {
                      : "Drag drawn artwork, or choose Move image on canvas for the imported picture.")
                     .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.guidance")
+                HStack(spacing: 8) {
+                    Button("Copy image") { _ = vm.copyImage() }
+                        .disabled(vm.prepareImagePlacement() == nil)
+                        .accessibilityIdentifier("studio.image.copy")
+                    Button("Paste image") { _ = vm.pasteImage() }
+                        .disabled(!vm.canPasteImage)
+                        .accessibilityIdentifier("studio.image.paste")
+                }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                if vm.hasCopiedImage {
+                    Text("Image copied within this project. Paste into a blank frame preserves its crop, flips and position.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                }
                 if vm.currentFrame.rasterPlacement != nil {
                     Button(vm.isMovingImageOnCanvas ? "Move drawings" : "Move image on canvas") {
                         _ = vm.setImageCanvasMove(!vm.isMovingImageOnCanvas)
@@ -640,6 +652,12 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityIdentifier("studio.selection.mode." + mode.rawValue)
                     }
                 }
+                HStack(spacing: 8) {
+                    Button("Select all") { _ = vm.selectVisibleArtwork() }
+                        .accessibilityIdentifier("studio.selection.all")
+                    Button("Invert") { _ = vm.selectVisibleArtwork(inverting: true) }
+                        .accessibilityIdentifier("studio.selection.invert")
+                }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
                 if vm.areaSelectionKind == .freehand {
                     SettingsSlider(label: "Smoothness", value: $vm.areaSelectionSmoothing, range: 0...10, unit: "px", accent: .red)
                 }

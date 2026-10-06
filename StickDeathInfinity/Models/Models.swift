@@ -5,6 +5,11 @@
 
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
 // MARK: - User Profile
 struct UserProfile: Codable, Identifiable {
@@ -100,6 +105,13 @@ struct DrawnElement: Codable, Identifiable, Equatable {
         let bounds: CGRect
         if let text, let point = points.first {
             bounds = text.style.bounds(at: CGPoint(x: point.x, y: point.y))
+        } else if tool == .text {
+            // Historical text lives in fillColor and uses a top-leading,
+            // unwrapped monospaced font. Its single origin is not its hit box.
+            guard let content = fillColor, let point = points.first,
+                  let measured = StudioLegacyTextGeometry.bounds(content: content,
+                    at: CGPoint(x: point.x, y: point.y), fontSize: width * 3) else { return nil }
+            bounds = measured
         } else if let mask = fillMask {
             guard let first = mask.spans.first, let last = mask.spans.last,
                   let left = mask.spans.map(\.start).min(), let right = mask.spans.map(\.end).max() else { return nil }
@@ -114,6 +126,30 @@ struct DrawnElement: Codable, Identifiable, Equatable {
         if reflection?.vertical == true { transformed.origin.y = -bounds.maxY }
         let placed = transformed.offsetBy(dx: translation?.x ?? 0, dy: translation?.y ?? 0)
         return transform?.bounds(placed) ?? placed
+    }
+}
+
+/// Measures historical text without rewriting the original or changing its renderer.
+/// All selection, group transform and reflection paths consume these same bounds.
+enum StudioLegacyTextGeometry {
+    static func bounds(content: String, at origin: CGPoint, fontSize: CGFloat) -> CGRect? {
+        guard fontSize.isFinite, fontSize > 0, fontSize <= 3072,
+              origin.x.isFinite, origin.y.isFinite,
+              content.utf8.count <= 65_536,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        #if canImport(UIKit)
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        #elseif canImport(AppKit)
+        let font = NSFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        #endif
+        let measured = (content as NSString).boundingRect(
+            with: CGSize(width: 100_000, height: 100_000),
+            options: [.usesLineFragmentOrigin, .usesFontLeading],
+            attributes: [.font: font], context: nil)
+        guard measured.width.isFinite, measured.height.isFinite,
+              measured.width > 0, measured.height > 0 else { return nil }
+        return CGRect(x: origin.x, y: origin.y,
+                      width: ceil(measured.width), height: ceil(measured.height))
     }
 }
 

@@ -482,18 +482,25 @@ struct AddImageOption: View {
 // MARK: - Studio Menu Sheet
 struct StudioMenuSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @State private var showingOnionSettings = false
+    @State private var showingGridSettings = false
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             
+            ScrollView {
             VStack(spacing: 0) {
                 // Drag handle
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.white.opacity(0.2))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 8)
+                HStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.2)).frame(width: 36, height: 4)
+                    Spacer()
+                }.frame(height: 44).overlay(alignment: .trailing) {
+                    Button(action: { dismiss() }) { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
+                }
                 
                 // PROJECT section
                 SectionLabel(text: "PROJECT")
@@ -517,8 +524,10 @@ struct StudioMenuSheet: View {
                     }
                 }
                 
-                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin)
-                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled)
+                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
+                if showingOnionSettings { StudioOnionSettingsControls(vm: vm) }
+                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
+                if showingGridSettings { StudioGridSettingsControls(vm: vm) }
                 
                 MenuSheetRow(icon: "✨", label: "Magic Cut") {
                     dismiss()
@@ -565,6 +574,7 @@ struct StudioMenuSheet: View {
                 
                 Spacer()
             }
+            }.accessibilityIdentifier("studio.menu.scroll")
         }
     }
 }
@@ -612,6 +622,7 @@ struct MenuSheetToggleRow: View {
     let label: String
     var hasEdit: Bool = false
     @Binding var isOn: Bool
+    var onEdit: (() -> Void)? = nil
     
     var body: some View {
         HStack(spacing: 12) {
@@ -620,8 +631,11 @@ struct MenuSheetToggleRow: View {
                 .font(.system(size: 14, weight: .medium, design: .monospaced))
                 .foregroundColor(.white)
             Spacer()
-            if hasEdit {
-                Text("Edit")
+            if hasEdit, let onEdit {
+                Button("Edit", action: onEdit)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("Edit " + label)
+                    .accessibilityIdentifier("studio.menu.edit." + label.lowercased())
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
             }

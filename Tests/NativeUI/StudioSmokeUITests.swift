@@ -119,7 +119,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(app.buttons["studio.image.apply"].exists, "No decoded frame exists yet")
         capture(app, name: "rotoscope-real-files-import-panel")
         photos.tap()
-        let cancelPhotos = app.navigationBars.buttons["Cancel"].firstMatch
+        // Photos can retain an offscreen Cancel node with an infinite frame.
+        // Address the visible video picker navigation bar, not the first duplicate.
+        let cancelPhotos = app.navigationBars["Videos"].buttons["Cancel"]
         try waitForHittable(cancelPhotos, app: app, name: "rotoscope-photos-cancel-ready")
         capture(app, name: "rotoscope-native-photos-video-picker")
         captureHierarchy(app, name: "rotoscope-native-photos-video-hierarchy")
@@ -782,10 +784,10 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testGuestStudioPortraitAndLandscape() throws {
+    func testGuestStudioPortraitLandscapeAndPersistedGuideControls() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        _ = try createProjectIfLibraryIsShown(app)
+        let projectName = try createProjectIfLibraryIsShown(app)
         // FIT now belongs to the selected Hand/Zoom tool, as requested.
         try selectToolbarTool("hand", app: app)
         try waitForButton("FIT", in: app)
@@ -820,6 +822,63 @@ final class StudioSmokeUITests: XCTestCase {
         landscapeCapture.name = "studio-landscape"
         landscapeCapture.lifetime = .keepAlways
         add(landscapeCapture)
+        XCUIDevice.shared.orientation = .portrait
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in app.frame.height > app.frame.width }, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        func menuControl(_ id: String, in target: XCUIApplication) throws -> XCUIElement {
+            let control = target.descendants(matching: .any)[id].firstMatch
+            for _ in 0..<5 {
+                if control.exists && control.isHittable { return control }
+                target.scrollViews["studio.menu.scroll"].swipeUp(velocity: .slow)
+            }
+            XCTFail("Guide control inaccessible: \(id)"); throw NSError(domain: "GuideControls", code: 1)
+        }
+        func closeMenu(_ target: XCUIApplication) throws {
+            let close = target.buttons["studio.menu.close"]
+            for _ in 0..<5 { if close.isHittable { break }; target.scrollViews["studio.menu.scroll"].swipeDown(velocity: .slow) }
+            XCTAssertTrue(close.isHittable); close.tap()
+        }
+        app.buttons["studio.menu.open"].tap()
+        try menuControl("studio.menu.edit.onion", in: app).tap()
+        let previous = app.steppers["studio.onion.previous"]
+        XCTAssertTrue(previous.waitForExistence(timeout: 5))
+        previous.buttons["studio.onion.previous-Increment"].tap()
+        app.steppers["studio.onion.next"].buttons["studio.onion.next-Increment"].tap()
+        let tint = app.switches["studio.onion.tint"]
+        try menuControl("studio.onion.tint", in: app).tap()
+        XCTAssertEqual(tint.value as? String, "1")
+        XCTAssertTrue(previous.label.contains("2") || app.staticTexts["Previous: 2"].exists)
+        capture(app, name: "onion-range-tint-controls")
+        try menuControl("studio.menu.edit.onion", in: app).tap()
+        try menuControl("studio.menu.edit.grid", in: app).tap()
+        let spacing = app.sliders["studio.grid.spacing"]
+        XCTAssertTrue(spacing.waitForExistence(timeout: 5)); spacing.adjust(toNormalizedSliderPosition: 0.65)
+        let opacity = app.sliders["studio.grid.opacity"]
+        opacity.adjust(toNormalizedSliderPosition: 0.5)
+        app.segmentedControls["studio.grid.tint"].buttons["Red"].tap()
+        let savedSpacing = spacing.value as? String, savedOpacity = opacity.value as? String
+        XCTAssertNotNil(savedSpacing); XCTAssertNotNil(savedOpacity)
+        capture(app, name: "grid-spacing-opacity-tint-controls")
+        try closeMenu(app)
+        let save = app.buttons["studio.save"]; save.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"), evaluatedWith: save).waitUntilFulfilled(timeout: 8))
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        try waitForStableCanvas(reopened.descendants(matching: .any)["studio.canvas"].firstMatch)
+        reopened.buttons["studio.menu.open"].tap()
+        try menuControl("studio.menu.edit.onion", in: reopened).tap()
+        XCTAssertEqual(reopened.switches["studio.onion.tint"].value as? String, "1")
+        XCTAssertTrue(reopened.steppers["studio.onion.previous"].label.contains("2") || reopened.staticTexts["Previous: 2"].exists)
+        try menuControl("studio.menu.edit.onion", in: reopened).tap()
+        try menuControl("studio.menu.edit.grid", in: reopened).tap()
+        XCTAssertEqual(reopened.sliders["studio.grid.spacing"].value as? String, savedSpacing)
+        XCTAssertEqual(reopened.sliders["studio.grid.opacity"].value as? String, savedOpacity)
+        XCTAssertTrue(reopened.segmentedControls["studio.grid.tint"].buttons["Red"].isSelected)
+        capture(reopened, name: "guide-settings-cold-reopened")
+        try closeMenu(reopened)
     }
 
     @MainActor

@@ -34,7 +34,21 @@ struct StudioFrameRenderer {
         fileprivate let elements: [DrawnElement]
         fileprivate let strokes: [String: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)]
     }
-    /// Performs all brush validation/allocation before a Canvas or export draws.
+    /// Editor-only tint preserves coverage, including black artwork.
+    static func onionContext(_ source: GraphicsContext, opacity: Double, previous: Bool, tinted: Bool) -> GraphicsContext {
+        var context = source
+        context.opacity *= opacity
+        if tinted {
+            var matrix = ColorMatrix()
+            matrix.r1 = 0; matrix.g2 = 0; matrix.b3 = 0
+            matrix.r4 = previous ? 1 : 0
+            matrix.g4 = 0
+            matrix.b4 = previous ? 0 : 1
+            context.addFilter(.colorMatrix(matrix))
+        }
+        return context
+    }
+
     static func prepare(frame: AnimationFrame, liveElement: DrawnElement? = nil) throws -> PreparedBrushes {
         let elements = (frame.elements + (liveElement.map { [$0] } ?? [])).filter { $0.brush != nil }
         var strokes: [String: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)] = [:]
