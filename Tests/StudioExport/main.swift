@@ -230,21 +230,59 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder) }
             try require(try fm.contentsOfDirectory(atPath: folder.path).count == 2, "Visible missing raster published or left partial output")
         }
-        await test("missing or corrupt raster removes all partial files and preserves prior exports") {
+        await test("missing or corrupt raster fails preflight without output and preserves prior exports") {
             let folder = try parent(root, "failed-asset"); var doc = try document(colors: ["#FF0000", "#0000FF"])
             doc.frames[1].rasterAssetID = "missing"; doc.frames[1].rasterLayerID = doc.activeLayerID
             let sentinel = folder.appendingPathComponent("keep.txt"); try Data("keep".utf8).write(to: sentinel)
-            var sawPartialFrame = false
-            try await rejects {
-                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, progress: { done, _ in
-                    if done == 1 {
-                        sawPartialFrame = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).contains { fm.fileExists(atPath: $0.appendingPathComponent("frame_000000.png").path) }) == true
-                    }
-                })
-            }
-            try require(sawPartialFrame && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"], "Partial output remained or earlier file was removed")
-            try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, rasterData: { _ in Data("corrupt".utf8) }) }
-            try require(try Data(contentsOf: sentinel) == Data("keep".utf8), "Earlier file changed")
+            var progress: [Int] = []
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    progress: { done, _ in progress.append(done) })
+                throw Failure(message: "Missing raster returned an export")
+            } catch StudioExportService.ExportError.missingRaster { }
+            try require(progress.isEmpty && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Missing-source preflight rendered output or changed a prior export")
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    rasterData: { _ in Data("corrupt".utf8) }, progress: { done, _ in progress.append(done) })
+                throw Failure(message: "Corrupt raster returned an export")
+            } catch StudioExportService.ExportError.invalidRaster { }
+            try require(progress.isEmpty && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Corrupt-source preflight rendered output or changed a prior export")
+        }
+        await test("real PNG write failure after one written frame removes only owned partial output") {
+            let folder = try parent(root, "failed-write"), doc = try document(colors: ["#FF0000", "#0000FF"])
+            let sentinel = folder.appendingPathComponent("keep.txt"); try Data("keep".utf8).write(to: sentinel)
+            var progress: [Int] = [], injected = false, firstFrame: URL?, setupError: String?
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    progress: { done, _ in
+                        progress.append(done)
+                        guard done == 1 else { return }
+                        do {
+                            let staging = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                                .filter { $0.lastPathComponent.hasPrefix(".sdi-export-") && $0.pathExtension == "partial" }
+                            guard staging.count == 1 else { throw Failure(message: "Expected one owned staging directory") }
+                            let written = staging[0].appendingPathComponent("frame_000000.png")
+                            try pixel(decode(written).pixel(32, 16), [255, 0, 0, 255])
+                            firstFrame = written
+                            // Obstruct only this test export's next output path.
+                            // The nonempty directory cannot be replaced by a PNG file.
+                            let blocker = staging[0].appendingPathComponent("frame_000001.png", isDirectory: true)
+                            try fm.createDirectory(at: blocker, withIntermediateDirectories: false)
+                            try Data("owned fixture".utf8).write(to: blocker.appendingPathComponent("blocker.txt"))
+                            injected = true
+                        } catch { setupError = String(describing: error) }
+                    })
+                throw Failure(message: "Obstructed PNG write returned success")
+            } catch StudioExportService.ExportError.encodeFailed { }
+            try require(setupError == nil && injected && firstFrame != nil && progress == [1],
+                        "Write-failure fixture did not observe one real PNG: \(setupError ?? "none")")
+            try require(fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        !fm.fileExists(atPath: firstFrame!.path) && Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Write failure left owned partial files or damaged an earlier export")
         }
         await test("Task cancellation after a real written frame removes owned partial output") {
             let folder = try parent(root, "cancel"); let doc = try document(); var progress: [Int] = []

@@ -18,6 +18,78 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
 }
 
 @main @MainActor struct StudioDocumentTests {
+    private static func imageMaskHistoryBudget() throws {
+        var value = try StudioDocument.new(name: "Wand history budget", width: 320, height: 240, fps: 12)
+        value.schemaVersion = 32
+        let primary = value.activeLayerID, alias = UUID().uuidString
+        value.layers.append(CanvasLayer(id: alias, name: "Linked region"))
+        let placement = StudioRasterPlacement(x: 0, y: 0, width: 320, height: 240)
+        let instance = StudioRasterLayerInstance(layerID: primary, placement: placement)
+        let geometry = StudioImageRegionMask.Geometry(instance)!
+        let sources = (0...8).map { _ in "image-" + UUID().uuidString }
+        // Each revision allocates distinct valid span arrays, not a transform
+        // retaining the same copy-on-write mask. Together both masks cost ~6MiB.
+        @MainActor func mask(_ revision: Int, inverted: Bool) -> StudioImageRegionMask {
+            let spans = (0..<(131_072 - revision)).map {
+                StudioImageRegionMask.Span(row: $0 / 1024, start: ($0 % 1024) * 4, end: ($0 % 1024) * 4 + 1)
+            }
+            return StudioImageRegionMask(width: 4096, height: 128, spans: spans, inverted: inverted,
+                samplingGeometry: geometry, placementGeometry: geometry)
+        }
+        value.frames[0].rasterAssetID = sources[0]
+        value.frames[0].rasterLayerID = primary
+        value.frames[0].rasterPlacement = placement
+        value.frames[0].rasterRegionMask = mask(0, inverted: false)
+        value.frames[0].rasterAliases = [.init(layerID: alias, placement: placement, regionMask: mask(0, inverted: true))]
+        var editor = try StudioDocumentEditor(document: value)
+        for revision in 1...8 {
+            try editor.change {
+                $0.frames[0].rasterAssetID = sources[revision]
+                $0.frames[0].rasterRegionMask = mask(revision, inverted: false)
+                $0.frames[0].rasterAliases![0].regionMask = mask(revision, inverted: true)
+            }
+        }
+        let final = editor.document
+        try require(final.frames[0].rasterAssetID == sources[8] && final.frames[0].rasterRegionMask == mask(8, inverted: false),
+                    "History pruning changed the current image or mask")
+        try require(editor.referencedRasterAssetIDsIncludingHistoryAndClipboard == Set(sources[3...8]),
+                    "Primary and alias mask bytes did not bound history, or discarded a retained Undo source")
+        let beforeInvalid = editor.document
+        // Invalid mask dimensions are rejected without consuming history.
+        do {
+            try editor.change {
+                $0.frames[0].rasterRegionMask = StudioImageRegionMask(width: 0, height: 128, spans: [])
+            }
+            throw Failure(text: "Invalid image mask committed")
+        } catch StudioDocumentError.invalid { }
+        try require(editor.document == beforeInvalid, "Rejected mask changed document/history")
+        var undos = 0
+        while editor.canUndo {
+            editor.undo(); undos += 1
+            let expected = 8 - undos
+            try require(editor.document.frames[0].rasterAssetID == sources[expected]
+                && editor.document.frames[0].rasterRegionMask == mask(expected, inverted: false)
+                && editor.document.frames[0].rasterAliases?[0].regionMask == mask(expected, inverted: true),
+                "Undo lost a primary/alias mask or managed source identity")
+        }
+        try require(undos == 5, "Image-mask history did not retain the bounded five reversible snapshots")
+        try require(editor.referencedRasterAssetIDsIncludingHistoryAndClipboard == Set(sources[3...8]),
+                    "Undo discarded a source still required by Redo")
+        for _ in 0..<undos { editor.redo() }
+        try require(editor.document.frames == final.frames && editor.document.layers == final.layers && !editor.canRedo,
+                    "Redo did not restore exact final region geometry and source")
+        editor.undo()
+        try editor.renameProject("Branch after Undo")
+        try require(!editor.canRedo && !editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.contains(sources[8]),
+                    "New edit retained stale Redo or evicted the wrong source")
+        var small = try StudioDocumentEditor(document: StudioDocument.new(name: "Small history", width: 320, height: 240, fps: 12))
+        for index in 1...55 { try small.renameProject("Small history \(index)") }
+        var smallUndos = 0
+        while small.canUndo { small.undo(); smallUndos += 1 }
+        try require(smallUndos == 50, "Image mask accounting changed ordinary history depth")
+        print("PASS bounded distinct primary/alias image-mask history, source lifetime, Undo/Redo and invalid-mask rollback")
+    }
+
     private static func linkedRasterJourneys() throws {
         var original = try StudioDocument.new(name: "Linked pictures", width: 320, height: 240, fps: 12)
         let primary = original.activeLayerID, frameID = original.activeFrameID
@@ -575,6 +647,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             let openedGrid = await gridReopened.openProject(try onionStore.loadAnimation(id: onion.document.id)!.metadata)
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
+            try imageMaskHistoryBudget()
             try linkedRasterJourneys()
             // Historical disabled colors were opaque metadata, including eight-digit and
             // noncanonical strings. Opening and editing unrelated content must preserve them.
@@ -660,7 +733,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
                 try require(openedFinal && finalSpace.document == dirtyBefore, "Retry cold reopen lost dirty artwork")
             }
             print("PASS actual VM payload/receipt disk-full dirty retention, old cold reader, retry and final cold reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 22 journeys")
+            print("STUDIO_DOCUMENT_TESTS=PASS 23 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

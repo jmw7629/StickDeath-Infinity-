@@ -1168,6 +1168,75 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(vm.beginMove(at: .init(x: 90, y: 80)) != nil && vm.hasMixedArtworkSelection, "Move Add could not restore image to drawing-only group")
             try require(vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Selection or rejected clipboard changed document/history")
         }
+        try await test("mixed selected layer locking deduplicates targets and preserves pixels sources Undo and cold state") {
+            let (vm, store, asset, _, _) = try await mixedFixture()
+            let imageLayer = vm.currentFrame.rasterLayerID!
+            try selectMixed(vm)
+            guard let sameLayer = vm.prepareSelectionLayerLock() else { throw Failure(message: "Same-layer mixed lock unavailable") }
+            try require(sameLayer.layerIDs == [imageLayer] && sameLayer.image?.assetID == asset,
+                        "Drawing and image on one layer were not deduplicated")
+            vm.clearElementSelection(); vm.addLayer()
+            let drawingLayer = vm.activeLayerID
+            let drawing = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 25, y: 45), .init(x: 45, y: 45)], color: "#0000FF", width: 4, opacity: 1, layerID: drawingLayer)
+            try require(vm.commitElement(drawing), "Second layer drawing fixture")
+            vm.duplicateFrame(); vm.selectLayer(imageLayer)
+            try selectMixed(vm)
+            guard let capture = vm.prepareSelectionLayerLock() else { throw Failure(message: "Mixed lock capture unavailable") }
+            try require(Set(capture.layerIDs) == [imageLayer, drawingLayer] && capture.imageSelectionID != nil,
+                        "Mixed lock omitted image/drawing layer or image selection identity")
+            let before = vm.document, beforePixels = try render(vm, transparent: true).bytes
+            let source = vm.originalImageSource(asset)
+            var checkpoints = 0
+            try require(vm.lockSelectedLayers(capture, checkCancellation: { checkpoints += 1 }), "Mixed layer lock failed")
+            let locked = vm.document
+            try require(vm.layers.filter(\.isFullyLocked).map(\.id).sorted() == capture.layerIDs &&
+                vm.currentFrame.elements.count == before.frames.first(where: { $0.id == before.activeFrameID })!.elements.count &&
+                vm.document.frames == before.frames && vm.selectedElementIDs.isEmpty && !vm.isSelectingMixedArtwork &&
+                render(vm, transparent: true).bytes == beforePixels && vm.originalImageSource(asset) == source,
+                "Lock changed content/source/pixels, missed a target or retained image selection")
+            vm.undo()
+            try require(vm.document.layers == before.layers && vm.document.frames == before.frames,
+                        "One Undo failed to restore all mixed target layers")
+            vm.redo()
+            try require(vm.document.layers == locked.layers && vm.document.frames == locked.frames,
+                        "Mixed lock Redo changed the saved targets")
+            let saved = await vm.save(); try require(saved, "Mixed lock save failed")
+            let reopened = StudioViewModel(storage: store); await reopened.loadProjects()
+            guard let metadata = reopened.savedProjects.first(where: { $0.id == locked.id }) else { throw Failure(message: "Missing mixed lock project") }
+            let opened = await reopened.openProject(metadata)
+            try require(opened && reopened.document.layers == locked.layers && reopened.document.frames == locked.frames &&
+                reopened.originalImageSource(asset) == source && render(reopened, transparent: true).bytes == beforePixels,
+                "Cold mixed lock lost locks, image originals or rendered content")
+            vm.undo(); try selectMixed(vm)
+            guard let cancelled = vm.prepareSelectionLayerLock() else { throw Failure(message: "No cancellation target") }
+            let unchanged = vm.document, selection = vm.selectedElementIDs, undo = vm.canUndo, redo = vm.canRedo
+            for stop in 1...checkpoints {
+                var calls = 0
+                try require(!vm.lockSelectedLayers(cancelled, checkCancellation: {
+                    calls += 1; if calls == stop { throw CancellationError() }
+                }) && vm.document == unchanged && vm.selectedElementIDs == selection &&
+                    vm.prepareSelectionLayerLock() == cancelled && vm.canUndo == undo && vm.canRedo == redo,
+                    "Cancelled mixed lock partially mutated document/history/selection")
+            }
+            // Recreate the same explicit selection without changing revision;
+            // the former confirmation must not regain authority over its image.
+            vm.clearElementSelection(); try selectMixed(vm)
+            try require(vm.document == unchanged && vm.prepareSelectionLayerLock() != cancelled &&
+                !vm.lockSelectedLayers(cancelled) && vm.document == unchanged,
+                "Same-revision image deselect/reselect revived a stale lock confirmation")
+            guard let latest = vm.prepareSelectionLayerLock() else { throw Failure(message: "No late-cancel lock capture") }
+            var lateCalls = 0
+            try require(!vm.lockSelectedLayers(latest, checkCancellation: {
+                lateCalls += 1
+                if lateCalls == checkpoints { vm.deselectAreaImage() }
+            }) && vm.document == unchanged, "Late image deselection allowed partial mixed layer locking")
+            try selectMixed(vm)
+            vm.toggleLayerVisibility(drawingLayer)
+            let hidden = vm.document
+            try require(vm.prepareSelectionLayerLock() == nil && !vm.lockSelectedLayers(latest) && vm.document == hidden,
+                        "Hidden or stale mixed target was silently omitted")
+        }
         try await test("mixed clipboard Cut Undo Redo Paste retains editable identities source geometry and cold pixels") {
             let (vm, store, asset, line, other) = try await mixedFixture()
             try selectMixed(vm)

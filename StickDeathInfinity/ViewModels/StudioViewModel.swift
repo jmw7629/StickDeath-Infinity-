@@ -2296,19 +2296,25 @@ final class StudioViewModel: ObservableObject {
         let frameID: String
         let elementIDs: Set<String>
         let layerIDs: [String]
+        let image: AreaImageIdentity?
+        let imageSelectionID: UUID?
     }
     func prepareSelectionLayerLock() -> SelectionLayerLockCapture? {
-        guard !hasMixedArtworkSelection, isEditing, selectedTool == .move, !isPlaying, !isSaving,
+        guard isEditing, selectedTool == .move, !isPlaying, !isSaving,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
         let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
         guard selected.count == selectedElementIDs.count else { return nil }
-        let ids = Set(selected.compactMap(\.layerID))
+        let image = isSelectingMixedArtwork ? validSelectedArtworkImage : nil
+        guard !isSelectingMixedArtwork || image != nil else { return nil }
+        var ids = Set(selected.compactMap(\.layerID))
+        if let image { ids.insert(image.layerID) }
         guard !ids.isEmpty, ids.count <= StudioCommandExecutor.maximumCommands,
               selected.allSatisfy({ $0.layerID != nil }),
               ids.allSatisfy({ id in layers.contains { $0.id == id && $0.visible && $0.opacity > 0 && !$0.isFullyLocked } }) else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
-                     elementIDs: selectedElementIDs, layerIDs: ids.sorted())
+                     elementIDs: selectedElementIDs, layerIDs: ids.sorted(), image: image,
+                     imageSelectionID: image == nil ? nil : imageMoveTarget?.selectionID)
     }
     /// Explicitly locks whole layers, across frames, after the UI discloses that
     /// scope. One typed transaction makes every affected layer one Undo step.
@@ -2326,7 +2332,7 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareSelectionLayerLock() == capture else { throw StudioCommandError.staleRevision }
                 })
-            editor.selectedElementIDs.removeAll()
+            clearElementSelection()
             return true
         } catch { message = error.localizedDescription; return false }
     }

@@ -641,12 +641,12 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (vm.hasMixedArtworkSelection && (action.contains("Fwd") || action.contains("Back") || action.contains("Lock"))))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (vm.hasMixedArtworkSelection && (action.contains("Fwd") || action.contains("Back"))))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
                 if vm.hasMixedArtworkSelection {
-                    Text("Copy and Cut preserve the selected drawings and image together. Ordering and layer locking require selecting one kind of artwork.")
+                    Text("Copy and Cut preserve the selected drawings and image together. Lock layers includes both kinds of artwork; ordering requires selecting one kind.")
                         .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                         .accessibilityIdentifier("studio.selection.mixed-limitations")
                 }

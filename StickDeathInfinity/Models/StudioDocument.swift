@@ -1511,6 +1511,12 @@ struct StudioDocumentEditor {
             var bytes = value.layers.count * 512 + value.audioClips.count * 512
             for frame in value.frames {
                 bytes += (frame.rasterAliases?.count ?? 0) * 512
+                // Image-region masks are retained in full Undo snapshots just
+                // like drawing fill masks, including linked-image instances.
+                bytes += (frame.rasterRegionMask?.spans.count ?? 0) * MemoryLayout<StudioImageRegionMask.Span>.stride
+                for instance in frame.rasterAliases ?? [] {
+                    bytes += (instance.regionMask?.spans.count ?? 0) * MemoryLayout<StudioImageRegionMask.Span>.stride
+                }
                 for element in frame.elements {
                     bytes += 256 + element.points.count * 40
                     bytes += (element.selectionErasures ?? []).reduce(0) { $0 + 256 + $1.points.count * 40 }
