@@ -82,11 +82,7 @@ import CryptoKit
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
         _ = try StudioExportService.renderedImageCredits(document: doc, creditsByRasterID: snapshot.imageCredits)
-        let visibleLayers = Set(doc.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
-        let visibleIDs = Set(doc.frames.compactMap { frame -> String? in
-            guard frame.rasterLayerInstances.contains(where: { visibleLayers.contains($0.layerID) }) else { return nil }
-            return frame.rasterAssetID
-        })
+        let visibleIDs = StudioExportService.visibleRasterAssetIDs(document: doc)
         let credits = visibleIDs.sorted().compactMap { id in
             snapshot.imageCredits[id].map { CreditedRaster(id: id, credit: $0) }
         }

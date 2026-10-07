@@ -564,8 +564,18 @@ class DeviceStorageManager {
         try text(metadata.title)
         try asset(metadata.thumbnailData)
         try asset(project.editableDocumentData)
+        let additional = project.additionalImageAssets ?? [:]
+        guard additional.count <= 256 else { throw AnimationStorageError.limitExceeded }
+        for (key, record) in additional {
+            guard let source = record.sourceImage, key == "image-" + source.id.uuidString,
+                  record.layerData == nil, record.legacyFrameIndex == nil,
+                  record.imageData?.isEmpty == false else { throw AnimationStorageError.invalidDocument }
+            try text(key)
+        }
         var imageSources: [UUID: (source: StoredImageSource, normalized: Data)] = [:]
-        for frame in project.frames {
+        // Both collections share the exact payload budget and source-identity
+        // checks. Additional sources never manufacture timeline frame records.
+        for frame in project.frames + Array(additional.values) {
             try account(64)
             try asset(frame.imageData)
             if let source = frame.sourceImage {
@@ -582,6 +592,14 @@ class DeviceStorageManager {
             for layer in layers {
                 guard layer.opacity.isFinite, (0...1).contains(layer.opacity) else { throw AnimationStorageError.invalidDocument }
                 try account(128); try text(layer.name); try text(layer.blendMode)
+            }
+        }
+        if !additional.isEmpty {
+            var decodedPixels = 0
+            for record in imageSources.values {
+                let pixels = record.source.normalizedWidth * record.source.normalizedHeight
+                guard pixels <= 32 * 1024 * 1024 - decodedPixels else { throw AnimationStorageError.limitExceeded }
+                decodedPixels += pixels
             }
         }
         guard Set(project.audioTracks.map(\.id)).count == project.audioTracks.count else { throw AnimationStorageError.invalidDocument }
@@ -641,6 +659,9 @@ struct AnimationProject: Codable {
     var audioTracks: [AudioTrack]
     /// Owned and validated by the Studio document model, stored without reinterpretation.
     var editableDocumentData: Data? = nil
+    /// Additional managed sources, independent of the historical one-record-per-frame layout.
+    /// Nil decodes every existing project without changing its original frame records.
+    var additionalImageAssets: [String: StoredAnimationFrame]? = nil
 }
 
 struct AnimationMetadata: Codable {

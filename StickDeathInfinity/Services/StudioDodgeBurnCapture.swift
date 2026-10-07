@@ -6,11 +6,11 @@ import Foundation
 enum StudioDodgeBurnCapture {
     typealias Capture = StudioBlurCapture.Capture
 
-    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?) throws -> Capture {
+    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
         try Task.checkCancellation()
         guard selection.isEmpty else {
             throw StudioDocumentError.unavailable("Dodging or burning within a selection is not available yet. Deselect artwork first; nothing changed.")
         }
-        return try StudioBlurCapture.capture(document: document, selection: selection, raster: raster)
+        return try StudioBlurCapture.capture(document: document, selection: selection, raster: raster, rasterDataByID: rasterDataByID)
     }
 }

@@ -156,6 +156,41 @@ struct SpatterMotionRecipe: Equatable {
 }
 
 /// Explicit active-layer styling; imported text never executes this instruction.
+struct SpatterFrameExposureInstruction: Equatable {
+    let ticks: Int
+    static let example = "Set selected frame exposure to 12 ticks."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        return words.contains("frame") && words.contains("exposure")
+    }
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Set selected frame exposure to 12 ticks. with a whole number from 1 to 600. Nothing changed."
+            case .invalidContext: return "Select an existing frame before changing its exposure. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let regex = try NSRegularExpression(pattern: #"\A\s*set\s+selected\s+frame\s+exposure\s+to\s+([1-9][0-9]{0,2})\s+ticks\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text), let ticks = Int(text[range]), (1...600).contains(ticks)
+        else { throw Failure.unsupported }
+        return .init(ticks: ticks)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard (1...600).contains(ticks) else { throw Failure.unsupported }
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }) else { throw Failure.invalidContext }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.setFrameHold(.init(frame: .id(context.activeFrameID), ticks: ticks))]))
+    }
+}
+
 struct SpatterLayerGlowInstruction: Equatable {
     let color: String?
     let radius: Double?
@@ -754,5 +789,81 @@ struct SpatterSelectedErasureInstruction: Equatable {
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.eraseSelectedElements(.init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID),
                 elementIDs: selectedElementIDs.sorted(), points: points, width: width, opacity: strength, mode: mode))]))
+    }
+}
+
+/// Explicit same-command layer duplication; no imported content is executed.
+struct SpatterLayerDuplicateInstruction: Equatable {
+    static let example = "Duplicate active layer."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        return words.contains("duplicate") && words.contains("layer")
+    }
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Duplicate active layer. as one complete instruction. Nothing changed."
+            case .invalidContext: return "Select an existing layer with room for another layer before duplicating. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let pattern = #"\A\s*duplicate\s+active\s+layer\.\s*\z"#
+        guard try NSRegularExpression(pattern:pattern,options:[.caseInsensitive]).firstMatch(in:text,range:NSRange(text.startIndex...,in:text)) != nil else { throw Failure.unsupported }
+        return Self()
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.layers.count < 128, context.layers.contains(where:{$0.id == context.activeLayerID}) else { throw Failure.invalidContext }
+        try checkCancellation()
+        return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
+            action:.apply([.duplicateLayer(.init(source:.id(context.activeLayerID),result:"duplicated_layer"))]))
+    }
+}
+
+struct SpatterLayerUpdateInstruction: Equatable {
+    let name: String?
+    let opacity: Double?
+    static let renameExample = "Rename active layer to \"Foreground\"."
+    static let opacityExample = "Set active layer opacity to 50%."
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of:#"\A\s*(?:rename\s+active\s+layer|set\s+active\s+layer\s+opacity)\b"#, options:[.regularExpression,.caseInsensitive]) != nil
+    }
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Rename active layer to \"Foreground\". or Set active layer opacity to 50%. Names use 1–120 characters and opacity is 0–100%. Nothing changed."
+            case .invalidContext: return "Select an existing active layer before changing its settings. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let range = NSRange(text.startIndex...,in:text)
+        let rename = try NSRegularExpression(pattern:#"\A\s*rename\s+active\s+layer\s+to\s+"([^"\r\n]+)"\.\s*\z"#,options:[.caseInsensitive])
+        if let match = rename.firstMatch(in:text,range:range), let value = Range(match.range(at:1),in:text) {
+            let name = String(text[value]).trimmingCharacters(in:.whitespacesAndNewlines)
+            guard StudioCommandExecutor.isValidLayerName(name) else { throw Failure.unsupported }
+            return .init(name:name,opacity:nil)
+        }
+        let alpha = try NSRegularExpression(pattern:#"\A\s*set\s+active\s+layer\s+opacity\s+to\s+((?:0|[1-9][0-9]*)(?:\.[0-9]+)?)%\.\s*\z"#,options:[.caseInsensitive])
+        guard let match = alpha.firstMatch(in:text,range:range), let value = Range(match.range(at:1),in:text),
+              let percent = Double(text[value]), percent.isFinite, (0...100).contains(percent) else { throw Failure.unsupported }
+        return .init(name:nil,opacity:percent/100)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.layers.contains(where:{$0.id == context.activeLayerID}) else { throw Failure.invalidContext }
+        guard (name != nil) != (opacity != nil), name.map(StudioCommandExecutor.isValidLayerName) ?? true,
+              opacity.map({$0.isFinite && (0...1).contains($0)}) ?? true else { throw Failure.unsupported }
+        var settings = StudioCommandLayerSettings(); settings.name = name; settings.opacity = opacity
+        try checkCancellation()
+        return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
+            action:.apply([.updateLayer(.init(layer:.id(context.activeLayerID),settings:settings))]))
     }
 }

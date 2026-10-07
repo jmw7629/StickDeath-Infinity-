@@ -6,6 +6,9 @@ struct StudioCanvasView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
     @State private var gestureActive = false
+    @State private var startedAsWand = false
+    @State private var wandCapture: StudioViewModel.ImageRegionCapture?
+    @State private var wandLayout: StudioColorSampleGesture.Layout?
     @State private var input: StudioStrokeInput?
     @State private var eraserCapture: StudioViewModel.EraserInputCapture?
     @State private var strokeInputCancelled = false
@@ -78,6 +81,7 @@ struct StudioCanvasView: View {
                 interruptInput("Touch input was interrupted. The incomplete draft is retained for explicit discard.")
             }
         }
+        .onChange(of: try? vm.captureImageRegion()) { _, _ in vm.clearImageRegion(); wandCapture = nil }
         .onChange(of: vm.document.revision) { _, _ in cancelMovePreview() }
         .onChange(of: vm.selectedTool) { _, _ in cancelMovePreview() }
         .onChange(of: vm.selectionMode) { _, _ in cancelMovePreview() }
@@ -130,10 +134,11 @@ struct StudioCanvasView: View {
             let handles = selectionHandles(frame: displayedFrame, size: size)
             let currentPrepared = Result { try livePrepared ?? StudioFrameRenderer.prepare(frame: displayedFrame) }
             let rasterSize = min(4096, max(1, Int(ceil(max(size.width, size.height) * displayScale * max(1, vm.canvasScale)))))
-            let currentRaster = Result { try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers,
-                data: vm.rasterData(vm.currentFrame.rasterAssetID), maximumDimension: rasterSize) }
+            let currentSources = vm.rasterSources(for: displayedFrame)
+            let currentRaster = Result { try StudioFrameRenderer.prepareRasters(frame: displayedFrame, layers: vm.layers,
+                sourceData: currentSources, maximumDimension: rasterSize) }
             let currentSmudges = Result { try StudioSmudgeReplay.viewCache.prepare(frame: displayedFrame, layers: vm.layers,
-                canvasSize: documentSize, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement) }
+                canvasSize: documentSize, rasterData: vm.rasterData(displayedFrame.rasterAssetID), rasterDataByID: currentSources, liveElement: liveElement) }
             ZStack {
                 Color.clear
                 ZStack {
@@ -145,23 +150,24 @@ struct StudioCanvasView: View {
                             do {
                                 let frame = ghost.frame
                                 let brushes = try StudioFrameRenderer.prepare(frame: frame)
-                                let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: vm.layers,
-                                    data: vm.rasterData(frame.rasterAssetID), maximumDimension: rasterSize)
+                                let sources = vm.rasterSources(for: frame)
+                                let images = try StudioFrameRenderer.prepareRasters(frame: frame, layers: vm.layers,
+                                    sourceData: sources, maximumDimension: rasterSize)
                                 let effects = try StudioSmudgeReplay.viewCache.prepare(frame: frame, layers: vm.layers,
-                                    canvasSize: documentSize, rasterData: vm.rasterData(frame.rasterAssetID))
+                                    canvasSize: documentSize, rasterData: vm.rasterData(frame.rasterAssetID), rasterDataByID: sources)
                                 var onion = StudioFrameRenderer.onionContext(context, opacity: ghost.opacity,
                                     previous: ghost.previous, tinted: ghost.tinted)
                                 if let error = StudioFrameRenderer.draw(context: &onion, frame: frame, layers: vm.layers,
                                     canvasSize: documentSize, size: actual, rasterData: vm.rasterData(frame.rasterAssetID),
-                                    preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) { throw error }
+                                    preparedBrushes: brushes, preparedSmudges: effects, rasterSources: sources, preparedRasters: images) { throw error }
                             } catch { StudioFrameRenderer.drawFailure(error, context: &context, size: actual) }
                         }
                         switch (currentPrepared, currentRaster, currentSmudges) {
-                        case (.success(let brushes), .success(let image), .success(let effects)):
+                        case (.success(let brushes), .success(let images), .success(let effects)):
                             if let error = StudioFrameRenderer.draw(context: &context, frame: displayedFrame, layers: vm.layers,
                                 canvasSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), size: actual,
-                                rasterData: vm.rasterData(vm.currentFrame.rasterAssetID), liveElement: liveElement,
-                                preparedBrushes: brushes, preparedRaster: image, preparedSmudges: effects) {
+                                rasterData: vm.rasterData(displayedFrame.rasterAssetID), liveElement: liveElement,
+                                preparedBrushes: brushes, preparedSmudges: effects, rasterSources: currentSources, preparedRasters: images) {
                                 StudioFrameRenderer.drawFailure(error, context: &context, size: actual)
                             }
                         case (.failure(let error), _, _), (_, .failure(let error), _), (_, _, .failure(let error)):
@@ -175,7 +181,7 @@ struct StudioCanvasView: View {
                                 height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
-                        if let corners = vm.selectedAreaImageCorners {
+                        if !(vm.hasMixedArtworkSelection && vm.selectedTool == .move), let corners = vm.selectedAreaImageCorners {
                             let points = corners.map { CGPoint(x: $0.x / Double(vm.canvasWidth) * actual.width,
                                 y: $0.y / Double(vm.canvasHeight) * actual.height) }
                             var outline = Path(); outline.move(to: points[0])
@@ -183,7 +189,7 @@ struct StudioCanvasView: View {
                             context.stroke(outline, with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
                         }
-                        if let capture = vm.currentImageMoveCapture(), let placement = displayedFrame.rasterInstance(on: capture.placement.layerID)?.placement {
+                        if !vm.isSelectingMixedArtwork, let capture = vm.currentImageMoveCapture(), let placement = displayedFrame.rasterInstance(on: capture.placement.layerID)?.placement {
                             let rect = CGRect(x: placement.x / Double(vm.canvasWidth) * actual.width,
                                 y: placement.y / Double(vm.canvasHeight) * actual.height,
                                 width: placement.width / Double(vm.canvasWidth) * actual.width,
@@ -305,7 +311,7 @@ struct StudioCanvasView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
-                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize or the red handle to rotate. Position image offers numeric dimensions and angle." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
+                    .accessibilityValue(vm.hasMixedArtworkSelection ? "Selected drawings and image: drag the group to move it, white corner handles to resize, or the red handle to rotate together." : vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize or the red handle to rotate. Position image offers numeric dimensions and angle." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
                     if vm.gridEnabled { GridOverlay(settings: vm.document.gridSettings ?? .init()).allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -333,6 +339,10 @@ struct StudioCanvasView: View {
             .clipped()
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
+                // Completed regions use source-image coordinates, so a banner,
+                // popup or viewport resize must not discard them. Only revoke
+                // in-flight work whose touch-to-canvas mapping just changed.
+                vm.cancelImageRegionWork(); wandCapture = nil
                 colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
                 if input?.tool == .eraser { interruptInput("Erasing cancelled because the canvas moved.") }
             }
@@ -349,7 +359,14 @@ struct StudioCanvasView: View {
                 guard !strokeInputCancelled else { return }
                 if touchID == nil {
                     touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
-                    startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
+                    startedAsWand = vm.selectedTool == .wand
+                    if startedAsWand {
+                        wandLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
+                        do { wandCapture = try vm.captureImageRegion() }
+                        catch { vm.message = error.localizedDescription; wandCapture = nil }
+                        return
+                    }
+                    startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas && !vm.isSelectingMixedArtwork
                     imageMoveCancelled = false
                     startedAsSmudge = vm.selectedTool == .smudge
                     if startedAsSmudge, smudgeSubmission == nil, let context = StudioSmudgeContext.current(vm) {
@@ -406,6 +423,7 @@ struct StudioCanvasView: View {
                         _ = updateArea(location: value.startLocation, size: size)
                     }
                 }
+                if startedAsWand { return }
                 if startedAsSmudge { _ = updateSmudge(location: value.location, size: size); return }
                 if startedAsBlur { _ = updateBlur(location: value.location, size: size); return }
                 if startedAsSharpen { _ = updateSharpen(location: value.location, size: size); return }
@@ -505,6 +523,14 @@ struct StudioCanvasView: View {
     private func inputEnded(_ value: StudioTouchValue, size: CGSize) {
                 defer { clearInput() }
                 guard !strokeInputCancelled, vm.pendingBrushStroke == nil else { return }
+                if startedAsWand {
+                    guard scenePhase == .active, let capture = wandCapture,
+                          wandLayout == StudioColorSampleGesture.Layout(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset),
+                          hypot(value.location.x - value.startLocation.x, value.location.y - value.startLocation.y) <= 8 else { return }
+                    let point = documentPoint(value.location, size: size)
+                    Task { await vm.selectImageRegion(capture, at: point) }
+                    return
+                }
                 if startedAsSmudge {
                     guard updateSmudge(location: value.location, size: size), let captured = smudgeInput,
                           smudgeSubmission == nil else { return }
@@ -802,12 +828,7 @@ struct StudioCanvasView: View {
         CGSize(width: delta.width / size.width * CGFloat(vm.canvasWidth), height: delta.height / size.height * CGFloat(vm.canvasHeight))
     }
     private func selectionHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
-        guard vm.beginSelectionHandle() != nil else { return nil }
-        var bounds = CGRect.null
-        for element in frame.elements where vm.selectedElementIDs.contains(element.id) {
-            guard let rect = try? StudioSelectionRegion.drawingBounds(element) else { return nil }
-            bounds = bounds.union(rect)
-        }
+        guard vm.beginSelectionHandle() != nil, let bounds = vm.selectedArtworkBounds(in: frame) else { return nil }
         return StudioSelectionHandleGeometry(bounds: bounds,
             documentSize: CGSize(width: vm.canvasWidth,height: vm.canvasHeight),viewport: size,zoom: vm.canvasScale)
     }
@@ -832,7 +853,7 @@ struct StudioCanvasView: View {
         } catch { cancelHandlePreview(); vm.message = error.localizedDescription; return false }
     }
     private func imageHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
-        guard let capture = vm.currentImageMoveCapture(), let p = frame.rasterInstance(on: capture.placement.layerID)?.placement else { return nil }
+        guard !vm.isSelectingMixedArtwork, let capture = vm.currentImageMoveCapture(), let p = frame.rasterInstance(on: capture.placement.layerID)?.placement else { return nil }
         return .init(bounds: StudioImageRotationGeometry(placement: p, degrees: frame.rasterInstance(on: capture.placement.layerID)?.rotationDegrees ?? 0).bounds,
             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewport: size, zoom: vm.canvasScale)
     }
@@ -894,6 +915,7 @@ struct StudioCanvasView: View {
         input = nil; eraserCapture = nil; panOrigin = nil; strokePreviewFrame = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
+            startedAsWand = false; wandCapture = nil; wandLayout = nil
             strokeInputCancelled = false
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
             smudgeInput = nil; startedAsSmudge = false
@@ -913,6 +935,7 @@ struct StudioCanvasView: View {
         // the captured input alone would let its next move recapture new targets.
         if gestureActive { strokeInputCancelled = true }
         vm.cancelPolygonSelection()
+        vm.clearImageRegion(); wandCapture = nil
         fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn()
         if let input { vm.interruptStrokeInput(input, reason: reason) }
         colorInput.invalidate()

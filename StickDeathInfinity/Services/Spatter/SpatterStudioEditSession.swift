@@ -26,7 +26,10 @@ final class SpatterStudioEditSession: ObservableObject {
     struct AppliedEdit {
         let receipt: StudioCommandReceipt
         let selectedErasureMaskCount: Int
+        let frameExposureTicks: Int?
         let isLayerGlowEdit: Bool
+        let isLayerDuplicate: Bool
+        let isLayerUpdate: Bool
         let isAudioEdit: Bool
         let renamedProjectName: String?
         let addedAudioClipCount: Int
@@ -42,6 +45,18 @@ final class SpatterStudioEditSession: ObservableObject {
             if let renamedProjectName {
                 return receipt.outcome == .unchanged ? "The project already has this name. Nothing changed."
                     : "Renamed project to “\(renamedProjectName)” in one undoable local edit."
+            }
+            if let frameExposureTicks {
+                return receipt.outcome == .unchanged ? "The selected frame already has this exposure. Nothing changed."
+                    : "Set selected frame exposure to \(frameExposureTicks) ticks at \(fps) FPS in one undoable local edit."
+            }
+            if isLayerUpdate {
+                return receipt.outcome == .unchanged ? "The active layer settings already match. Nothing changed."
+                    : "Updated the active layer settings in one undoable local edit."
+            }
+            if isLayerDuplicate {
+                return receipt.outcome == .unchanged ? "The layer was not duplicated. Nothing changed."
+                    : "Duplicated the active layer across its frames in one undoable local edit. Original artwork remains editable."
             }
             if isLayerGlowEdit {
                 return receipt.outcome == .unchanged ? "The active layer glow already matches this instruction. Nothing changed."
@@ -180,14 +195,24 @@ final class SpatterStudioEditSession: ObservableObject {
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
                 let isErasure = SpatterSelectedErasureInstruction.isInstruction(draft)
                 let isAudio = SpatterAudioInstruction.isAudioInstruction(draft)
-                let isRename = SpatterProjectRenameInstruction.isInstruction(draft)
-                let isGlow = !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
+                let isLayerUpdate = SpatterLayerUpdateInstruction.isInstruction(draft)
+                let isRename = !isLayerUpdate && SpatterProjectRenameInstruction.isInstruction(draft)
+                let isExposure = !isLayerUpdate && !isRename && SpatterFrameExposureInstruction.isInstruction(draft)
+                let isLayerDuplicate = !isLayerUpdate && !isRename && SpatterLayerDuplicateInstruction.isInstruction(draft)
+                let isGlow = !isLayerUpdate && !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
                 let preparedRequest: StudioCommandRequest
                 if isErasure {
                     preparedRequest = try SpatterSelectedErasureInstruction.parse(draft).prepare(in: document,
                         selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
                 } else if isRename {
                     preparedRequest = try SpatterProjectRenameInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
+                } else if isExposure {
+                    preparedRequest = try SpatterFrameExposureInstruction.parse(draft).prepare(in: document,
+                        requestID: submissionID, checkCancellation: check)
+                } else if isLayerUpdate {
+                    preparedRequest = try SpatterLayerUpdateInstruction.parse(draft).prepare(in:document,requestID:submissionID,checkCancellation:check)
+                } else if isLayerDuplicate {
+                    preparedRequest = try SpatterLayerDuplicateInstruction.parse(draft).prepare(in:document, requestID:submissionID, checkCancellation:check)
                 } else if isGlow {
                     preparedRequest = try SpatterLayerGlowInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
                 } else if isAudio {
@@ -223,7 +248,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, isLayerGlowEdit: isGlow, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,

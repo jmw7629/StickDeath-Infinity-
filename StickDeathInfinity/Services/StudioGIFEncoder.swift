@@ -90,6 +90,8 @@ final class StudioGIFEncoder {
             guard bytes.count <= Self.maximumBytes - sourceBytes else { throw Failure.limit }
             sourceBytes += bytes.count
         }
+        guard StudioExportService.visibleRasterAssetIDs(document: document).allSatisfy({ snapshot.rasterDataByID[$0] != nil }) else { throw Failure.missingRaster }
+        try renderer.validateRasterSources(document: document, sources: snapshot.rasterDataByID)
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.gif.identifier as CFString,
                                                                  document.frames.count, nil) else { throw Failure.encoding }
@@ -98,13 +100,8 @@ final class StudioGIFEncoder {
         for (index, frame) in document.frames.enumerated() {
             try Task.checkCancellation()
             try autoreleasepool {
-                let visible = !frame.visibleRasterInstances(in: document.layers).isEmpty
-                let raster: Data?
-                if visible, let id = frame.rasterAssetID {
-                    guard let bytes = snapshot.rasterDataByID[id] else { throw Failure.missingRaster }
-                    raster = bytes
-                } else { raster = nil }
-                let image = try renderer.render(frame, document: document, background: .white, raster: raster)
+                let image = try renderer.render(frame, document: document, background: .white, raster: nil,
+                    rasterDataByID: snapshot.rasterDataByID)
                 let delay = Double(delays[index]) / 100
                 CGImageDestinationAddImage(destination, image,
                     [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay,

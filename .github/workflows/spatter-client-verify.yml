@@ -47,15 +47,24 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
   native-production-tests:
     runs-on: macos-15
-    # Production took 34m05s on run 37557518936 before portable validation.
-    # New backup coverage and actual audio decoding in every VM recipe need
-    # bounded headroom; retain all gates and sequential Mac runners.
-    timeout-minutes: 50
+    # Production took 47m09s on run 37668843963 before image-region dependencies.
+    # Forty-five VM recipes now compile the region service and the new admin
+    # suite adds coverage. Keep bounded headroom and every sequential gate.
+    timeout-minutes: 65
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
+      - name: Verify truthful admin overview authorization and data lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/AdminOverviewModel.swift \
+            Tests/AdminOverview/main.swift \
+            -o /tmp/sdi-admin-overview-tests
+          /tmp/sdi-admin-overview-tests
       - name: Verify complete production model encoding and historical decoding
         shell: bash
         run: |
@@ -142,6 +151,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -174,6 +185,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -222,6 +235,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -258,6 +273,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -294,6 +311,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -330,6 +349,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -366,6 +387,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -402,6 +425,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -438,6 +463,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -474,6 +501,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -510,6 +539,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -546,6 +577,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -582,6 +615,7 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -645,6 +679,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -680,6 +716,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -711,6 +749,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -767,6 +807,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -818,6 +860,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -847,6 +891,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -876,6 +922,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -931,6 +979,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -1005,6 +1055,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
@@ -1053,6 +1105,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1085,6 +1139,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1117,6 +1173,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1150,6 +1208,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1185,6 +1245,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1223,6 +1285,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1267,6 +1331,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -1297,6 +1363,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -1327,6 +1395,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -1356,6 +1426,8 @@ jobs:
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
@@ -1394,6 +1466,8 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1418,6 +1492,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1453,6 +1529,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1504,6 +1582,8 @@ jobs:
             StickDeathInfinity/Services/StudioMuxOwnership.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1543,6 +1623,8 @@ jobs:
             StickDeathInfinity/Services/StudioMuxOwnership.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1566,6 +1648,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1605,6 +1689,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1645,6 +1731,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1688,6 +1776,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1732,6 +1822,8 @@ jobs:
             StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
@@ -1788,6 +1880,8 @@ jobs:
             StickDeathInfinity/Services/StudioMuxOwnership.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1827,6 +1921,8 @@ jobs:
             StickDeathInfinity/Services/StudioMuxOwnership.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1867,6 +1963,8 @@ jobs:
             StickDeathInfinity/Services/StudioMuxOwnership.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Services/StudioImageRegionService.swift \
+            StickDeathInfinity/Services/StudioFillRegion.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -1909,12 +2007,12 @@ jobs:
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 95 cases x 180 seconds, three measured
+    # Match the bounded inventory: 101 cases x 180 seconds, nine bounded
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
     # The separate nine-case auth suite adds a bounded 17 minutes on the same runner.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
-    # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 335
+    # runner at a time, explicit per-case limits, no retries or skipped cases.
+    timeout-minutes: 359
     steps:
       - name: Require successful production verification
         shell: bash

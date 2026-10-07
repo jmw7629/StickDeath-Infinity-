@@ -63,13 +63,11 @@ final class StudioGIFExportSession: ObservableObject {
               vm.activeStrokeID == nil, vm.pendingBrushStroke == nil else { return false }
         let document = vm.document
         var rasters: [String: Data] = [:]
-        for id in Set(document.frames.compactMap(\.rasterAssetID)) {
+        for id in document.referencedRasterAssetIDs {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }
         }
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
-        let visibleIDs = Set(document.frames.compactMap { frame -> String? in
-            !frame.visibleRasterInstances(in: document.layers).isEmpty ? frame.rasterAssetID : nil
-        })
+        let visibleIDs = StudioExportService.visibleRasterAssetIDs(document: document)
         do {
             for id in visibleIDs {
                 if let original = vm.originalImageSource(id), let attribution = original.catalogueAttribution {

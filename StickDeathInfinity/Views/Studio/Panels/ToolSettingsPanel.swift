@@ -97,6 +97,12 @@ struct FloatingToolSettingsPanel: View {
             imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
             selectionLayerLock = nil; showingSelectionLayerLock = false
         }
+        .onChange(of: vm.hasMixedArtworkSelection) { _, mixed in
+            if mixed {
+                imageCrop = nil; imagePlacement = nil; imageDeletion = nil; showingImageDeletion = false
+                imageFocusedField = nil; selectionLayerLock = nil; showingSelectionLayerLock = false
+            }
+        }
         .onDisappear {
             imageCrop = nil; imagePlacement = nil; showingImageDeletion = false; imageDeletion = nil; imageFocusedField = nil
             selectionLayerLock = nil; showingSelectionLayerLock = false
@@ -236,6 +242,10 @@ struct FloatingToolSettingsPanel: View {
         // ── FILL TOOL (GREEN THEME) ──
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
+                if vm.hasFillImageTarget {
+                    Text("Fill stays within the explicitly selected image’s alpha, crop and region mask. Original image bytes stay unchanged. Choose Move to deselect; mixed drawing and image coverage is not available.")
+                        .font(.caption).foregroundColor(.sdStudioSecondaryText)
+                }
                 if !vm.selectedElementIDs.isEmpty {
                     Text("Fill paints on the active layer within the selected drawings’ shapes, excluding layer glow and blending. Original objects stay editable. Deselect in Move or Lasso to fill the whole canvas region.")
                         .font(.system(size: 10)).foregroundColor(.sdStudioSecondaryText)
@@ -474,24 +484,25 @@ struct FloatingToolSettingsPanel: View {
             
         // ── MOVE ──
         case .move:
-            if let capture = imageCrop {
+            if let capture = imageCrop, !vm.hasMixedArtworkSelection {
                 StudioImageCropControls(vm: vm, capture: capture, focused: $imageFocusedField,
                     x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
                     imageFocusedField = nil; imageCrop = nil
                 }
-            } else if let capture = imagePlacement {
+            } else if let capture = imagePlacement, !vm.hasMixedArtworkSelection {
                 StudioImagePlacementControls(vm: vm, capture: capture, focused: $imageFocusedField,
                     x: $imageX, y: $imageY, width: $imageWidth, height: $imageHeight) {
                     imageFocusedField = nil; imagePlacement = nil
                 }
             } else {
             VStack(alignment: .leading, spacing: 8) {
-                Text(vm.isMovingImageOnCanvas ? "Drag inside the image to move it. It stays inside the canvas. Use Position image to make it smaller first if it fills the canvas." : vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
+                Text(vm.hasMixedArtworkSelection ? "Selected drawings and image move together. Drag the group or use its corner and rotation handles. Select the image alone for image-specific edits." : vm.isMovingImageOnCanvas ? "Drag inside the image to move it. It stays inside the canvas. Use Position image to make it smaller first if it fills the canvas." : vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
                      : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
-                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture. For linked copies, select the image layer to edit.")
+                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture. Select the image layer you want to edit.")
                     .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.guidance")
+                if !vm.hasMixedArtworkSelection {
                 HStack(spacing: 8) {
                     Button("Copy image") { _ = vm.copyImage() }
                         .disabled(vm.prepareImagePlacement() == nil)
@@ -510,7 +521,7 @@ struct FloatingToolSettingsPanel: View {
                 Text("Cut requires an explicit image selection on its active, unlocked layer. It keeps drawings and linked images; Undo restores the cut image.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 if vm.hasCopiedImage {
-                    Text("Image copied within this project. Paste into a blank frame preserves its crop, flips and position.")
+                    Text("Image copied within this project. Paste adds a separate image layer and preserves its crop, flips and position.")
                         .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 if vm.currentFrame.rasterPlacement != nil {
@@ -564,6 +575,7 @@ struct FloatingToolSettingsPanel: View {
                         Text("Show the image layer and choose Free to edit it. Finish any pending edit or save first.")
                             .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     }
+                }
                 }
                 if !vm.isMovingImageOnCanvas {
                 Text("SELECTION MODE")
@@ -629,9 +641,14 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (vm.hasMixedArtworkSelection && (action.contains("Fwd") || action.contains("Back") || action.contains("Lock"))))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
+                }
+                if vm.hasMixedArtworkSelection {
+                    Text("Copy and Cut preserve the selected drawings and image together. Ordering and layer locking require selecting one kind of artwork.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                        .accessibilityIdentifier("studio.selection.mixed-limitations")
                 }
                 Text("Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
@@ -660,6 +677,41 @@ struct FloatingToolSettingsPanel: View {
             
             }
         // ── LASSO ──
+        case .wand:
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Image pixels").font(.headline)
+                Text("Select an image layer, close this popup and tap its visible pixels. This version samples only that image, not composited artwork. Layers with drawings, effects, glow, blending or reduced opacity must be separated or restored to normal first.").font(.caption)
+                Picker("Region", selection: $vm.wandMode) {
+                    ForEach(StudioImageRegionService.Mode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.mode")
+                HStack { Text("Tolerance"); Slider(value: $vm.wandTolerance, in: 0...128, step: 1); Text("\(Int(vm.wandTolerance))") }
+                    .accessibilityIdentifier("studio.wand.tolerance")
+                Toggle("Connected pixels only", isOn: $vm.wandContiguous).accessibilityIdentifier("studio.wand.contiguous")
+                Text("\(vm.wandSelectedPixels) source pixels selected").accessibilityIdentifier("studio.wand.count")
+                if let data = vm.wandPreviewPNG, let image = UIImage(data: data) {
+                    Image(uiImage: image).resizable().scaledToFit().frame(height: 100)
+                        .accessibilityLabel("Selected source pixels before crop and canvas transforms")
+                }
+                if vm.wandWorking { ProgressView("Selecting image pixels") }
+                HStack {
+                    Button("Copy pixels") { _ = vm.applyImageRegion(.copy) }.disabled(!vm.canEditImageRegion)
+                        .accessibilityIdentifier("studio.wand.copy")
+                    Button("Delete pixels") { _ = vm.applyImageRegion(.delete) }.disabled(!vm.canEditImageRegion)
+                        .accessibilityIdentifier("studio.wand.delete")
+                }.frame(minHeight: 44)
+                Text("Move selected pixels in canvas units. Original bytes and unselected images stay preserved.").font(.caption)
+                HStack {
+                    TextField("X offset", value: $vm.wandMoveX, format: .number).keyboardType(.numbersAndPunctuation)
+                        .accessibilityIdentifier("studio.wand.dx")
+                    TextField("Y offset", value: $vm.wandMoveY, format: .number).keyboardType(.numbersAndPunctuation)
+                        .accessibilityIdentifier("studio.wand.dy")
+                }.textFieldStyle(.roundedBorder)
+                Button("Move pixels") { _ = vm.applyImageRegion(.move) }
+                    .frame(minHeight: 44).disabled(!vm.canEditImageRegion || (vm.wandMoveX == 0 && vm.wandMoveY == 0))
+                    .accessibilityIdentifier("studio.wand.move")
+                Button("Cancel selection") { vm.clearImageRegion() }.frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.wand.cancel")
+            }
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
                 Picker("Selection target", selection: $vm.areaSelectionTarget) {
@@ -667,11 +719,9 @@ struct FloatingToolSettingsPanel: View {
                         Text(target.label).tag(target)
                     }
                 }.accessibilityIdentifier("studio.selection.target")
-                Text(vm.areaSelectionTarget == .drawings
-                     ? "Enclose whole drawings, then choose Move to drag them. Lasso includes editable and historical text."
-                     : "Enclose the whole image on the active visible, unlocked layer, then choose Move. Only this one image is selected; mixed drawings and images or image groups are unavailable.")
+                Text(areaSelectionGuidance)
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                Text(vm.areaSelectionTarget == .drawings ? "\(vm.selectedElementIDs.count) drawings selected" : "\(vm.selectedAreaImageCorners == nil ? 0 : 1) image selected")
+                Text(areaSelectionCount)
                     .font(.specialElite(11)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.selection.count")
                 HStack(spacing: 4) {
@@ -694,7 +744,7 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityAddTraits(vm.selectionMode == mode ? .isSelected : [])
                     }
                 }
-                if vm.areaSelectionTarget == .drawings {
+                if vm.areaSelectionTarget != .image {
                 HStack(spacing: 8) {
                     Button("Select all") { _ = vm.selectVisibleArtwork() }
                         .accessibilityIdentifier("studio.selection.all")
@@ -705,11 +755,12 @@ struct FloatingToolSettingsPanel: View {
                 if vm.areaSelectionKind == .freehand {
                     SettingsSlider(label: "Smoothness", value: $vm.areaSelectionSmoothing, range: 0...10, unit: "px", accent: .red)
                 }
-                if vm.areaSelectionTarget == .drawings {
+                if vm.areaSelectionTarget == .drawings || (vm.areaSelectionTarget == .artwork && !vm.selectedElementIDs.isEmpty) {
                 HStack(spacing: 4) {
                     Button("Copy") { _ = vm.copySelected() }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .accessibilityIdentifier("studio.lasso.copy")
+                        .disabled(vm.hasMixedArtworkSelection && !vm.canCopyBottomSelection)
                     Button("Cut") { _ = vm.cutSelected() }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .disabled(!vm.canCutSelected)
@@ -722,6 +773,10 @@ struct FloatingToolSettingsPanel: View {
                         .accessibilityIdentifier("studio.lasso.deselect")
                 }.font(.specialElite(11)).frame(minHeight: 44)
                     .disabled(vm.selectedElementIDs.isEmpty)
+                if vm.hasMixedArtworkSelection {
+                    Text("Choose Move to transform this group. Copy and Cut require drawings or an image selected separately.")
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                }
                 } else {
                     Button("Deselect image") { vm.deselectAreaImage() }
                         .disabled(vm.selectedAreaImageCorners == nil)
@@ -766,6 +821,21 @@ struct FloatingToolSettingsPanel: View {
         }
     }
     
+    private var areaSelectionGuidance: String {
+        switch vm.areaSelectionTarget {
+        case .drawings: return "Enclose whole drawings, then choose Move to drag them. Lasso includes editable and historical text."
+        case .image: return "Enclose the whole image on the active visible, unlocked layer, then choose Move. This mode selects one image. Choose Drawings + image to select it together with drawings."
+        case .artwork: return "Enclose whole drawings and the image on its active visible, unlocked layer, then choose Move to transform them together. Hidden or locked artwork is excluded."
+        }
+    }
+    private var areaSelectionCount: String {
+        switch vm.areaSelectionTarget {
+        case .drawings: return "\(vm.selectedElementIDs.count) drawings selected"
+        case .image: return "\(vm.selectedAreaImageCorners == nil ? 0 : 1) image selected"
+        case .artwork: return "\(vm.selectedArtworkCount) artwork items selected · \(vm.selectedElementIDs.count) drawings, \(vm.selectedAreaImageCorners == nil ? 0 : 1) image"
+        }
+    }
+
     private var mirrorSettings: some View {
         VStack(alignment: .leading, spacing: 4) {
             Picker("Mirror", selection: $vm.mirrorMode) {

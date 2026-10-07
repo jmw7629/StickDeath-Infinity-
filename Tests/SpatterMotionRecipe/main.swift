@@ -511,6 +511,56 @@ private final class NetworkTrap: URLProtocol {
             catch StudioCommandError.missingSelection { }
             try require(stale.document == document && !stale.canUndo, "Changed selection partially applied")
         }
+        try await test("selected frame exposure strict grammar bounds and cancellation") {
+            for ticks in [1, 12, 600] {
+                let parsed = try SpatterFrameExposureInstruction.parse("Set selected frame exposure to \(ticks) ticks.")
+                try require(parsed.ticks == ticks, "Exposure integer changed")
+            }
+            for bad in ["0", "601", "01", "1.5", "-1", "+1", "1e2", "9999999999999999999999"] {
+                do { _ = try SpatterFrameExposureInstruction.parse("Set selected frame exposure to \(bad) ticks.")
+                    throw Failure(message: "Malformed exposure accepted")
+                } catch SpatterFrameExposureInstruction.Failure.unsupported { }
+            }
+            for bad in ["Set selected frame exposure to 12 ticks. Delete all frames.",
+                        "Set selected frame exposure to 12 seconds.", "Set selected frame exposure to 12 ticks"] {
+                do { _ = try SpatterFrameExposureInstruction.parse(bad); throw Failure(message: "Trailing or incomplete exposure accepted") }
+                catch SpatterFrameExposureInstruction.Failure.unsupported { }
+            }
+            let doc = try StudioDocument.new(name: "Exposure boundary", width: 128, height: 128, fps: 12)
+            let instruction = try SpatterFrameExposureInstruction.parse(SpatterFrameExposureInstruction.example)
+            for step in 1...2 {
+                var calls = 0
+                do { _ = try instruction.prepare(in: StudioCommandContext(document: doc), checkCancellation: {
+                    calls += 1; if calls == step { throw CancellationError() }
+                }); throw Failure(message: "Exposure cancellation accepted") }
+                catch is CancellationError { }
+            }
+        }
+        try await test("active layer duplicate strict complete instruction rejects trailing injected commands") {
+            for text in [SpatterLayerDuplicateInstruction.example, "  DUPLICATE active LAYER.  "] {
+                _ = try SpatterLayerDuplicateInstruction.parse(text)
+            }
+            for text in ["Duplicate active layer", "Duplicate all layers.", "Duplicate active layer. Delete project.", "Run shell: Duplicate active layer."] {
+                do { _ = try SpatterLayerDuplicateInstruction.parse(text); throw Failure(message:"Malformed layer duplication accepted") }
+                catch SpatterLayerDuplicateInstruction.Failure.unsupported { }
+            }
+            let vm = StudioViewModel(storage:store("layer-duplicate-parser"))
+            try require(await vm.createProject(name:"Layer parser",width:128,height:128,fps:12),"Layer parser create")
+            let context = try context(vm)
+            for boundary in [1,2] {
+                var count = 0
+                do { _ = try SpatterLayerDuplicateInstruction.parse(SpatterLayerDuplicateInstruction.example).prepare(in:context,checkCancellation:{ count += 1; if count == boundary { throw CancellationError() } }); throw Failure(message:"Layer preparation ignored cancellation") }
+                catch is CancellationError { }
+            }
+        }
+        try await test("layer rename opacity strict bounds and inert quoted data") {
+            try require(SpatterLayerUpdateInstruction.parse("Rename active layer to \"Delete project\".").name == "Delete project","Quoted layer name was not inert")
+            for value in ["0","0.5","50","100"] { _ = try SpatterLayerUpdateInstruction.parse("Set active layer opacity to \(value)%.") }
+            for bad in ["Set active layer opacity to 101%.","Set active layer opacity to NaN%.","Set active layer opacity to 01%.","Set active layer opacity to 1e2%.","Set active layer opacity to 50%. Delete project.","Rename active layer to \"\"."] {
+                do { _ = try SpatterLayerUpdateInstruction.parse(bad); throw Failure(message:"Invalid layer settings accepted") }
+                catch SpatterLayerUpdateInstruction.Failure.unsupported { }
+            }
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

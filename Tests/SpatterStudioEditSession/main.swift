@@ -1329,6 +1329,167 @@ private final class NetworkTrap: URLProtocol {
             try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before,
                 "Malformed selected erase fell through to motion generation")
         }
+        try await test("selected frame exposure matches manual timing one Undo no-op and real cold reopen") {
+            let (vm, store) = try await fixture("frame-exposure")
+            try require(vm.commitElement(styledStroke(vm)), "Exposure source artwork missing")
+            await vm.flush()
+            let before = vm.document, target = vm.currentFrame.id
+            vm.setFrameHold(target, ticks: 12); let manual = vm.document
+            vm.undo(); await vm.flush()
+            let session = SpatterStudioEditSession(), id = UUID()
+            try require(session.submit(SpatterFrameExposureInstruction.example, in: vm, accountID: nil,
+                submissionID: id, currentScope: { guest }), "Exposure submission rejected")
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.frames == manual.frames && vm.currentFrame.id == target &&
+                vm.currentFrame.elements == before.frames[0].elements && vm.currentFrame.durationTicks == 12 &&
+                session.appliedEdit?.addedFrameCount == 0 &&
+                session.notice == "Set selected frame exposure to 12 ticks at \(vm.fps) FPS in one undoable local edit.",
+                "Exposure diverged from manual artwork/timing or invented frames")
+            vm.undo(); try require(vm.frames == before.frames, "Exposure Undo was not one edit")
+            vm.redo(); try require(vm.frames == manual.frames, "Exposure Redo failed")
+            await vm.flush()
+            let noOp = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            try require(session.submit(SpatterFrameExposureInstruction.example, in: vm, accountID: nil,
+                currentScope: { guest }), "Exposure no-op submission rejected")
+            await session.waitForCompletion()
+            try require(session.appliedEdit?.receipt.outcome == .unchanged && vm.document == noOp &&
+                vm.canUndo == undo && vm.canRedo == redo &&
+                session.notice == "The selected frame already has this exposure. Nothing changed.", "Exposure no-op mutated history")
+            try require(!session.submit(SpatterFrameExposureInstruction.example, in: vm, accountID: nil,
+                submissionID: id, currentScope: { guest }) && vm.document == noOp, "Exposure replay changed timeline")
+            let record = try store.loadAnimation(id: vm.document.id)!, cold = StudioViewModel(storage: store)
+            try require(await cold.openProject(record.metadata), "Exposure cold open failed")
+            try require(cold.frames == vm.frames && cold.fps == vm.fps, "Saved exposure timing/artwork changed")
+            await cold.flush(); await vm.flush()
+        }
+        try await test("selected exposure stale frame account cancellation and revision remain atomic") {
+            for change in ["frame", "account", "cancel", "revision"] {
+                let (vm, _) = try await fixture("exposure-fence-" + change)
+                let first = vm.currentFrame.id; vm.addFrame(); vm.selectFrame(first); await vm.flush()
+                let gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                var account: String? = nil
+                try require(session.submit(SpatterFrameExposureInstruction.example, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) }), "Exposure fence rejected")
+                try await reachSecond(gate)
+                switch change {
+                case "frame": vm.selectFrame(vm.frames.first { $0.id != first }!.id)
+                case "account": account = "another-account"
+                case "cancel": try require(session.cancel(), "Exposure cancel rejected")
+                default: vm.setFrameHold(first, ticks: 3)
+                }
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil &&
+                    vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Exposure overwrote newer state")
+                await vm.flush()
+            }
+        }
+        try await test("active layer duplication uses real typed transaction across frames with Undo replay and cold reopen") {
+            let (vm, store) = try await fixture("duplicate-active-layer")
+            try require(vm.commitElement(styledStroke(vm)), "Layer source artwork")
+            vm.addFrame(); try require(vm.commitElement(styledStroke(vm,id:"second-frame-stroke")), "Second-frame artwork")
+            await vm.flush()
+            let before = vm.document, source = vm.activeLayerID
+            // Same manual command preserves lock/appearance on copies, including locked originals.
+            vm.duplicateLayer(source)
+            let manual = vm.document
+            vm.undo(); await vm.flush()
+            let session = SpatterStudioEditSession(), id = UUID()
+            try require(session.submit(SpatterLayerDuplicateInstruction.example,in:vm,accountID:nil,submissionID:id,currentScope:{guest}), "Duplicate submission")
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.layers.count == before.layers.count+1 && vm.frames.count == before.frames.count,
+                "Layer duplicate did not add one layer without frames")
+            let newLayer = vm.activeLayerID
+            try require(newLayer != source && session.appliedEdit?.receipt.createdLayerIDs == [newLayer] && session.appliedEdit?.receipt.createdFrameIDs.isEmpty == true,
+                "Receipt invented frames or lost new layer identity")
+            for (frame, manualFrame) in zip(vm.frames,manual.frames) {
+                let copies = frame.elements.filter{$0.layerID == newLayer}, originals = frame.elements.filter{$0.layerID == source}
+                let manualCopies = manualFrame.elements.filter{$0.layerID == manual.activeLayerID}
+                try require(copies.count == originals.count && copies.count == manualCopies.count && !copies.isEmpty,"Layer artwork was not duplicated across all frames")
+                for (copy, original) in zip(copies,originals) {
+                    var copiedJSON = try JSONSerialization.jsonObject(with:JSONEncoder().encode(copy)) as! [String:Any]
+                    var originalJSON = try JSONSerialization.jsonObject(with:JSONEncoder().encode(original)) as! [String:Any]
+                    copiedJSON.removeValue(forKey:"id"); copiedJSON.removeValue(forKey:"layerID")
+                    originalJSON.removeValue(forKey:"id"); originalJSON.removeValue(forKey:"layerID")
+                    try require(NSDictionary(dictionary:copiedJSON).isEqual(to:originalJSON) && copy.id != original.id,"Copied artwork lost editable settings or identity separation")
+                }
+            }
+            try require(session.notice == "Duplicated the active layer across its frames in one undoable local edit. Original artwork remains editable.", "Layer receipt claimed generated frames")
+            let after = vm.document
+            vm.undo(); try require(vm.frames == before.frames && vm.layers == before.layers && vm.activeLayerID == before.activeLayerID,"One layer Undo failed")
+            vm.redo(); try require(vm.frames == after.frames && vm.layers == after.layers && vm.activeLayerID == newLayer,"Layer Redo identities changed")
+            await vm.flush(); let unchanged = vm.document
+            try require(!session.submit(SpatterLayerDuplicateInstruction.example,in:vm,accountID:nil,submissionID:id,currentScope:{guest}) && vm.document == unchanged,"Layer replay duplicated twice")
+            let record = try store.loadAnimation(id:vm.document.id)!, cold = StudioViewModel(storage:store)
+            try require(await cold.openProject(record.metadata),"Layer cold open")
+            try require(cold.frames == vm.frames && cold.layers == vm.layers,"Layer duplication did not persist actual artwork")
+            await cold.flush()
+        }
+        try await test("active layer rename and opacity match manual edits no-op history and cold state") {
+            for (instruction, isRename) in [(SpatterLayerUpdateInstruction.renameExample,true),(SpatterLayerUpdateInstruction.opacityExample,false)] {
+                let (vm, store) = try await fixture(isRename ? "layer-rename":"layer-opacity")
+                try require(vm.commitElement(styledStroke(vm)),"Layer update artwork")
+                await vm.flush(); let target = vm.activeLayerID, original = vm.document
+                if isRename {
+                    guard let capture = vm.prepareLayerRename(target) else { throw Failure(message:"Manual rename unavailable") }
+                    try require(vm.renameLayer(capture,to:"Foreground"),"Manual rename failed")
+                } else { vm.setLayerOpacity(target,opacity:0.5) }
+                let manualLayer = vm.layers.first{$0.id == target}!, manualPixels = try erasurePixels(vm.document)
+                vm.undo(); await vm.flush()
+                let session = SpatterStudioEditSession()
+                try require(session.submit(instruction,in:vm,accountID:nil,currentScope:{guest}),"Layer settings rejected")
+                await session.waitForCompletion()
+                try require(session.status == .applied && vm.layers.first{$0.id == target} == manualLayer && vm.frames == original.frames && erasurePixels(vm.document) == manualPixels,"Layer settings differ from manual command or changed artwork")
+                let changed = vm.document
+                vm.undo(); try require(vm.layers == original.layers && vm.frames == original.frames,"Layer settings Undo")
+                vm.redo(); try require(vm.layers == changed.layers,"Layer settings Redo")
+                await vm.flush(); let beforeNoOp = vm.document
+                try require(session.submit(instruction,in:vm,accountID:nil,currentScope:{guest}),"Layer no-op submission")
+                await session.waitForCompletion()
+                try require(session.appliedEdit?.receipt.outcome == .unchanged && vm.document == beforeNoOp && session.notice == "The active layer settings already match. Nothing changed.","Layer no-op created history or false receipt")
+                let record = try store.loadAnimation(id:vm.document.id)!, cold = StudioViewModel(storage:store)
+                try require(await cold.openProject(record.metadata),"Layer settings cold open")
+                try require(cold.layers == vm.layers && erasurePixels(cold.document) == manualPixels,"Layer settings cold pixels")
+                await cold.flush()
+            }
+        }
+        try await test("quoted layer names containing command words remain inert through the real session") {
+            for name in ["Frame exposure", "Duplicate layer glow", "Erase selected drawings and audio", "Rename project"] {
+                let (vm, _) = try await fixture("reserved-layer-"+UUID().uuidString)
+                try require(vm.commitElement(styledStroke(vm)),"Reserved name artwork")
+                await vm.flush(); let before = vm.document, target = vm.activeLayerID
+                let session = SpatterStudioEditSession()
+                try require(session.submit("Rename active layer to \"\(name)\".",in:vm,accountID:nil,currentScope:{guest}),"Reserved-name submission rejected")
+                await session.waitForCompletion()
+                try require(session.status == .applied && vm.layers.first{$0.id == target}?.name == name && vm.frames == before.frames && vm.layers.count == before.layers.count && vm.document.name == before.name,
+                    "Quoted name selected another parser or executed content")
+                try require(session.notice == "Updated the active layer settings in one undoable local edit.","Quoted name produced another command receipt")
+                vm.undo(); try require(vm.layers == before.layers && vm.frames == before.frames,"Reserved-name Undo altered artwork")
+                await vm.flush()
+            }
+        }
+        try await test("layer duplication stale selection revision account and cancellation leave newer work intact") {
+            for instruction in [SpatterLayerDuplicateInstruction.example, SpatterLayerUpdateInstruction.renameExample, SpatterLayerUpdateInstruction.opacityExample] {
+            for change in ["layer","revision","account","cancel"] {
+                let (vm, _) = try await fixture("layer-command-fence-"+UUID().uuidString+change)
+                vm.duplicateLayer(vm.activeLayerID); await vm.flush()
+                let originalLayer = vm.activeLayerID, gate = Gate(), session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                var account:String? = nil
+                try require(session.submit(instruction,in:vm,accountID:nil,currentScope:{.init(isStudioVisible:true,accountID:account)}),"Layer fence submission")
+                try await reachSecond(gate)
+                switch change {
+                case "layer": vm.selectLayer(vm.layers.first{$0.id != originalLayer}!.id)
+                case "revision": vm.setFrameHold(vm.currentFrame.id,ticks:3)
+                case "account": account = "another-account"
+                default: try require(session.cancel(),"Layer cancellation")
+                }
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled:.stale) && session.appliedEdit == nil && vm.document == before && vm.canUndo == undo && vm.canRedo == redo,"Layer duplicate overwrote changed context")
+                await vm.flush()
+            }
+            }
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

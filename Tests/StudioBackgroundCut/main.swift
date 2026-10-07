@@ -11,6 +11,24 @@ private func rejects(_ operation: () throws -> Void) throws {
     do { try operation() } catch { return }
     throw Failure(message: "Unsafe operation succeeded")
 }
+/// Holds a real post-acquisition checkpoint without relying on scheduler timing.
+private final class BatchBarrier: @unchecked Sendable {
+    private let lock = NSLock()
+    private var checks = 0
+    let entered = DispatchSemaphore(value: 0)
+    let resume = DispatchSemaphore(value: 0)
+    func check() throws {
+        lock.lock(); checks += 1; let current = checks; lock.unlock()
+        // Initial cancellation, one metadata preflight, then acquired lease.
+        if current == 3 {
+            entered.signal()
+            guard resume.wait(timeout: .now() + 10) == .success else {
+                throw Failure(message: "Background Cut barrier timed out")
+            }
+        }
+        try Task.checkCancellation()
+    }
+}
 @main @MainActor struct BackgroundCutTests {
     static func png() throws -> Data {
         var pixels = [UInt8](repeating: 255, count: 9 * 9 * 4)
@@ -68,6 +86,41 @@ private func rejects(_ operation: () throws -> Void) throws {
                 }) }
             }
             print("PASS real PNG edge flood removal, tolerance, enclosed/colored foreground preservation, no-op and every cancellation checkpoint")
+            let barrier = BatchBarrier()
+            let held = Task.detached {
+                try await StudioBackgroundCut.removeBatch(from: ["source": original], red: 255, green: 255,
+                    blue: 255, tolerance: 3, checkCancellation: { try barrier.check() })
+            }
+            let entered = await Task.detached { barrier.entered.wait(timeout: .now() + 10) == .success }.value
+            try require(entered, "Background Cut did not enter actual leased work")
+            held.cancel()
+            do {
+                _ = try await StudioBackgroundCut.removeBatch(from: ["other": original], red: 255,
+                    green: 255, blue: 255, tolerance: 3)
+                throw Failure(message: "Cancelled decoder released its memory lease before returning")
+            } catch StudioBackgroundCut.Failure.busy { }
+            barrier.resume.signal()
+            do { _ = try await held.value; throw Failure(message: "Cancelled batch published pixels") }
+            catch is CancellationError { }
+            let nextBatch = try await StudioBackgroundCut.removeBatch(from: ["a": original, "b": original],
+                red: 255, green: 255, blue: 255, tolerance: 3)
+            try require(nextBatch.count == 2 && nextBatch.values.allSatisfy {
+                $0.png == wider.png && $0.removedPixels == wider.removedPixels
+            }, "Batch lease was not released or real PNG output changed")
+            do {
+                _ = try await StudioBackgroundCut.removeBatch(from: Dictionary(uniqueKeysWithValues: (0..<17).map { ("\($0)", original) }),
+                    red: 255, green: 255, blue: 255, tolerance: 3)
+                throw Failure(message: "Oversized batch admitted")
+            } catch StudioBackgroundCut.Failure.limit { }
+            do {
+                _ = try await StudioBackgroundCut.removeBatch(from: ["a": original], red: 255, green: 255,
+                    blue: 255, tolerance: 3, checkCancellation: { throw CancellationError() })
+                throw Failure(message: "Precancelled batch admitted")
+            } catch is CancellationError { }
+            let afterFailure = try await StudioBackgroundCut.removeBatch(from: ["a": original], red: 255,
+                green: 255, blue: 255, tolerance: 3)
+            try require(afterFailure["a"]?.png == wider.png, "Failure leaked batch ownership")
+            print("PASS actual single-owner Background Cut rejects overlap until cancelled worker returns, releases ownership and retains exact PNG output")
             let url = root.appendingPathComponent("original.png"); try original.write(to: url)
             let imported = try await StudioImageImportService.shared.importImage(from: url, name: "Cut fixture")
             let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("documents"))
@@ -178,6 +231,100 @@ private func rejects(_ operation: () throws -> Void) throws {
                 coldLinked.originalImageSource(linkedCutID)?.originalData == original, "Cold linked Cut reopen lost references/clipboard rendition/original")
             await coldLinked.backToProjects()
             print("PASS real linked frame Cut, sibling permission denial, late layer switch, old clipboard isolation, Undo/Redo and cold persisted renditions")
+            let independentStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("independent-documents"))
+            let independent = StudioViewModel(storage: independentStore)
+            let independentCreated = await independent.createProject(name: "Independent source cut", width: 64, height: 64, fps: 12)
+            try require(independentCreated, "Independent create")
+            let firstID = try independent.attachImportedImage(imported, expectedProjectID: independent.document.id,
+                expectedRevision: independent.document.revision, frameID: independent.document.activeFrameID, layerID: independent.document.activeLayerID)
+            let firstLayer = independent.currentFrame.rasterLayerID!
+            let secondURL = root.appendingPathComponent("second.png"); try exact.png.write(to: secondURL)
+            let secondImport = try await StudioImageImportService.shared.importImage(from: secondURL, name: "Independent edge")
+            let secondID = try independent.attachImportedImage(secondImport, expectedProjectID: independent.document.id,
+                expectedRevision: independent.document.revision, frameID: independent.document.activeFrameID, layerID: independent.document.activeLayerID)
+            let secondLayer = independent.currentFrame.rasterLayerInstances.first { independent.currentFrame.rasterAssetID(on: $0.layerID) == secondID }!.layerID
+            try require(independent.rasterData(firstID) != independent.rasterData(secondID), "Independent fixture does not contain distinct encoded sources")
+            // A drawing layer is ambiguous when two different sources exist.
+            try rejects { _ = try independent.prepareImageCut(allFrames: false) }
+            independent.selectLayer(secondLayer); independent.duplicateLayer(secondLayer)
+            let secondAlias = independent.activeLayerID
+            independent.selectedTool = .move; await independent.flush()
+            try require(independent.copyImage(), "Independent old-source clipboard")
+            independent.setLayerLockMode(secondLayer, mode: .full); await independent.flush()
+            try rejects { _ = try independent.prepareImageCut(allFrames: false) }
+            independent.undo(); await independent.flush()
+            independent.selectLayer(secondAlias)
+            // An unrelated locked primary is not a target and must remain intact.
+            independent.setLayerLockMode(firstLayer, mode: .full); await independent.flush()
+            independent.selectLayer(secondAlias); await independent.flush()
+            let independentCapture = try independent.prepareImageCut(allFrames: false)
+            try require(Set(independentCapture.assetsByFrame.values) == [secondID], "Selected secondary source was not captured")
+            let secondCut = try StudioBackgroundCut.remove(from: secondImport.normalizedPNG, red: 255, green: 255, blue: 255, tolerance: 3)
+            try require(secondCut.removedPixels > 0, "Second source has no remaining edge background")
+            let beforeIndependent = independent.document, independentUndo = independent.canUndo, independentRedo = independent.canRedo
+            let originalFirstProjection = independent.currentFrame.projectedRasterFrame(on: firstLayer)
+            for boundary in 1...3 {
+                var count = 0
+                try rejects { _ = try independent.applyImageCut(independentCapture, replacements: [secondID: secondCut.png], checkCancellation: {
+                    count += 1; if count == boundary { throw CancellationError() }
+                }) }
+                try require(independent.document == beforeIndependent && independent.canUndo == independentUndo && independent.canRedo == independentRedo &&
+                    independent.rasterData(secondID) == secondImport.normalizedPNG, "Cancelled independent Cut partially published")
+            }
+            try rejects { _ = try independent.applyImageCut(independentCapture, replacements: [firstID: wider.png]) }
+            var lateCount = 0
+            try rejects { _ = try independent.applyImageCut(independentCapture, replacements: [secondID: secondCut.png], checkCancellation: {
+                lateCount += 1
+                if lateCount == 3 { independent.selectLayer(firstLayer) }
+            }) }
+            try require(independent.activeLayerID == firstLayer && independent.currentFrame.rasterAssetID(on: secondLayer) == secondID,
+                        "Late selection was overwritten or independent source partially changed")
+            independent.selectLayer(secondAlias); await independent.flush()
+            let freshIndependent = try independent.prepareImageCut(allFrames: false)
+            let affectedIndependent = try independent.applyImageCut(freshIndependent, replacements: [secondID: secondCut.png])
+            let newSecond = independent.currentFrame.rasterAssetID(on: secondLayer)!
+            try require(affectedIndependent == 1 && newSecond != secondID && independent.currentFrame.rasterAssetID(on: secondAlias) == newSecond,
+                        "Selected secondary and its linked alias did not change atomically")
+            try require(independent.currentFrame.projectedRasterFrame(on: firstLayer) == originalFirstProjection &&
+                independent.rasterData(firstID) == imported.normalizedPNG && independent.rasterData(secondID) == secondImport.normalizedPNG &&
+                independent.rasterData(newSecond) == secondCut.png && independent.originalImageSource(newSecond)?.originalData == secondImport.originalData &&
+                independent.originalImageSource(newSecond)?.catalogueAttribution == independent.originalImageSource(secondID)?.catalogueAttribution,
+                        "Independent Cut changed unrelated primary, original bytes, alpha rendition or provenance")
+            independent.undo()
+            try require(independent.currentFrame.rasterAssetID(on: secondLayer) == secondID && independent.currentFrame.rasterAssetID == firstID,
+                        "Independent Cut needs more than one Undo")
+            independent.redo()
+            try require(independent.currentFrame.rasterAssetID(on: secondLayer) == newSecond, "Independent Cut Redo lost source")
+            print("PASS selected independent source Cut preserves locked sibling and old clipboard, linked permissions, all cancellation checkpoints, stale selection and one Undo Redo")
+
+            // The same layer selects the primary across duplicated frames; only
+            // that source changes, even with independent secondary renditions.
+            independent.setLayerLockMode(firstLayer, mode: .free); independent.selectLayer(firstLayer)
+            independent.duplicateFrame(); await independent.flush()
+            let allIndependent = try independent.prepareImageCut(allFrames: true)
+            try require(allIndependent.assetsByFrame.count == 2 && Set(allIndependent.assetsByFrame.values) == [firstID], "All-frame source selection changed scope")
+            let allAffected = try independent.applyImageCut(allIndependent, replacements: [firstID: wider.png])
+            let newFirst = independent.currentFrame.rasterAssetID!
+            try require(allAffected == 2 && newFirst != firstID && independent.frames.allSatisfy {
+                $0.rasterAssetID == newFirst && $0.rasterAssetID(on: secondLayer) == newSecond && $0.rasterAssetID(on: secondAlias) == newSecond
+            }, "Primary Cut retargeted unrelated secondary sources")
+            independent.undo(); try require(independent.frames.allSatisfy { $0.rasterAssetID == firstID && $0.rasterAssetID(on: secondLayer) == newSecond }, "All-frame independent Cut Undo")
+            independent.redo()
+            independent.addFrame(); await independent.flush()
+            try require(independent.pasteImage(), "Pre-Cut independent clipboard missing")
+            try require(independent.currentFrame.rasterAssetID == secondID && independent.rasterData(secondID) == secondImport.normalizedPNG,
+                        "Independent clipboard silently switched to cut rendition")
+            let independentProjectID = independent.document.id
+            await independent.backToProjects()
+            let independentMetadata = try independentStore.loadAnimation(id: independentProjectID)!.metadata
+            let coldIndependent = StudioViewModel(storage: independentStore)
+            let independentOpened = await coldIndependent.openProject(independentMetadata)
+            try require(independentOpened && coldIndependent.frames.filter { $0.rasterAssetID == newFirst && $0.rasterAssetID(on: secondLayer) == newSecond }.count == 2 &&
+                coldIndependent.rasterData(newFirst) == wider.png && coldIndependent.rasterData(newSecond) == secondCut.png &&
+                coldIndependent.rasterData(secondID) == secondImport.normalizedPNG && coldIndependent.originalImageSource(newSecond)?.originalData == secondImport.originalData,
+                        "Cold reopen lost independent Cut renditions or original source ownership")
+            await coldIndependent.backToProjects()
+            print("PASS two-source two-frame selected-primary Cut preserves secondary aliases, old image clipboard and actual cold original/normalized bytes")
         } catch { print("FAIL \(error)"); exit(1) }
     }
 }

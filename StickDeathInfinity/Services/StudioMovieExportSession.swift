@@ -101,15 +101,13 @@ final class StudioMovieExportSession: ObservableObject {
         // One synchronous MainActor capture; the task never retains the VM.
         let document = vm.document
         var rasters: [String: Data] = [:]
-        for id in Set(document.frames.compactMap(\.rasterAssetID)) {
+        for id in document.referencedRasterAssetIDs {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }
         }
         var credits: [String: StudioExportService.ImageCredit] = [:]
         do {
-            let visible = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
-            for frame in document.frames {
-                guard frame.rasterLayerInstances.contains(where: { visible.contains($0.layerID) }), let id = frame.rasterAssetID,
-                      credits[id] == nil, let original = vm.originalImageSource(id),
+            for id in StudioExportService.visibleRasterAssetIDs(document: document).sorted() {
+                guard let original = vm.originalImageSource(id),
                       let attribution = original.catalogueAttribution else { continue }
                 try original.validate()
                 credits[id] = try StudioExportService.ImageCredit(attribution: attribution)

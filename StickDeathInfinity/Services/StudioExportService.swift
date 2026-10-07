@@ -98,11 +98,8 @@ final class StudioExportService {
     static func renderedImageCredits(document: StudioDocument,
                                      creditsByRasterID: [String: ImageCredit]) throws -> [ImageCredit] {
         guard creditsByRasterID.count <= maximumFrames else { throw ExportError.limitExceeded }
-        let visibleLayers = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
-        let used = Set(document.frames.compactMap { frame -> String? in
-            guard frame.rasterLayerInstances.contains(where: { visibleLayers.contains($0.layerID) }) else { return nil }
-            return frame.rasterAssetID
-        })
+        let used = visibleRasterAssetIDs(document: document)
+        guard used.count <= maximumFrames else { throw ExportError.limitExceeded }
         var result: [ImageCredit] = []
         for asset in used.sorted() {
             try Task.checkCancellation()
@@ -120,6 +117,31 @@ final class StudioExportService {
         }
     }
 
+    static func visibleRasterAssetIDs(document: StudioDocument) -> Set<String> {
+        Set(document.frames.flatMap { frame in
+            frame.visibleRasterInstances(in: document.layers).compactMap { frame.rasterAssetID(on: $0.layerID) }
+        })
+    }
+
+    /// Bound unique source decoding across the snapshot, not once per linked copy.
+    func validateRasterSources(document: StudioDocument, sources: [String: Data]) throws {
+        let references = Self.visibleRasterAssetIDs(document: document)
+        guard sources.count <= Self.maximumFrames, references.count <= Self.maximumFrames else { throw ExportError.limitExceeded }
+        var bytes = 0, pixels = 0
+        for (id, data) in sources {
+            try Task.checkCancellation()
+            guard !id.isEmpty, id.utf8.count <= 128, data.count <= 64 * 1024 * 1024 - bytes else { throw ExportError.limitExceeded }
+            bytes += data.count
+        }
+        for id in references.sorted() {
+            try Task.checkCancellation()
+            guard let data = sources[id] else { throw ExportError.missingRaster }
+            let count = try validateRaster(data)
+            guard count <= 32 * 1024 * 1024 - pixels else { throw ExportError.limitExceeded }
+            pixels += count
+        }
+    }
+
     /// outputParent must be an existing app-owned cache/temporary directory.
     /// Pass immutable project-managed raster bytes, never a URL from picker state.
     /// Progress counts rendered frames; only the returned Output means success.
@@ -134,6 +156,17 @@ final class StudioExportService {
         defer { Self.exportInProgress = false }
         try validate(document)
         guard imageCredits.count <= Self.maximumFrames else { throw ExportError.limitExceeded }
+        var sources: [String: Data] = [:]
+        let sourceIDs = Self.visibleRasterAssetIDs(document: document)
+        guard sourceIDs.count <= Self.maximumFrames else { throw ExportError.limitExceeded }
+        var capturedBytes = 0
+        for id in sourceIDs.sorted() {
+            try Task.checkCancellation()
+            guard let bytes = try rasterData(id) else { throw ExportError.missingRaster }
+            guard bytes.count <= 64 * 1024 * 1024 - capturedBytes else { throw ExportError.limitExceeded }
+            capturedBytes += bytes.count; sources[id] = bytes
+        }
+        try validateRasterSources(document: document, sources: sources)
         let columns = format == .spritesheet ? Int(ceil(sqrt(Double(document.frames.count)))) : 1
         let rows = format == .spritesheet ? (document.frames.count + columns - 1) / columns : 1
         let width = document.width * columns, height = document.height * rows
@@ -170,14 +203,7 @@ final class StudioExportService {
                 let x = format == .spritesheet ? (index % columns) * document.width : 0
                 let y = format == .spritesheet ? (index / columns) * document.height : 0
                 try autoreleasepool {
-                    let raster: Data?
-                    let rasterVisible = !frame.visibleRasterInstances(in: document.layers).isEmpty
-                    if rasterVisible, let asset = frame.rasterAssetID {
-                        guard let bytes = try rasterData(asset) else { throw ExportError.missingRaster }
-                        try validateRaster(bytes)
-                        raster = bytes
-                    } else { raster = nil }
-                    let image = try render(frame, document: document, background: background, raster: raster)
+                    let image = try render(frame, document: document, background: background, raster: nil, rasterDataByID: sources)
                     if let sheet {
                         sheet.draw(image, in: CGRect(x: x, y: height - y - document.height,
                             width: document.width, height: document.height))
@@ -230,19 +256,22 @@ final class StudioExportService {
     }
 
     func render(_ frame: AnimationFrame, document: StudioDocument,
-                        background: Background, raster: Data?, thumbnail: Bool = false) throws -> CGImage {
+                        background: Background, raster: Data?, thumbnail: Bool = false,
+                        rasterDataByID: [String: Data] = [:]) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let ratio = thumbnail ? min(1, 256 / max(size.width, size.height)) : 1
         let output = CGSize(width: max(1, floor(size.width * ratio)), height: max(1, floor(size.height * ratio)))
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
-        let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers, data: raster)
+        var sources = rasterDataByID
+        if let id = frame.rasterAssetID, let raster, sources[id] == nil { sources[id] = raster }
+        let images = try StudioFrameRenderer.prepareRasters(frame: frame, layers: document.layers, sourceData: sources)
         let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers,
-            canvasSize: size, rasterData: raster)
+            canvasSize: size, rasterData: raster, rasterDataByID: sources)
         var drawingError: Error?
         let content = Canvas { context, actual in
             if background == .white { context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white)) }
             drawingError = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedRaster: image, preparedSmudges: smudges)
+                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedSmudges: smudges, rasterSources: sources, preparedRasters: images)
         }.frame(width: output.width, height: output.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1
@@ -254,10 +283,10 @@ final class StudioExportService {
         return image
     }
 
-    func projectThumbnail(document: StudioDocument, raster: Data?) throws -> Data {
+    func projectThumbnail(document: StudioDocument, raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Data {
         try document.validate()
         guard let frame = document.frames.first else { throw ExportError.renderFailed }
-        let image = try render(frame, document: document, background: .white, raster: raster, thumbnail: true)
+        let image = try render(frame, document: document, background: .white, raster: raster, thumbnail: true, rasterDataByID: rasterDataByID)
         let data = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
             throw ExportError.encodeFailed
@@ -309,7 +338,7 @@ final class StudioExportService {
         }
     }
 
-    private func validateRaster(_ data: Data) throws {
+    private func validateRaster(_ data: Data) throws -> Int {
         guard data.count <= 32 * 1024 * 1024 else { throw ExportError.limitExceeded }
         guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let values = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -323,6 +352,7 @@ final class StudioExportService {
         guard CGImageSourceGetStatus(source) == .statusComplete, CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else {
             throw ExportError.invalidRaster
         }
+        return width * height
     }
 
     enum ExportError: LocalizedError {

@@ -936,6 +936,55 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(old.imageCredits == nil && old.version == 1, "Legacy silent manifest cannot decode")
             try output.cleanup(); try require(png.directory.checkResourceIsReachable(), "Separate reference output was removed")
         }
+        await test("two independent licensed sources share a frame and survive real MP4 decoding with exact visible credits") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            guard let pencil = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }),
+                  let arrow = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_arrow" }) else {
+                throw Failure(message: "Independent licensed fixtures missing")
+            }
+            let firstData = try catalogue.checkedPNG(pencil), secondData = try catalogue.checkedPNG(arrow)
+            try require(firstData != secondData, "Independent-source fixture accidentally reuses one PNG")
+            let firstCredit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: pencil))
+            let secondCredit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: arrow))
+            let firstID = "image-11111111-1111-4111-8111-111111111111", secondID = "image-22222222-2222-4222-8222-222222222222"
+            let folder = try parent(root, "independent-images")
+            var doc = try document(colors: ["#FFFFFF"])
+            doc.schemaVersion = 31; doc.frames[0].elements = []
+            doc.layers.append(CanvasLayer(id: "independent", name: "Independent arrow"))
+            doc.frames[0].rasterAssetID = firstID; doc.frames[0].rasterLayerID = doc.activeLayerID
+            doc.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 28, height: 32)
+            doc.frames[0].rasterAliases = [.init(layerID: "independent", placement: .init(x: 36, y: 0, width: 28, height: 32), assetID: secondID)]
+            try doc.validate()
+            let rasters = [firstID: firstData, secondID: secondData]
+            let credits = [firstID: firstCredit, secondID: secondCredit]
+            let output = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits), outputParent: folder, background: .white)
+            _ = try output.checkedURLs()
+            let decoded = try await decode(output.movieURL)
+            let png = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder, imageCredits: credits, rasterData: { rasters[$0] })
+            try require(decoded.frames.count == 1 && output.manifest.imageCredits == [secondCredit, firstCredit], "Independent movie lost source attribution or frame")
+            let reference = try readPNG(png.imageURLs[0])
+            try matchesPNG(decoded.frames[0], reference)
+            for range in [0..<28, 36..<64] {
+                let colored = (0..<32).reduce(0) { count, y in count + range.filter { x in
+                    let p = decoded.frames[0].pixel(x, y); return p[0] < 230 || p[1] < 230 || p[2] < 230
+                }.count }
+                try require(colored > 12, "One independent image disappeared from encoded pixels")
+            }
+            try output.cleanup()
+            doc.layers[1].visible = false
+            let hidden = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits), outputParent: folder, background: .white)
+            let hiddenPixels = try await decode(hidden.movieURL)
+            try require(hidden.manifest.imageCredits == [firstCredit], "Hidden independent source acquired a visible credit")
+            for y in stride(from: 4, to: 32, by: 8) { for x in stride(from: 40, to: 64, by: 8) {
+                try pixel(hiddenPixels.frames[0].pixel(x, y), [255,255,255,255])
+            } }
+            try hidden.cleanup()
+            let before = Set(try contents(folder))
+            try await rejected({
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: [firstID: firstData], imageCredits: credits), outputParent: folder, background: .white)
+            }, matching: { if case Service.ExportError.missingRaster = $0 { return true }; return false })
+            try require(Set(try contents(folder)) == before && doc.referencedRasterAssetIDs == Set([firstID, secondID]), "Missing hidden independent source published files or lost document reference")
+        }
         await test("movie credits omit hidden zero-opacity and personal originals without weakening raster validation") {
             let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
             let item = catalogue.images[0], data = try catalogue.checkedPNG(item)

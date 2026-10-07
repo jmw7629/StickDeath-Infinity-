@@ -74,6 +74,68 @@ private final class RevisionSpaceFailureStore: DeviceStorageManager {
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
 
+        test("additional managed image sources survive cold storage and portable backup without extra frames") {
+            let (store, root) = try fixture()
+            var value = project()
+            let firstID = UUID(), secondID = UUID()
+            func record(_ id: UUID, _ bytes: Data) -> StoredAnimationFrame {
+                .init(imageData: bytes, layerData: nil, sourceImage: .init(id: id, name: "Original",
+                    container: "png", originalData: bytes, originalWidth: 4, originalHeight: 4,
+                    originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4))
+            }
+            value.frames[0] = record(firstID, red)
+            value.additionalImageAssets = ["image-" + secondID.uuidString: record(secondID, blue)]
+            try store.saveAnimation(value)
+            let restarted = DeviceStorageManager(documentsDirectory: root)
+            guard let loaded = try restarted.loadAnimation(id: value.id) else { throw TestFailure(message: "Cold project missing") }
+            try require(loaded.frames == value.frames && loaded.metadata.frameCount == 1 && loaded.frames.count == 1,
+                        "Additional source changed historical frame mapping")
+            try require(loaded.additionalImageAssets == value.additionalImageAssets, "Additional original/normalized bytes changed")
+            let backup = try restarted.portableBundle(for: loaded)
+            let restored = try restarted.projectFromPortableBundle(backup)
+            try require(restored.frames == value.frames && restored.additionalImageAssets == value.additionalImageAssets,
+                        "Portable backup dropped or changed independently owned sources")
+            try require(try encoded(restored) == encoded(loaded), "Portable metadata changed")
+        }
+        test("invalid additional image identity and bounds preserve the selected saved revision") {
+            let (store, _) = try fixture(); var original = project()
+            let id = UUID()
+            let source = StoredImageSource(id: id, name: "Original", container: "png", originalData: red,
+                originalWidth: 4, originalHeight: 4, originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4)
+            let record = StoredAnimationFrame(imageData: red, layerData: nil, sourceImage: source)
+            original.frames[0] = record
+            try store.saveAnimation(original)
+            var invalid = original
+            invalid.additionalImageAssets = ["image-" + UUID().uuidString: record]
+            try rejects { try store.saveAnimation(invalid) }
+            invalid.additionalImageAssets = ["image-" + id.uuidString: .init(imageData: blue, layerData: nil, sourceImage: source)]
+            try rejects { try store.saveAnimation(invalid) }
+            invalid.additionalImageAssets = ["image-" + id.uuidString: .init(imageData: red, layerData: [], sourceImage: source)]
+            try rejects { try store.saveAnimation(invalid) }
+            var huge = record; huge.imageData = Data(repeating: 1, count: 32 * 1024 * 1024 + 1)
+            invalid.additionalImageAssets = ["image-" + id.uuidString: huge]
+            try rejects { try store.preflightAnimation(invalid) }
+            var largeRecords: [String: StoredAnimationFrame] = [:]
+            for _ in 0..<2 {
+                let extraID = UUID()
+                let extraSource = StoredImageSource(id: extraID, name: "Bounded source", container: "png", originalData: blue,
+                    originalWidth: 4, originalHeight: 4, originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4)
+                largeRecords["image-" + extraID.uuidString] = .init(imageData: Data(repeating: 1, count: 20 * 1024 * 1024),
+                    layerData: nil, sourceImage: extraSource)
+            }
+            invalid.additionalImageAssets = largeRecords
+            try rejects { try store.preflightAnimation(invalid) } // Aggregate, not per-asset limit.
+            guard let loaded = try store.loadAnimation(id: original.id) else { throw TestFailure(message: "Original disappeared") }
+            try require(try encoded(loaded) == encoded(original), "Rejected additional source changed prior saved project")
+        }
+        test("legacy project decoding preserves absent additional-source collection and opaque records") {
+            let legacy = project()
+            let data = try encoded(legacy)
+            try require(!String(decoding: data, as: UTF8.self).contains("additionalImageAssets"), "Nil collection changed legacy encoding")
+            let decoded = try JSONDecoder().decode(AnimationProject.self, from: data)
+            try require(decoded.additionalImageAssets == nil && decoded.frames == legacy.frames,
+                        "Legacy decode adopted or replaced source records")
+        }
         test("portable bundle preserves complete project bytes without writing either store") {
             let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
             let (other, target) = try fixture(); defer { try? FileManager.default.removeItem(at: target) }

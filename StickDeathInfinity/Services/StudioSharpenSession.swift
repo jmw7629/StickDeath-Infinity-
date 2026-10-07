@@ -93,7 +93,8 @@ struct StudioSharpenInput {
             var frame = vm.currentFrame; frame.elements.append(element)
             try StudioSmudgeDescriptor.validateFrame(frame, width: input.context.width, height: input.context.height)
             let captured = try StudioSharpenCapture.capture(document: vm.document,
-                selection: vm.selectedElementIDs, raster: vm.rasterData(vm.currentFrame.rasterAssetID))
+                selection: vm.selectedElementIDs, raster: vm.rasterData(vm.currentFrame.rasterAssetID),
+                rasterDataByID: vm.rasterSources(for: vm.currentFrame))
             let worker = Task.detached(priority: .userInitiated) {
                 try StudioSharpen.apply(to: captured.pixels, path: input.points, settings: input.context.settings)
             }

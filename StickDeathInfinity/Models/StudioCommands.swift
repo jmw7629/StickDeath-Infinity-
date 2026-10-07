@@ -128,6 +128,15 @@ enum StudioCommand: Codable {
     struct ReflectElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let axis: StudioReflectionAxis }
     struct OrderElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let direction: StudioCommandDirection }
     struct PasteElements: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let clipboardID: String }
+    struct SelectedArtworkImage: Codable { let assetID: String; let layerID: String }
+    struct TransformSelectedArtwork: Codable {
+        let frame: StudioCommandReference; let elementIDs: [String]; let image: SelectedArtworkImage?
+        let dx: Double; let dy: Double; let scale: Double; let rotation: Double
+        let flipHorizontal: Bool; let flipVertical: Bool
+    }
+    struct DeleteSelectedArtwork: Codable {
+        let frame: StudioCommandReference; let elementIDs: [String]; let image: SelectedArtworkImage?
+    }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
     struct CropImage: Codable { let frame: StudioCommandReference; let assetID: String; let crop: StudioImageCrop; var layer: StudioCommandReference? = nil }
@@ -167,6 +176,7 @@ enum StudioCommand: Codable {
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
+    case transformSelectedArtwork(TransformSelectedArtwork), deleteSelectedArtwork(DeleteSelectedArtwork)
     case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
     case cutElements(DeleteElements)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
@@ -187,6 +197,8 @@ enum StudioCommand: Codable {
         case "reflectImage": self = .reflectImage(try container.decode(ReflectImage.self, forKey: key))
         case "deleteImage": self = .deleteImage(try container.decode(DeleteImage.self, forKey: key))
         case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
+        case "transformSelectedArtwork": self = .transformSelectedArtwork(try container.decode(TransformSelectedArtwork.self, forKey: key))
+        case "deleteSelectedArtwork": self = .deleteSelectedArtwork(try container.decode(DeleteSelectedArtwork.self, forKey: key))
         case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
         case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
@@ -227,6 +239,8 @@ enum StudioCommand: Codable {
         case .reflectImage(let value): try container.encode(value, forKey: StudioWireKey("reflectImage"))
         case .deleteImage(let value): try container.encode(value, forKey: StudioWireKey("deleteImage"))
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
+        case .transformSelectedArtwork(let value): try container.encode(value, forKey: StudioWireKey("transformSelectedArtwork"))
+        case .deleteSelectedArtwork(let value): try container.encode(value, forKey: StudioWireKey("deleteSelectedArtwork"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .eraseSelectedElements(let value): try container.encode(value, forKey: StudioWireKey("eraseSelectedElements"))
@@ -346,7 +360,7 @@ struct StudioCommandContext {
             let image = frame.preferredRasterInstance(activeLayerID: document.activeLayerID)
             return Frame(id: frame.id, elementCount: frame.elements.count, durationTicks: frame.durationTicks,
                 hasOriginalRecord: frame.rasterAssetID != nil,
-                imageAssetID: image?.placement == nil ? nil : frame.rasterAssetID,
+                imageAssetID: image.flatMap { $0.placement == nil ? nil : frame.rasterAssetID(on: $0.layerID) },
                 imageLayerID: image?.placement == nil ? nil : image?.layerID,
                 imagePlacement: image?.placement, imageReflection: image?.reflection,
                 imageQuarterTurns: image?.quarterTurns, imageCrop: image?.crop, imageRotationDegrees: image?.rotationDegrees)
@@ -419,6 +433,8 @@ enum StudioCommandExecutor {
             "reflectImage": ["layer", "frame", "assetID", "axis"],
             "deleteImage": ["layer", "frame", "assetID"],
             "updateImagePlacement": ["layer", "frame", "assetID", "placement", "rotationDegrees"],
+            "transformSelectedArtwork": ["frame", "elementIDs", "image", "dx", "dy", "scale", "rotation", "flipHorizontal", "flipVertical"],
+            "deleteSelectedArtwork": ["frame", "elementIDs", "image"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
@@ -447,6 +463,9 @@ enum StudioCommandExecutor {
             for key in ["frame", "layer", "after", "to", "source", "target"] where keys.contains(key) {
                 if key == "layer", ["cropImage", "rotateImage", "reflectImage", "deleteImage", "updateImagePlacement"].contains(kind), fields[key] == nil { continue }
                 try reference(fields[key])
+            }
+            if ["transformSelectedArtwork", "deleteSelectedArtwork"].contains(kind), let image = fields["image"], !(image is NSNull) {
+                _ = try object(image, keys: ["assetID", "layerID"])
             }
             if kind == "canvasOptions" {
                 if let settings = fields["gridSettings"] { _ = try object(settings, keys: ["spacing", "opacity", "tint"]) }
@@ -644,13 +663,13 @@ enum StudioCommandExecutor {
         func layer(_ reference: StudioCommandReference) throws -> String { try resolve(reference, kind: .layer, document: document, created: created) }
         func imageLayer(_ reference: StudioCommandReference?, frame referenceFrame: StudioCommandReference, assetID: String) throws -> String {
             let id = try frame(referenceFrame)
-            guard let selected = document.frames.first(where: { $0.id == id }), selected.rasterAssetID == assetID else {
+            guard let selected = document.frames.first(where: { $0.id == id }) else {
                 throw StudioCommandError.invalidReference
             }
             let instance: StudioRasterLayerInstance?
             if let reference { instance = selected.rasterInstance(on: try layer(reference)) }
             else { instance = selected.rasterLayerInstances.count == 1 ? selected.rasterLayerInstances.first : nil }
-            guard let instance, instance.placement != nil else { throw StudioCommandError.invalidReference }
+            guard let instance, instance.placement != nil, selected.rasterAssetID(on: instance.layerID) == assetID else { throw StudioCommandError.invalidReference }
             return instance.layerID
         }
         switch command {
@@ -859,6 +878,18 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.translateElements(frameID: id, ids: Set(value.elementIDs), dx: value.dx, dy: value.dy,
                                          checkCancellation: checkCancellation)
+        case .transformSelectedArtwork(let value):
+            guard value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.transformSelectedArtwork(frameID: frame(value.frame), ids: Set(value.elementIDs),
+                imageAssetID: value.image?.assetID, imageLayerID: value.image?.layerID,
+                dx: value.dx, dy: value.dy, scale: value.scale, rotation: value.rotation,
+                flipHorizontal: value.flipHorizontal, flipVertical: value.flipVertical, checkCancellation: checkCancellation)
+        case .deleteSelectedArtwork(let value):
+            guard value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.deleteSelectedArtwork(frameID: frame(value.frame), ids: Set(value.elementIDs),
+                imageAssetID: value.image?.assetID, imageLayerID: value.image?.layerID, checkCancellation: checkCancellation)
         case .transformElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,

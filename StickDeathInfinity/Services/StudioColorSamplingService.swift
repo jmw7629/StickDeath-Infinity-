@@ -37,7 +37,7 @@ enum StudioColorSamplingService {
     /// fractional location selects its containing pixel; outside input is never
     /// clamped onto unrelated artwork. Visible layers are sampled as composited.
     static func sample(document: StudioDocument, frameID: String, point: CGPoint,
-                       rasterData: Data? = nil) throws -> Sample {
+                       rasterData: Data? = nil, rasterDataByID: [String: Data] = [:]) throws -> Sample {
         guard point.x.isFinite, point.y.isFinite, point.x >= 0, point.y >= 0,
               point.x < CGFloat(document.width), point.y < CGFloat(document.height) else {
             throw Failure.outsideCanvas
@@ -47,21 +47,25 @@ enum StudioColorSamplingService {
               document.width <= maximumPixels / document.height else { throw Failure.limitExceeded }
         try document.validate()
         guard let frame = document.frames.first(where: { $0.id == frameID }) else { throw Failure.unavailableFrame }
-        let visibleRaster = !frame.visibleRasterInstances(in: document.layers).isEmpty
-        if visibleRaster && rasterData == nil { throw Failure.missingRaster }
+        let sources = try StudioFrameRenderer.resolvedRasterSources(frame: frame, legacyData: rasterData, sources: rasterDataByID)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
-        let raster = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers,
-            data: visibleRaster ? rasterData : nil, maximumDimension: 8192)
-        if visibleRaster && raster == nil { throw Failure.missingRaster }
+        for instance in frame.visibleRasterInstances(in: document.layers) {
+            guard let id = frame.rasterAssetID(on: instance.layerID), sources[id] != nil else { throw Failure.missingRaster }
+        }
+        let images = try StudioFrameRenderer.prepareRasters(frame: frame, layers: document.layers,
+            sourceData: sources, maximumDimension: 8192)
+        for instance in frame.visibleRasterInstances(in: document.layers) {
+            guard let id = frame.rasterAssetID(on: instance.layerID), sources[id] != nil, images[id] != nil else { throw Failure.missingRaster }
+        }
         let size = CGSize(width: document.width, height: document.height)
         let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size,
-            rasterData: visibleRaster ? rasterData : nil)
+            rasterData: rasterData, rasterDataByID: sources)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: visibleRaster ? rasterData : nil,
-                preparedBrushes: brushes, preparedRaster: raster, preparedSmudges: smudges)
+                canvasSize: size, size: actual, rasterData: rasterData,
+                preparedBrushes: brushes, preparedSmudges: smudges, rasterSources: sources, preparedRasters: images)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas)
         renderer.scale = 1

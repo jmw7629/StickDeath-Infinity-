@@ -51,7 +51,10 @@ final class StudioViewModel: ObservableObject {
     // clipboard generation. Failed copies and Undo never select older payloads.
     private var imageClipboardEditorVersion: UUID?
     private var copiedImageLayer: CanvasLayer?
+    private var copiedArtworkLayers: [CanvasLayer] = []
+    private var copiedArtworkSchema: Int = 1
     var projectThumbnailRenderer: ((StudioDocument, Data?) throws -> Data)?
+    var projectThumbnailSourcesRenderer: ((StudioDocument, [String: Data]) throws -> Data)?
     private var projectThumbnailData: Data?
     private var retainedRasterFrames: [String: StoredAnimationFrame] = [:]
     private var retainedAudioTracks: [AudioTrack] = []
@@ -103,7 +106,7 @@ final class StudioViewModel: ObservableObject {
     var canPaste: Bool { usesImageClipboard ? canPasteImage : activeStrokeID == nil && editor.canPaste }
     var copiedDrawingCount: Int { editor.clipboardElementCount }
     var copiedDrawingClipboardID: String? { copiedDrawingCount > 0 ? editor.clipboardVersion.uuidString : nil }
-    var canDeleteSelected: Bool { !editor.selectedElementIDs.isEmpty }
+    var canDeleteSelected: Bool { isSelectingMixedArtwork ? captureArtworkSelection() != nil : !editor.selectedElementIDs.isEmpty }
     var selectedElementIDs: Set<String> { editor.selectedElementIDs }
     var isDirty: Bool { savedRevision != document.revision || pendingBrushStroke != nil || activeStrokeID != nil || textDraft != nil }
     var saveTimeAgo: String { activeStrokeID != nil ? "Drawing…" : isSaving ? "Saving…" : isDirty ? "Unsaved" : "Saved" }
@@ -116,9 +119,16 @@ final class StudioViewModel: ObservableObject {
     @Published var selectedTool: DrawingTool = .brush {
         didSet {
             if selectedTool != oldValue {
+                clearImageRegion()
+                if selectedTool == .wand { clearElementSelection() }
                 areaSelectionGeneration = UUID()
                 // Only an explicitly selected, unchanged Lasso image may continue into Move.
-                if oldValue == .lasso, selectedTool == .move, areaSelectionTarget == .image,
+                if selectedTool == .fill, [.move, .lasso].contains(oldValue),
+                   imageMoveTarget != nil {
+                    // Keep an invalid target as a fail-closed sentinel. Never
+                    // refresh a stale Lasso revision into fresh Fill authority.
+                    if fillImageLayerID != nil { imageMoveTarget?.areaRevision = document.revision }
+                } else if oldValue == .lasso, selectedTool == .move, areaSelectionTarget != .drawings,
                    validAreaImageSelection != nil {
                     imageMoveTarget?.areaRevision = nil
                 } else { imageMoveTarget = nil }
@@ -702,6 +712,8 @@ final class StudioViewModel: ObservableObject {
                 try addUnits(erasure.points.count, weight: targets)
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
             case .transformElements(let selection): edits += selection.elementIDs.count; try addUnits(selection.elementIDs.count, weight: 32)
+            case .transformSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
+            case .deleteSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
             case .duplicateFrame, .duplicateLayer, .pasteElements, .tweenFrames:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
@@ -978,16 +990,37 @@ final class StudioViewModel: ObservableObject {
                     guard stored.frames.indices.contains(index) else { throw StudioDocumentError.invalid("An original frame record is missing. The project was not replaced.") }
                     rasters[assetID] = stored.frames[index]
                 }
+                for (assetID, record) in stored.additionalImageAssets ?? [:] {
+                    guard rasters[assetID] == nil || rasters[assetID] == record else {
+                        throw StudioDocumentError.invalid("Conflicting image source records cannot be opened.")
+                    }
+                    rasters[assetID] = record
+                }
                 try validateManagedImageCapacity(rasters)
-                guard Set(archive.rasterFrameIndices.keys) == decoded.referencedRasterAssetIDs else {
+                guard Set(rasters.keys) == decoded.referencedRasterAssetIDs else {
                     throw StudioDocumentError.invalid("The image archive has unaccounted references. Its original bytes were preserved.")
                 }
+                var validatedSources = Set<String>()
                 for (index, frame) in decoded.frames.enumerated() {
                     if let id = frame.rasterAssetID {
                         guard let record = rasters[id], stored.frames[index] == record else {
                             throw StudioDocumentError.invalid("An imported image reference is missing or its frame records disagree.")
                         }
                         try validateManagedRaster(frame: frame, record: record)
+                        validatedSources.insert(id)
+                        for instance in frame.rasterLayerInstances where instance.layerID != frame.rasterLayerID {
+                            guard let projected = frame.projectedRasterFrame(on: instance.layerID),
+                                  let assetID = projected.rasterAssetID, let sourceRecord = rasters[assetID] else {
+                                throw StudioRasterImage.Failure.missing
+                            }
+                            if let mask = instance.regionMask {
+                                guard let source = sourceRecord.sourceImage, mask.width == source.normalizedWidth,
+                                      mask.height == source.normalizedHeight else { throw StudioRasterImage.Failure.invalid }
+                            }
+                            if validatedSources.insert(assetID).inserted {
+                                try validateManagedRaster(frame: projected, record: sourceRecord)
+                            }
+                        }
                     } else {
                         guard stored.frames[index].imageData == nil, stored.frames[index].layerData == nil,
                               stored.frames[index].sourceImage == nil else {
@@ -996,7 +1029,8 @@ final class StudioViewModel: ObservableObject {
                     }
                 }
             } else {
-                guard stored.frames.allSatisfy({ $0.sourceImage == nil }) else {
+                guard stored.frames.allSatisfy({ $0.sourceImage == nil }),
+                      stored.additionalImageAssets?.isEmpty ?? true else {
                     throw StudioDocumentError.invalid("This imported image project is missing its editable placement archive. Its original bytes were preserved; recovery is required before editing.")
                 }
                 // Missing legacy images have unknown content. Do not compact their
@@ -1066,7 +1100,11 @@ final class StudioViewModel: ObservableObject {
         defer { isSaving = false }
         do {
             let snapshot = document
-            if updateThumbnail, let renderThumbnail = projectThumbnailRenderer {
+            if updateThumbnail, let renderThumbnail = projectThumbnailSourcesRenderer {
+                projectThumbnailData = try? renderThumbnail(snapshot,
+                    snapshot.frames.first.map { rasterSources(for: $0) } ?? [:])
+            } else if updateThumbnail, let renderThumbnail = projectThumbnailRenderer,
+                      (snapshot.frames.first?.referencedRasterAssetIDs.count ?? 0) <= 1 {
                 // Optional preview generation never blocks preservation of the editable project.
                 projectThumbnailData = try? renderThumbnail(snapshot,
                     snapshot.frames.first?.rasterAssetID.flatMap { retainedRasterFrames[$0]?.imageData })
@@ -1225,6 +1263,7 @@ final class StudioViewModel: ObservableObject {
     }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func pasteClipboard() {
+        if usesArtworkClipboard { _ = pasteSelectedArtwork(); return }
         if usesImageClipboard { _ = pasteImage(); return }
         guard copiedDrawingCount > 0 else { pasteFrame(); return }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
@@ -1353,6 +1392,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func orderSelected(forward: Bool) -> Bool {
+        guard !hasMixedArtworkSelection else { message = "Select drawings alone to change their order. Mixed group order is unavailable."; return false }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
             message = "Finish the current Studio operation before changing artwork order."; return false
         }
@@ -1369,7 +1409,12 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
     @discardableResult
-    func reflectSelected(axis: StudioReflectionAxis) -> Bool {
+    func reflectSelected(axis: StudioReflectionAxis,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        if isSelectingMixedArtwork {
+            return applyArtworkTransform(flipHorizontal: axis == .horizontal, flipVertical: axis == .vertical,
+                                         checkCancellation: checkCancellation)
+        }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
             message = "Finish the current Studio operation before flipping artwork."; return false
         }
@@ -1386,6 +1431,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func copySelected() -> Bool {
+        if hasMixedArtworkSelection { return copySelectedArtwork() }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
             message = "Finish the current Studio operation before copying drawings."; return false
         }
@@ -1399,6 +1445,7 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
     var canCutSelected: Bool {
+        if hasMixedArtworkSelection { return captureArtworkSelection() != nil }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil,
               pendingBrushStroke == nil, textDraft == nil, !selectedElementIDs.isEmpty else { return false }
         let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
@@ -1408,6 +1455,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func cutSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        if hasMixedArtworkSelection { return copySelectedArtwork(cut: true, checkCancellation: checkCancellation) }
         guard canCutSelected else { message = "Select drawings on visible unlocked layers before cutting."; return false }
         do {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
@@ -1417,7 +1465,24 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
-    func deleteSelected() { command { try $0.deleteSelected() } }
+    func deleteSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) {
+        if isSelectingMixedArtwork {
+            do {
+                guard let capture = captureArtworkSelection(), let image = capture.image else { throw StudioCommandError.staleRevision }
+                _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                    expectedRevision: capture.revision, action: .apply([.deleteSelectedArtwork(.init(
+                        frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
+                        image: .init(assetID: image.assetID, layerID: image.layerID)))])), checkCancellation: {
+                            try checkCancellation()
+                            guard self.captureArtworkSelection() == capture else { throw StudioCommandError.staleRevision }
+                        })
+                imageMoveTarget = nil; editor.selectedElementIDs.removeAll()
+            } catch { message = error.localizedDescription }
+        } else {
+            do { try checkCancellation(); command { try $0.deleteSelected() } }
+            catch { message = error.localizedDescription }
+        }
+    }
     enum SelectionMode: String, Codable, CaseIterable { case new, add, subtract
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
     }
@@ -1425,7 +1490,11 @@ final class StudioViewModel: ObservableObject {
     @Published var selectionScalePercent: Double = 100
     @Published var selectionRotationDegrees: Double = 0
     @discardableResult
-    func transformSelected() -> Bool {
+    func transformSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        if isSelectingMixedArtwork {
+            return applyArtworkTransform(scale: selectionScalePercent / 100, rotation: selectionRotationDegrees,
+                                         checkCancellation: checkCancellation)
+        }
         let ids=selectedElementIDs
         guard isEditing,!isPlaying,!ids.isEmpty else { message="Select drawings or text before transforming.";return false }
         do {
@@ -1444,12 +1513,42 @@ final class StudioViewModel: ObservableObject {
         let ids: Set<String>
         let mode: SelectionMode
         let bounds: CGRect
+        var image: AreaImageIdentity? = nil
+        var imageSelectionID: UUID? = nil
+        var generation: UUID? = nil
     }
-    func beginSelectionHandle() -> SelectionHandleCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .move, !isMovingImageOnCanvas, selectionMode != .subtract,
-              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
-              !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
+    /// Mixed intent stays explicit even when a target becomes invalid, so an
+    /// operation can never silently fall back to editing only its drawings.
+    var hasMixedArtworkSelection: Bool {
+        areaSelectionTarget == .artwork && imageMoveTarget != nil && !selectedElementIDs.isEmpty
+    }
+    var isSelectingMixedArtwork: Bool { areaSelectionTarget == .artwork && imageMoveTarget != nil }
+    var selectedArtworkCount: Int { selectedElementIDs.count + (validSelectedArtworkImage == nil ? 0 : 1) }
+    private var validSelectedArtworkImage: AreaImageIdentity? {
+        guard let target = imageMoveTarget,
+              target.areaRevision == nil || target.areaRevision == document.revision,
+              let image = availableAreaImage, target.projectID == image.projectID,
+              target.frameID == image.frameID, target.layerID == image.layerID,
+              target.assetID == image.assetID else { return nil }
+        return image
+    }
+    func selectedArtworkBounds(in frame: AnimationFrame) -> CGRect? {
         var bounds = CGRect.null
+        for element in frame.elements where selectedElementIDs.contains(element.id) {
+            guard let rect = try? StudioSelectionRegion.drawingBounds(element) else { return nil }
+            bounds = bounds.union(rect)
+        }
+        if isSelectingMixedArtwork {
+            guard let image = validSelectedArtworkImage,
+                  let instance = frame.rasterInstance(on: image.layerID), let placement = instance.placement else { return nil }
+            bounds = bounds.union(StudioImageRotationGeometry(placement: placement, degrees: instance.rotationDegrees ?? 0).bounds)
+        }
+        return bounds.isNull ? nil : bounds
+    }
+    private func captureArtworkSelection() -> SelectionHandleCapture? {
+        guard isEditing, !isPlaying, !isSaving, !isMovingImageOnCanvas, selectionMode != .subtract,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              (!selectedElementIDs.isEmpty || isSelectingMixedArtwork), selectedElementIDs.count <= 1024 else { return nil }
         let elements = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
         guard elements.count == selectedElementIDs.count else { return nil }
         for element in elements {
@@ -1458,46 +1557,84 @@ final class StudioViewModel: ObservableObject {
                   let rect = try? StudioSelectionRegion.drawingBounds(element), !rect.isNull,
                   rect.width > 0, rect.height > 0,
                   [rect.minX,rect.minY,rect.maxX,rect.maxY].allSatisfy({ $0.isFinite && abs($0) <= 100_000 }) else { return nil }
-            bounds = bounds.union(rect)
         }
-        return SelectionHandleCapture(projectID: document.id, revision: document.revision,
-            frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds)
+        let image = isSelectingMixedArtwork ? validSelectedArtworkImage : nil
+        guard !isSelectingMixedArtwork || image != nil, let bounds = selectedArtworkBounds(in: currentFrame) else { return nil }
+        return .init(projectID: document.id, revision: document.revision,
+            frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds,
+            image: image, imageSelectionID: image == nil ? nil : imageMoveTarget?.selectionID,
+            generation: areaSelectionGeneration)
+    }
+    func beginSelectionHandle() -> SelectionHandleCapture? {
+        selectedTool == .move ? captureArtworkSelection() : nil
+    }
+    private func artworkRequest(_ capture: SelectionHandleCapture, dx: Double = 0, dy: Double = 0,
+                                scale: Double = 1, rotation: Double = 0,
+                                flipHorizontal: Bool = false, flipVertical: Bool = false) throws -> StudioCommandRequest {
+        guard captureArtworkSelection() == capture else { throw StudioCommandError.staleRevision }
+        return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
+            action: .apply([.transformSelectedArtwork(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
+                image: capture.image.map { .init(assetID: $0.assetID, layerID: $0.layerID) },
+                dx: dx, dy: dy, scale: scale, rotation: rotation, flipHorizontal: flipHorizontal, flipVertical: flipVertical))]))
+    }
+    private func retainArtworkSelection(_ capture: SelectionHandleCapture) {
+        editor.selectedElementIDs = capture.ids
+        if imageMoveTarget?.areaRevision != nil { imageMoveTarget?.areaRevision = document.revision }
+        resetSelectionTransform()
+    }
+    @discardableResult
+    private func applyArtworkTransform(scale: Double = 1, rotation: Double = 0,
+                                       flipHorizontal: Bool = false, flipVertical: Bool = false,
+                                       checkCancellation: () throws -> Void) -> Bool {
+        do {
+            guard let capture = captureArtworkSelection() else { throw StudioCommandError.staleRevision }
+            let request = try artworkRequest(capture, scale: scale, rotation: rotation,
+                                             flipHorizontal: flipHorizontal, flipVertical: flipVertical)
+            _ = try applyStudioCommands(request, checkCancellation: {
+                try checkCancellation()
+                guard self.captureArtworkSelection() == capture else { throw StudioCommandError.staleRevision }
+            })
+            retainArtworkSelection(capture)
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     private func selectionHandleRequest(_ capture: SelectionHandleCapture,
                                         values: StudioSelectionHandleGeometry.Values) throws -> StudioCommandRequest {
         guard beginSelectionHandle() == capture else { throw StudioCommandError.staleRevision }
+        if capture.image != nil { return try artworkRequest(capture, scale: values.scale, rotation: values.rotation) }
         return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
             action: .apply([.transformElements(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
                 scaleX: values.scale, scaleY: values.scale, rotation: values.rotation))]))
     }
-    /// Uses the same validated command as the final edit, on a disposable editor.
-    /// Preview never mutates document history, selection, autosave or source assets.
+    /// Preview executes the same validated operation on a disposable editor.
     func selectionHandlePreview(_ capture: SelectionHandleCapture,
                                 values: StudioSelectionHandleGeometry.Values) throws -> AnimationFrame {
         let request = try selectionHandleRequest(capture, values: values)
         try validateCommandWorkBudget(request)
         var candidate = editor
         _ = try StudioCommandExecutor.execute(request, editor: &candidate)
-        guard let frame = candidate.document.frames.first(where: { $0.id == capture.frameID }) else {
-            throw StudioCommandError.staleRevision
-        }
+        guard let frame = candidate.document.frames.first(where: { $0.id == capture.frameID }) else { throw StudioCommandError.staleRevision }
         return frame
     }
     @discardableResult
-    func finishSelectionHandle(_ capture: SelectionHandleCapture,
-                               values: StudioSelectionHandleGeometry.Values) -> Bool {
+    func finishSelectionHandle(_ capture: SelectionHandleCapture, values: StudioSelectionHandleGeometry.Values,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
             let request = try selectionHandleRequest(capture, values: values)
-            _ = try applyStudioCommands(request)
-            editor.selectedElementIDs = capture.ids
-            resetSelectionTransform()
+            _ = try applyStudioCommands(request, checkCancellation: {
+                try checkCancellation()
+                guard self.beginSelectionHandle() == capture else { throw StudioCommandError.staleRevision }
+            })
+            retainArtworkSelection(capture)
             return true
         } catch { message = error.localizedDescription; return false }
     }
     @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand { didSet { rememberDrawingToolPreferences() } }
     @Published var areaSelectionSmoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
-    enum AreaSelectionTarget: String, CaseIterable { case drawings, image
-        var label: String { self == .drawings ? "Drawings" : "Image on active layer" }
+    enum AreaSelectionTarget: String, CaseIterable { case drawings, image, artwork
+        var label: String {
+            switch self { case .drawings: return "Drawings"; case .image: return "Image on active layer"; case .artwork: return "Drawings + image" }
+        }
     }
     private var areaSelectionGeneration = UUID()
     @Published var areaSelectionTarget: AreaSelectionTarget = .drawings {
@@ -1517,7 +1654,7 @@ final class StudioViewModel: ObservableObject {
         let angle: Double
     }
     private var availableAreaImage: AreaImageIdentity? {
-        guard let assetID = currentFrame.rasterAssetID,
+        guard let assetID = currentFrame.rasterAssetID(on: activeLayerID),
               let instance = currentFrame.rasterInstance(on: activeLayerID), let placement = instance.placement,
               originalImageSource(assetID) != nil,
               let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible,
@@ -1533,7 +1670,7 @@ final class StudioViewModel: ObservableObject {
         return image
     }
     var selectedAreaImageCorners: [CGPoint]? {
-        guard selectedTool == .lasso, areaSelectionTarget == .image,
+        guard selectedTool == .lasso, areaSelectionTarget != .drawings,
               let image = validAreaImageSelection else { return nil }
         return StudioImageRotationGeometry(placement: image.placement, degrees: image.angle).corners
     }
@@ -1601,11 +1738,11 @@ final class StudioViewModel: ObservableObject {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .lasso,
               activeStrokeID == nil, pendingBrushStroke == nil,
               areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing),
-              areaSelectionTarget == .drawings || availableAreaImage != nil else { return nil }
+              areaSelectionTarget != .image || availableAreaImage != nil else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             selectedIDs: selectedElementIDs, mode: selectionMode, kind: areaSelectionKind,
             smoothing: areaSelectionSmoothing, target: areaSelectionTarget,
-            image: areaSelectionTarget == .image ? availableAreaImage : nil,
+            image: areaSelectionTarget != .drawings ? availableAreaImage : nil,
             imageSelectionID: validAreaImageSelection == nil ? nil : imageMoveTarget?.selectionID,
             generation: areaSelectionGeneration)
     }
@@ -1659,6 +1796,21 @@ final class StudioViewModel: ObservableObject {
             guard beginAreaSelection() == capture else { throw StudioCommandError.staleRevision }
             // Selection is transient UI state: no document edit, revision,
             // autosave or Undo entry, and no success banner resizing the canvas.
+            if capture.target == .artwork {
+                let foundImage = capture.image.map { region.containsImage(placement: $0.placement, angle: $0.angle) } ?? false
+                let keepImage: Bool
+                switch capture.mode {
+                case .new: keepImage = foundImage
+                case .add: keepImage = foundImage || capture.imageSelectionID != nil
+                case .subtract: keepImage = capture.imageSelectionID != nil && !foundImage
+                }
+                if keepImage, let image = capture.image {
+                    if capture.imageSelectionID == nil {
+                        imageMoveTarget = .init(projectID: image.projectID, frameID: image.frameID,
+                            assetID: image.assetID, layerID: image.layerID, areaRevision: document.revision)
+                    }
+                } else { imageMoveTarget = nil }
+            }
             editor.selectedElementIDs = selected
             return true
         } catch { message = error.localizedDescription; return false }
@@ -1669,7 +1821,7 @@ final class StudioViewModel: ObservableObject {
     func selectVisibleArtwork(inverting: Bool = false,
                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
-            guard areaSelectionTarget == .drawings, let capture = beginAreaSelection(), textDraft == nil else { return false }
+            guard areaSelectionTarget != .image, let capture = beginAreaSelection(), textDraft == nil else { return false }
             let eligible = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
             let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
             var ids = Set<String>()
@@ -1684,6 +1836,12 @@ final class StudioViewModel: ObservableObject {
             try checkCancellation()
             guard beginAreaSelection() == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
             editor.selectedElementIDs = inverting ? ids.subtracting(capture.selectedIDs) : ids
+            if capture.target == .artwork {
+                if let image = capture.image, !inverting || capture.imageSelectionID == nil {
+                    imageMoveTarget = .init(projectID: image.projectID, frameID: image.frameID,
+                        assetID: image.assetID, layerID: image.layerID, areaRevision: document.revision)
+                } else { imageMoveTarget = nil }
+            }
             cancelPolygonSelection()
             return true
         } catch { message = error.localizedDescription; return false }
@@ -1697,16 +1855,30 @@ final class StudioViewModel: ObservableObject {
         var areaRevision: Int? = nil
     }
     @Published private var imageMoveTarget: ImageMoveTarget?
+    var hasFillImageTarget: Bool { imageMoveTarget != nil }
+    var fillImageSelectionID: UUID? { imageMoveTarget?.selectionID }
+    var fillImageLayerID: String? {
+        guard let target = imageMoveTarget, target.projectID == document.id,
+              target.frameID == currentFrame.id, target.layerID == activeLayerID,
+              target.areaRevision == nil || target.areaRevision == document.revision,
+              target.assetID == currentFrame.rasterAssetID(on: target.layerID),
+              currentFrame.rasterInstance(on: target.layerID)?.placement != nil,
+              originalImageSource(target.assetID) != nil,
+              let layer = layers.first(where: { $0.id == target.layerID }), layer.visible,
+              layer.opacity > 0, !layer.isFullyLocked, ["free", "position"].contains(layer.lockMode) else { return nil }
+        return target.layerID
+    }
     var isMovingImageOnCanvas: Bool {
-        guard let target = imageMoveTarget else { return false }
+        guard !isSelectingMixedArtwork, let target = imageMoveTarget else { return false }
         return selectedTool == .move && target.projectID == document.id &&
-            target.frameID == currentFrame.id && target.assetID == currentFrame.rasterAssetID &&
+            target.frameID == currentFrame.id && target.assetID == currentFrame.rasterAssetID(on: target.layerID) &&
             currentFrame.preferredRasterInstance(activeLayerID: activeLayerID)?.layerID == target.layerID
     }
     @discardableResult
     func setImageCanvasMove(_ enabled: Bool) -> Bool {
         if !enabled { imageMoveTarget = nil; return true }
         guard let capture = prepareImagePlacement() else { return false }
+        if areaSelectionTarget == .artwork { areaSelectionTarget = .image }
         imageMoveTarget = .init(projectID: capture.projectID, frameID: capture.frameID, assetID: capture.assetID, layerID: capture.layerID)
         editor.selectedElementIDs.removeAll()
         return true
@@ -1714,7 +1886,7 @@ final class StudioViewModel: ObservableObject {
     private func clearMissingImageMoveTarget(in next: StudioDocument) {
         guard let target = imageMoveTarget else { return }
         if target.projectID != next.id || target.frameID != next.activeFrameID ||
-            next.frames.first(where: { $0.id == target.frameID })?.rasterAssetID != target.assetID ||
+            next.frames.first(where: { $0.id == target.frameID })?.rasterAssetID(on: target.layerID) != target.assetID ||
             next.frames.first(where: { $0.id == target.frameID })?.preferredRasterInstance(activeLayerID: next.activeLayerID)?.layerID != target.layerID {
             imageMoveTarget = nil
         }
@@ -1724,14 +1896,14 @@ final class StudioViewModel: ObservableObject {
         let selectionID: UUID
     }
     func currentImageMoveCapture() -> ImageMoveCapture? {
-        guard isMovingImageOnCanvas, let target = imageMoveTarget,
+        guard isMovingImageOnCanvas || (selectedTool == .move && isSelectingMixedArtwork && selectedElementIDs.isEmpty), let target = imageMoveTarget,
               let placement = prepareImagePlacement(), placement.layerID == target.layerID else { return nil }
         return .init(placement: placement, selectionID: target.selectionID)
     }
     func beginImageMove(at point: CGPoint) -> ImageMoveCapture? {
         guard point.x.isFinite, point.y.isFinite, let capture = currentImageMoveCapture() else { return nil }
         let p = capture.placement.original
-        return StudioImageRotationGeometry(placement: p, degrees: capture.placement.rotationDegrees).contains(point) ? capture : nil
+        return StudioImageRotationGeometry(placement: p, degrees: capture.placement.rotationDegrees).contains(point) && imageRegionContains(point, layerID: capture.placement.layerID) ? capture : nil
     }
     /// A transient frame preview; only finishImageMove commits through the shared command.
     func imageMovePreview(_ capture: ImageMoveCapture, delta: CGSize) throws -> AnimationFrame {
@@ -1887,10 +2059,10 @@ final class StudioViewModel: ObservableObject {
         var rotationDegrees: Double = 0
     }
     func prepareImagePlacement() -> ImagePlacementCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
+        guard !hasMixedArtworkSelection, isEditing, !isPlaying, !isSaving, selectedTool == .move,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
-              let assetID = currentFrame.rasterAssetID,
               let instance = currentFrame.preferredRasterInstance(activeLayerID: activeLayerID), let original = instance.placement,
+              let assetID = currentFrame.rasterAssetID(on: instance.layerID),
               let source = originalImageSource(assetID),
               let layer = layers.first(where: { $0.id == instance.layerID }),
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
@@ -1998,6 +2170,7 @@ final class StudioViewModel: ObservableObject {
         let frameID: String
         let ids: Set<String>
         let mode: SelectionMode
+        var artwork: SelectionHandleCapture? = nil
     }
     @discardableResult
     func selectElement(at point: CGPoint) -> String? {
@@ -2028,6 +2201,28 @@ final class StudioViewModel: ObservableObject {
     func beginMove(at point: CGPoint) -> MoveCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .move, !isMovingImageOnCanvas,
               activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
+        if areaSelectionTarget == .artwork && selectionMode != .new {
+            // Add/Subtract are selection input before transform admission. This
+            // also lets either missing kind be re-added to a one-kind group.
+            let drawingHit = selectElement(at: point)
+            if drawingHit == nil, let image = availableAreaImage,
+               StudioImageRotationGeometry(placement: image.placement, degrees: image.angle).contains(point) && imageRegionContains(point, layerID: activeLayerID) {
+                if selectionMode == .subtract { imageMoveTarget = nil }
+                else if imageMoveTarget == nil {
+                    imageMoveTarget = .init(projectID: image.projectID, frameID: image.frameID,
+                        assetID: image.assetID, layerID: image.layerID)
+                }
+            }
+            if selectionMode == .subtract { return nil }
+        }
+        if isSelectingMixedArtwork {
+            guard let artwork = beginSelectionHandle() else { return nil }
+            if artwork.bounds.insetBy(dx: -6, dy: -6).contains(point) {
+                return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+                             ids: selectedElementIDs, mode: selectionMode, artwork: artwork)
+            }
+            if selectionMode == .new { clearElementSelection() }
+        }
         let hit = selectElement(at: point)
         guard selectionMode != .subtract else { return nil }
         // Empty canvas is ordinary selection input. Guidance belongs in the
@@ -2041,7 +2236,8 @@ final class StudioViewModel: ObservableObject {
         return MoveCapture(projectID: document.id, revision: document.revision, frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode)
     }
     func moveIsCurrent(_ capture: MoveCapture) -> Bool {
-        isEditing && !isPlaying && selectedTool == .move && !isMovingImageOnCanvas && activeStrokeID == nil && pendingBrushStroke == nil &&
+        if let artwork = capture.artwork { return beginSelectionHandle() == artwork }
+        return !isSelectingMixedArtwork && isEditing && !isPlaying && selectedTool == .move && !isMovingImageOnCanvas && activeStrokeID == nil && pendingBrushStroke == nil &&
         capture.projectID == document.id && capture.revision == document.revision && capture.frameID == currentFrame.id &&
         capture.ids == selectedElementIDs && capture.mode == selectionMode
     }
@@ -2049,6 +2245,14 @@ final class StudioViewModel: ObservableObject {
     func movePreview(_ capture: MoveCapture, delta: CGSize) throws -> AnimationFrame {
         guard moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
         try StudioElementTranslation(x: delta.width, y: delta.height).validate()
+        if let artwork = capture.artwork {
+            let request = try artworkRequest(artwork, dx: delta.width, dy: delta.height)
+            try validateCommandWorkBudget(request)
+            var candidate = editor
+            _ = try StudioCommandExecutor.execute(request, editor: &candidate)
+            guard let frame = candidate.document.frames.first(where: { $0.id == capture.frameID }) else { throw StudioCommandError.staleRevision }
+            return frame
+        }
         var frame = currentFrame
         for index in frame.elements.indices where capture.ids.contains(frame.elements[index].id) {
             if let prior = frame.elements[index].transform {
@@ -2063,7 +2267,20 @@ final class StudioViewModel: ObservableObject {
         return frame
     }
     @discardableResult
-    func finishMove(_ capture: MoveCapture, delta: CGSize) -> Bool {
+    func finishMove(_ capture: MoveCapture, delta: CGSize,
+                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        if let artwork = capture.artwork {
+            do {
+                guard moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
+                let request = try artworkRequest(artwork, dx: delta.width, dy: delta.height)
+                _ = try applyStudioCommands(request, checkCancellation: {
+                    try checkCancellation()
+                    guard self.moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
+                })
+                retainArtworkSelection(artwork)
+                return true
+            } catch { message = error.localizedDescription; return false }
+        }
         guard moveIsCurrent(capture) else { message = "Studio changed during the move. The artwork has not moved."; return false }
         do {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
@@ -2081,7 +2298,7 @@ final class StudioViewModel: ObservableObject {
         let layerIDs: [String]
     }
     func prepareSelectionLayerLock() -> SelectionLayerLockCapture? {
-        guard isEditing, selectedTool == .move, !isPlaying, !isSaving,
+        guard !hasMixedArtworkSelection, isEditing, selectedTool == .move, !isPlaying, !isSaving,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024 else { return nil }
         let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
@@ -2113,7 +2330,10 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
-    func clearElementSelection() { editor.selectedElementIDs.removeAll() }
+    func clearElementSelection() {
+        areaSelectionGeneration = UUID()
+        editor.selectedElementIDs.removeAll(); imageMoveTarget = nil; cancelPolygonSelection()
+    }
     func clearCanvas() { message = "Select elements explicitly before deleting. The canvas has not changed." }
     func selectLayer(_ id: String) {
         guard allowDocumentEditDuringInput() else { return }
@@ -2664,8 +2884,8 @@ final class StudioViewModel: ObservableObject {
               let index = document.frames.firstIndex(where: { $0.id == frameID }) else {
             throw StudioDocumentError.unavailable("The project, frame, layer, save or drawing state changed. Import again in the current editor.")
         }
-        guard document.frames[index].rasterAssetID == nil else {
-            throw StudioDocumentError.unavailable("This frame already contains an imported image or original record. Add a new blank frame; nothing was replaced.")
+        guard document.frames[index].rasterAssetID == nil || document.frames[index].rasterPlacement != nil else {
+            throw StudioDocumentError.unavailable("This frame contains a historical original record. Add a new blank frame; its original bytes were not replaced.")
         }
         guard let layer = document.layers.first(where: { $0.id == layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
@@ -2682,13 +2902,11 @@ final class StudioViewModel: ObservableObject {
             canvasWidth: document.width, canvasHeight: document.height)
         var candidate = editor
         try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 3)
+            value.schemaVersion = max(value.schemaVersion, value.frames[index].rasterAssetID == nil ? 3 : 31)
             value.layers.append(imageLayer) // Behind drawings; active drawing layer stays selected.
-            value.frames[index].rasterAssetID = assetID
-            value.frames[index].rasterLayerID = imageLayer.id
-            value.frames[index].rasterPlacement = placement
+            try value.frames[index].appendRasterInstance(.init(layerID: imageLayer.id, placement: placement), assetID: assetID)
         }
-        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         next[assetID] = record
         try validateManagedImageCapacity(next)
@@ -2763,7 +2981,7 @@ final class StudioViewModel: ObservableObject {
             value.frames.insert(contentsOf: frames, at: index + 1)
             value.activeFrameID = frames[0].id
         }
-        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         next.merge(records) { _, new in new }
         try validateManagedImageCapacity(next)
@@ -2786,6 +3004,7 @@ final class StudioViewModel: ObservableObject {
         let activeFrameID: String
         let allFrames: Bool
         let assetsByFrame: [String: String]
+        let activeLayerID: String
     }
     func prepareImageCut(allFrames: Bool) throws -> ImageCutCapture {
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil,
@@ -2798,12 +3017,19 @@ final class StudioViewModel: ObservableObject {
         }
         var mapping: [String: String] = [:], assets = Set<String>(), pixels = 0
         for frame in targets {
-            guard let id = frame.rasterAssetID, let record = retainedRasterFrames[id],
+            let selectedSource: String?
+            if frame.referencedRasterAssetIDs.count == 1 { selectedSource = frame.rasterAssetID }
+            else { selectedSource = frame.rasterAssetID(on: activeLayerID) }
+            guard let id = selectedSource else {
+                throw StudioDocumentError.unavailable("Select an image layer in every multi-source frame in the chosen scope before Background Cut. Nothing changed.")
+            }
+            guard let record = retainedRasterFrames[id],
                   let source = record.sourceImage, let png = record.imageData, frame.rasterPlacement != nil else {
                 throw StudioDocumentError.unavailable("Background Cut currently works on imported images. Historical raster originals and drawing-only frames are not converted.")
             }
-            guard !frame.rasterLayerInstances.isEmpty,
-                  frame.rasterLayerInstances.allSatisfy({ instance in
+            let affectedInstances = frame.rasterLayerInstances.filter { frame.rasterAssetID(on: $0.layerID) == id }
+            guard !affectedInstances.isEmpty,
+                  affectedInstances.allSatisfy({ instance in
                       layers.contains { $0.id == instance.layerID && $0.visible && $0.opacity > 0 && $0.lockMode == "free" && !$0.isFullyLocked }
                   }) else {
                 throw StudioDocumentError.unavailable("Show and unlock every linked image layer in the chosen frames before cutting its background.")
@@ -2818,7 +3044,7 @@ final class StudioViewModel: ObservableObject {
             mapping[frame.id] = id
         }
         return .init(projectID: document.id, revision: document.revision, activeFrameID: currentFrame.id,
-                     allFrames: allFrames, assetsByFrame: mapping)
+                     allFrames: allFrames, assetsByFrame: mapping, activeLayerID: activeLayerID)
     }
     /// New immutable normalized renditions retain original bytes and provenance.
     /// Every affected frame is changed in one history transaction after preflight.
@@ -2854,12 +3080,20 @@ final class StudioViewModel: ObservableObject {
             for index in document.frames.indices {
                 let frame = document.frames[index]
                 if let oldID = capture.assetsByFrame[frame.id], let newID = updatedIDs[oldID] {
-                    document.frames[index].rasterAssetID = newID
+                    let newPrimary = frame.rasterAssetID == oldID ? newID : frame.rasterAssetID
+                    document.frames[index].rasterAssetID = newPrimary
+                    document.frames[index].rasterAliases = frame.rasterAliases?.map { instance in
+                        var updated = instance
+                        let resolved = instance.assetID ?? frame.rasterAssetID
+                        if resolved == oldID { updated.assetID = newID == newPrimary ? nil : newID }
+                        else if instance.assetID == nil && newPrimary != frame.rasterAssetID { updated.assetID = resolved }
+                        return updated
+                    }
                     affected += 1
                 }
             }
         }
-        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         next = next.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
         try validateManagedImageCapacity(next)
         try storage.preflightAnimation(storageProject(candidate.document, rasters: next))
@@ -2870,6 +3104,124 @@ final class StudioViewModel: ObservableObject {
         return affected
     }
 
+    var usesArtworkClipboard: Bool {
+        usesImageClipboard && !(imageClipboard?.elements.isEmpty ?? true)
+    }
+
+    /// The mixed payload shares the existing image-source lifetime and editor
+    /// clipboard generation. Nothing publishes until both selected kinds pass.
+    @discardableResult
+    func copySelectedArtwork(cut: Bool = false,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard hasMixedArtworkSelection, let capture = captureArtworkSelection(), let image = capture.image,
+                  var copied = currentFrame.projectedRasterFrame(on: image.layerID),
+                  let appearance = layers.first(where: { $0.id == image.layerID }),
+                  let record = retainedRasterFrames[image.assetID] else { throw StudioCommandError.staleRevision }
+            let before = document, version = editor.clipboardVersion
+            let oldImage = imageClipboard, oldLayer = copiedImageLayer, oldScope = imageClipboardEditorVersion
+            let oldLayers = copiedArtworkLayers
+            var candidate = editor
+            try candidate.copyElements(frameID: capture.frameID, ids: capture.ids, checkCancellation: checkCancellation)
+            guard let elements = candidate.clipboardElements else { throw StudioCommandError.staleClipboard }
+            copied.elements = elements; copied.holdTicks = nil
+            let layerIDs = Set(elements.compactMap(\.layerID)).union([image.layerID])
+            let appearances = layers.filter { layerIDs.contains($0.id) }
+            try validateManagedRaster(frame: copied, record: record)
+            if cut {
+                try candidate.deleteSelectedArtwork(frameID: capture.frameID, ids: capture.ids,
+                    imageAssetID: image.assetID, imageLayerID: image.layerID, checkCancellation: checkCancellation)
+                try preflightRasterDocument(candidate.document)
+            }
+            try checkCancellation()
+            guard document == before, captureArtworkSelection() == capture, editor.clipboardVersion == version,
+                  imageClipboard == oldImage, copiedImageLayer == oldLayer, imageClipboardEditorVersion == oldScope,
+                  copiedArtworkLayers == oldLayers else { throw StudioCommandError.staleRevision }
+            imageClipboard = copied; copiedImageLayer = appearance
+            copiedArtworkLayers = appearances; copiedArtworkSchema = before.schemaVersion
+            imageClipboardEditorVersion = candidate.clipboardVersion
+            editor = candidate
+            if cut { imageMoveTarget = nil; editor.selectedElementIDs.removeAll(); scheduleSave() }
+            pruneManagedImages(); message = nil
+            return true
+        } catch is CancellationError {
+            message = "Artwork clipboard operation cancelled. Nothing changed."; return false
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    /// Preserve layer appearance/order and document-space relative geometry.
+    /// Fresh identities are allocated in one history transaction, never flattened.
+    @discardableResult
+    func pasteSelectedArtwork(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard usesArtworkClipboard, canPasteImage, let copied = imageClipboard,
+                  let sourceLayerID = copied.rasterLayerID, let assetID = copied.rasterAssetID,
+                  let record = retainedRasterFrames[assetID], record.sourceImage != nil,
+                  let index = document.frames.firstIndex(where: { $0.id == document.activeFrameID }) else {
+                throw StudioDocumentError.unavailable("Copy selected artwork, then choose Move and an unlocked destination layer. Nothing changed.")
+            }
+            let before = document, version = editor.clipboardVersion, selected = selectedElementIDs
+            let appearances = copiedArtworkLayers, schema = copiedArtworkSchema, scope = imageClipboardEditorVersion
+            let selectionTarget = imageMoveTarget
+            try validateManagedRaster(frame: copied, record: record)
+            var candidate = editor
+            var created = Set<String>()
+            try candidate.change { value in
+                try checkCancellation()
+                guard copied.elements.count <= 20_000 - value.frames[index].elements.count else {
+                    throw StudioDocumentError.invalid("This paste exceeds the frame's drawing limit.")
+                }
+                var layerMap: [String: String] = [:]
+                var newLayers: [CanvasLayer] = []
+                for appearance in appearances {
+                    try checkCancellation()
+                    let layer = CanvasLayer(id: UUID().uuidString, name: "Pasted artwork",
+                        opacity: appearance.opacity, blendMode: appearance.blendMode,
+                        glowEnabled: appearance.glowEnabled, glowColor: appearance.glowColor,
+                        colorLabel: appearance.colorLabel, glowRadius: appearance.glowRadius, glowStrength: appearance.glowStrength)
+                    layerMap[appearance.id] = layer.id; newLayers.append(layer)
+                }
+                guard let imageLayer = layerMap[sourceLayerID] else { throw StudioCommandError.staleClipboard }
+                value.schemaVersion = max(value.schemaVersion, schema)
+                if let primary = value.frames[index].rasterAssetID {
+                    value.schemaVersion = max(value.schemaVersion, primary == assetID ? 27 : 31)
+                }
+                value.layers.insert(contentsOf: newLayers, at: 0)
+                try value.frames[index].appendRasterInstance(.init(layerID: imageLayer,
+                    placement: copied.rasterPlacement, reflection: copied.rasterReflection,
+                    quarterTurns: copied.rasterQuarterTurns, crop: copied.rasterCrop,
+                    rotationDegrees: copied.rasterRotationDegrees, regionMask: copied.rasterRegionMask), assetID: assetID)
+                if copied.rasterRegionMask != nil { value.schemaVersion = max(value.schemaVersion, 32) }
+                for element in copied.elements {
+                    try checkCancellation()
+                    guard let sourceLayer = element.layerID, let destination = layerMap[sourceLayer] else {
+                        throw StudioCommandError.staleClipboard
+                    }
+                    let id = UUID().uuidString
+                    value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
+                        color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
+                        layerID: destination, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
+                        translation: element.translation, reflection: element.reflection, eraser: element.eraser,
+                        text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur,
+                        sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha,
+                        selectionErasures: element.selectionErasures))
+                    created.insert(id)
+                }
+                value.activeLayerID = imageLayer
+            }
+            try preflightRasterDocument(candidate.document)
+            try checkCancellation()
+            guard document == before, editor.clipboardVersion == version, imageClipboard == copied,
+                  copiedArtworkLayers == appearances, copiedArtworkSchema == schema, imageClipboardEditorVersion == scope,
+                  selectedElementIDs == selected, imageMoveTarget == selectionTarget, canPasteImage else {
+                throw StudioCommandError.staleRevision
+            }
+            editor = candidate; editor.selectedElementIDs = created; imageMoveTarget = nil
+            scheduleSave(); message = nil
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
     var usesImageClipboard: Bool {
         imageClipboard != nil && imageClipboardEditorVersion == editor.clipboardVersion
     }
@@ -2877,16 +3229,23 @@ final class StudioViewModel: ObservableObject {
         selectedElementIDs.isEmpty ? currentImageMoveCapture() : nil
     }
     var bottomCopyLabel: String {
-        if selectedTool == .lasso && areaSelectionTarget == .image { return "Choose Move to copy the selected image" }
-        if isMovingImageOnCanvas { return "Copy selected image" }
+        if selectedTool == .wand { return canEditImageRegion ? "Copy selected image region" : "Select an image region to copy" }
+        if hasMixedArtworkSelection { return "Copy selected artwork" }
+        if selectedTool == .lasso && (areaSelectionTarget == .image || validAreaImageSelection != nil) { return "Choose Move to copy the selected image" }
+        if bottomImageSelection != nil { return "Copy selected image" }
+        if isSelectingMixedArtwork { return "Select the image again before copying" }
         return selectedElementIDs.isEmpty ? "Copy frame" : selectedElementIDs.count == 1 ? "Copy selected drawing" : "Copy \(selectedElementIDs.count) selected drawings"
     }
     var bottomPasteLabel: String {
+        if usesArtworkClipboard { return "Paste artwork" }
         if usesImageClipboard { return "Paste image" }
         return copiedDrawingCount == 1 ? "Paste drawing" : copiedDrawingCount > 0 ? "Paste \(copiedDrawingCount) drawings" : "Paste frame"
     }
     var canCopyBottomSelection: Bool {
-        if selectedTool == .lasso && areaSelectionTarget == .image { return false }
+        if selectedTool == .wand { return canEditImageRegion }
+        if hasMixedArtworkSelection { return captureArtworkSelection() != nil }
+        if selectedTool == .lasso && (areaSelectionTarget == .image || validAreaImageSelection != nil) { return false }
+        if isSelectingMixedArtwork { return selectedElementIDs.isEmpty && bottomImageSelection != nil }
         return !isMovingImageOnCanvas || bottomImageSelection != nil
     }
     @discardableResult
@@ -2898,9 +3257,13 @@ final class StudioViewModel: ObservableObject {
         return deleteImage(capture.placement)
     }
     func copyBottomSelection() {
+        if selectedTool == .wand {
+            guard canEditImageRegion else { return }
+            _ = applyImageRegion(.copy); return
+        }
         guard canCopyBottomSelection else { return }
         if !selectedElementIDs.isEmpty { _ = copySelected() }
-        else if isMovingImageOnCanvas { _ = copyImage() }
+        else if bottomImageSelection != nil { _ = copyImage() }
         else { copyFrame() }
     }
     var hasCopiedImage: Bool { imageClipboard != nil }
@@ -2965,20 +3328,25 @@ final class StudioViewModel: ObservableObject {
     var canPasteImage: Bool {
         isEditing && !isPlaying && !isSaving && selectedTool == .move &&
         activeStrokeID == nil && pendingBrushStroke == nil && textDraft == nil &&
-        imageClipboard != nil && currentFrame.rasterAssetID == nil &&
+        imageClipboard != nil && (currentFrame.rasterAssetID == nil || currentFrame.rasterPlacement != nil) &&
+        currentFrame.rasterLayerInstances.count < 128 &&
         layers.contains { $0.id == activeLayerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" }
     }
     @discardableResult
     func pasteImage(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        if usesArtworkClipboard { return pasteSelectedArtwork(checkCancellation: checkCancellation) }
         do {
             guard canPasteImage, let copied = imageClipboard, let appearance = copiedImageLayer, let assetID = copied.rasterAssetID,
                   let record = retainedRasterFrames[assetID], record.sourceImage != nil,
                   let index = document.frames.firstIndex(where: { $0.id == document.activeFrameID }) else {
-                throw StudioDocumentError.unavailable("Copy an image, then choose a blank frame and an unlocked layer. Existing images are never replaced.")
+                throw StudioDocumentError.unavailable("Copy an image, then choose an editable frame and an unlocked layer. Existing images are never replaced.")
             }
-            let before = document
+            let before = document, clipboardVersion = editor.clipboardVersion
+            let selectedIDs = selectedElementIDs, clipboardScope = imageClipboardEditorVersion
             try checkCancellation()
-            guard document == before, imageClipboard == copied, copiedImageLayer == appearance, canPasteImage else { throw StudioCommandError.staleRevision }
+            guard document == before, imageClipboard == copied, copiedImageLayer == appearance,
+                  editor.clipboardVersion == clipboardVersion, imageClipboardEditorVersion == clipboardScope,
+                  selectedElementIDs == selectedIDs, canPasteImage else { throw StudioCommandError.staleRevision }
             var candidate = editor
             let layer = CanvasLayer(id: UUID().uuidString, name: "Pasted image",
                 opacity: appearance.opacity, blendMode: appearance.blendMode,
@@ -2986,24 +3354,176 @@ final class StudioViewModel: ObservableObject {
             try candidate.change { value in
                 value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
                 if copied.rasterRotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
+                if let primary = value.frames[index].rasterAssetID { value.schemaVersion = max(value.schemaVersion, primary == assetID ? 27 : 31) }
                 value.layers.append(layer)
-                value.frames[index].rasterAssetID = assetID
-                value.frames[index].rasterLayerID = layer.id
-                value.frames[index].rasterPlacement = copied.rasterPlacement
-                value.frames[index].rasterReflection = copied.rasterReflection
-                value.frames[index].rasterQuarterTurns = copied.rasterQuarterTurns
-                value.frames[index].rasterRotationDegrees = copied.rasterRotationDegrees
-                value.frames[index].rasterCrop = copied.rasterCrop
+                value.activeLayerID = layer.id
+                try value.frames[index].appendRasterInstance(.init(layerID: layer.id,
+                    placement: copied.rasterPlacement, reflection: copied.rasterReflection,
+                    quarterTurns: copied.rasterQuarterTurns, crop: copied.rasterCrop,
+                    rotationDegrees: copied.rasterRotationDegrees, regionMask: copied.rasterRegionMask), assetID: assetID)
+                if copied.rasterRegionMask != nil { value.schemaVersion = max(value.schemaVersion, 32) }
             }
-            try validateManagedRaster(frame: candidate.document.frames[index], record: record)
+            guard let projected = candidate.document.frames[index].projectedRasterFrame(on: layer.id) else {
+                throw StudioRasterImage.Failure.missing
+            }
+            try validateManagedRaster(frame: projected, record: record)
             try preflightRasterDocument(candidate.document)
             try checkCancellation()
-            guard document == before, imageClipboard == copied, copiedImageLayer == appearance, canPasteImage else { throw StudioCommandError.staleRevision }
+            guard document == before, imageClipboard == copied, copiedImageLayer == appearance,
+                  editor.clipboardVersion == clipboardVersion, imageClipboardEditorVersion == clipboardScope,
+                  selectedElementIDs == selectedIDs, canPasteImage else { throw StudioCommandError.staleRevision }
             editor = candidate
             scheduleSave()
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    struct ImageRegionCapture: Equatable {
+        let projectID: UUID, revision: Int, frameID: String, layerID: String, sourceID: String
+        let instance: StudioRasterLayerInstance
+    }
+    private struct ImageRegionSelection {
+        let capture: ImageRegionCapture
+        let result: StudioImageRegionService.Result
+    }
+    @Published var wandTolerance: Double = 32 { didSet { cancelImageRegionWork() } }
+    @Published var wandContiguous = true { didSet { cancelImageRegionWork() } }
+    @Published var wandMode: StudioImageRegionService.Mode = .newSelection { didSet { cancelImageRegionWork() } }
+    @Published var wandMoveX: Double = 0
+    @Published var wandMoveY: Double = 0
+    @Published private(set) var wandWorking = false
+    @Published private(set) var wandSelectedPixels = 0
+    @Published private(set) var wandPreviewPNG: Data?
+    private var imageRegionSelection: ImageRegionSelection?
+    private var imageRegionGeneration = UUID()
+    private var imageRegionWorker: Task<StudioImageRegionService.Result?, Error>?
+    private var imageRegionWorkerID: UUID?
+    func cancelImageRegionWork() {
+        imageRegionGeneration = UUID()
+        imageRegionWorker?.cancel()
+        // ImageIO decode/encode is bounded but cannot be interrupted midway.
+        // Retain ownership and busy state until awaiting this worker completes.
+        // Cancellation revokes publication immediately, not its memory lease.
+        if imageRegionWorker == nil { wandWorking = false }
+    }
+    func clearImageRegion() {
+        cancelImageRegionWork(); imageRegionSelection = nil; wandPreviewPNG = nil; wandSelectedPixels = 0
+    }
+    func captureImageRegion() throws -> ImageRegionCapture {
+        guard isEditing, !isPlaying, !isSaving, selectedTool == .wand, activeStrokeID == nil,
+              pendingBrushStroke == nil, textDraft == nil, selectedElementIDs.isEmpty,
+              let instance = currentFrame.rasterInstance(on: activeLayerID), instance.placement != nil,
+              let sourceID = currentFrame.rasterAssetID(on: activeLayerID), originalImageSource(sourceID) != nil,
+              let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible, layer.opacity == 1,
+              !layer.isFullyLocked, layer.lockMode == "free", layer.blendMode == "normal", !layer.glowEnabled,
+              !currentFrame.elements.contains(where: { $0.layerID == activeLayerID }) else { throw StudioImageRegionService.Failure.unavailable }
+        return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+                     layerID: activeLayerID, sourceID: sourceID, instance: instance)
+    }
+    var canEditImageRegion: Bool {
+        !wandWorking && imageRegionSelection != nil && (try? captureImageRegion()) == imageRegionSelection?.capture
+    }
+    @discardableResult
+    func selectImageRegion(_ capture: ImageRegionCapture, at point: CGPoint) async -> Bool {
+        guard imageRegionWorker == nil else {
+            message = "The previous Wand selection is still finishing. Wait for it to finish before selecting again."
+            return false
+        }
+        cancelImageRegionWork()
+        let generation = imageRegionGeneration, owner = UUID()
+        defer {
+            // No later submission can acquire this lease before this await has
+            // finished. Identity checking also prevents an older completion
+            // from clearing any future owner's state.
+            if imageRegionWorkerID == owner {
+                imageRegionWorker = nil; imageRegionWorkerID = nil; wandWorking = false
+            }
+        }
+        do {
+            guard try captureImageRegion() == capture, let png = rasterData(capture.sourceID),
+                  wandTolerance.isFinite, (0...128).contains(wandTolerance) else { throw StudioCommandError.staleRevision }
+            let previous = imageRegionSelection?.capture == capture ? imageRegionSelection?.result.membership : nil
+            let mode = wandMode, tolerance = Int(wandTolerance.rounded()), contiguous = wandContiguous
+            wandWorking = true
+            let worker = Task.detached(priority: .userInitiated) {
+                try StudioImageRegionService.select(png: png, instance: capture.instance, point: point,
+                    tolerance: tolerance, contiguous: contiguous, mode: mode, previous: previous)
+            }
+            imageRegionWorker = worker; imageRegionWorkerID = owner
+            let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
+            try Task.checkCancellation()
+            guard imageRegionGeneration == generation, try captureImageRegion() == capture else { throw StudioCommandError.staleRevision }
+            imageRegionSelection = result.map { .init(capture: capture, result: $0) }
+            wandPreviewPNG = result?.fragmentPNG; wandSelectedPixels = result?.selectedPixels ?? 0
+            message = nil
+            return true
+        } catch {
+            if imageRegionGeneration == generation {
+                message = error is CancellationError ? "Wand selection cancelled. Artwork is unchanged." : error.localizedDescription
+            }
+            return false
+        }
+    }
+    enum ImageRegionAction { case copy, delete, move }
+    @discardableResult
+    func applyImageRegion(_ action: ImageRegionAction,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard canEditImageRegion, let selected = imageRegionSelection,
+                  retainedRasterFrames[selected.capture.sourceID]?.sourceImage != nil,
+                  let layer = layers.first(where: { $0.id == selected.capture.layerID }) else { throw StudioImageRegionService.Failure.empty }
+            let before = document, generation = imageRegionGeneration, version = editor.clipboardVersion
+            let oldClipboard = imageClipboard, oldAppearance = copiedImageLayer, oldArtwork = copiedArtworkLayers
+            let scope = imageClipboardEditorVersion, oldSelection = selectedElementIDs
+            let dx = wandMoveX, dy = wandMoveY
+            if case .move = action {
+                guard dx.isFinite, dy.isFinite, dx != 0 || dy != 0 else { throw StudioImageRegionService.Failure.invalid }
+            }
+            try checkCancellation()
+            var next = retainedRasterFrames, candidate = editor
+            var copied: AnimationFrame?
+            switch action {
+            case .copy:
+                guard var frame = currentFrame.projectedRasterFrame(on: selected.capture.layerID) else { throw StudioImageRegionService.Failure.invalid }
+                frame.elements = []; frame.holdTicks = nil
+                let fragment = try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation)
+                try frame.updateRasterInstance(fragment); copied = frame
+            case .delete, .move:
+                let operation: StudioDocumentEditor.ImageRegionAction
+                if case .move = action { operation = .move(dx: dx, dy: dy) } else { operation = .delete }
+                try candidate.editImageRegion(frameID: selected.capture.frameID, layerID: selected.capture.layerID,
+                    sourceID: selected.capture.sourceID, expected: selected.capture.instance,
+                    fragment: try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation),
+                    remainderMask: selected.result.remainderMask, fragmentLayerID: UUID().uuidString,
+                    action: operation, checkCancellation: checkCancellation)
+            }
+            let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union((copied ?? imageClipboard)?.referencedRasterAssetIDs ?? [])
+            next = next.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
+            try validateManagedImageCapacity(next)
+            try storage.preflightAnimation(storageProject(candidate.document, rasters: next))
+            try checkCancellation()
+            guard document == before, imageRegionGeneration == generation, canEditImageRegion,
+                  try captureImageRegion() == selected.capture, editor.clipboardVersion == version,
+                  imageClipboard == oldClipboard, copiedImageLayer == oldAppearance, copiedArtworkLayers == oldArtwork,
+                  imageClipboardEditorVersion == scope, selectedElementIDs == oldSelection,
+                  wandMoveX == dx, wandMoveY == dy else { throw StudioCommandError.staleRevision }
+            retainedRasterFrames = next
+            if let copied {
+                imageClipboard = copied; copiedImageLayer = layer; copiedArtworkLayers = []; copiedArtworkSchema = 32
+                imageClipboardEditorVersion = version
+                message = "Copied \(selected.result.selectedPixels) image pixels. Choose Move to paste a separate image."
+            } else {
+                editor = candidate; clearImageRegion(); scheduleSave(); message = nil
+            }
+            return true
+        } catch { message = error is CancellationError ? "Wand action cancelled. Artwork and clipboard are unchanged." : error.localizedDescription; return false }
+    }
+
+    private func imageRegionContains(_ point: CGPoint, layerID: String) -> Bool {
+        guard let instance = currentFrame.rasterInstance(on: layerID), let mask = instance.regionMask else { return true }
+        guard let source = try? StudioImageRegionService.sourcePoint(point, instance: instance, width: mask.width, height: mask.height) else { return false }
+        return mask.contains(x: Int(floor(source.x)), y: Int(floor(source.y)))
+    }
+
     func originalImageSource(_ assetID: String) -> StoredImageSource? { retainedRasterFrames[assetID]?.sourceImage }
     var managedImageByteCount: Int {
         retainedRasterFrames.values.filter { $0.sourceImage != nil }.reduce(0) { $0 + ($1.imageData?.count ?? 0) + ($1.sourceImage?.originalData.count ?? 0) }
@@ -3024,10 +3544,22 @@ final class StudioViewModel: ObservableObject {
             guard frame.rasterPlacement != nil, frame.rasterAssetID == "image-" + source.id.uuidString,
                   let normalized = record.imageData else { throw StudioRasterImage.Failure.missing }
             try StudioRasterImage.validate(source: source, normalized: normalized)
+            if let mask = frame.rasterRegionMask {
+                try mask.validate()
+                guard mask.width == source.normalizedWidth, mask.height == source.normalizedHeight else { throw StudioRasterImage.Failure.invalid }
+            }
         } else if frame.rasterPlacement != nil { throw StudioRasterImage.Failure.missing }
     }
     private func storageProject(_ snapshot: StudioDocument, rasters: [String: StoredAnimationFrame],
                                 audioTracks: [AudioTrack]? = nil) throws -> AnimationProject {
+        for frame in snapshot.frames {
+            for instance in frame.rasterLayerInstances {
+                if let mask = instance.regionMask {
+                    guard let asset = frame.rasterAssetID(on: instance.layerID), let source = rasters[asset]?.sourceImage,
+                          mask.width == source.normalizedWidth, mask.height == source.normalizedHeight else { throw StudioRasterImage.Failure.invalid }
+                }
+            }
+        }
         var indices: [String: Int] = [:]
         let frames = try snapshot.frames.enumerated().map { index, frame -> StoredAnimationFrame in
             guard let asset = frame.rasterAssetID else { return StoredAnimationFrame(imageData: nil, layerData: nil) }
@@ -3040,12 +3572,20 @@ final class StudioViewModel: ObservableObject {
             }
             indices[asset] = index; return record
         }
+        var additional: [String: StoredAnimationFrame] = [:]
+        for asset in snapshot.referencedRasterAssetIDs.subtracting(Set(indices.keys)) {
+            guard let record = rasters[asset], let source = record.sourceImage,
+                  asset == "image-" + source.id.uuidString, record.imageData?.isEmpty == false,
+                  record.layerData == nil, record.legacyFrameIndex == nil else { throw StudioRasterImage.Failure.missing }
+            additional[asset] = record
+        }
         let metadata = AnimationMetadata(id: snapshot.id, title: snapshot.name, fps: snapshot.fps,
             canvasWidth: snapshot.width, canvasHeight: snapshot.height, frameCount: snapshot.frames.count,
             layerCount: snapshot.layers.count, createdAt: snapshot.createdAt, modifiedAt: snapshot.modifiedAt, thumbnailData: projectThumbnailData)
         return AnimationProject(id: snapshot.id, metadata: metadata, frames: frames,
             audioTracks: try audioTracks ?? audioTracksForSave(snapshot),
-            editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded())
+            editableDocumentData: try StudioDocumentArchive(document: snapshot, rasterFrameIndices: indices).encoded(),
+            additionalImageAssets: additional.isEmpty ? nil : additional)
     }
     private func preflightRasterDocument(_ candidate: StudioDocument) throws {
         guard !candidate.referencedRasterAssetIDs.isEmpty || candidate.frames.contains(where: {
@@ -3054,12 +3594,25 @@ final class StudioViewModel: ObservableObject {
         try storage.preflightAnimation(storageProject(candidate, rasters: retainedRasterFrames))
     }
     private func pruneManagedImages() {
-        let needed = editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        let needed = editor.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.referencedRasterAssetIDs ?? [])
         retainedRasterFrames = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
     }
     func rasterData(_ assetID: String?) -> Data? { assetID.flatMap { retainedRasterFrames[$0]?.imageData } }
-    func undo() { stopPlayback(); command { $0.undo() } }
-    func redo() { stopPlayback(); command { $0.redo() } }
+    func rasterSources(for frame: AnimationFrame) -> [String: Data] {
+        frame.referencedRasterAssetIDs.reduce(into: [:]) { result, assetID in
+            if let data = rasterData(assetID) { result[assetID] = data }
+        }
+    }
+    func undo() {
+        stopPlayback(); let before = document
+        command { $0.undo() }
+        if document != before { clearElementSelection() }
+    }
+    func redo() {
+        stopPlayback(); let before = document
+        command { $0.redo() }
+        if document != before { clearElementSelection() }
+    }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private var playbackTick: Int?
     private func startPlayback() {

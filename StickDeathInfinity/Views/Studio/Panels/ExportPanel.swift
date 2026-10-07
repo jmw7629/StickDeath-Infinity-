@@ -206,9 +206,8 @@ struct ExportPanel: View {
         // MainActor before export yields. Later edits cannot change this export.
         var rasters: [String: Data] = [:]
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
-        let visibleIDs = Set(document.frames.compactMap { frame -> String? in
-            !frame.visibleRasterInstances(in: document.layers).isEmpty
-                ? frame.rasterAssetID : nil
+        let visibleIDs = Set(document.frames.flatMap { frame in
+            frame.visibleRasterInstances(in: document.layers).compactMap { frame.rasterAssetID(on: $0.layerID) }
         })
         do {
             for id in visibleIDs {

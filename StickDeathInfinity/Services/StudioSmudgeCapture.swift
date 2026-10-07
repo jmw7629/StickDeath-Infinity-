@@ -21,7 +21,7 @@ enum StudioSmudgeCapture {
                 !$0.isFullyLocked && $0.lockMode == "free" }
         }
     }
-    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?) throws -> Capture {
+    static func capture(document: StudioDocument, selection: Set<String>, raster: Data?, rasterDataByID: [String: Data] = [:]) throws -> Capture {
         try Task.checkCancellation(); try document.validate()
         guard selection.isEmpty else {
             throw StudioDocumentError.unavailable("Smudging within a selection is not available yet. Deselect artwork first; nothing changed.")
@@ -34,7 +34,8 @@ enum StudioSmudgeCapture {
               let frame = document.frames.first(where: { $0.id == document.activeFrameID }) else {
             throw StudioSmudge.Failure.invalidImage
         }
-        if frame.rasterInstance(on: layer.id) != nil, raster == nil {
+        if let asset = frame.rasterAssetID(on: layer.id), rasterDataByID[asset] == nil,
+           asset != frame.rasterAssetID || raster == nil {
             throw StudioRasterImage.Failure.missing
         }
         var isolated = document
@@ -43,7 +44,7 @@ enum StudioSmudgeCapture {
             if copy.visible { copy.opacity = 1; copy.blendMode = "normal"; copy.glowEnabled = false }
             return copy
         }
-        let rendered = try StudioExportService().render(frame, document: isolated, background: .transparent, raster: raster)
+        let rendered = try StudioExportService().render(frame, document: isolated, background: .transparent, raster: raster, rasterDataByID: rasterDataByID)
         try Task.checkCancellation()
         var bytes = [UInt8](repeating: 0, count: rendered.width*rendered.height*4)
         let decoded = bytes.withUnsafeMutableBytes { buffer -> Bool in

@@ -257,6 +257,60 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(editor.document == doc && doc.referencedRasterAssetIDs == ["raster"], "GIF export changed linked source document")
             try output.cleanup()
         }
+        await test("independent image sources encode distinct GIF pixels and exact visible source credits") {
+            // Synthetic red/blue originals isolate source dispatch. Credits are
+            // test metadata transport, not a claim these pixels are publisher art.
+            let blue = NSMutableData()
+            let context = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+                space: fixtureSRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.setFillColor(CGColor(colorSpace: fixtureSRGB, components: [0, 0, 1, 1])!)
+            context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+            let destination = CGImageDestinationCreateWithData(blue, UTType.png.identifier as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+            try require(CGImageDestinationFinalize(destination), "Independent blue PNG fixture failed")
+            let blueData = blue as Data
+            try require(blueData != pngData, "Independent source fixture reused the original")
+            var blueRights = rights
+            blueRights["assetID"] = "gif-credit-fixture-second"
+            blueRights["originalSHA256"] = SHA256.hash(data: blueData).map { String(format: "%02x", $0) }.joined()
+            let blueCredit = try StudioExportService.ImageCredit(attribution: blueRights)
+            let secondID = "image-22222222-2222-4222-8222-222222222222"
+            var doc = try rasterDocument(); doc.schemaVersion = 31
+            doc.layers.append(CanvasLayer(id: "second-source", name: "Independent blue image"))
+            for index in doc.frames.indices {
+                doc.frames[index].rasterPlacement = .init(x: 0, y: 0, width: 24, height: 32)
+                doc.frames[index].rasterAliases = [.init(layerID: "second-source", placement: .init(x: 40, y: 0, width: 24, height: 32), assetID: secondID)]
+            }
+            try doc.validate()
+            let sources = ["raster": pngData, secondID: blueData], credits = ["raster": credit, secondID: blueCredit]
+            let parent = folder.appendingPathComponent("independent-credited-gif")
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            let output = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: sources, imageCredits: credits), outputParent: parent)
+            let urls = try output.checkedURLs(), bytes = try Data(contentsOf: urls[0])
+            let receipt = try JSONDecoder().decode(Encoder.Receipt.self, from: Data(contentsOf: urls[1]))
+            try require(receipt.imageCredits == [credit, blueCredit] && receipt.frameIDs == doc.frames.map(\.id), "Independent GIF source credits or frames changed")
+            for index in 0..<2 {
+                try same(pixel(bytes, index: index, x: 12, y: 16), [255,0,0,255])
+                try same(pixel(bytes, index: index, x: 52, y: 16), [0,0,255,255])
+                try same(pixel(bytes, index: index, x: 32, y: 16), [255,255,255,255])
+            }
+            try output.cleanup()
+            var missingRejected = false
+            do {
+                _ = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: ["raster": pngData], imageCredits: credits), outputParent: parent)
+            } catch Encoder.Failure.missingRaster { missingRejected = true }
+            try require(missingRejected && FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty, "Visible independent source was omitted or left partial GIF output")
+            doc.layers[1].visible = false
+            // GIF intentionally requires only visible sources; missing hidden
+            // bytes cannot be substituted with another source or credited.
+            let hidden = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: ["raster": pngData], imageCredits: credits), outputParent: parent)
+            let hiddenURLs = try hidden.checkedURLs(), hiddenBytes = try Data(contentsOf: hiddenURLs[0])
+            let hiddenReceipt = try JSONDecoder().decode(Encoder.Receipt.self, from: Data(contentsOf: hiddenURLs[1]))
+            try require(hiddenReceipt.imageCredits == [credit], "Hidden independent source retained a visible credit")
+            try same(pixel(hiddenBytes, index: 0, x: 12, y: 16), [255,0,0,255])
+            try same(pixel(hiddenBytes, index: 0, x: 52, y: 16), [255,255,255,255])
+            try hidden.cleanup()
+        }
         await test("GIF credits omit hidden zero-opacity and personal assets and old receipts decode") {
             var doc = try rasterDocument()
             let personal = try await Encoder().encode(.init(document: doc, rasterDataByID: ["raster": pngData]))

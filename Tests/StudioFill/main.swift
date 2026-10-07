@@ -41,12 +41,13 @@ private struct Failure: Error { let message: String }
         try require(success, "Actual image pixel decode")
         return bytes
     }
-    static func render(_ d: StudioDocument, size: Int = 128) throws -> [UInt8] {
+    static func render(_ d: StudioDocument, size: Int = 128, sources: [String:Data] = [:]) throws -> [UInt8] {
         let frame = d.frames[0], brushes = try StudioFrameRenderer.prepare(frame: frame)
+        let rasters = try StudioFrameRenderer.prepareRasters(frame:frame,layers:d.layers,sourceData:sources)
         var failure: Error?
         let content = Canvas { context, actual in
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: d.layers,
-                canvasSize: CGSize(width: d.width, height: d.height), size: actual, preparedBrushes: brushes)
+                canvasSize: CGSize(width: d.width, height: d.height), size: actual, preparedBrushes: brushes, rasterSources:sources, preparedRasters:rasters)
         }.frame(width: CGFloat(size), height: CGFloat(size))
         let renderer = ImageRenderer(content: content); renderer.scale = 1
         guard let image = renderer.cgImage else { throw Failure(message: "Actual canonical shape renderer") }
@@ -662,6 +663,104 @@ private struct Failure: Error { let message: String }
         await cold.flush()
         pass("real selected Fill session adds separate paint with one Undo Redo and cold saved pixels")
     }
+    static func selectedImageCoverageSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-image-fill-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        let original = try document(shape("fixture",opacity:0.5))
+        let input = try await StudioExportService().export(document:original,format:.pngSequence,outputParent:root,background:.transparent)
+        let imported = try await StudioImageImportService().importImage(from:input.imageURLs[0],name:"Transparent shape",scratchParent:root)
+        let store = DeviceStorageManager(documentsDirectory:root.appendingPathComponent("projects")), vm = StudioViewModel(storage:DeviceStorageManager(documentsDirectory:root.appendingPathComponent("projects")))
+        let created = await vm.createProject(name:"Selected image Fill",width:128,height:128,fps:12)
+        try require(created,"Image Fill project")
+        let asset = try vm.attachImportedImage(imported,expectedProjectID:vm.document.id,expectedRevision:vm.document.revision,frameID:vm.currentFrame.id,layerID:vm.activeLayerID)
+        let layer = vm.currentFrame.rasterLayerID!
+        vm.selectLayer(layer); vm.selectedTool = .move; await vm.flush()
+        guard let placement = vm.prepareImagePlacement() else { throw Failure(message:"Image Fill placement") }
+        try require(vm.placeImage(placement,at:.init(x:24,y:24,width:80,height:80),rotationDegrees:30),"Image Fill transform")
+        await vm.flush(); try require(vm.setImageCanvasMove(true),"Explicit image selection")
+        vm.selectedTool = .fill; vm.strokeColor = Color.blue; vm.fillSampleAll = true; vm.fillTolerance = 128; vm.fillExpand = 5
+        await vm.flush()
+        guard let context = StudioFillContext.current(vm) else { throw Failure(message:"Selected image Fill context") }
+        try require(context.selectedImageLayerID == layer && context.selectedImageSelectionID != nil,"Image selection lost on Fill handoff")
+        // Same document/revision, a different explicit selection UUID.
+        vm.selectedTool = .move; await vm.flush()
+        try require(vm.setImageCanvasMove(true), "Image reselection failed")
+        vm.selectedTool = .fill; await vm.flush()
+        guard let reselected = StudioFillContext.current(vm) else { throw Failure(message:"Reselected Fill context") }
+        try require(reselected.revision == context.revision && reselected.selectedImageSelectionID != context.selectedImageSelectionID,
+            "Selection-token fixture changed revision or reused identity")
+        let unchanged = vm.document, staleSession = StudioFillSession()
+        let oldTokenAccepted = await staleSession.fill(vm,context:context,point:CGPoint(x:64,y:64))
+        try require(!oldTokenAccepted && vm.document == unchanged,"Same-revision old selection token authorized Fill")
+        let before = vm.document, sources = vm.rasterSources(for:vm.currentFrame)
+        let capture = try StudioFillService.capture(document:before,frameID:before.activeFrameID,layerID:layer,point:CGPoint(x:64,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer)
+        guard let coverage = capture.selectionCoverage else { throw Failure(message:"Image alpha missing") }
+        try require(coverage[64*128+64] > 100 && coverage[64*128+64] < 200 && coverage[2*128+2] == 0,"Actual partial image alpha was flattened or bounded-box substituted")
+        for lock in ["full", "alpha"] {
+            var blocked = before
+            let index = blocked.layers.firstIndex(where:{$0.id == layer})!
+            blocked.layers[index].lockMode = lock
+            try rejects { _ = try StudioFillService.capture(document:blocked,frameID:blocked.activeFrameID,layerID:layer,point:CGPoint(x:64,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer) }
+        }
+        var hidden = before
+        hidden.layers[hidden.layers.firstIndex(where:{$0.id == layer})!].visible = false
+        try rejects { _ = try StudioFillService.capture(document:hidden,frameID:hidden.activeFrameID,layerID:layer,point:CGPoint(x:64,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer) }
+        // Real canonical source-mask and crop replay, not a rectangular proxy.
+        var masked = before
+        var instance = masked.frames[0].rasterInstance(on:layer)!
+        instance.rotationDegrees = nil; instance.crop = .init(x:0.25,y:0.25,width:0.5,height:0.5)
+        let geometry = StudioImageRegionMask.Geometry(instance)!
+        instance.regionMask = .init(width:imported.width,height:imported.height,
+            spans:(0..<imported.height).map { .init(row:$0,start:0,end:imported.width/2) },
+            sourceClip:instance.crop,samplingGeometry:geometry,placementGeometry:geometry)
+        masked.schemaVersion = 32; try masked.frames[0].updateRasterInstance(instance); try masked.validate()
+        let maskedCapture = try StudioFillService.capture(document:masked,frameID:masked.activeFrameID,layerID:layer,point:CGPoint(x:44,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer)
+        try require((maskedCapture.selectionCoverage?[64*128+44] ?? 0) > 0,"Cropped selected source mask lost retained pixels")
+        try require(maskedCapture.selectionCoverage?[64*128+84] == 0,"Selection coverage ignored existing Wand mask")
+        _ = try StudioFillService.element(from:maskedCapture)
+        let maskedOutside = try StudioFillService.capture(document:masked,frameID:masked.activeFrameID,layerID:layer,point:CGPoint(x:84,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer)
+        try rejects { _ = try StudioFillService.element(from:maskedOutside) }
+        let fill = try StudioFillService.element(from:capture)
+        try require(fill.fillMask != nil,"Actual image clipped region")
+        // Outside selection must reject even with broad tolerance and expansion.
+        let outside = try StudioFillService.capture(document:before,frameID:before.activeFrameID,layerID:layer,point:CGPoint(x:2,y:2),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer)
+        try rejects { _ = try StudioFillService.element(from:outside) }
+        try rejects { _ = try StudioFillService.capture(document:before,frameID:before.activeFrameID,layerID:layer,point:CGPoint(x:64,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,selectedImageLayerID:layer) }
+        let session = StudioFillSession(), succeeded = await session.fill(vm,context:reselected,point:CGPoint(x:64,y:64))
+        try require(succeeded && vm.currentFrame.elements.count == 1 && vm.rasterData(asset) == imported.normalizedPNG,"Real selected image Fill changed original bytes or failed")
+        let painted = try render(vm.document,sources:sources)
+        for i in 0..<coverage.count where coverage[i] == 0 {
+            try require(painted[i*4+2] == 0,"Fill painted outside selected image alpha")
+        }
+        try require(channel(painted,64,64,2)>0,"Selected image Fill had no blue output")
+        vm.undo(); try require(vm.document.frames == before.frames,"Selected image Fill Undo changed source")
+        vm.redo(); try require(render(vm.document,sources:sources) == painted,"Selected image Fill Redo pixels")
+        let saved = await vm.save(); try require(saved,"Selected image Fill save")
+        let cold = StudioViewModel(storage:store)
+        let opened = await cold.openProject(try store.loadAnimation(id:vm.document.id)!.metadata)
+        try require(opened && render(cold.document,sources:cold.rasterSources(for:cold.currentFrame)) == painted && cold.rasterData(asset) == imported.normalizedPNG,"Selected image cold coverage/source")
+        let output = try await StudioExportService().export(document:cold.document,format:.pngSequence,outputParent:root,background:.transparent,rasterData:{cold.rasterData($0)})
+        let decoded = CGImageSourceCreateWithURL(output.imageURLs[0] as CFURL,nil)!
+        try require(pixels(CGImageSourceCreateImageAtIndex(decoded,0,nil)!) == painted,"Selected image Fill PNG differed")
+        // An old selection token cannot authorize a new fill after deselection.
+        vm.deselectAreaImage(); let stable = vm.document
+        let stale = await session.fill(vm,context:context,point:CGPoint(x:64,y:64))
+        try require(!stale && vm.document == stable,"Stale image selection added paint")
+        // A stale Lasso capture must not be revived by switching tools.
+        vm.selectedTool = .lasso; vm.areaSelectionTarget = .image; vm.areaSelectionKind = .rectangle
+        await vm.flush()
+        guard let area = vm.beginAreaSelection() else { throw Failure(message:"Lasso image fixture unavailable") }
+        try require(vm.finishAreaSelection(area,points:[CGPoint(x:0,y:0),CGPoint(x:128,y:128)]) && vm.selectedAreaImageCorners != nil,
+            "Real Lasso image selection failed")
+        try require(vm.renameProject("Unrelated revision",expectedProjectID:vm.document.id,expectedRevision:vm.document.revision),"Unrelated document edit")
+        try require(vm.selectedAreaImageCorners == nil,"Unrelated edit did not stale Lasso selection")
+        let revised = vm.document, canUndo = vm.canUndo, canRedo = vm.canRedo
+        vm.selectedTool = .fill; await vm.flush()
+        try require(vm.hasFillImageTarget && StudioFillContext.current(vm) == nil && vm.document == revised && vm.canUndo == canUndo && vm.canRedo == canRedo,
+            "Tool handoff revived stale Lasso or silently fell back to whole-canvas Fill")
+        pass("explicit transformed image-alpha Fill real session clips expansion preserves source Undo cold and PNG")
+    }
     static func main() async throws {
         setbuf(stdout, nil)
         try await styledBrushShapeFillRoundtrip()
@@ -675,6 +774,7 @@ private struct Failure: Error { let message: String }
         try await selectionAuthorization()
         try transformedSelectionCoverage()
         try await selectedCoverageSessionPersistence()
+        try await selectedImageCoverageSession()
         print("STUDIO_FILL_INTEGRATION=PASS groups=\(passed)")
     }
 }

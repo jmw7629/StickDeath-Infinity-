@@ -713,12 +713,40 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     var rasterCrop: StudioImageCrop? = nil
     /// Version 27 linked instances share this frame's immutable raster source.
     var rasterAliases: [StudioRasterLayerInstance]? = nil
+    /// Schema32: nondestructive source-pixel visibility, nil preserves full image.
+    var rasterRegionMask: StudioImageRegionMask? = nil
     var durationTicks: Int { min(600, max(1, holdTicks ?? 1)) }
 
     var rasterLayerInstances: [StudioRasterLayerInstance] {
         guard rasterAssetID != nil, let rasterLayerID else { return [] }
         return [.init(layerID: rasterLayerID, placement: rasterPlacement, reflection: rasterReflection,
-                      quarterTurns: rasterQuarterTurns, crop: rasterCrop, rotationDegrees: rasterRotationDegrees)] + (rasterAliases ?? [])
+                      quarterTurns: rasterQuarterTurns, crop: rasterCrop, rotationDegrees: rasterRotationDegrees, regionMask: rasterRegionMask)] + (rasterAliases ?? [])
+    }
+    /// Resolve source identity without changing historical nil alias metadata.
+    func rasterAssetID(on layerID: String) -> String? {
+        guard let instance = rasterInstance(on: layerID) else { return nil }
+        return instance.assetID ?? rasterAssetID
+    }
+    var referencedRasterAssetIDs: Set<String> {
+        var ids = Set(rasterLayerInstances.compactMap { $0.assetID ?? rasterAssetID })
+        if let rasterAssetID { ids.insert(rasterAssetID) }
+        return ids
+    }
+    mutating func appendRasterInstance(_ instance: StudioRasterLayerInstance, assetID: String) throws {
+        guard rasterInstance(on: instance.layerID) == nil, rasterLayerInstances.count < 128,
+              instance.placement != nil, !assetID.isEmpty,
+              instance.assetID == nil || instance.assetID == assetID else { throw StudioRasterLayerInstance.Failure.invalid }
+        var added = instance
+        if rasterAssetID == nil {
+            guard rasterAliases?.isEmpty ?? true else { throw StudioRasterLayerInstance.Failure.invalid }
+            rasterAssetID = assetID; added.assetID = nil; assignPrimaryRasterInstance(added)
+        } else {
+            // Preserve opaque legacy frame records without reinterpreting them
+            // as managed image objects in this additive format.
+            guard rasterPlacement != nil else { throw StudioRasterLayerInstance.Failure.invalid }
+            added.assetID = assetID == rasterAssetID ? nil : assetID
+            rasterAliases = (rasterAliases ?? []) + [added]
+        }
     }
     func rasterInstance(on layerID: String) -> StudioRasterLayerInstance? {
         let matches = rasterLayerInstances.filter { $0.layerID == layerID }
@@ -736,11 +764,12 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     func projectedRasterFrame(on layerID: String) -> AnimationFrame? {
         guard let instance = rasterInstance(on: layerID) else { return nil }
         var frame = self
+        frame.rasterAssetID = rasterAssetID(on: layerID)
         frame.assignPrimaryRasterInstance(instance); frame.rasterAliases = nil
         return frame
     }
     mutating func updateRasterInstance(_ instance: StudioRasterLayerInstance) throws {
-        guard rasterInstance(on: instance.layerID) != nil else { throw StudioRasterLayerInstance.Failure.invalid }
+        guard let prior = rasterInstance(on: instance.layerID), prior.assetID == instance.assetID else { throw StudioRasterLayerInstance.Failure.invalid }
         if rasterLayerID == instance.layerID { assignPrimaryRasterInstance(instance) }
         else if let index = rasterAliases?.firstIndex(where: { $0.layerID == instance.layerID }) {
             rasterAliases?[index] = instance
@@ -751,11 +780,21 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
         if rasterLayerID == layerID {
             var aliases = rasterAliases ?? []
             if !aliases.isEmpty {
-                assignPrimaryRasterInstance(aliases.removeFirst())
+                let oldSource = rasterAssetID
+                let promoted = aliases.removeFirst()
+                let newSource = promoted.assetID ?? oldSource
+                aliases = aliases.map { entry in
+                    var entry = entry
+                    let resolved = entry.assetID ?? oldSource
+                    entry.assetID = resolved == newSource ? nil : resolved
+                    return entry
+                }
+                rasterAssetID = newSource
+                assignPrimaryRasterInstance(promoted)
                 rasterAliases = aliases.isEmpty ? nil : aliases
             } else {
                 rasterAssetID = nil; rasterLayerID = nil; rasterPlacement = nil
-                rasterReflection = nil; rasterQuarterTurns = nil; rasterRotationDegrees = nil; rasterCrop = nil; rasterAliases = nil
+                rasterReflection = nil; rasterQuarterTurns = nil; rasterRotationDegrees = nil; rasterCrop = nil; rasterAliases = nil; rasterRegionMask = nil
             }
         } else {
             rasterAliases?.removeAll { $0.layerID == layerID }
@@ -765,7 +804,7 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     private mutating func assignPrimaryRasterInstance(_ instance: StudioRasterLayerInstance) {
         rasterLayerID = instance.layerID; rasterPlacement = instance.placement
         rasterReflection = instance.reflection; rasterQuarterTurns = instance.quarterTurns; rasterCrop = instance.crop
-        rasterRotationDegrees = instance.rotationDegrees
+        rasterRotationDegrees = instance.rotationDegrees; rasterRegionMask = instance.regionMask
     }
 }
 
@@ -776,13 +815,16 @@ struct StudioRasterLayerInstance: Codable, Equatable {
     var quarterTurns: Int? = nil
     var crop: StudioImageCrop? = nil
     var rotationDegrees: Double? = nil
+    /// Schema31 source override; nil inherits the frame primary source.
+    var assetID: String? = nil
+    var regionMask: StudioImageRegionMask? = nil
     enum Failure: LocalizedError {
         case invalid
         var errorDescription: String? { "The selected linked image is unavailable or ambiguous. Nothing changed." }
     }
 }
 
-struct StudioImageCrop: Codable, Equatable {
+struct StudioImageCrop: Codable, Equatable, Sendable {
     let x: Double
     let y: Double
     let width: Double
@@ -805,12 +847,12 @@ enum StudioImageQuarterTurn: String, Codable {
     var offset: Int { self == .clockwise ? 1 : -1 }
 }
 
-struct StudioRasterReflection: Codable, Equatable {
+struct StudioRasterReflection: Codable, Equatable, Sendable {
     var horizontal = false
     var vertical = false
 }
 
-struct StudioRasterPlacement: Codable, Equatable {
+struct StudioRasterPlacement: Codable, Equatable, Sendable {
     let x: Double
     let y: Double
     let width: Double
@@ -1365,5 +1407,124 @@ struct StudioImageRotationGeometry {
         let result = StudioRasterPlacement(x: candidate.x + dx, y: candidate.y + dy, width: width, height: height)
         try Self(placement: result, degrees: degrees).validate(canvasWidth: canvasWidth, canvasHeight: canvasHeight)
         return result
+    }
+}
+
+/// Schema32 source-pixel clip. Original image bytes are sampled unchanged;
+/// selection boundaries are binary and do not apply a second alpha multiplier.
+struct StudioImageRegionMask: Codable, Equatable, Sendable {
+    struct Span: Codable, Equatable, Sendable {
+        let row: Int, start: Int, end: Int
+    }
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "The image region has invalid dimensions, spans or resource bounds." }
+    }
+    static let maximumSpans = 262_144
+    static let maximumDocumentSpans = 262_144
+    let width: Int, height: Int
+    let spans: [Span]
+    var inverted = false
+    /// Original source-space render clip, distinct from a compact placement crop.
+    var sourceClip: StudioImageCrop? = nil
+    var samplingGeometry: Geometry? = nil
+    var placementGeometry: Geometry? = nil
+    struct Geometry: Codable, Equatable, Sendable {
+        let placement: StudioRasterPlacement
+        let crop: StudioImageCrop?
+        let reflection: StudioRasterReflection?
+        let quarterTurns: Int?
+        let rotationDegrees: Double?
+        init?(_ instance: StudioRasterLayerInstance) {
+            guard let placement = instance.placement else { return nil }
+            self.placement = placement; crop = instance.crop; reflection = instance.reflection
+            quarterTurns = instance.quarterTurns; rotationDegrees = instance.rotationDegrees
+        }
+        func applying(to instance: StudioRasterLayerInstance) -> StudioRasterLayerInstance {
+            var result = instance; result.placement = placement; result.crop = crop; result.reflection = reflection
+            result.quarterTurns = quarterTurns; result.rotationDegrees = rotationDegrees; return result
+        }
+        func validate() throws {
+            let p = placement
+            guard [p.x,p.y,p.width,p.height].allSatisfy({ $0.isFinite }), abs(p.x) <= 262144, abs(p.y) <= 262144,
+                  p.width > 0, p.height > 0, p.width <= 262144, p.height <= 262144,
+                  (0...3).contains(quarterTurns ?? 0), (rotationDegrees ?? 0).isFinite,
+                  (-180...180).contains(rotationDegrees ?? 0) else { throw Failure.invalid }
+            try crop?.validate()
+        }
+        /// Deterministic compact geometry; validation rejects spoofed origins.
+        func compact(for mask: StudioImageRegionMask) throws -> Geometry {
+            guard !mask.inverted, let first = mask.spans.first else { throw Failure.invalid }
+            var minX = first.start, maxX = first.end, minY = first.row, maxY = first.row + 1
+            for span in mask.spans { minX = min(minX,span.start); maxX = max(maxX,span.end); minY = min(minY,span.row); maxY = max(maxY,span.row+1) }
+            let crop = self.crop ?? .full, p = placement
+            let x0 = max(crop.x, Double(max(0,minX-2))/Double(mask.width))
+            let y0 = max(crop.y, Double(max(0,minY-2))/Double(mask.height))
+            let x1 = min(crop.x+crop.width, Double(min(mask.width,maxX+2))/Double(mask.width))
+            let y1 = min(crop.y+crop.height, Double(min(mask.height,maxY+2))/Double(mask.height))
+            let w = max(0.01,x1-x0), h = max(0.01,y1-y0)
+            let cx = max(crop.x,min(x0,crop.x+crop.width-w)), cy = max(crop.y,min(y0,crop.y+crop.height-h))
+            return try reframed(crop: .init(x:cx,y:cy,width:w,height:h))
+        }
+        func reframed(crop next: StudioImageCrop) throws -> Geometry {
+            try next.validate()
+            let crop = self.crop ?? .full, p = placement
+            let cx = next.x, cy = next.y, w = next.width, h = next.height
+            let odd = (quarterTurns ?? 0) % 2 != 0
+            let preW = odd ? p.height : p.width, preH = odd ? p.width : p.height
+            var x = ((cx+w/2-crop.x)/crop.width-0.5)*preW, y = ((cy+h/2-crop.y)/crop.height-0.5)*preH
+            let q = Double(quarterTurns ?? 0) * .pi/2, qx = x*cos(q)-y*sin(q), qy = x*sin(q)+y*cos(q)
+            x = reflection?.horizontal == true ? -qx:qx; y = reflection?.vertical == true ? -qy:qy
+            let angle = (rotationDegrees ?? 0)*Double.pi/180
+            let centerX = p.x+p.width/2+x*cos(angle)-y*sin(angle), centerY = p.y+p.height/2+x*sin(angle)+y*cos(angle)
+            let localW = preW*w/crop.width, localH = preH*h/crop.height
+            let placedW = odd ? localH:localW, placedH = odd ? localW:localH
+            var instance = applying(to: .init(layerID:"region"))
+            instance.placement = .init(x:centerX-placedW/2,y:centerY-placedH/2,width:placedW,height:placedH)
+            instance.crop = .init(x:cx,y:cy,width:w,height:h)
+            guard let result = Geometry(instance) else { throw Failure.invalid }; return result
+        }
+    }
+    func sampledInstance(_ instance: StudioRasterLayerInstance) -> StudioRasterLayerInstance {
+        guard let samplingGeometry, let placementGeometry, let current = Geometry(instance) else { return instance }
+        if current == placementGeometry { return samplingGeometry.applying(to: instance) }
+        // Lift a transformed compact placement back to the same source crop.
+        // Rendering, hit mapping and shared decode detail use this one geometry.
+        guard let lifted = try? current.reframed(crop: samplingGeometry.crop ?? .full) else { return instance }
+        var result = lifted.applying(to:instance); result.crop = samplingGeometry.crop
+        return result
+    }
+    func validate() throws {
+        guard width > 0, height > 0, width <= 4096, height <= 4096,
+              width <= 4_194_304 / height, spans.count <= Self.maximumSpans else {
+            throw Failure.invalid
+        }
+        var row = -1, end = -1
+        for span in spans {
+            guard span.row >= 0, span.row < height, span.start >= 0, span.end <= width, span.start < span.end,
+                  span.row > row || (span.row == row && span.start > end) else {
+                throw Failure.invalid
+            }
+            row = span.row; end = span.end
+        }
+        try sourceClip?.validate()
+        guard (samplingGeometry == nil) == (placementGeometry == nil) else { throw Failure.invalid }
+        if let samplingGeometry, let placementGeometry {
+            try samplingGeometry.validate(); try placementGeometry.validate()
+            if samplingGeometry != placementGeometry {
+                guard let crop = placementGeometry.crop, try samplingGeometry.reframed(crop:crop) == placementGeometry else { throw Failure.invalid }
+            }
+        }
+    }
+    func contains(x: Int, y: Int) -> Bool {
+        guard x >= 0, y >= 0, x < width, y < height else { return false }
+        // Find first span whose (row,end) can contain this pixel.
+        var low = 0, high = spans.count
+        while low < high {
+            let mid = (low + high) / 2, span = spans[mid]
+            if span.row < y || (span.row == y && span.end <= x) { low = mid + 1 } else { high = mid }
+        }
+        let inside = low < spans.count && spans[low].row == y && spans[low].start <= x && x < spans[low].end
+        return inverted ? !inside : inside
     }
 }

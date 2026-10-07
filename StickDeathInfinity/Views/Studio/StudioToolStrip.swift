@@ -26,6 +26,7 @@ struct StudioToolStrip: View {
     static let tools: [ToolDef] = [
         ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   topColor: "555566", bottomColor: "333344", glowColor: "777788"),
         ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+        ToolDef(tool: .wand, icon: "wand.and.stars", emoji: "✦", label: "Wand", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
         ToolDef(tool: .pencil,    icon: "pencil",           emoji: "✏️",  label: "Pencil", topColor: "DC2626", bottomColor: "991B1B", glowColor: "EF4444"),
         ToolDef(tool: .pen,       icon: "pencil.tip",       emoji: "🖊️", label: "Pen",    topColor: "C53030", bottomColor: "7F1D1D", glowColor: "DC2626"),
         ToolDef(tool: .brush,     icon: "paintbrush",       emoji: "🖌️", label: "Brush",  topColor: "E03030", bottomColor: "B91C1C", glowColor: "F43F5E"),

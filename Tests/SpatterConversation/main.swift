@@ -110,8 +110,8 @@ private final class NetworkTrap: URLProtocol {
                     ("How do I rename the project I call Sunset?", ["Rename project"], ["have been removed"]),
                     ("How do I export the project I call Sunset from my phone?", ["Export panel"], ["have been removed"]),
                     (String(repeating: "drawing ", count: 80) + "then start video calling", ["have been removed"], ["Export panel"]),
-                    ("How do I add a canvas background?", ["Open Background Library", "16 locally generated", "current frame only", "no original is replaced", "Undo"], ["Open Magic Cut"]),
-                    ("Can I change the backdrop on every frame?", ["does not change every frame", "add a blank frame first"], ["Open Magic Cut"]),
+                    ("How do I add a canvas background?", ["Open Background Library", "16 locally generated", "current frame only", "without replacing existing managed images", "Undo"], ["Open Magic Cut"]),
+                    ("Can I change the backdrop on every frame?", ["does not change every frame", "independent image layer", "historical frame with an opaque original record still requires a new blank frame"], ["Open Magic Cut"]),
                     ("How do I export a transparent background PNG?", ["Export background", "White or Transparent", "does not remove pixels"], ["Open Magic Cut", "Open Background Library"]),
                     ("How do I export an MP4 background?", ["MP4 and GIF use a white background"], ["Open Magic Cut", "Open Background Library"]),
                     ("How do I remove an image background?", ["Open Magic Cut", "edge-connected pixels", "Original images are preserved"], ["Open Background Library"]),
@@ -138,6 +138,9 @@ private final class NetworkTrap: URLProtocol {
                     ("How do I rotate a picture?", ["red canvas handle", "angle", "one Undo step"]),
                     ("How do I cut an image?", ["Cut image in Move", "selected active-layer image", "one Undo step"]),
                     ("How do I copy and paste an image?", ["Copy selected image", "crop, flips and angle", "never replaces an existing image"]),
+                    ("Can I add two images to the same frame?", ["independently imported", "own image layer", "preserves the other originals"]),
+                    ("How do I copy mixed artwork?", ["Drawings + image", "Copy and Cut preserve", "Paste artwork", "fresh artwork identities"]),
+                    ("Can I move drawings and an image together?", ["group can move, scale, rotate and flip", "at most one active-layer image"]),
                     ("Can I duplicate imported image layers?", ["linked instance", "sharing the original file", "separate placement"]),
                     ("How do layers work?", ["linked instance", "separate placement"]),
                     ("How do I copy an image in my project?", ["Copy selected image", "crop, flips and angle"]),
@@ -148,14 +151,18 @@ private final class NetworkTrap: URLProtocol {
                     try require(chat.submit(question, context: .general), "Image guidance rejected")
                     try await idle(chat)
                     let answer = chat.messages.last!.content
-                    try require(facts.allSatisfy(answer.contains) && !answer.contains("duplication remains unavailable"),
+                    try require(facts.allSatisfy(answer.contains) && !answer.contains("duplication remains unavailable") &&
+                        !answer.contains("needs a blank image destination") && !answer.contains("Mixed image-and-drawing group selection is unavailable"),
                                 "Stale or incomplete image guidance: \(question)")
                     try require(answer.contains("Guidance only") && chat.status == .localGuide && chat.messages.last?.origin == .local,
                                 "Image guidance claimed execution")
                 }
                 try require(calls == 0 && studio.document == before, "Image guidance used a provider or edited the document")
                 try require(SpatterAIViewModel.currentStudioCapabilities.contains("Image on active layer") &&
-                            SpatterAIViewModel.currentStudioCapabilities.contains("linked instance"),
+                            SpatterAIViewModel.currentStudioCapabilities.contains("linked instance") &&
+                            SpatterAIViewModel.currentStudioCapabilities.contains("Drawings + image") &&
+                            SpatterAIViewModel.currentStudioCapabilities.contains("Paste artwork") &&
+                            !SpatterAIViewModel.currentStudioCapabilities.contains("refuses frames that already have one"),
                             "Configured advice omitted current image capabilities")
             }
             try await test("versioned backup and storage help overrides legacy promises without side effects") {
@@ -252,7 +259,7 @@ private final class NetworkTrap: URLProtocol {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
                 for (question, facts) in [
-                    ("Download thousands of pictures from the image library", ["207 pictures", "458 pictures", "665 total", "not thousands", "Download 643 KB", "not an installation"]),
+                    ("Download thousands of pictures from the image library", ["207 pictures", "1818 more", "2025 pictures", "all six verified packs", "not a claim that your device has installed", "not an installation"]),
                     ("Remove my downloaded image pack", ["Remove download", "pictures already added to projects are kept", "cannot see whether"]),
                     ("Can Spatter memory learn from my history?", ["off by default", "fixed choices", "each account and guest", "does not learn from conversation history", "not automatically sent to cloud"]),
                     ("Import and export my personal preferences", ["Import preference JSON", "Save is required", "version 1", "at most 2 KB", "no extra fields", "no account identity or conversation"])
@@ -263,6 +270,38 @@ private final class NetworkTrap: URLProtocol {
                     try require(chat.messages.last?.origin == .local && chat.status == .localGuide, "Pack/preference help changed origin")
                 }
                 try require(calls == 0, "Pack/preference lookup contacted provider")
+            }
+            try await test("named optional-pack offline help distinguishes availability installation cancellation and authority") {
+                var calls = 0
+                let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unexpected provider response" })
+                let before = studio.document
+                let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
+                for question in ["Can I use Micro Roguelike offline?", "Where is Monochrome RPG?",
+                                 "How do I install 1-Bit Characters and Props?", "I cancelled 1-Bit Platformer; are its pictures installed?",
+                                 "Smoke and Explosions says verification failed", "Which packs bring the image library to 2025 pictures?"] {
+                    try require(chat.submit(question,context:context), "Named pack question rejected")
+                    try await idle(chat)
+                    let answer = chat.messages.last!.content
+                    try require(answer.contains("2025 pictures") && answer.contains("Micro Roguelike (160)") &&
+                        answer.contains("Download 178 KB") && answer.contains("Already verified pictures can be used offline") &&
+                        answer.contains("not an installation") && answer.contains("cannot see whether"), "Named pack help omitted actual state boundaries")
+                    try require(!answer.contains("665 total") && !answer.contains("not thousands") && !answer.contains("download complete"),
+                        "Stale pack limitation or invented completion remained")
+                    try require(chat.messages.last?.origin == .local && chat.status == .localGuide && studio.document == before,
+                        "Pack advice used cloud or edited a project")
+                }
+                for (question,expected) in [("Refund my Micro Roguelike purchase", "cannot inspect your billing account"),
+                    ("Publish my Micro Roguelike pictures", "does not publish"),
+                    ("Does Storage count Micro Roguelike downloaded packs?", "are excluded"),
+                    ("Copy my project containing Micro Roguelike", "Duplicate Project"),
+                    ("Export Micro Roguelike to MP4", "MP4 can mix project audio"),
+                    ("Back up my Micro Roguelike project as a .sdiproject backup", "Save Project Backup to Files")] {
+                    try require(chat.submit(question,context:.general), "Pack boundary question rejected")
+                    try await idle(chat)
+                    try require(chat.messages.last!.content.contains(expected), "Pack name bypassed an authority/storage boundary")
+                }
+                try require(calls == 0 && NetworkTrap.count == 0 && SpatterKnowledgeBase.allModules.count == 120,
+                    "Local pack help contacted a provider or changed preserved personality packs")
             }
             try await test("preference help stays out of later cloud history and saved choices remain account scoped") {
                 let store = SpatterPersonalMemoryStore(directory: root.appendingPathComponent("help-preferences"))

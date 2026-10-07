@@ -38,14 +38,15 @@ private func rejects(_ operation: () throws -> Void) throws {
         return bytes
     }
     static func render(_ frame: AnimationFrame, layers: [CanvasLayer], edge: Int = 64,
-                       outerOpacity: Double = 1, transparent: Bool = false) throws -> [UInt8] {
+                       outerOpacity: Double = 1, transparent: Bool = false, rasterSources: [String: Data] = [:]) throws -> [UInt8] {
         let prepared = try StudioFrameRenderer.prepare(frame: frame)
+        let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: layers, sourceData: rasterSources)
         var error: Error?
         let renderer = ImageRenderer(content: Canvas { context, size in
             if !transparent { context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white)) }
             context.opacity = outerOpacity
             error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
-                canvasSize: CGSize(width: 64, height: 64), size: size, preparedBrushes: prepared)
+                canvasSize: CGSize(width: 64, height: 64), size: size, preparedBrushes: prepared, rasterSources: rasterSources, preparedRasters: rasters)
         }.frame(width: CGFloat(edge), height: CGFloat(edge)))
         renderer.scale = 1
         guard let image = renderer.cgImage else { throw Failure(message: "Actual native renderer produced no image") }
@@ -263,6 +264,89 @@ private func rejects(_ operation: () throws -> Void) throws {
             let coldAlphaOpened = await coldAlphaVM.openProject(alphaMetadata); try require(coldAlphaOpened, "Actual alpha paint cold reopen failed")
             try require(coldAlphaVM.currentFrame.elements.last?.preservesLayerAlpha == true && render(coldAlphaVM.currentFrame, layers: coldAlphaVM.document.layers, transparent: true) == alphaPixels, "Actual save/reopen changed alpha-painted pixels")
             print("PASS canonical alpha-lock brush paint changes RGB, preserves transparent/partial coverage, fences unsupported edits, survives schema24/archive/Undo/Redo and real PNG export")
+
+            // Actual imported pixels: transparent exterior, opaque upper region,
+            // and half-alpha lower region. The production importer owns decoding.
+            var pngBytes = [UInt8](repeating: 0, count: 64 * 64 * 4)
+            for y in 12..<52 { for x in 12..<52 {
+                let offset = (y * 64 + x) * 4, alpha: UInt8 = y < 32 ? 255 : 128
+                pngBytes[offset] = alpha; pngBytes[offset + 3] = alpha
+            } }
+            let cg = CGImage(width: 64, height: 64, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 256,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue:
+                    CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                provider: CGDataProvider(data: Data(pngBytes) as CFData)!, decode: nil,
+                shouldInterpolate: false, intent: .defaultIntent)!
+            let png = NSMutableData()
+            let destination = CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, cg, nil)
+            try require(CGImageDestinationFinalize(destination), "Imported alpha fixture PNG encoding")
+            let file = root.appendingPathComponent("alpha-source.png")
+            try (png as Data).write(to: file)
+            let imported = try await StudioImageImportService().importImage(from: file, name: "Alpha source", scratchParent: root)
+            let rasterStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("raster-alpha-documents"))
+            let rasterVM = StudioViewModel(storage: rasterStore)
+            let createdRaster = await rasterVM.createProject(name: "Raster alpha", width: 64, height: 64, fps: 12)
+            try require(createdRaster, "Imported alpha project creation")
+            let rasterID = try rasterVM.attachImportedImage(imported, expectedProjectID: rasterVM.document.id,
+                expectedRevision: rasterVM.document.revision, frameID: rasterVM.document.activeFrameID, layerID: rasterVM.document.activeLayerID)
+            let rasterLayer = rasterVM.currentFrame.rasterLayerID!
+            rasterVM.selectLayer(rasterLayer)
+            let originalSource = rasterVM.originalImageSource(rasterID)
+            let rawBefore = try render(rasterVM.currentFrame, layers: rasterVM.layers, transparent: true,
+                rasterSources: rasterVM.rasterSources(for: rasterVM.currentFrame))
+            let beforeRasterPaint = rasterVM.document
+            var importedPaint = stroke(rasterLayer); importedPaint.color = "#0000FF"; importedPaint.width = 64
+            importedPaint.points = [.init(x: 32, y: 0), .init(x: 32, y: 64)]
+            let typedPaint = StudioCommandStroke(id: importedPaint.id, tool: importedPaint.tool,
+                points: importedPaint.points, color: importedPaint.color, width: Double(importedPaint.width),
+                opacity: importedPaint.opacity, brush: importedPaint.brush)
+            let request = StudioCommandRequest(requestID: UUID(), projectID: rasterVM.document.id,
+                expectedRevision: rasterVM.document.revision, action: .apply([
+                    .updateLayer(.init(layer: .id(rasterLayer), settings: .init(lock: .alpha))),
+                    .draw(.init(frame: .id(rasterVM.document.activeFrameID), layer: .id(rasterLayer), strokes: [typedPaint]))]))
+            _ = try rasterVM.applyStudioCommands(JSONEncoder().encode(request))
+            let paintedFrame = rasterVM.currentFrame
+            let rawAfter = try render(paintedFrame, layers: rasterVM.layers, transparent: true,
+                rasterSources: rasterVM.rasterSources(for: paintedFrame))
+            try require(rawBefore != rawAfter && paintedFrame.elements.last?.preservesLayerAlpha == true,
+                        "Typed alpha painting did not recolor imported coverage")
+            let opaqueCenter = (24 * 64 + 32) * 4, partialCenter = (40 * 64 + 32) * 4
+            for offset in [opaqueCenter, partialCenter] {
+                try require(rawAfter[offset + 2] > rawAfter[offset] && rawAfter[offset + 2] > 60,
+                            "Imported coverage was not painted with the requested blue color")
+            }
+            for offset in stride(from: 0, to: rawBefore.count, by: 4) {
+                try require(abs(Int(rawBefore[offset + 3]) - Int(rawAfter[offset + 3])) <= 1,
+                            "Imported alpha paint changed actual coverage")
+                if rawBefore[offset + 3] == 0 { try require(rawAfter[offset + 3] == 0, "Paint escaped imported transparency") }
+            }
+            rasterVM.undo(); try require(rasterVM.currentFrame == beforeRasterPaint.frames[0], "Typed alpha batch Undo was partial")
+            rasterVM.redo(); try require(rasterVM.currentFrame == paintedFrame, "Typed alpha batch Redo lost paint")
+            rasterVM.setLayerOpacity(rasterLayer, opacity: 0.7)
+            rasterVM.setLayerBlend(rasterLayer, mode: "multiply")
+            rasterVM.setLayerGlow(rasterLayer, enabled: true)
+            rasterVM.setLayerGlowStyle(rasterLayer, color: "#00FF00", radius: 3, strength: 0.5)
+            let styledFrame = rasterVM.currentFrame, styledLayers = rasterVM.layers
+            let styledPixels = try render(styledFrame, layers: styledLayers, rasterSources: rasterVM.rasterSources(for: styledFrame))
+            let unstyledPixels = try render(paintedFrame, layers: beforeRasterPaint.layers,
+                rasterSources: rasterVM.rasterSources(for: paintedFrame))
+            try require(styledPixels != unstyledPixels, "Opacity/blend/glow did not affect imported alpha composite")
+            let exported = try await StudioExportService().export(document: rasterVM.document, format: .pngSequence,
+                outputParent: root, rasterData: { rasterVM.rasterData($0) })
+            let pngSource = CGImageSourceCreateWithURL(exported.imageURLs[0] as CFURL, nil)!
+            try require(pixels(CGImageSourceCreateImageAtIndex(pngSource, 0, nil)!) == styledPixels,
+                        "Imported alpha blend/glow PNG differs from real composite")
+            let savedRaster = await rasterVM.save(); try require(savedRaster, "Imported alpha persistence")
+            let coldRaster = StudioViewModel(storage: rasterStore)
+            let openedRaster = await coldRaster.openProject(try rasterStore.loadAnimation(id: rasterVM.document.id)!.metadata)
+            try require(openedRaster && coldRaster.currentFrame == styledFrame && coldRaster.layers == styledLayers &&
+                coldRaster.originalImageSource(rasterID) == originalSource && coldRaster.rasterData(rasterID) == imported.normalizedPNG &&
+                render(coldRaster.currentFrame, layers: coldRaster.layers,
+                    rasterSources: coldRaster.rasterSources(for: coldRaster.currentFrame)) == styledPixels,
+                "Cold imported alpha paint lost source, appearance or pixels")
+            print("PASS actual imported transparent/partial coverage typed alpha paint one Undo/Redo blend/glow PNG and cold original retention")
+
 
             var halfLayer = CanvasLayer(id: "half", name: "Half"); halfLayer.opacity = 0.5
             let halfStroke = stroke(halfLayer.id, opacity: 0.5)
@@ -487,7 +571,7 @@ private func rejects(_ operation: () throws -> Void) throws {
             print("BRUSH_INTEGRATION_METRICS rapid60Total=\(durations.reduce(0,+))s rapidWorst=\(durations.max() ?? 0)s cachedDocumentValidation=\(validationSeconds)s cacheBytes=\(footprint.bytes)")
             try require((durations.max() ?? 0) < 2 && validationSeconds < 2, "Bounded preparation unexpectedly stalled for seconds")
             print("PASS actual rapid input preparation and full production document validation benchmark")
-            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 16 production groups")
+            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 17 production groups")
         } catch {
             fputs("STUDIO_BRUSH_INTEGRATION_TESTS=FAIL \(error)\n", stderr)
             exit(1)

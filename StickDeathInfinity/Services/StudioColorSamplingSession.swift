@@ -76,7 +76,7 @@ extension StudioViewModel {
         let raster = rasterData(currentFrame.rasterAssetID)
         do {
             let sample = try StudioColorSamplingService.sample(document: snapshot,
-                frameID: captured.frameID, point: point, rasterData: raster)
+                frameID: captured.frameID, point: point, rasterData: raster, rasterDataByID: rasterSources(for: currentFrame))
             guard beginColorSample() == captured else {
                 message = "Studio changed before the color sample was ready. Tap again."
                 return false

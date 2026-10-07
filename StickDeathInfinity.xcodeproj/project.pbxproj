@@ -105,6 +105,8 @@
 		04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */; };
 		7AB2F0DE170F4B7AB035BBE1 /* StudioVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AB2F0DE170F4B7AB035BBE2 /* StudioVoiceSession.swift */; };
 		80DA34133BC549FF810832A1 /* StudioBackgroundCut.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80DA34133BC549FF810832A2 /* StudioBackgroundCut.swift */; };
+		A07199523A38469D81917DA0 /* StudioImageRegionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8706813622A44296A4BCCB5D /* StudioImageRegionService.swift */; };
+		9C1CA8C8062D4D9390B9D72D /* AdminOverviewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 898E6EEDDD66499BA2071D6B /* AdminOverviewModel.swift */; };
 		7E34DF01A5F1E9C233CD945F /* StudioBrush.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */; };
 		6AC1BB20EC1C813B2E328E30 /* StudioBrushRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */; };
 				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */; };
@@ -286,6 +288,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioAudioPreviewSession.swift; sourceTree = SOURCE_ROOT; };
 		7AB2F0DE170F4B7AB035BBE2 /* StudioVoiceSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioVoiceSession.swift; sourceTree = SOURCE_ROOT; };
 		80DA34133BC549FF810832A2 /* StudioBackgroundCut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioBackgroundCut.swift; sourceTree = SOURCE_ROOT; };
+		8706813622A44296A4BCCB5D /* StudioImageRegionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImageRegionService.swift"; sourceTree = SOURCE_ROOT; };
+		898E6EEDDD66499BA2071D6B /* AdminOverviewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/AdminOverviewModel.swift"; sourceTree = SOURCE_ROOT; };
 		8E12BCD26A59C977ECF34ACA /* StudioBrush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Models/StudioBrush.swift; sourceTree = SOURCE_ROOT; };
 		1726C3AA18FB3C0CF058C144 /* StudioBrushRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioBrushRenderer.swift; sourceTree = SOURCE_ROOT; };
 				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioImageImportService.swift; sourceTree = SOURCE_ROOT; };
@@ -486,6 +490,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */,
 				7AB2F0DE170F4B7AB035BBE2 /* StudioVoiceSession.swift */,
 				80DA34133BC549FF810832A2 /* StudioBackgroundCut.swift */,
+				8706813622A44296A4BCCB5D /* StudioImageRegionService.swift */,
+				898E6EEDDD66499BA2071D6B /* AdminOverviewModel.swift */,
 				5DFD1B105C27556D5FED3585 /* StudioImageImportService.swift */,
 				985FABCA23FDE15A222FC2C7 /* StudioVideoFrameImportService.swift */,
 				CA7723B81F084B54A333C012 /* StudioVideoAudioImportService.swift */,
@@ -956,6 +962,8 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */,
 				7AB2F0DE170F4B7AB035BBE1 /* StudioVoiceSession.swift in Sources */,
 				80DA34133BC549FF810832A1 /* StudioBackgroundCut.swift in Sources */,
+				A07199523A38469D81917DA0 /* StudioImageRegionService.swift in Sources */,
+				9C1CA8C8062D4D9390B9D72D /* AdminOverviewModel.swift in Sources */,
 				BC9C71E2C6ADD9CB77935A37 /* StudioImageImportService.swift in Sources */,
 				C0AB2A45BFCE37714E0D8090 /* StudioVideoFrameImportService.swift in Sources */,
 				CA7723B81F084B54A333C011 /* StudioVideoAudioImportService.swift in Sources */,

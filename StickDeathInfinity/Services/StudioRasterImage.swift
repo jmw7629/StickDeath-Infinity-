@@ -15,6 +15,9 @@ enum StudioRasterImage {
         let encoded: Data
         let managed: Bool
         let image: CGImage
+        /// Native normalized dimensions, independent of thumbnail decode size.
+        let sourceWidth: Int
+        let sourceHeight: Int
     }
     private struct Entry { let prepared: Prepared; let cost: Int; var used: UInt64 }
     private static let lock = NSLock()
@@ -80,7 +83,7 @@ enum StudioRasterImage {
                   let removed = entries.removeValue(forKey: oldest) else { break }
             bytes -= removed.cost
         }
-        let prepared = Prepared(assetID: assetID, encoded: data, managed: managed, image: image)
+        let prepared = Prepared(assetID: assetID, encoded: data, managed: managed, image: image, sourceWidth: width, sourceHeight: height)
         entries[key] = Entry(prepared: prepared, cost: cost, used: clock); bytes += cost
         return prepared
     }

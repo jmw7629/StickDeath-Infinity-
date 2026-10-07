@@ -34,8 +34,8 @@ struct StudioView: View {
             Text("Only this frame's selected picture will be removed. Its layer and drawings stay. Undo restores the picture.")
         }
         .task {
-            vm.projectThumbnailRenderer = { document, raster in
-                try StudioExportService().projectThumbnail(document: document, raster: raster)
+            vm.projectThumbnailSourcesRenderer = { document, sources in
+                try StudioExportService().projectThumbnail(document: document, raster: nil, rasterDataByID: sources)
             }
             await vm.loadProjects()
         }
@@ -293,21 +293,21 @@ struct StudioBottomBar: View {
             BottomBarButton(icon: "doc.on.doc", label: "COPY", enabled: vm.canCopyBottomSelection) { vm.copyBottomSelection() }
                 .accessibilityIdentifier("studio.copy")
                 .accessibilityLabel(vm.bottomCopyLabel)
-                .accessibilityHint(vm.bottomImageSelection != nil
-                    ? "Copies only the selected image. Paste adds it to a blank frame."
+                .accessibilityHint(vm.hasMixedArtworkSelection ? "Copies the selected drawings and image together, preserving their relative positions." : vm.bottomImageSelection != nil
+                    ? "Copies only the selected image. Paste adds a separate image layer."
                     : vm.selectedElementIDs.isEmpty ? "Copies the current frame. Select artwork to copy only those drawings."
                     : "Copies only selected artwork. Paste adds it to the active layer.")
             BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) { vm.pasteClipboard() }
                 .accessibilityIdentifier("studio.paste")
                 .accessibilityLabel(vm.bottomPasteLabel)
-                .accessibilityHint(vm.usesImageClipboard ? "Images paste into a blank frame on an unlocked layer. Existing images are not replaced." : "Pastes the most recently copied frame or drawings.")
+                .accessibilityHint(vm.usesImageClipboard ? "Pastes copied images or artwork on new layers in an editable frame. Existing images are not replaced." : "Pastes the most recently copied frame or drawings.")
             BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected || vm.bottomImageSelection != nil) {
                 if let capture = vm.bottomImageSelection {
                     onImageDelete(capture)
                 } else { vm.deleteSelected() }
             }
             .accessibilityIdentifier("studio.delete-selection")
-            .accessibilityLabel(vm.bottomImageSelection == nil ? "Delete selected drawings" : "Delete selected image")
+            .accessibilityLabel(vm.hasMixedArtworkSelection ? "Delete selected drawings and image" : vm.bottomImageSelection == nil ? "Delete selected drawings" : "Delete selected image")
 
             // Layer (with red badge)
             Button(action: {
@@ -504,9 +504,6 @@ struct BackgroundLibraryPanel: View {
         guard vm.isEditing, !vm.isSaving, !vm.isPlaying, vm.activeStrokeID == nil,
               vm.pendingBrushStroke == nil, vm.textDraft == nil, scenePhase == .active else {
             notice = "Finish saving, playback and any drawing or text draft before adding a background."; return
-        }
-        guard vm.currentFrame.rasterAssetID == nil else {
-            notice = "This frame already has an original image. Add a blank frame first; nothing was replaced."; return
         }
         let document = vm.document, account = authVM.userId, token = UUID()
         requestID = token; notice = nil
@@ -998,10 +995,13 @@ struct MagicCutSheet: View {
     @State private var isProcessing = false
     @State private var task: Task<Void, Never>?
     @State private var token = UUID()
+    @State private var workerOwner: UUID?
     @State private var confirmAll = false
 
     private func cancel() {
-        token = UUID(); task?.cancel(); task = nil; isProcessing = false
+        token = UUID(); task?.cancel()
+        // Keep busy ownership until the detached decoder has actually returned.
+        if workerOwner == nil { task = nil; isProcessing = false }
         replacements = [:]; preview = nil; capture = nil; notice = nil; confirmAll = false
     }
     private var current: Bool {
@@ -1010,6 +1010,7 @@ struct MagicCutSheet: View {
             && (try? vm.prepareImageCut(allFrames: allFrames)) == capture
     }
     private func generate() {
+        guard workerOwner == nil else { return }
         cancel(); vm.stopPlayback()
         guard scenePhase == .active else { return }
         do {
@@ -1029,16 +1030,17 @@ struct MagicCutSheet: View {
             let threshold = Int(tolerance.rounded()), request = token
             let previewID = target.assetsByFrame[vm.currentFrame.id] ?? inputs.keys.sorted().first!
             capture = target; accountID = authVM.userId; isProcessing = true
-            let immutableInputs = inputs
+            let immutableInputs = inputs, owner = UUID()
+            workerOwner = owner
             task = Task {
-                let worker = Task.detached(priority: .userInitiated) { () throws -> [String: StudioBackgroundCut.Result] in
-                    var results: [String: StudioBackgroundCut.Result] = [:]
-                    for id in immutableInputs.keys.sorted() {
-                        try Task.checkCancellation()
-                        results[id] = try StudioBackgroundCut.remove(from: immutableInputs[id]!, red: red,
-                            green: green, blue: blue, tolerance: threshold)
+                defer {
+                    if workerOwner == owner {
+                        workerOwner = nil; task = nil; isProcessing = false
                     }
-                    return results
+                }
+                let worker = Task.detached(priority: .userInitiated) {
+                    try await StudioBackgroundCut.removeBatch(from: immutableInputs, red: red,
+                        green: green, blue: blue, tolerance: threshold)
                 }
                 do {
                     let results = try await withTaskCancellationHandler(operation: { try await worker.value },
@@ -1050,10 +1052,9 @@ struct MagicCutSheet: View {
                     let changed = target.assetsByFrame.values.filter { replacements[$0] != nil }.count
                     notice = changed == 0 ? "No matching edge-connected background found. Nothing changed."
                         : "Preview ready · \(changed) frame(s). Apply changes all affected frames in one Undo step."
-                    isProcessing = false; task = nil
                 } catch {
                     guard token == request else { return }
-                    isProcessing = false; replacements = [:]; preview = nil; task = nil
+                    replacements = [:]; preview = nil
                     notice = error is CancellationError ? "Cancelled. The project is unchanged." : error.localizedDescription
                 }
             }
@@ -1079,7 +1080,7 @@ struct MagicCutSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Edge-connected color removal").font(.headline)
-                        Text("Removes the chosen background color from the original imported image's edges. All linked image copies in the chosen frames are updated together. Enclosed areas, drawing layers and original files are preserved. This is color-based removal, not AI subject recognition.")
+                        Text("Removes the chosen color from the imported image's edges. When a frame has different images, select the image layer to cut. Linked copies of that source update together; other images, enclosed areas, drawings and original files stay unchanged. This is color-based removal, not AI subject recognition.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                         Picker("Scope", selection: $allFrames) {
                             Text("Current frame").tag(false)
@@ -1108,7 +1109,7 @@ struct MagicCutSheet: View {
                             }.frame(height: 200).clipped().accessibilityLabel("Background removal preview")
                         }
                         if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.cut.notice") }
-                        Text("Limit: 64 image frames, 16 distinct images / 16 megapixels per batch; 4 megapixels per image. Hidden or locked image layers must be shown and unlocked first.")
+                        Text("Limit: 64 image frames, 16 selected sources / 16 megapixels per batch; 4 megapixels per image. Show and unlock the selected source’s linked layers. All imported frames requires the selected image layer in each frame containing different sources.")
                             .font(.caption2).foregroundColor(.white.opacity(0.6))
                     }
                 }

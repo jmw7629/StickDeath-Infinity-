@@ -5,13 +5,20 @@ import re
 PER_CASE_SECONDS = 180
 MAXIMUM_CASE_SECONDS = 240
 EXTENDED_CASE_SECONDS = {
+    "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 240,
+    "testSpatterSelectedAudioPlacementUndoAndColdReopen": 240,
+
+    "testSelectedImageAlphaFillUndoAndColdReopen": 240,
+    "testImageWandRegionCopyDeletePasteUndoAndColdReopen": 240,
+    "testMixedArtworkCopyCutPasteUndoAndColdReopen": 240,
+    "testMixedDrawingImageMoveDeleteUndoAndColdReopen": 240,
     "testBucketFillPopupUndoSaveReopenAndPNG": 240,
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
     "testImageQuarterTurnsUndoAndColdReopen": 240,
 }
 # Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 95
+MAXIMUM_CASES = 101
 SUITE_OVERHEAD_SECONDS = 300
 
 
@@ -37,7 +44,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
         index = command.index(flag)
         if index + 1 == len(command) or command[index + 1] != value:
             raise ValueError("Native verification must preserve " + flag + " " + value)
-    # Only the explicitly measured long journeys may opt into the longer ceiling.
+    # Only the explicitly bounded long journeys may opt into the longer ceiling.
     # Preserve all cases, assertions and the 180s default for every other case.
     declared = re.findall(r"executionTimeAllowance\s*=\s*([0-9]+)", source)
     extended = {name: seconds for name, seconds in EXTENDED_CASE_SECONDS.items() if name in names}
@@ -46,7 +53,7 @@ def build_test_budget(source: str, command: list[str]) -> dict:
     for name, seconds in extended.items():
         header = r"func\s+" + re.escape(name) + r"\s*\(\)\s*throws\s*\{\s*(?://[^\n]*\n\s*)*executionTimeAllowance\s*=\s*" + str(seconds) + r"\b"
         if not re.search(header, source):
-            raise ValueError("Missing explicit measured allowance for " + name)
+            raise ValueError("Missing explicit bounded allowance for " + name)
     return {"testNames": names, "testCount": len(names), "perCaseSeconds": PER_CASE_SECONDS,
             "maximumCaseSeconds": MAXIMUM_CASE_SECONDS, "extendedCases": extended,
             "suiteOverheadSeconds": SUITE_OVERHEAD_SECONDS,

@@ -13,6 +13,8 @@ struct StudioFillContext: Equatable {
     let settings: StudioFillRegion.Settings
     let sampleAllLayers: Bool
     let selectedElementIDs: Set<String>
+    var selectedImageLayerID: String? = nil
+    var selectedImageSelectionID: UUID? = nil
 
     @MainActor static func current(_ vm: StudioViewModel, ownedStroke: String? = nil) -> Self? {
         guard vm.isEditing, !vm.isPlaying, vm.selectedTool == .fill,
@@ -22,6 +24,7 @@ struct StudioFillContext: Equatable {
               vm.fillGapClose.isFinite, (0...5).contains(vm.fillGapClose),
               let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible,
               !layer.isFullyLocked, ["free", "position"].contains(layer.lockMode) else { return nil }
+        guard !vm.hasFillImageTarget || (vm.fillImageLayerID != nil && vm.selectedElementIDs.isEmpty) else { return nil }
         let opacity = vm.capturedStrokeOpacity
         guard opacity.isFinite, (0...1).contains(opacity) else { return nil }
         return Self(projectID: vm.document.id, revision: vm.document.revision,
@@ -29,7 +32,8 @@ struct StudioFillContext: Equatable {
             width: vm.canvasWidth, height: vm.canvasHeight, color: vm.strokeColorHex, opacity: opacity,
             settings: .init(tolerance: Int(vm.fillTolerance.rounded()), contiguous: vm.fillContiguous,
                 expand: Int(vm.fillExpand.rounded()), gapClose: vm.fillContiguous ? Int(vm.fillGapClose.rounded()) : 0,
-                antiAlias: vm.fillAntiAlias), sampleAllLayers: vm.fillSampleAll, selectedElementIDs: vm.selectedElementIDs)
+                antiAlias: vm.fillAntiAlias), sampleAllLayers: vm.fillSampleAll, selectedElementIDs: vm.selectedElementIDs,
+            selectedImageLayerID: vm.fillImageLayerID, selectedImageSelectionID: vm.fillImageSelectionID)
     }
 }
 
@@ -92,7 +96,7 @@ final class StudioFillSession: ObservableObject {
                 frameID: context.frameID, layerID: context.layerID, point: point,
                 color: context.color, opacity: context.opacity, settings: context.settings,
                 sampleAllLayers: context.sampleAllLayers, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID),
-                selectedElementIDs: context.selectedElementIDs)
+                rasterDataByID: vm.rasterSources(for: vm.currentFrame), selectedElementIDs: context.selectedElementIDs, selectedImageLayerID: context.selectedImageLayerID)
             let worker = Task.detached(priority: .userInitiated) {
                 try StudioFillService.element(from: captured, id: id)
             }
@@ -106,7 +110,7 @@ final class StudioFillSession: ObservableObject {
             }
             let committed = vm.commitElement(element, frameID: context.frameID)
             if committed {
-                vm.message = context.selectedElementIDs.isEmpty ? "Filled the tapped canvas region."
+                vm.message = context.selectedImageLayerID != nil ? "Added paint within the selected image alpha. Original image bytes remain unchanged." : context.selectedElementIDs.isEmpty ? "Filled the tapped canvas region."
                     : "Added paint on the active layer within selected artwork coverage. Original drawings remain unchanged."
             }
             return committed

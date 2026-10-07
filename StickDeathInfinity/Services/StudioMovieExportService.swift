@@ -600,7 +600,7 @@ final class StudioMovieExportService {
                 try confirmOwnership()
                 try autoreleasepool {
                     try checkpoint(started)
-                    let image = try render(frame, document: document, raster: frame.rasterAssetID.flatMap { snapshot.rasterDataByID[$0] })
+                    let image = try render(frame, document: document, rasterDataByID: snapshot.rasterDataByID)
                     try draw(image, into: buffer)
                     if formatDescription == nil {
                         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer,
@@ -745,8 +745,8 @@ final class StudioMovieExportService {
                 }
             }
         }
-        let references = Set(document.frames.compactMap(\.rasterAssetID))
-        guard snapshot.rasterDataByID.count <= limits.maximumFrames else { throw ExportError.limitExceeded }
+        let references = document.referencedRasterAssetIDs
+        guard snapshot.rasterDataByID.count <= limits.maximumFrames, references.count <= limits.maximumFrames else { throw ExportError.limitExceeded }
         var bytes = 0
         for (id, data) in snapshot.rasterDataByID {
             guard !id.isEmpty, id.utf8.count <= 1024, data.count <= limits.maximumRasterBytes - bytes else { throw ExportError.limitExceeded }
@@ -754,7 +754,8 @@ final class StudioMovieExportService {
         }
         // Even a hidden referenced raster must exist and decode; exporting must
         // never turn a lost original into an apparently successful empty layer.
-        for id in references {
+        var totalRasterPixels = 0
+        for id in references.sorted() {
             try Task.checkCancellation()
             guard let data = snapshot.rasterDataByID[id] else { throw ExportError.missingRaster }
             try autoreleasepool {
@@ -764,7 +765,9 @@ final class StudioMovieExportService {
                       let width = properties[kCGImagePropertyPixelWidth] as? Int,
                       let height = properties[kCGImagePropertyPixelHeight] as? Int,
                       width > 0, height > 0, width <= 8192, height <= 8192 else { throw ExportError.invalidRaster }
-                guard width * height <= limits.maximumRasterPixels else { throw ExportError.limitExceeded }
+                guard width * height <= limits.maximumRasterPixels,
+                      width * height <= 32 * 1024 * 1024 - totalRasterPixels else { throw ExportError.limitExceeded }
+                totalRasterPixels += width * height
                 guard CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) != nil,
                       CGImageSourceGetStatus(source) == .statusComplete,
                       CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
@@ -773,15 +776,16 @@ final class StudioMovieExportService {
         }
     }
 
-    private func render(_ frame: AnimationFrame, document: StudioDocument, raster: Data?) throws -> CGImage {
+    private func render(_ frame: AnimationFrame, document: StudioDocument, rasterDataByID: [String: Data]) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
-        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size, rasterData: raster)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size, rasterData: nil, rasterDataByID: rasterDataByID)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes, preparedSmudges: smudges)
+                canvasSize: size, size: actual, preparedBrushes: brushes, preparedSmudges: smudges,
+                rasterSources: rasterDataByID)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas); renderer.scale = 1; renderer.isOpaque = true
         guard let image = renderer.cgImage, image.width == document.width, image.height == document.height else { throw ExportError.renderFailed }

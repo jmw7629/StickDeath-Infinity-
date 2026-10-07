@@ -37,7 +37,7 @@ enum StudioFillService {
     static func capture(document: StudioDocument, frameID: String, layerID: String,
                         point: CGPoint, color: String, opacity: Double,
                         settings: StudioFillRegion.Settings, sampleAllLayers: Bool,
-                        rasterData: Data? = nil, selectedElementIDs: Set<String> = []) throws -> Capture {
+                        rasterData: Data? = nil, rasterDataByID: [String: Data] = [:], selectedElementIDs: Set<String> = [], selectedImageLayerID: String? = nil) throws -> Capture {
         try Task.checkCancellation()
         guard (16...4096).contains(document.width), (16...4096).contains(document.height),
               document.width <= StudioFillRegion.maximumPixels / document.height else { throw Failure.limit }
@@ -53,17 +53,22 @@ enum StudioFillService {
         guard let frame = document.frames.first(where: { $0.id == frameID }),
               let target = document.layers.first(where: { $0.id == layerID }), target.visible,
               !target.isFullyLocked, ["free", "position"].contains(target.lockMode) else { throw Failure.unavailable }
-        let coverage = try selectionCoverage(document: document, frame: frame, selectedIDs: selectedElementIDs)
+        guard selectedImageLayerID == nil || selectedImageLayerID == layerID else { throw Failure.selection }
         let layers = sampleAllLayers ? document.layers : [target]
-        let needsRaster = !frame.visibleRasterInstances(in: layers).isEmpty
-        if needsRaster && rasterData == nil { throw Failure.missingRaster }
+        let sources = try StudioFrameRenderer.resolvedRasterSources(frame: frame, legacyData: rasterData, sources: rasterDataByID)
+        let coverage = try selectionCoverage(document: document, frame: frame, selectedIDs: selectedElementIDs, imageLayerID: selectedImageLayerID, sources: sources)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
-        let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: layers,
-            data: needsRaster ? rasterData : nil, maximumDimension: 8192)
-        if needsRaster && image == nil { throw Failure.missingRaster }
+        for instance in frame.visibleRasterInstances(in: layers) {
+            guard let id = frame.rasterAssetID(on: instance.layerID), sources[id] != nil else { throw Failure.missingRaster }
+        }
+        let images = try StudioFrameRenderer.prepareRasters(frame: frame, layers: layers,
+            sourceData: sources, maximumDimension: 8192)
+        for instance in frame.visibleRasterInstances(in: layers) {
+            guard let id = frame.rasterAssetID(on: instance.layerID), sources[id] != nil, images[id] != nil else { throw Failure.missingRaster }
+        }
         let size = CGSize(width: document.width, height: document.height)
         let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: layers, canvasSize: size,
-            rasterData: needsRaster ? rasterData : nil)
+            rasterData: rasterData, rasterDataByID: sources)
         var failure: Error?
         let canvas = Canvas { context, actual in
             // The current layer keeps its transparent pixels distinct from
@@ -72,8 +77,8 @@ enum StudioFillService {
                 context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             }
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
-                canvasSize: size, size: actual, rasterData: needsRaster ? rasterData : nil,
-                preparedBrushes: brushes, preparedRaster: image, preparedSmudges: smudges)
+                canvasSize: size, size: actual, rasterData: rasterData,
+                preparedBrushes: brushes, preparedSmudges: smudges, rasterSources: sources, preparedRasters: images)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas)
         renderer.scale = 1; renderer.isOpaque = sampleAllLayers
@@ -112,12 +117,13 @@ enum StudioFillService {
     /// paint layer, not to selection clipping. No raster or bounding-box proxy.
     @MainActor
     private static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
-                                          selectedIDs: Set<String>) throws -> Data? {
-        guard !selectedIDs.isEmpty else { return nil }
+                                          selectedIDs: Set<String>, imageLayerID: String? = nil, sources: [String: Data] = [:]) throws -> Data? {
+        guard !selectedIDs.isEmpty || imageLayerID != nil else { return nil }
+        guard imageLayerID == nil || selectedIDs.isEmpty else { throw Failure.selection }
         guard selectedIDs.count <= 1024 else { throw Failure.selection }
         let elements = frame.elements.filter { selectedIDs.contains($0.id) }
         guard elements.count == selectedIDs.count else { throw Failure.selection }
-        let owners = Set(elements.compactMap(\.layerID))
+        let owners = imageLayerID.map { Set([$0]) } ?? Set(elements.compactMap(\.layerID))
         var layers = document.layers.filter { owners.contains($0.id) }
         guard layers.count == owners.count, elements.allSatisfy({ element in
             [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle, .text, .fill].contains(element.tool)
@@ -133,13 +139,20 @@ enum StudioFillService {
             layers[index].opacity = 1; layers[index].blendMode = "normal"; layers[index].glowEnabled = false
         }
         try Task.checkCancellation()
-        let isolated = AnimationFrame(id: frame.id, elements: elements)
+        var isolated = AnimationFrame(id: frame.id, elements: elements)
+        if let imageLayerID {
+            guard let instance = frame.rasterInstance(on: imageLayerID), instance.placement != nil,
+                  let sourceID = frame.rasterAssetID(on: imageLayerID), sources[sourceID] != nil,
+                  let projected = frame.projectedRasterFrame(on: imageLayerID) else { throw Failure.missingRaster }
+            isolated = projected; isolated.elements = []
+        }
+        let images = try StudioFrameRenderer.prepareRasters(frame: isolated, layers: layers, sourceData: sources, maximumDimension: 8192)
         let prepared = try StudioFrameRenderer.prepare(frame: isolated)
         let size = CGSize(width: document.width, height: document.height)
         var failure: Error?
         let renderer = ImageRenderer(content: Canvas { context, actual in
             failure = StudioFrameRenderer.draw(context: &context, frame: isolated, layers: layers,
-                canvasSize: size, size: actual, preparedBrushes: prepared)
+                canvasSize: size, size: actual, preparedBrushes: prepared, rasterSources: sources, preparedRasters: images)
         }.frame(width: size.width, height: size.height))
         renderer.scale = 1; renderer.isOpaque = false
         guard let image = renderer.cgImage, image.width == document.width, image.height == document.height,

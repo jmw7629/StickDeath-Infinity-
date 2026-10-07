@@ -2,10 +2,16 @@ import SwiftUI
 import WebKit
 
 // MARK: - Admin Dashboard (Superuser Only)
+@MainActor
 struct AdminDashboardView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var selectedTab = "dashboard"
-    @State private var stats = AdminStats()
+    @StateObject private var overview: AdminOverviewModel
+
+    init(overview: AdminOverviewModel? = nil) {
+        _overview = StateObject(wrappedValue: overview ?? AdminOverviewModel())
+    }
     @State private var showSpatterAdmin = false
     
     let tabs: [(id: String, icon: String, label: String)] = [
@@ -45,11 +51,11 @@ struct AdminDashboardView: View {
                     // Live indicator
                     HStack(spacing: 4) {
                         Circle()
-                            .fill(Color.green)
+                            .fill(Color.gray)
                             .frame(width: 6, height: 6)
-                        Text("LIVE")
+                        Text("READ ONLY")
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundColor(.green)
+                            .foregroundColor(.gray)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -85,7 +91,7 @@ struct AdminDashboardView: View {
                     VStack(spacing: 12) {
                         switch selectedTab {
                         case "dashboard":
-                            AdminDashboardContent(stats: stats)
+                            AdminDashboardContent(state: overview.state)
                         case "users":
                             AdminUsersContent()
                         case "content":
@@ -112,69 +118,49 @@ struct AdminDashboardView: View {
                 }
             }
         }
+        .task(id: "\(scenePhase == .active)-\(authVM.isAuthenticated)-\(authVM.userId ?? "none")-\(authVM.isSuperAdmin)") {
+            guard scenePhase == .active else { overview.invalidate(); return }
+            await overview.refresh(accountID: authVM.isAuthenticated ? authVM.userId : nil)
+        }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { overview.invalidate() } }
+        .onDisappear { overview.invalidate() }
     }
 }
 
-// MARK: - Admin Stats
-struct AdminStats {
-    var totalUsers = 1247
-    var activeToday = 89
-    var totalAnimations = 4521
-    var totalRevenue = 12450.00
-    var pendingReports = 3
-    var aiQueriesDay = 892
-}
-
-// MARK: - Dashboard Content
+// MARK: - Read-only verified overview
 struct AdminDashboardContent: View {
-    let stats: AdminStats
-    
+    let state: AdminOverviewModel.State
+    private var snapshot: AdminOverviewSnapshot? {
+        if case .data(let value) = state { return value }; return nil
+    }
+    private func count(_ key: KeyPath<AdminOverviewSnapshot, Int>) -> String {
+        snapshot.map { String($0[keyPath: key]) } ?? "—"
+    }
     var body: some View {
         VStack(spacing: 12) {
-            // Stat cards
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                AdminStatCard(icon: "person.2.fill", label: "Total Users", value: "\(stats.totalUsers)", color: "3B82F6")
-                AdminStatCard(icon: "person.fill.checkmark", label: "Active Today", value: "\(stats.activeToday)", color: "10B981")
-                AdminStatCard(icon: "film.fill", label: "Animations", value: "\(stats.totalAnimations)", color: "8B5CF6")
-                AdminStatCard(icon: "dollarsign.circle.fill", label: "Revenue", value: "$\(String(format: "%.0f", stats.totalRevenue))", color: "F59E0B")
-                AdminStatCard(icon: "exclamationmark.shield.fill", label: "Reports", value: "\(stats.pendingReports)", color: "EF4444")
-                AdminStatCard(icon: "brain", label: "AI Queries/Day", value: "\(stats.aiQueriesDay)", color: "EC4899")
+                AdminStatCard(icon: "person.2.fill", label: "Total Users", value: count(\.totalUsers), color: "3B82F6")
+                AdminStatCard(icon: "person.fill.checkmark", label: "Active Today", value: count(\.activeToday), color: "10B981")
+                AdminStatCard(icon: "film.fill", label: "Animations", value: count(\.totalAnimations), color: "8B5CF6")
+                AdminStatCard(icon: "dollarsign.circle.fill", label: "Revenue (USD)", value: snapshot.map { String(format: "$%.2f", Double($0.revenueMinorUnits) / 100) } ?? "—", color: "F59E0B")
+                AdminStatCard(icon: "exclamationmark.shield.fill", label: "Reports", value: count(\.pendingReports), color: "EF4444")
+                AdminStatCard(icon: "brain", label: "AI Queries/Day", value: count(\.aiQueriesDay), color: "EC4899")
             }
-            
-            // Recent activity
             VStack(alignment: .leading, spacing: 8) {
-                Text("RECENT ACTIVITY")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.3))
-                    .tracking(2)
-                
-                ForEach(0..<5, id: \.self) { i in
-                    let activities = [
-                        ("StickNinja99 joined", "person.fill.badge.plus", "2m ago"),
-                        ("New animation: 'Last Stand'", "film.fill", "5m ago"),
-                        ("Creator plan purchased", "creditcard.fill", "12m ago"),
-                        ("Report: spam content", "flag.fill", "18m ago"),
-                        ("Challenge 'Speed Demon' ended", "trophy.fill", "30m ago"),
-                    ]
-                    HStack(spacing: 10) {
-                        Image(systemName: activities[i].1)
-                            .font(.system(size: 11))
-                            .foregroundColor(.red)
-                            .frame(width: 24)
-                        Text(activities[i].0)
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.7))
-                        Spacer()
-                        Text(activities[i].2)
-                            .font(.system(size: 9))
-                            .foregroundColor(.white.opacity(0.3))
-                    }
-                    .padding(.vertical, 4)
+                Text("DATA STATUS").font(.system(size: 10, weight: .bold, design: .monospaced))
+                switch state {
+                case .loading: ProgressView("Loading verified admin data…")
+                case .unavailable(let message), .failed(let message): Text(message)
+                case .data(let value):
+                    Text("Snapshot: " + value.measuredAt.formatted(date: .abbreviated, time: .standard))
                 }
+                Text("Recent activity is not connected.")
+                    .foregroundColor(.white.opacity(0.4))
             }
-            .padding(12)
-            .background(Color(hex: "12121A"))
-            .cornerRadius(12)
+            .font(.system(size: 11)).foregroundColor(.white.opacity(0.7))
+            .frame(maxWidth: .infinity, alignment: .leading).padding(12)
+            .background(Color(hex: "12121A")).cornerRadius(12)
+            .accessibilityIdentifier("admin.overview.status")
         }
     }
 }

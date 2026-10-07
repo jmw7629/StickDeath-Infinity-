@@ -19,19 +19,20 @@ enum StudioSmudgeReplay {
         fileprivate let layers: [CanvasLayer]
         fileprivate let canvasSize: CGSize
         fileprivate let rasterData: Data?
+        fileprivate let rasterDataByID: [String: Data]
         fileprivate let liveElement: DrawnElement?
         let images: [String: CGImage]
 
         fileprivate func matches(frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
-                                 rasterData: Data?, liveElement: DrawnElement?) -> Bool {
+                                 rasterData: Data?, rasterDataByID: [String: Data] = [:], liveElement: DrawnElement?) -> Bool {
             self.frame == frame && self.layers == layers && self.canvasSize == canvasSize
-                && self.rasterData == rasterData && self.liveElement == liveElement
+                && self.rasterData == rasterData && self.rasterDataByID == rasterDataByID && self.liveElement == liveElement
         }
 
         func validate(frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
-                      rasterData: Data?, liveElement: DrawnElement?) throws {
+                      rasterData: Data?, rasterDataByID: [String: Data] = [:], liveElement: DrawnElement?) throws {
             guard matches(frame: frame, layers: layers, canvasSize: canvasSize,
-                          rasterData: rasterData, liveElement: liveElement) else { throw Failure.stale }
+                          rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement) else { throw Failure.stale }
         }
     }
 
@@ -59,12 +60,12 @@ enum StudioSmudgeReplay {
         }
 
         func prepare(frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
-                     rasterData: Data?, liveElement: DrawnElement? = nil,
+                     rasterData: Data?, rasterDataByID: [String: Data] = [:], liveElement: DrawnElement? = nil,
                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Prepared {
             try checkCancellation()
             if let index = entries.firstIndex(where: {
                 $0.value.matches(frame: frame, layers: layers, canvasSize: canvasSize,
-                                 rasterData: rasterData, liveElement: liveElement)
+                                 rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement)
             }) {
                 try checkCancellation()
                 let hit = entries.remove(at: index)
@@ -75,11 +76,16 @@ enum StudioSmudgeReplay {
             // IDs/revisions alone is insufficient: artwork, layer settings,
             // canvas dimensions, imported bytes and live input must all match.
             let value = try StudioSmudgeReplay.prepare(frame: frame, layers: layers,
-                canvasSize: canvasSize, rasterData: rasterData, liveElement: liveElement,
+                canvasSize: canvasSize, rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement,
                 checkCancellation: checkCancellation)
             try checkCancellation()
             guard maximumEntries > 0, !value.images.isEmpty else { return value }
             var cost = rasterData?.count ?? 0
+            for (id, data) in rasterDataByID where id != frame.rasterAssetID || rasterData == nil {
+                let total = cost.addingReportingOverflow(data.count)
+                guard !total.overflow else { return value }
+                cost = total.partialValue
+            }
             for image in value.images.values {
                 let bytes = image.bytesPerRow.multipliedReportingOverflow(by: image.height)
                 guard !bytes.overflow else { return value }
@@ -100,7 +106,7 @@ enum StudioSmudgeReplay {
     }
     @MainActor
     static func prepare(frame: AnimationFrame, layers: [CanvasLayer], canvasSize: CGSize,
-                        rasterData: Data?, liveElement: DrawnElement? = nil,
+                        rasterData: Data?, rasterDataByID: [String: Data] = [:], liveElement: DrawnElement? = nil,
                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Prepared {
         try checkCancellation()
         var complete = frame
@@ -115,7 +121,8 @@ enum StudioSmudgeReplay {
                   Set(layers.map(\.id)).count == layers.count else { throw Failure.render }
             let width = Int(canvasSize.width), height = Int(canvasSize.height)
             try StudioSmudgeDescriptor.validateFrame(complete, width: width, height: height)
-            let raster = try StudioFrameRenderer.prepareRaster(frame: frame, layers: layers, data: rasterData)
+            let sources = try StudioFrameRenderer.resolvedRasterSources(frame: frame, legacyData: rasterData, sources: rasterDataByID)
+            let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: layers, sourceData: sources)
             // A caller may render one explicitly scoped layer (bucket fill or
             // color capture). Other frame layers remain editable but excluded.
             for layer in layers where layer.visible && layer.opacity > 0 {
@@ -127,7 +134,7 @@ enum StudioSmudgeReplay {
                     try checkCancellation()
                     guard element.hasPixelEffect else { prefix.elements.append(element); continue }
                     let source = try renderPrefix(prefix, layer: layer, canvasSize: canvasSize,
-                                                  raster: raster, base: base)
+                                                  rasters: rasters, base: base)
                     let original = try pixels(source)
                     let changed: StudioSmudge.Pixels
                     if let descriptor = element.smudge {
@@ -160,17 +167,17 @@ enum StudioSmudgeReplay {
         }
         try checkCancellation()
         return Prepared(frame: frame, layers: layers, canvasSize: canvasSize,
-                        rasterData: rasterData, liveElement: liveElement, images: images)
+                        rasterData: rasterData, rasterDataByID: rasterDataByID, liveElement: liveElement, images: images)
     }
 
     @MainActor
     private static func renderPrefix(_ frame: AnimationFrame, layer: CanvasLayer, canvasSize: CGSize,
-                                     raster: StudioRasterImage.Prepared?, base: CGImage?) throws -> CGImage {
+                                     rasters: [String: StudioRasterImage.Prepared], base: CGImage?) throws -> CGImage {
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         var failure: Error?
         let content = Canvas { context, size in
             failure = StudioFrameRenderer.drawRawLayer(context: &context, frame: frame, layer: layer,
-                canvasSize: canvasSize, size: size, preparedBrushes: brushes, preparedRaster: raster, baseImage: base)
+                canvasSize: canvasSize, size: size, preparedBrushes: brushes, preparedRaster: nil, baseImage: base, preparedRasters: rasters)
         }.frame(width: canvasSize.width, height: canvasSize.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1; renderer.isOpaque = false
