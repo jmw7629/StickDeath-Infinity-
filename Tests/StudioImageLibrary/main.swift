@@ -793,6 +793,94 @@ private final class NetworkTrap: URLProtocol {
             await session.waitForCompletion()
             try require(session.status == .failed && session.preview == nil && editor.document == before, "Corrupt asset exposed or attached")
         }
+        try await test("trusted release update rejects pending Add without changing the project") {
+            let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+            let local = try StudioImageCatalogue(directory: source, releasePolicy: policy)
+            let (editor, _) = try await fixture(), pending = try await prepare(editor, local)
+            let before = editor.document
+            try policy.advance(revision: 2, quarantined: [.init(assetID: item.id, sha256: item.sha256, reason: "Isolated test review")])
+            try require(!pending.apply(currentScope: scope) && editor.document == before && pending.appliedImage == nil,
+                "Pending quarantined preview modified document")
+        }
+        try await test("actual saved project survives catalogue removal and trusted version quarantine offline") {
+            let copy = root.appendingPathComponent("removable-library")
+            try fm.copyItem(at: source, to: copy)
+            let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+            let local = try StudioImageCatalogue(directory: copy, releasePolicy: policy)
+            let (editor, storage) = try await fixture(), selected = try await prepare(editor, local)
+            try require(selected.apply(currentScope: scope), "Initial Add failed")
+            let assetID = selected.appliedImage!.assetID, pixels = try await exported(editor)
+            try require(await editor.save(), "Actual save failed")
+            try policy.advance(revision: 2, quarantined: [.init(assetID: item.id, sha256: item.sha256, reason: "Isolated test review")])
+            try fm.removeItem(at: copy)
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Cold reopen depended on removed library")
+            try require(reopened.originalImageSource(assetID)?.originalData == original
+                && reopened.originalImageSource(assetID)?.catalogueAttribution == provenance,
+                "Removal or policy update modified saved originals/rights")
+            try require(try await exported(reopened) == pixels, "Offline reopened export changed")
+            try require(NetworkTrap.count == 0, "Offline policy/reopen requested network")
+        }
+        try await test("queued concurrent policy update cannot interleave synchronous image Add") {
+            let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+            let local = try StudioImageCatalogue(directory: source, releasePolicy: policy)
+            let (editor, _) = try await fixture(), pending = try await prepare(editor, local)
+            let attempt = DispatchSemaphore(value: 0)
+            let quarantine = StudioImageCatalogue.ReleasePolicy.Quarantine(assetID: item.id,
+                sha256: item.sha256, reason: "Isolated concurrent rights review")
+            // Detached code announces its update attempt while this actor is
+            // still executing. The mutation itself must await this executor.
+            let update = Task.detached {
+                attempt.signal()
+                try await policy.advance(revision: 2, quarantined: [quarantine])
+            }
+            try require(attempt.wait(timeout: .now() + 2) == .success, "Concurrent update did not start")
+            // No await until Add finishes: the queued release cannot invalidate
+            // authorization between the session check and editor commit.
+            try require(policy.currentRevision == 1 && pending.apply(currentScope: scope),
+                "Concurrent policy mutation interleaved synchronous Add")
+            let committed = editor.document
+            try await update.value
+            try require(policy.currentRevision == 2 && local.availableImages.count == catalogue.images.count - 1,
+                "Queued release update did not take effect")
+            // Use a fresh eligible editor: the first Add may have scheduled autosave.
+            let (fresh, _) = try await fixture(), unchanged = fresh.document
+            let next = StudioImageImportSession(scratchParent: scratch)
+            guard let token = next.beginPicker(in: fresh, scope: scope) else {
+                throw Failure(message: "Fresh post-update editor was not eligible")
+            }
+            try require(next.receiveLibraryImage(item, from: local, token: token, currentScope: { scope }), "Next import did not start")
+            await next.waitForCompletion()
+            try require(next.status == .failed && next.preview == nil && fresh.document == unchanged
+                && next.notice == StudioImageCatalogue.CatalogueError.quarantined.localizedDescription,
+                "Post-update import did not specifically reject quarantine")
+            try require(editor.document == committed, "Policy update changed the committed document")
+        }
+        try await test("actual optional pack removal preserves saved project after quarantine") {
+            let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+            let cache = StudioImagePackCache(root: root.appendingPathComponent("real-pack-cache"), releasePolicy: policy)
+            let descriptor = try StudioImagePackCache.descriptor(directory: source)
+            let archive = try Data(contentsOf: URL(fileURLWithPath: "Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip"))
+            let installed = try await cache.download(descriptor, fetch: { _ in archive })
+            let selectedItem = installed.images[0], expectedBytes = try installed.checkedPNG(installed.images[0])
+            let expectedRights = try installed.attribution(for: selectedItem)
+            let (editor, storage) = try await fixture()
+            let session = try await prepare(editor, installed, selectedImage: selectedItem)
+            try require(session.apply(currentScope: scope), "Pack Add failed")
+            let assetID = session.appliedImage!.assetID, pixels = try await exported(editor)
+            try require(await editor.save(), "Pack project save failed")
+            try policy.advance(revision: 2, quarantined: [.init(assetID: selectedItem.id, sha256: selectedItem.sha256, reason: "Isolated test review")])
+            let quarantined = try await cache.installed(descriptor)
+            try require(quarantined?.availableImages.count == 457, "Quarantine prevented cache verification or exposed revoked tile")
+            try await cache.remove(descriptor)
+            try require(try await cache.installed(descriptor) == nil, "Actual remove failed")
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Pack removal broke real cold reopen")
+            try require(reopened.originalImageSource(assetID)?.originalData == expectedBytes
+                && reopened.originalImageSource(assetID)?.catalogueAttribution == expectedRights,
+                "Pack removal changed project-managed original/rights")
+            try require(try await exported(reopened) == pixels, "Pack removal changed actual export")
+        }
         try await test("legacy records decode with nil provenance and tampered provenance rejects atomically") {
             let (editor, _) = try await fixture(), session = try await prepare(editor)
             try require(session.apply(currentScope: scope), "Fixture Add failed")

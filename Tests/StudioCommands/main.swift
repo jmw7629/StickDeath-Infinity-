@@ -846,7 +846,7 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                 let noOp = StudioCommand.selectFrame(.id(editor.document.activeFrameID))
                 try rejected(request(editor, .apply(Array(repeating: noOp, count: StudioCommandExecutor.maximumCommands + 1))), editor: &editor, expected: .limitExceeded)
                 try rejected(request(editor, .apply([])), editor: &editor, expected: .limitExceeded)
-                try rejected(request(editor, .apply([draw(editor, Array(repeating: stroke(), count: 257))])), editor: &editor, expected: .limitExceeded)
+                try rejected(request(editor, .apply([draw(editor, Array(repeating: stroke(), count: StudioCommandExecutor.maximumStrokes + 1))])), editor: &editor, expected: .limitExceeded)
                 let tooManyPoints = Array(repeating: StrokePoint(x: 10, y: 20), count: 4097)
                 try rejected(request(editor, .apply([draw(editor, [stroke(points: tooManyPoints)])])), editor: &editor, expected: .limitExceeded)
                 do { _ = try StudioCommandExecutor.decode(Data(repeating: 32, count: StudioCommandExecutor.maximumRequestBytes + 1)); throw Failure(message: "oversized wire request accepted") }
@@ -913,6 +913,64 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             let cancellationObserved = await cancelled.value
             try require(cancellationObserved, "default executor check did not observe actual Swift Task cancellation")
             passed += 1; print("PASS default cancellation observes a cancelled actual Swift Task")
+            try test("plain primitive batches preserve repeated-commit geometry and one transaction history") {
+                var editor = try fresh(), repeated = editor
+                let before = editor.document
+                let values = (0..<10).map { stroke(id: "primitive-\($0)", tool: $0 == 9 ? .circle : .line) }
+                for value in values {
+                    try repeated.commit(.init(id: value.id, tool: value.tool, points: value.points, color: value.color,
+                        width: value.width, opacity: value.opacity, layerID: before.activeLayerID), frameID: before.activeFrameID)
+                }
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, values)])), editor: &editor)
+                try require(content(editor.document) == content(repeated.document), "Batched primitives changed rendering inputs")
+                editor.undo(); try require(content(editor.document) == content(before), "Primitive transaction not one Undo")
+                editor.redo(); try require(content(editor.document) == content(repeated.document), "Primitive Redo changed geometry")
+                for mode in ["alpha", "full"] {
+                    var locked = try fresh()
+                    try locked.change { $0.layers[0].lockMode = mode }
+                    try rejected(request(locked, .apply([draw(locked, values)])), editor: &locked)
+                }
+                for mode in ["free", "position"] {
+                    var allowed = try fresh()
+                    try allowed.change { $0.layers[0].lockMode = mode; $0.layers[0].opacity = 0 }
+                    _ = try StudioCommandExecutor.execute(request(allowed, .apply([draw(allowed, values)])), editor: &allowed)
+                    try require(allowed.document.frames[0].elements.count == 10, "Existing invisible-opacity primitive semantics changed")
+                }
+                var hidden = try fresh()
+                try hidden.change { $0.layers[0].visible = false }
+                try rejected(request(hidden, .apply([draw(hidden, values)])), editor: &hidden)
+                var duplicate = try fresh()
+                try rejected(request(duplicate, .apply([draw(duplicate, [values[0], values[0]])])), editor: &duplicate)
+                var invalid = try fresh()
+                let late = stroke(tool: .line, color: "invalid")
+                try rejected(request(invalid, .apply([draw(invalid, [values[0], late])])), editor: &invalid)
+                var cancellationChecks = 0, probe = try fresh()
+                _ = try StudioCommandExecutor.execute(request(probe, .apply([draw(probe, values)])), editor: &probe,
+                    checkCancellation: { cancellationChecks += 1 })
+                for boundary in 1...cancellationChecks {
+                    var cancelled = try fresh(), checks = 0
+                    try rejected(request(cancelled, .apply([draw(cancelled, values)])), editor: &cancelled,
+                        cancellation: { checks += 1; if checks == boundary { throw CancellationError() } })
+                }
+            }
+            try test("expanded command bounds accept 480 real primitives and reject 513 without partial edits") {
+                var editor = try fresh()
+                let values = (0..<480).map { stroke(id: "bounded-\($0)", tool: .line) }
+                let commands = stride(from: 0, to: values.count, by: 10).map { draw(editor, Array(values[$0..<$0+10])) }
+                _ = try StudioCommandExecutor.execute(request(editor, .apply(commands)), editor: &editor)
+                try require(editor.document.frames[0].elements.count == 480, "480 strokes truncated")
+                var exact = try fresh()
+                let exactValues = (0..<StudioCommandExecutor.maximumStrokes).map { stroke(id: "exact-\($0)", tool: .line) }
+                let exactCommands = stride(from: 0, to: exactValues.count, by: 16).map { draw(exact, Array(exactValues[$0..<min($0+16,exactValues.count)])) }
+                _ = try StudioCommandExecutor.execute(request(exact, .apply(exactCommands)), editor: &exact)
+                try require(exact.document.frames[0].elements.count == StudioCommandExecutor.maximumStrokes, "Exact stroke limit rejected")
+                var commandBoundary = try fresh()
+                let selected = StudioCommand.selectFrame(.id(commandBoundary.document.activeFrameID))
+                _ = try StudioCommandExecutor.execute(request(commandBoundary, .apply(Array(repeating: selected, count: StudioCommandExecutor.maximumCommands))), editor: &commandBoundary)
+                var tooMany = try fresh()
+                let excess = (0..<(StudioCommandExecutor.maximumStrokes + 1)).map { stroke(id: "excess-\($0)", tool: .line) }
+                try rejected(request(tooMany, .apply([draw(tooMany, excess)])), editor: &tooMany, expected: .limitExceeded)
+            }
             print("STUDIO_COMMAND_TESTS=PASS \(passed) production command cases")
         } catch {
             print("STUDIO_COMMAND_TESTS=FAIL \(error)")

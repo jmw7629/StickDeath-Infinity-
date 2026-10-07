@@ -476,3 +476,84 @@ struct SpatterSceneBrief: Equatable {
             appendedAfterFrameID: last.id, firstNewFrameAlias: firstAlias)
     }
 }
+
+/// Two locally generated actors, sampled at every project tick. Never stretch a
+/// handful of poses with holds to satisfy a longer requested duration.
+struct SpatterTwoActorBrief: Equatable {
+    struct Actor: Equatable { let color: String; let action: SpatterStickFigureRecipe.Action; let movesRight: Bool }
+    let actors: [Actor]
+    let seconds: Double
+    static let example = "Two stick figures: red walks left to right; blue waves right to left; 2 seconds."
+    static func isBrief(_ text: String) -> Bool { text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("two ") }
+    enum Failure: LocalizedError {
+        case syntax, timing
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use the complete two-figure example with a color, walks/runs/jumps/waves and direction for each actor. Other actions, props, audio or extra clauses are unavailable. Nothing changed."
+            case .timing: return "Two-figure motion needs 12–60 project FPS and 8–24 distinct frames, one pose per tick. At 12 FPS choose up to 2 seconds; at 24 FPS up to 1 second. Longer motion is unavailable; no poses were stretched."
+            }
+        }
+    }
+    private static let syntax = try? NSRegularExpression(pattern:
+        #"\A\s*two\s+stick\s+figures:\s*([^\s]+)\s+(walks|runs|jumps|waves)\s+(left\s+to\s+right|right\s+to\s+left)\s*;\s*([^\s]+)\s+(walks|runs|jumps|waves)\s+(left\s+to\s+right|right\s+to\s+left)\s*;\s*([0-9]+(?:\.[0-9]+)?)\s+seconds?\.?\s*\z"#, options: [.caseInsensitive])
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard let syntax, let match = syntax.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { throw Failure.syntax }
+        func token(_ n: Int) -> String { String(text[Range(match.range(at: n), in: text)!]).lowercased() }
+        let verbs: [String: SpatterStickFigureRecipe.Action] = ["walks": .walking, "runs": .running, "jumps": .jumping, "waves": .waving]
+        var actors: [Actor] = []
+        for index in [1, 4] {
+            let color = try SpatterStickFigureRecipe.parse("Append 8 frames of a \(token(index)) stick figure walking from (25%, 80%) to (75%, 80%), height 35%, line width 3 px.").color
+            guard let action = verbs[token(index + 1)] else { throw Failure.syntax }
+            actors.append(.init(color: color, action: action, movesRight: token(index + 2).hasPrefix("left")))
+        }
+        guard let seconds = Double(token(7)), seconds.isFinite, seconds > 0, seconds <= 2 else { throw Failure.timing }
+        return .init(actors: actors, seconds: seconds)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
+        try checkCancellation()
+        guard actors.count == 2, (12...60).contains(context.fps), seconds.isFinite, seconds > 0, seconds <= 2 else { throw Failure.timing }
+        let count = Int((seconds * Double(context.fps)).rounded())
+        guard (8...24).contains(count) else { throw Failure.timing }
+        guard context.layers.count <= 126, context.frames.count <= 1000 - count, let last = context.frames.last else { throw SpatterStickFigureRecipe.Failure.context }
+        var poses: [[[StudioCommandStroke]]] = []
+        for (index, actor) in actors.enumerated() {
+            try checkCancellation()
+            let low = index == 0 ? 15.0 : 60.0, high = index == 0 ? 40.0 : 85.0
+            let start = actor.movesRight ? low : high
+            let end = actor.action == .waving ? start : (actor.movesRight ? high : low)
+            var recipe = SpatterStickFigureRecipe(frameCount: count, color: actor.color, action: actor.action,
+                start: .init(x: start, y: 80), end: .init(x: end, y: 80), heightPercent: 28, lineWidth: 3)
+            recipe.neutralFacing = actor.movesRight ? 1 : -1
+            let plan = try recipe.prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
+            guard case .apply(let generated) = plan.request.action else { throw Failure.syntax }
+            let frames: [[StudioCommandStroke]] = generated.compactMap { command in
+                guard case .draw(let draw) = command else { return nil }; return draw.strokes
+            }
+            guard frames.count == count else { throw Failure.syntax }; poses.append(frames)
+        }
+        var commands: [StudioCommand] = actors.enumerated().map { index, actor in
+            .addLayer(.init(name: "Spatter actor \(index + 1) · \(actor.action.rawValue)", result: "duo_layer_\(index)"))
+        }
+        var after = StudioCommandReference.id(last.id)
+        for frame in 0..<count {
+            try checkCancellation()
+            let alias = "duo_frame_\(frame)"
+            commands.append(.addFrame(.init(after: after, result: alias)))
+            for actor in 0..<2 {
+                let strokes = poses[actor][frame].enumerated().map { part, stroke in
+                    StudioCommandStroke(id: "duo-\(requestID.uuidString)-\(actor)-\(frame)-\(part)", tool: stroke.tool,
+                        points: stroke.points, color: stroke.color, width: stroke.width, opacity: stroke.opacity)
+                }
+                commands.append(.draw(.init(frame: .created(alias), layer: .created("duo_layer_\(actor)"), strokes: strokes)))
+            }
+            after = .created(alias)
+        }
+        commands.append(.selectFrame(.created("duo_frame_0")))
+        guard commands.count <= StudioCommandExecutor.maximumCommands else { throw StudioCommandError.limitExceeded }
+        return .init(request: .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply(commands)), framesToAdd: count, durationSeconds: Double(count) / Double(context.fps),
+            appendedAfterFrameID: last.id, firstNewFrameAlias: "duo_frame_0")
+    }
+}

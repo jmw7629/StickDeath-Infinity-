@@ -522,7 +522,8 @@ final class StudioViewModel: ObservableObject {
             switch command {
             case .draw(let drawing):
                 guard drawing.strokes.count <= StudioCommandExecutor.maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }
-                strokes += drawing.strokes.count; edits += drawing.strokes.count
+                strokes += drawing.strokes.count
+                edits += StudioCommandExecutor.batchesPrimitiveDrawing(drawing.strokes) ? 1 : drawing.strokes.count
                 try addUnits(drawing.strokes.count, weight: 32)
                 for stroke in drawing.strokes { try addUnits(stroke.points.count); try addUnits(stroke.text?.content.utf8.count ?? 0) }
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)

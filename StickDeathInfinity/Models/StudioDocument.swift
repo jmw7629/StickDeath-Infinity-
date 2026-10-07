@@ -426,6 +426,36 @@ struct StudioDocumentEditor {
         document.revision += 1; document.modifiedAt = Date()
         return true
     }
+    /// Plain assistant geometry uses one validated mutation, not one document
+    /// copy/validation per limb. Rich drawing and effect semantics remain in commit.
+    mutating func commitCommandPrimitives(_ elements: [DrawnElement], frameID: String,
+                                         checkCancellation: () throws -> Void) throws {
+        guard (2...32).contains(elements.count) else { throw StudioDocumentError.invalid("Invalid primitive batch size.") }
+        for element in elements {
+            try checkCancellation()
+            guard (element.tool == .line || element.tool == .circle), element.brush == nil,
+                  element.shape == nil, element.fillColor == nil, element.fillMask == nil,
+                  element.translation == nil, element.reflection == nil, element.eraser == nil,
+                  element.text == nil, element.transform == nil, element.smudge == nil,
+                  element.blur == nil, element.sharpen == nil, element.dodgeBurn == nil,
+                  element.preservesLayerAlpha == nil, element.points.count == 2,
+                  element.points.allSatisfy({ $0.pressure == nil && $0.tilt == nil }) else { throw StudioDocumentError.invalid("Only plain primitive geometry can be batched.") }
+        }
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else {
+                throw StudioDocumentError.invalid("The drawing frame is unavailable.")
+            }
+            for element in elements {
+                try checkCancellation()
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }),
+                      layer.visible, !layer.isFullyLocked,
+                      layer.lockMode == "free" || layer.lockMode == "position" else { throw StudioDocumentError.locked }
+                value.frames[index].elements.append(element)
+            }
+            try checkCancellation()
+        }
+    }
+
     mutating func commitMirroredStroke(_ elements: [DrawnElement], frameID: String) throws {
         guard (1...4).contains(elements.count), Set(elements.map(\.id)).count == elements.count else {
             throw StudioDocumentError.invalid("The mirror stroke is invalid.")

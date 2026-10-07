@@ -7,6 +7,45 @@ import Compression
 /// Bundled, curated artwork only. Loading or searching this catalogue never
 /// changes a project or fetches a URL. Additions must use the Studio importer.
 struct StudioImageCatalogue: Sendable {
+    /// Trusted application-release policy. Never decoded from a downloaded catalogue,
+    /// user defaults, project, or provider response. Updates cannot roll back a revision.
+    final class ReleasePolicy: @unchecked Sendable {
+        struct Quarantine: Equatable, Sendable {
+            let assetID: String
+            let sha256: String
+            let reason: String
+        }
+        private let lock = NSLock()
+        private var revision: Int
+        private var records: [Quarantine]
+        static let bundled = ReleasePolicy()
+        private init() { revision = 1; records = [] }
+        init(revision: Int, quarantined: [Quarantine]) throws {
+            try Self.validate(revision, quarantined)
+            self.revision = revision; self.records = quarantined
+        }
+        private static func validate(_ revision: Int, _ records: [Quarantine]) throws {
+            guard (1...1_000_000).contains(revision), records.count <= 5000,
+                  Set(records.map { $0.assetID + ":" + $0.sha256 }).count == records.count,
+                  records.allSatisfy({ StudioImageCatalogue.identifier($0.assetID)
+                    && StudioImageCatalogue.hash($0.sha256)
+                    && StudioImageCatalogue.label($0.reason, limit: 240)
+                    && $0.reason.utf8.count <= 960 }) else { throw CatalogueError.invalid }
+        }
+        // Updates share the editor's executor. No await occurs between its
+        // final availability check and the synchronous document commit.
+        @MainActor func advance(revision next: Int, quarantined: [Quarantine]) throws {
+            try Self.validate(next, quarantined)
+            lock.lock(); defer { lock.unlock() }
+            guard next > revision else { throw CatalogueError.invalid }
+            revision = next; records = quarantined
+        }
+        var currentRevision: Int { lock.lock(); defer { lock.unlock() }; return revision }
+        func permits(_ image: Image) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            return !records.contains { $0.assetID == image.id && $0.sha256 == image.sha256 }
+        }
+    }
     enum Category: String, Codable, CaseIterable, Sendable { case props, scenery, effects }
     enum ContentAdvisory: String, Codable, Sendable { case none, cartoonWeapons }
     struct License: Codable, Equatable, Sendable {
@@ -38,21 +77,31 @@ struct StudioImageCatalogue: Sendable {
     }
     private struct Manifest: Decodable {
         let schemaVersion: Int
+        let catalogueRevision: Int?
         let licenses: [License]
         let images: [Image]
     }
     static let maximumManifestBytes = 16 * 1024 * 1024
     static let maximumImageBytes = 16 * 1024 * 1024
+    let catalogueRevision: Int
+    private let releasePolicy: ReleasePolicy
+    var availableImages: [Image] { images.filter { releasePolicy.permits($0) } }
+    func requireAvailable(_ image: Image) throws {
+        guard images.contains(image) else { throw CatalogueError.invalid }
+        guard releasePolicy.permits(image) else { throw CatalogueError.quarantined }
+    }
     let images: [Image]
     let licenses: [License]
     private let directory: URL
 
-    init(directory: URL) throws {
+    init(directory: URL, releasePolicy: ReleasePolicy = .bundled) throws {
+        self.releasePolicy = releasePolicy
         guard directory.isFileURL else { throw CatalogueError.unavailable }
         self.directory = directory.standardizedFileURL
         let data = try Self.readFile(directory.appendingPathComponent("catalogue.json"), limit:Self.maximumManifestBytes)
         let manifest = try JSONDecoder().decode(Manifest.self,from:data)
-        guard manifest.schemaVersion == 1, (1...5000).contains(manifest.images.count),
+        catalogueRevision = manifest.catalogueRevision ?? 1
+        guard (1...1_000_000).contains(catalogueRevision), manifest.schemaVersion == 1, (1...5000).contains(manifest.images.count),
               (1...100).contains(manifest.licenses.count),
               Set(manifest.licenses.map(\.id)).count == manifest.licenses.count,
               Set(manifest.images.map(\.id)).count == manifest.images.count,
@@ -86,12 +135,13 @@ struct StudioImageCatalogue: Sendable {
         }
         images=manifest.images;self.licenses=manifest.licenses
     }
-    private init(verifiedImages: [Image], verifiedLicenses: [License], directory: URL) {
+    private init(verifiedImages: [Image], verifiedLicenses: [License], directory: URL, revision: Int, releasePolicy: ReleasePolicy) {
         images = verifiedImages; licenses = verifiedLicenses; self.directory = directory
+        catalogueRevision = revision; self.releasePolicy = releasePolicy
     }
     /// Only the verified installer uses this after an atomic directory rename.
     fileprivate func relocated(to directory: URL) -> Self {
-        Self(verifiedImages: images, verifiedLicenses: licenses, directory: directory)
+        Self(verifiedImages: images, verifiedLicenses: licenses, directory: directory, revision: catalogueRevision, releasePolicy: releasePolicy)
     }
     static func bundled(in bundle: Bundle = .main) throws -> Self {
         guard let url=bundle.url(forResource:"StudioImages",withExtension:nil) else { throw CatalogueError.unavailable }
@@ -106,10 +156,12 @@ struct StudioImageCatalogue: Sendable {
     /// This URL is only an input to the existing importer. The import session
     /// compares its copied original bytes with checkedPNG before showing preview.
     func sourceURL(for image: Image) throws -> URL {
+        try requireAvailable(image)
         guard images.contains(image) else { throw CatalogueError.invalid }
         return directory.appendingPathComponent(image.filename)
     }
     func attribution(for image: Image) throws -> [String: String] {
+        try requireAvailable(image)
         guard images.contains(image), let license = licenses.first(where: { $0.id == image.licenseID }) else {
             throw CatalogueError.invalid
         }
@@ -130,7 +182,7 @@ struct StudioImageCatalogue: Sendable {
     }
     func search(_ query: String,category: Category? = nil,includeCartoonWeapons: Bool = true) -> [Image] {
         let terms=query.split(whereSeparator:\.isWhitespace).map(String.init)
-        return images.filter { item in
+        return availableImages.filter { item in
             (category==nil || item.category==category) && (includeCartoonWeapons || item.contentAdvisory == .none) &&
             terms.allSatisfy { (item.title+" "+item.category.rawValue+" "+item.tags.joined(separator:" ")).localizedCaseInsensitiveContains($0) }
         }
@@ -138,6 +190,11 @@ struct StudioImageCatalogue: Sendable {
     /// Pin, hash and decode the actual immutable bytes before any Studio import.
     /// Reject symlinks/FIFOs, mismatched metadata and aliases outside this list.
     func checkedPNG(_ item: Image) throws -> Data {
+        try requireAvailable(item)
+        return try integrityCheckedPNG(item)
+    }
+    /// Cache verification must remain possible after quarantine, including removal.
+    fileprivate func integrityCheckedPNG(_ item: Image) throws -> Data {
         try Task.checkCancellation()
         guard images.contains(item) else { throw CatalogueError.invalid }
         let data=try Self.readFile(directory.appendingPathComponent(item.filename),limit:Self.maximumImageBytes)
@@ -177,9 +234,10 @@ struct StudioImageCatalogue: Sendable {
         !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty && text.count<=limit && !text.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains)
     }
     enum CatalogueError: LocalizedError {
-        case unavailable,invalid
+        case unavailable,invalid,quarantined
         var errorDescription: String? {
             switch self {
+            case .quarantined:return "This picture is unavailable for new use. Existing project originals are kept."
             case .unavailable:return "The image library is not installed in this build. You can still import your own pictures."
             case .invalid:return "The image library could not be verified. No artwork was added."
             }
@@ -242,8 +300,10 @@ actor StudioImagePackCache {
     static let shared = StudioImagePackCache()
     static let maximumCacheBytes = 32 * 1024 * 1024
     private let root: URL
+    private let releasePolicy: StudioImageCatalogue.ReleasePolicy
     private var busy = false
-    init(root: URL? = nil) {
+    init(root: URL? = nil, releasePolicy: StudioImageCatalogue.ReleasePolicy = .bundled) {
+        self.releasePolicy = releasePolicy
         self.root = root ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("StudioOptionalImagePacks", isDirectory: true)
     }
@@ -312,7 +372,7 @@ actor StudioImagePackCache {
     }
     private func location(_ descriptor: Descriptor) -> URL { root.appendingPathComponent(descriptor.id, isDirectory: true) }
     private func verify(_ descriptor: Descriptor, at directory: URL) throws -> StudioImageCatalogue {
-        let catalogue = try StudioImageCatalogue(directory: directory)
+        let catalogue = try StudioImageCatalogue(directory: directory, releasePolicy: releasePolicy)
         guard catalogue.images.count == descriptor.tiles.count, catalogue.licenses.count == 1,
               catalogue.licenses[0].id == "kenney.1-bit-pack.cc0",
               catalogue.licenses[0].author == "Kenney",
@@ -326,7 +386,7 @@ actor StudioImagePackCache {
                   item.licenseID == "kenney.1-bit-pack.cc0", item.originalSHA256 == item.sha256,
                   item.category == .scenery, item.contentAdvisory == .none,
                   item.pixelSHA256 == tile.pixelSHA256, item.width == 16, item.height == 16 else { throw PackError.invalid }
-            _ = try catalogue.checkedPNG(item)
+            _ = try catalogue.integrityCheckedPNG(item)
         }
         return catalogue
     }

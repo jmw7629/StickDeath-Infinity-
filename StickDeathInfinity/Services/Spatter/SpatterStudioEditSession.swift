@@ -144,6 +144,8 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
                         selectedClipID: captured.selectedAudioClipID, requestID: submissionID)
+                } else if SpatterTwoActorBrief.isBrief(draft) {
+                    preparedRequest = try SpatterTwoActorBrief.parse(draft).prepare(in: document, requestID: submissionID).request
                 } else if SpatterSceneBrief.isBrief(draft) {
                     let brief = try SpatterSceneBrief.parse(draft)
                     preparedRequest = try brief.prepare(in: document, requestID: submissionID).request

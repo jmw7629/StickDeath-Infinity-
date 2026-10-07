@@ -276,12 +276,12 @@ final class StudioSmokeUITests: XCTestCase {
         let motion = app.buttons["spatter.studio.local-motion"]
         XCTAssertTrue(motion.waitForExistence(timeout: 8)); XCTAssertTrue(motion.isHittable); motion.tap()
         let input = try localMotionControl("spatter.motion.input", app: app)
-        input.tap(); input.typeText("Append 5 frames of a blue outlined circle moving from (30%, 40%) to (70%, 60%), radius 6%, line width 12 px.")
+        input.tap(); input.typeText("Two stick figures: red walks left to right; blue waves right to left; 2 seconds.")
         let done = app.buttons["spatter.motion.keyboard.done"]
         XCTAssertTrue(done.waitForExistence(timeout: 8)); XCTAssertTrue(done.isHittable); done.tap()
         try localMotionControl("spatter.motion.apply", app: app).tap()
         let edit = try localMotionControl("spatter.motion.result", app: app)
-        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "Added 5 editable frames"),
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "Added 24 editable frames"),
             evaluatedWith: edit).waitUntilFulfilled(timeout: 8))
         try localMotionControl("spatter.motion.save", app: app).tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Saved"),
@@ -291,7 +291,7 @@ final class StudioSmokeUITests: XCTestCase {
         let provenance = app.staticTexts["studio.export.movie.spatter-receipt"]
         XCTAssertTrue(provenance.waitForExistence(timeout: 30))
         XCTAssertTrue(provenance.label.contains("verified MP4 from revision"))
-        XCTAssertTrue(try exportControl("studio.export.movie.receipt", app: app).label.contains("6 frames · 12 fps"))
+        XCTAssertTrue(try exportControl("studio.export.movie.receipt", app: app).label.contains("25 frames · 12 fps"))
         let picture = try exportControl("studio.export.movie.preview", app: app)
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "Preview ready"),
             evaluatedWith: app.staticTexts["studio.export.movie.preview.status"]).waitUntilFulfilled(timeout: 8))
@@ -299,23 +299,24 @@ final class StudioSmokeUITests: XCTestCase {
         let seek = try exportControl("studio.export.movie.preview.seek", app: app)
         seek.adjust(toNormalizedSliderPosition: 0.65)
         _ = try exportControl("studio.export.movie.preview", app: app)
-        let actualBlue = NSPredicate { _, _ in
+        let actualActors = NSPredicate { _, _ in
             guard let raster = try? self.moviePreviewPixels(picture, app: app) else { return false }
-            var blue = 0
+            var blue = 0, red = 0
             for i in stride(from: 0, to: raster.bytes.count, by: 4) {
                 if raster.bytes[i + 2] > 130 && raster.bytes[i] < 100 && raster.bytes[i + 1] < 100 { blue += 1 }
+                if raster.bytes[i] > 130 && raster.bytes[i + 1] < 100 && raster.bytes[i + 2] < 100 { red += 1 }
             }
-            return blue > 12
+            return blue > 12 && red > 12
         }
-        XCTAssertTrue(expectation(for: actualBlue, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
-                      "Direct MP4 did not decode the requested blue artwork")
+        XCTAssertTrue(expectation(for: actualActors, evaluatedWith: nil).waitUntilFulfilled(timeout: 8),
+                      "Direct MP4 did not decode both independently colored actors")
         capture(app, name: "spatter-direct-mp4-actual-decoded-pose")
         try closeExportPanel(app)
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         let edited = try pixels(canvas.screenshot().image)
         let frames = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
         let ids = Set(frames.allElementsBoundByIndex.map(\.identifier))
-        XCTAssertEqual(ids.count, 6)
+        XCTAssertEqual(ids.count, 25)
         XCTAssertGreaterThan(try changedPixelCount(before, edited), 12)
         app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertEqual(frames.count, 1)

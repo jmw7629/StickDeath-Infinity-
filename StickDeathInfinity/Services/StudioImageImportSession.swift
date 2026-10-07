@@ -90,6 +90,7 @@ final class StudioImageImportSession: ObservableObject {
     private var token: UUID?
     private var request: Task<Void, Never>?
     private var requestID: UUID?
+    private var librarySelection: (StudioImageCatalogue, StudioImageCatalogue.Image)?
     private var imported: StudioImageImportService.ImportedImage?
     private var importedSequence: [StudioImageImportService.ImportedImage] = []
     private let scratchParent: URL
@@ -201,6 +202,7 @@ final class StudioImageImportSession: ObservableObject {
                     extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: url,
                         projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent)
                 case .library(let catalogue, let image):
+                    self.librarySelection = (catalogue, image)
                     let verification = Task.detached(priority: .userInitiated) {
                         try Task.checkCancellation()
                         return try catalogue.checkedPNG(image)
@@ -292,6 +294,7 @@ final class StudioImageImportSession: ObservableObject {
         do {
             try requireCurrent(id, scope: currentScope, requireForeground: true)
             guard let studio else { throw SessionError.unavailable }
+            if let (catalogue, image) = librarySelection { try catalogue.requireAvailable(image) }
             let assetID: String, resultFrameID: String
             let count = importedSequence.count
             if count > 1 {
@@ -397,7 +400,7 @@ final class StudioImageImportSession: ObservableObject {
         }
         return false
     }
-    private func clearPreview() { imported = nil; importedSequence = []; previewFrameCount = 1; preview = nil; previewImage = nil }
+    private func clearPreview() { librarySelection = nil; imported = nil; importedSequence = []; previewFrameCount = 1; preview = nil; previewImage = nil }
     private static func thumbnail(_ png: Data) throws -> CGImage {
         guard let source = CGImageSourceCreateWithData(png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) == 1,

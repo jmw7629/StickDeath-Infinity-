@@ -17,7 +17,7 @@ struct StudioImageLibraryView: View {
     @Environment(\.scenePhase) private var scenePhase
     private var sources: [StudioImageCatalogue] { [catalogue, optionalCatalogue].compactMap { $0 } }
     private func source(for image: StudioImageCatalogue.Image) -> StudioImageCatalogue? {
-        sources.first { $0.images.contains(image) }
+        sources.first { $0.availableImages.contains(image) }
     }
     @State private var query = ""
     @State private var favorites = Set<String>()
@@ -48,12 +48,12 @@ struct StudioImageLibraryView: View {
             PanelHeader(title: "Image Library", icon: "square.grid.2x2.fill", onClose: onClose)
             if let catalogue {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("\(sources.reduce(0) { $0 + $1.images.count }) free pictures · available offline")
+                    Text("\(sources.reduce(0) { $0 + $1.availableImages.count }) free pictures · available offline")
                         .font(.specialElite(16)).foregroundColor(.white)
                         .accessibilityIdentifier("studio.image-library.count")
                     if let pack {
                         HStack {
-                            Text("\(pack.title) · \(pack.tiles.count) additional pictures").font(.caption)
+                            Text("\(pack.title) · optional picture pack").font(.caption)
                             Spacer()
                             if packBusy {
                                 Button("Cancel") { cancelPack() }

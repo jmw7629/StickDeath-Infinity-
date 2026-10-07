@@ -73,6 +73,36 @@ func require(_ condition: @autoclosure () throws -> Bool,_ message: String) thro
   try require(try Data(contentsOf:source.appendingPathComponent(item.filename))==bytes,"Original asset changed")
   try require(try Data(contentsOf:source.appendingPathComponent("catalogue.json"))==original,"Original manifest changed")
   pass("symlink manifest and corrupt license text fail with original source intact")
+  let policy = try StudioImageCatalogue.ReleasePolicy(revision: 1, quarantined: [])
+  let governed = try StudioImageCatalogue(directory: source, releasePolicy: policy)
+  let selected = governed.images[0]
+  try require(governed.catalogueRevision == 1, "Legacy catalogue revision changed")
+  let quarantine = StudioImageCatalogue.ReleasePolicy.Quarantine(assetID: selected.id, sha256: selected.sha256, reason: "Isolated test rights review")
+  try policy.advance(revision: 2, quarantined: [quarantine])
+  try require(governed.images == catalogue.images && governed.availableImages.count == 206, "Policy mutated inventory or failed to hide asset")
+  try require(!governed.search("").contains(selected), "Quarantine search bypass")
+  do { _ = try governed.checkedPNG(selected); throw TestFailure(message: "Quarantine bytes bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
+  do { _ = try governed.sourceURL(for: selected); throw TestFailure(message: "Quarantine URL bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
+  do { _ = try governed.attribution(for: selected); throw TestFailure(message: "Quarantine provenance bypass") } catch StudioImageCatalogue.CatalogueError.quarantined { }
+  do { try policy.advance(revision: 1, quarantined: []); throw TestFailure(message: "Policy rollback") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  do { _ = try StudioImageCatalogue.ReleasePolicy(revision: 3, quarantined: [quarantine, quarantine]); throw TestFailure(message: "Duplicate policy") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  // The previous corruption case deliberately damaged this copied license.
+  // Restore its verified source bytes before testing manifest revision semantics.
+  try Data(contentsOf: source.appendingPathComponent(copied.licenses[0].licenseFilename)).write(to: license)
+  do { _ = try StudioImageCatalogue.ReleasePolicy(revision: 0, quarantined: []); throw TestFailure(message: "Zero policy revision accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  do { _ = try StudioImageCatalogue.ReleasePolicy(revision: 3, quarantined: [.init(assetID: selected.id, sha256: "not-a-digest", reason: "Isolated test")]); throw TestFailure(message: "Invalid policy digest accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  var revisionManifest = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+  revisionManifest["catalogueRevision"] = 2
+  try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
+  let revised = try StudioImageCatalogue(directory: copy, releasePolicy: policy)
+  try require(revised.catalogueRevision == 2 && revised.images == governed.images && revised.availableImages.count == 206, "New manifest overrode policy or IDs")
+  revisionManifest["catalogueRevision"] = 0
+  try JSONSerialization.data(withJSONObject: revisionManifest).write(to: manifest)
+  do { _ = try StudioImageCatalogue(directory: copy); throw TestFailure(message: "Invalid revision accepted") } catch StudioImageCatalogue.CatalogueError.invalid { }
+  try original.write(to: manifest)
+  try policy.advance(revision: 3, quarantined: [])
+  try require(try governed.checkedPNG(selected) == catalogue.checkedPNG(selected), "Explicit new release failed to restore verified bytes")
+  pass("legacy and new catalogue revisions preserve IDs; trusted quarantine blocks direct use and stale manifests")
   print("STUDIO_IMAGE_CATALOGUE_TESTS=PASS \(groups)/\(groups), 207 original PNGs")
  }
 }

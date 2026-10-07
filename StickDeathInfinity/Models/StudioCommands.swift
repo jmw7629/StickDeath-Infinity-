@@ -319,13 +319,23 @@ struct StudioCommandContext {
 
 enum StudioCommandExecutor {
     static let maximumRequestBytes = 1_048_576
-    static let maximumCommands = 64
-    static let maximumStrokes = 256
+    static let maximumCommands = 96
+    static let maximumStrokes = 512
     static let maximumPointsPerStroke = 4096
     static let maximumInputPoints = 16_384
     static let maximumGeneratedElements = 1024
     static let maximumGeneratedPoints = 65_536
     static let supportedTools: [DrawingTool] = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
+
+    /// Only these plain primitives have identical append semantics and can share
+    /// one whole-document validation/history step. General tools stay unchanged.
+    static func batchesPrimitiveDrawing(_ strokes: [StudioCommandStroke]) -> Bool {
+        (2...32).contains(strokes.count) && strokes.allSatisfy {
+            ($0.tool == .line || $0.tool == .circle) && $0.brush == nil
+                && $0.shape == nil && $0.eraser == nil && $0.text == nil
+                && $0.points.count == 2 && $0.points.allSatisfy { $0.pressure == nil && $0.tilt == nil }
+        }
+    }
 
     static func decode(_ data: Data) throws -> StudioCommandRequest {
         guard data.count <= maximumRequestBytes else { throw StudioCommandError.limitExceeded }
@@ -560,6 +570,8 @@ enum StudioCommandExecutor {
             let frameID = try frame(draw.frame), layerID = try layer(draw.layer)
             guard !draw.strokes.isEmpty, draw.strokes.count <= maximumStrokes - budget.strokes else { throw StudioCommandError.limitExceeded }
             budget.strokes += draw.strokes.count
+            let batched = batchesPrimitiveDrawing(draw.strokes)
+            var primitives: [DrawnElement] = []
             for stroke in draw.strokes {
                 try checkCancellation()
                 guard stroke.tool != .text || stroke.text != nil else { throw StudioCommandError.invalidSettings }
@@ -590,8 +602,10 @@ enum StudioCommandExecutor {
                 let element = DrawnElement(id: stroke.id, tool: stroke.tool, points: stroke.points, color: stroke.color,
                     width: CGFloat(stroke.width), opacity: stroke.opacity, layerID: layerID, brush: stroke.brush, shape: stroke.shape, eraser: stroke.eraser, text: stroke.text)
                 try budget.generate([element])
-                try editor.commit(element, frameID: frameID)
+                if batched { primitives.append(element) }
+                else { try editor.commit(element, frameID: frameID) }
             }
+            if batched { try editor.commitCommandPrimitives(primitives, frameID: frameID, checkCancellation: checkCancellation) }
         case .updateText(let value):
             try editor.updateText(frameID: frame(value.frame), elementID: value.elementID,
                 text: value.text, color: value.color, opacity: value.opacity)

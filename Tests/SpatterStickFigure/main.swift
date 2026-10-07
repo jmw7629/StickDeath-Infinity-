@@ -164,6 +164,90 @@ private func rejects(_ action: () throws -> Void) throws {
                 await reopened.backToProjects(); await vm.backToProjects()
                 print("PASS composite brief: color/direction/action order, neutral continuity, timed receipt, cancellation, one Undo, reopen and export")
             }
+            for text in [SpatterTwoActorBrief.example,
+                         "Two stick figures: green runs right to left; purple jumps left to right; 2 seconds."] {
+                let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent(UUID().uuidString))
+                let vm = StudioViewModel(storage: store)
+                let created = await vm.createProject(name: "Two independently editable actors", width: 256, height: 256, fps: 12)
+                try require(created, "Two-actor create failed"); vm.activePanel = .spatterAI
+                let before = vm.document, brief = try SpatterTwoActorBrief.parse(text)
+                let context = vm.commandScreenContext.document!
+                var checks = 0
+                let plan = try brief.prepare(in: context, checkCancellation: { checks += 1 })
+                try require(plan.framesToAdd == 24 && plan.durationSeconds == 2, "Two-actor timing changed")
+                for boundary in 1...checks {
+                    var at = 0
+                    try rejects { _ = try brief.prepare(in: context, checkCancellation: { at += 1; if at == boundary { throw CancellationError() } }) }
+                }
+                let session = SpatterStudioEditSession()
+                try require(session.submit(text, in: vm, accountID: nil, currentScope: { scope }), "Two-actor submit failed")
+                try await idle(session)
+                try require(session.status == .applied, "Two-actor actual VM failed: \(session.notice ?? "nil")")
+                let result = vm.document, frames = Array(vm.frames.suffix(24))
+                try require(frames.count == 24 && frames.allSatisfy { $0.elements.count == 20 && $0.durationTicks == 1 }, "Poses flattened, omitted or stretched")
+                try require(vm.layers.count == before.layers.count + 2 && vm.frames[0] == before.frames[0], "Actor layers/original changed")
+                for actor in 0..<2 {
+                    let poses = frames.map { $0.elements.filter { $0.color == brief.actors[actor].color } }
+                    try require(poses.allSatisfy { $0.count == 10 }, "Actor color/count ignored")
+                    try require(Set(poses.flatMap { $0.compactMap(\.layerID) }).count == 1, "Actor has no independent layer")
+                    try require(Set(poses.map { String(describing: $0.map(\.points)) }).count >= 20, "Two-actor poses repeated instead of per-tick motion")
+                    let firstX = poses.first![0].points[0].x, lastX = poses.last![0].points[0].x
+                    if brief.actors[actor].action == .waving { try require(abs(firstX-lastX) < 0.001, "Stationary actor moved") }
+                    else { try require(brief.actors[actor].movesRight ? lastX > firstX : lastX < firstX, "Actor direction ignored") }
+                }
+                // Compare real raster output with the old repeated commit path,
+                // using exactly the same actor identities and drawing metadata.
+                var blank = result
+                let comparedIndex = blank.frames.count - 12
+                let expectedElements = blank.frames[comparedIndex].elements
+                blank.frames[comparedIndex].elements = []
+                var repeated = try StudioDocumentEditor(document: blank)
+                for element in expectedElements { try repeated.commit(element, frameID: blank.frames[comparedIndex].id) }
+                let rasterizer = StudioExportService()
+                let actualPixels = try rasterizer.render(result.frames[comparedIndex], document: result, background: .white, raster: nil)
+                let repeatedPixels = try rasterizer.render(repeated.document.frames[comparedIndex], document: repeated.document, background: .white, raster: nil)
+                guard let actualBytes = actualPixels.dataProvider?.data, let repeatedBytes = repeatedPixels.dataProvider?.data else {
+                    throw Failure(message: "Primitive equivalence pixels unavailable")
+                }
+                try require(actualBytes as Data == repeatedBytes as Data, "Batched primitives changed actual rendered pixels")
+                vm.undo(); try require(vm.frames == before.frames && vm.layers == before.layers, "Scene not one Undo")
+                vm.redo(); try require(vm.frames == result.frames && vm.layers == result.layers, "Scene Redo changed")
+                let id = vm.document.id
+                await vm.backToProjects()
+                let saved = try store.loadAnimation(id: id)!, reopened = StudioViewModel(storage: store)
+                let opened = await reopened.openProject(saved.metadata)
+                try require(opened && reopened.frames == result.frames && reopened.layers == result.layers, "Two-actor reopen lost edits")
+                let output = try await StudioMovieExportService().export(snapshot: .init(document: reopened.document,
+                    retainedAudioTracks: [], rasterDataByID: [:]), outputParent: root, background: .white)
+                let asset = AVURLAsset(url: output.movieURL), duration = try await asset.load(.duration).seconds
+                try require(abs(duration - 25.0 / 12) < 0.001, "Two-actor real MP4 duration wrong")
+                let track = try await asset.loadTracks(withMediaType: .video)[0]
+                let reader = try AVAssetReader(asset: asset)
+                let decoded = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+                reader.add(decoded); try require(reader.startReading(), "Two-actor decode start")
+                var count = 0, distinct = Set<Data>()
+                while let sample = decoded.copyNextSampleBuffer() {
+                    guard let buffer = CMSampleBufferGetImageBuffer(sample) else { throw Failure(message: "Missing duo pixels") }
+                    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+                    let data = Data(bytes: CVPixelBufferGetBaseAddress(buffer)!, count: CVPixelBufferGetBytesPerRow(buffer) * CVPixelBufferGetHeight(buffer))
+                    distinct.insert(Data(SHA256.hash(data: data))); count += 1
+                    CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+                }
+                try require(reader.status == .completed && count == 25 && distinct.count >= 21, "Two-actor movie has missing/static frames")
+                await reopened.backToProjects()
+                print("PASS two actors: 24 per-tick editable poses, independent layers/actions/directions, 480 strokes, guarded VM, one Undo, actual reopen and decoded MP4")
+            }
+            for text in [SpatterTwoActorBrief.example + " publish it", SpatterTwoActorBrief.example.replacingOccurrences(of: "walks", with: "flies"),
+                         SpatterTwoActorBrief.example.replacingOccurrences(of: "2 seconds", with: "10 seconds")] {
+                try rejects { _ = try SpatterTwoActorBrief.parse(text) }
+            }
+            do {
+                let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("duo-timing-reject")), vm = StudioViewModel(storage: store)
+                let created = await vm.createProject(name: "No stretched duo", width: 256, height: 256, fps: 24)
+                try require(created, "Timing fixture create")
+                try rejects { _ = try SpatterTwoActorBrief.parse(SpatterTwoActorBrief.example).prepare(in: vm.commandScreenContext.document!) }
+                await vm.backToProjects()
+            }
             for text in [SpatterSceneBrief.example + " Upload it", "A red stick figure flies left to right, then waves; 2 seconds.",
                          "A red stick figure waves left to right, then waves; 2 seconds.",
                          "A red stick figure walks left to right, then waves; 500 seconds."] {
