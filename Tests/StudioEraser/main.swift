@@ -53,6 +53,279 @@ private struct Failure: Error { let message: String }
         if let error { throw error }; return try pixels(image)
     }
     static func channel(_ bytes: [UInt8], _ x: Int, _ y: Int, _ c: Int = 3, edge: Int = 128) -> UInt8 { bytes[(y * edge + x) * 4 + c] }
+    static func multiLayerSelectedErasureRegressions() throws {
+        var base = try document()
+        base.schemaVersion = 7
+        let active = base.activeLayerID, other = "selected-other", background = "unselected-background"
+        base.layers += [CanvasLayer(id: other, name: "Other target"), CanvasLayer(id: background, name: "Background")]
+        var red = artwork(active)
+        red.points = [.init(x: 8, y: 8), .init(x: 56, y: 120)]
+        var blue = artwork(other, color: "#0000FF")
+        blue.points = [.init(x: 60, y: 8), .init(x: 112, y: 120)]
+        blue.translation = .init(x: 8, y: 0)
+        let green = artwork(background, color: "#00FF00")
+        base.frames[0].elements = [green, blue, red]
+        try base.validate()
+        let ids: Set<String> = [red.id, blue.id], frame = base.activeFrameID, gesture = erase(active)
+        var editor = try StudioDocumentEditor(document: base)
+        editor.selectedElementIDs = ids
+        let preview = try editor.previewSelectedErasure(gesture, frameID: frame, elementIDs: ids)
+        try require(editor.document == base && !editor.canUndo, "Multi-layer preview mutated document/history")
+        try editor.eraseSelectedElements(gesture, frameID: frame, elementIDs: ids)
+        let result = editor.document
+        try require(result.frames[0] == preview && editor.selectedElementIDs == ids
+            && result.activeLayerID == active, "Multi-layer preview/commit/selection differ")
+        try require(result.frames[0].elements[0] == green, "Unselected background changed")
+        for original in [red, blue] {
+            let changed = result.frames[0].elements.first { $0.id == original.id }!
+            var stripped = changed; stripped.selectionErasures = nil
+            try require(stripped == original && changed.selectionErasures?.count == 1,
+                "Multi-layer erase changed editable source geometry or missed a target")
+            try require(changed.selectionErasures?.first?.pathToElement == original.erasurePlacement().invertedForErasure(),
+                "Target did not capture its own inverse placement")
+        }
+        let actual = try render(result)
+        // Fully covered interior samples avoid the documented SwiftUI partial-coverage AA batching edge.
+        for x in [32, 96] {
+            try require(channel(actual, x, 64, 0) == 0 && channel(actual, x, 64, 1) == 255
+                && channel(actual, x, 64, 2) == 0 && channel(actual, x, 64) == 255,
+                "Selected targets on distinct layers did not reveal the unselected background")
+        }
+        try require(channel(actual, 32, 32, 0) == 255 && channel(actual, 96, 32, 2) == 255,
+            "Multi-layer erasing changed intact target interiors")
+        editor.undo()
+        try require(editor.document.frames == base.frames && !editor.canUndo && editor.canRedo,
+            "Multi-layer erasure was not a single Undo transaction")
+        editor.redo()
+        try require(try render(editor.document) == actual, "Multi-layer Redo changed rendered result")
+        let archived = try StudioDocumentArchive.decode(StudioDocumentArchive(document: result, rasterFrameIndices: [:]).encoded())
+        try require(archived.document.frames == result.frames, "Multi-layer masks did not survive archive round trip")
+        pass("multi-layer selected erasure keeps independent transforms unselected pixels and single Undo/Redo/archive")
+
+        for failure in ["full", "position", "alpha", "hidden", "zero", "effect", "stale", "active"] {
+            var invalid = base
+            switch failure {
+            case "full", "position", "alpha": invalid.layers[1].lockMode = failure
+            case "hidden": invalid.layers[1].visible = false
+            case "zero": invalid.layers[1].opacity = 0
+            case "effect":
+                invalid.schemaVersion = 18
+                invalid.frames[0].elements.append(.init(id: UUID().uuidString, tool: .blur,
+                    points: [.init(x: 80, y: 64)], color: "#000000", width: 16, opacity: 0.5,
+                    layerID: other, blur: .init()))
+            case "active": invalid.layers[0].locked = true
+            default: break
+            }
+            try invalid.validate()
+            let selected = failure == "stale" ? ids.union(["missing-drawing"]) : ids
+            var rejected = try StudioDocumentEditor(document: invalid)
+            rejected.selectedElementIDs = selected
+            try rejects { _ = try rejected.previewSelectedErasure(gesture, frameID: frame, elementIDs: selected) }
+            try rejects { try rejected.eraseSelectedElements(gesture, frameID: frame, elementIDs: selected) }
+            try require(rejected.document == invalid && !rejected.canUndo && !rejected.canRedo
+                && rejected.selectedElementIDs == selected, "Multi-layer rejection partially changed \(failure) selection")
+        }
+        var unrelatedLocked = base
+        unrelatedLocked.layers[2].locked = true
+        var allowed = try StudioDocumentEditor(document: unrelatedLocked)
+        try allowed.eraseSelectedElements(gesture, frameID: frame, elementIDs: ids)
+        try require(allowed.document.frames[0].elements[0] == green,
+            "An unselected locked layer blocked erasing or changed its content")
+        var probe = try StudioDocumentEditor(document: base), checkpoints = 0
+        try probe.eraseSelectedElements(gesture, frameID: frame, elementIDs: ids, checkCancellation: { checkpoints += 1 })
+        for stop in 1...checkpoints {
+            var cancelled = try StudioDocumentEditor(document: base)
+            cancelled.selectedElementIDs = ids
+            var visits = 0
+            try rejects {
+                try cancelled.eraseSelectedElements(gesture, frameID: frame, elementIDs: ids, checkCancellation: {
+                    visits += 1
+                    if visits == stop { throw CancellationError() }
+                })
+            }
+            try require(cancelled.document == base && !cancelled.canUndo && !cancelled.canRedo
+                && cancelled.selectedElementIDs == ids, "Multi-layer cancellation partially committed")
+        }
+        pass("multi-layer hidden locked alpha effect stale and every cancellation checkpoint reject atomically")
+    }
+    static func selectedErasureRegressions() async throws {
+        let base = try document(), layer = base.activeLayerID, frame = base.activeFrameID
+        var overlap = base
+        let lower = artwork(layer, color: "#0000FF"), upper = artwork(layer)
+        overlap.frames[0].elements = [lower, upper]
+        var selectedTop = try StudioDocumentEditor(document: overlap)
+        selectedTop.selectedElementIDs = [upper.id]
+        let gesture = erase(layer)
+        for stop in 1...6 {
+            var cancelled = try StudioDocumentEditor(document: overlap)
+            cancelled.selectedElementIDs = [lower.id, upper.id]
+            var checks = 0
+            try rejects {
+                try cancelled.eraseSelectedElements(gesture, frameID: frame, elementIDs: [lower.id, upper.id], checkCancellation: {
+                    checks += 1
+                    if checks == stop { throw CancellationError() }
+                })
+            }
+            try require(cancelled.document == overlap && !cancelled.canUndo && !cancelled.canRedo
+                && cancelled.selectedElementIDs == [lower.id, upper.id], "Cancelled target processing changed document/history/selection")
+        }
+        var lockedDoc = overlap; lockedDoc.layers[0].locked = true
+        var lockedEditor = try StudioDocumentEditor(document: lockedDoc)
+        try rejects { try lockedEditor.eraseSelectedElements(gesture, frameID: frame, elementIDs: [upper.id]) }
+        try require(lockedEditor.document == lockedDoc && !lockedEditor.canUndo, "Fully locked flag allowed selected erasure")
+        pass("selected erasure cancellation during target processing and full lock preserve document/history/selection")
+        let preview = try selectedTop.previewSelectedErasure(gesture, frameID: frame, elementIDs: [upper.id])
+        try require(selectedTop.document == overlap && !selectedTop.canUndo, "Selected preview mutated history")
+        try selectedTop.eraseSelectedElements(gesture, frameID: frame, elementIDs: [upper.id])
+        let masked = selectedTop.document
+        try require(masked.frames[0].elements.count == 2 && masked.frames[0].elements[0] == lower
+            && masked.frames[0].elements[1].points == upper.points, "Selected erase rewrote source or unselected object")
+        var previewDocument = masked; previewDocument.frames[0] = preview
+        try require(try render(previewDocument) == render(masked), "Selected preview differs from committed renderer")
+        for edge in [64, 128] {
+            let p = try render(masked, edge: edge), center = edge / 2
+            try require(channel(p, center, center, 0, edge: edge) == 0
+                && channel(p, center, center, 2, edge: edge) == 255
+                && channel(p, center, center, 3, edge: edge) == 255,
+                "Selected upper hole failed to reveal overlapping unselected blue")
+            try require(channel(p, center, edge * 5 / 16, 0, edge: edge) == 255,
+                "Selected erase escaped its stroke footprint")
+        }
+        var selectedBottom = try StudioDocumentEditor(document: overlap)
+        selectedBottom.selectedElementIDs = [lower.id]
+        try selectedBottom.eraseSelectedElements(gesture, frameID: frame, elementIDs: [lower.id])
+        let bottomPixels = try render(selectedBottom.document), overlapPixels = try render(overlap)
+        let differences = zip(bottomPixels, overlapPixels).enumerated().filter { $0.element.0 != $0.element.1 }
+        print("SELECTED_LOWER_DIFF count=\(differences.count) max=\(differences.map { abs(Int($0.element.0)-Int($0.element.1)) }.max() ?? 0) first=\(differences.prefix(12).map { ($0.offset / 4 % 128, $0.offset / 4 / 128, $0.offset % 4, $0.element.0, $0.element.1) })")
+        // Known native Canvas clipping limitation, independently reproduced in
+        // a minimal platform probe: only these four partially covered lower
+        // corners may change. Do not turn this into a general image tolerance.
+        let knownCornerChannels = Set([120 * 128 + 120, 120 * 128 + 121,
+                                      121 * 128 + 120, 121 * 128 + 121].flatMap { [$0 * 4 + 2, $0 * 4 + 3] })
+        try require(differences.count <= 8 && differences.allSatisfy {
+            knownCornerChannels.contains($0.offset) && abs(Int($0.element.0)-Int($0.element.1)) <= 34
+        }, "Selected lower erase changed pixels outside the characterized native corner limitation")
+        for index in stride(from: 0, to: bottomPixels.count, by: 4) {
+            try require(bottomPixels[index] == overlapPixels[index], "Selected erase changed unselected upper red coverage")
+        }
+        try require(selectedBottom.document.frames[0].elements[1] == upper,
+            "Selected lower erase mutated unselected upper geometry")
+        selectedTop.undo(); try require(try render(selectedTop.document) == render(overlap), "Selected erase Undo changed source")
+        selectedTop.redo(); try require(try render(selectedTop.document) == render(masked), "Selected erase Redo lost mask")
+        pass("selected upper/lower protected coverage preview two-scale pixels Undo/Redo with characterized four-corner limitation")
+
+        for mode in [StudioEraserMode.hard, .soft] {
+            var owner = try StudioDocumentEditor(document: base)
+            let target = base.frames[0].elements[0].id
+            owner.selectedElementIDs = [target]
+            var halfGesture = erase(layer, mode: mode, strength: 0.5)
+            halfGesture.points += [.init(x: 32, y: 64), .init(x: 96, y: 64)]
+            try owner.eraseSelectedElements(halfGesture, frameID: frame, elementIDs: [target])
+            var wholeLayer = base; wholeLayer.schemaVersion = 9; wholeLayer.frames[0].elements.append(halfGesture)
+            let actual = try render(owner.document), expected = try render(wholeLayer)
+            try require(actual == expected, "Selected mask changed existing hard/soft/strength/crossing semantics")
+            try require(channel(actual, 64, 64) >= 127, "One selected gesture compounded strength")
+            if mode == .soft { try require(channel(actual, 64, 48) > channel(actual, 64, 64)
+                && channel(actual, 64, 48) < 255, "Selected soft edge lost meaningful falloff") }
+        }
+        pass("selected hard/soft partial strength self-crossing share exact existing mask pixels")
+
+        var transformed = base
+        transformed.schemaVersion = 11
+        transformed.frames[0].elements[0].transform = .init(a: 0, b: 0.75, c: -0.5, d: 0, tx: 96, ty: 16)
+        let target = transformed.frames[0].elements[0].id
+        var placed = try StudioDocumentEditor(document: transformed); placed.selectedElementIDs = [target]
+        try placed.eraseSelectedElements(gesture, frameID: frame, elementIDs: [target])
+        var worldMask = transformed; worldMask.frames[0].elements.append(gesture)
+        try require(try render(placed.document) == render(worldMask),
+            "Capturing on rotated/nonuniform artwork distorted the circular world-space eraser")
+        try placed.translateElements(frameID: frame, ids: [target], dx: 0, dy: 16)
+        let moved = try render(placed.document)
+        try require(channel(moved, 64, 80) == 0 && channel(moved, 64, 56) == 255,
+            "Moving selected artwork left its hole behind or moved original geometry incorrectly")
+        try placed.reflectElements(frameID: frame, ids: [target], axis: .horizontal)
+        try require(channel(try render(placed.document), 64, 80) == 0, "Reflection detached the hole from symmetric geometry")
+        pass("captured full affine mask remains correct through nonuniform rotation move and reflection")
+
+        var copies = try StudioDocumentEditor(document: masked)
+        copies.selectedElementIDs = [upper.id]
+        try copies.copyElements(frameID: frame, ids: [upper.id])
+        let pasted = try copies.pasteElements(frameID: frame, layerID: layer)
+        let copy = try requireFirst(copies.document.frames[0].elements.filter { pasted.contains($0.id) })
+        try require(copy.id != upper.id && copy.selectionErasures == masked.frames[0].elements[1].selectionErasures,
+            "Element clipboard lost independent masked copy")
+        try copies.duplicateFrame()
+        try require(copies.document.frames[1].elements.filter { $0.selectionErasures != nil }.count == 2,
+            "Frame duplication discarded selected erasures")
+        try copies.duplicateLayer(layer)
+        try require(copies.document.frames[0].elements.filter { $0.selectionErasures != nil }.count == 4,
+            "Layer duplication discarded selected erasures")
+        let bytes = try StudioDocumentArchive(document: copies.document, rasterFrameIndices: [:]).encoded()
+        try require(StudioDocumentArchive.decode(bytes).document == copies.document, "Masked clones changed during archive roundtrip")
+        pass("masked element/frame/layer clones retain editable originals descriptors and archive identities")
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-selected-eraser-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Caches"))
+        let metadata = AnimationMetadata(id: masked.id, title: masked.name, fps: masked.fps,
+            canvasWidth: 128, canvasHeight: 128, frameCount: 1, layerCount: 1,
+            createdAt: masked.createdAt, modifiedAt: masked.modifiedAt, thumbnailData: nil)
+        try storage.saveAnimation(AnimationProject(id: masked.id, metadata: metadata,
+            frames: [StoredAnimationFrame(imageData: nil, layerData: nil)], audioTracks: [],
+            editableDocumentData: StudioDocumentArchive(document: masked, rasterFrameIndices: [:]).encoded()))
+        let cold = StudioViewModel(storage: storage)
+        let opened = await cold.openProject(metadata)
+        try require(opened && cold.document == masked && render(cold.document) == render(masked),
+            "Real cold project load lost selected masks or overlap isolation")
+        let output = try await StudioExportService().export(document: cold.document, format: .pngSequence,
+            outputParent: root, background: .transparent)
+        guard let source = CGImageSourceCreateWithURL(output.imageURLs[0] as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Selected-erasure PNG cannot decode") }
+        try require(try pixels(image) == render(masked), "Real PNG differs from saved selected-erasure artwork")
+        await cold.flush()
+        pass("real storage cold reopen and decoded PNG retain selected holes and unselected overlap")
+        let vmStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("vm-documents"), cachesDirectory: root.appendingPathComponent("vm-caches"))
+        let vm = StudioViewModel(storage: vmStore)
+        let vmCreated = await vm.createProject(name: "Selected eraser VM", width: 128, height: 128, fps: 12)
+        try require(vmCreated, "Selected VM project creation failed")
+        let vmLower = artwork(vm.activeLayerID, color: "#0000FF"), vmUpper = artwork(vm.activeLayerID)
+        try require(vm.commitElement(vmLower) && vm.commitElement(vmUpper), "Selected VM source fixture rejected")
+        await vm.flush()
+        vm.selectedTool = .move; vm.selectionMode = .new
+        try require(vm.selectElement(at: CGPoint(x: 64, y: 64)) == vmUpper.id, "Actual selection did not target upper drawing")
+        vm.selectedTool = .eraser
+        guard let staleCapture = vm.captureEraserInput() else { throw Failure(message: "Selected VM capture unavailable") }
+        let vmGesture = erase(vm.activeLayerID)
+        vm.clearElementSelection()
+        let beforeStale = vm.document, beforeUndo = vm.canUndo, beforeRedo = vm.canRedo
+        try rejects { _ = try vm.eraserInputPreview(staleCapture, element: vmGesture) }
+        try require(!vm.commitEraserInput(staleCapture, element: vmGesture) && vm.document == beforeStale
+            && vm.canUndo == beforeUndo && vm.canRedo == beforeRedo, "Stale selected eraser broadened to whole-layer erase")
+        vm.selectedTool = .move; vm.selectionMode = .new
+        try require(vm.selectElement(at: CGPoint(x: 64, y: 64)) == vmUpper.id, "Fresh real selection failed")
+        vm.selectedTool = .eraser
+        guard let capture = vm.captureEraserInput() else { throw Failure(message: "Fresh selected capture unavailable") }
+        try require(vm.beginStrokeInput(id: vmGesture.id), "Selected eraser input ownership unavailable")
+        let vmPreview = try vm.eraserInputPreview(capture, element: vmGesture)
+        try require(vm.commitEraserInput(capture, element: vmGesture), "Current selected eraser commit failed")
+        vm.finishStrokeInput(id: vmGesture.id)
+        var previewState = vm.document; previewState.frames[0] = vmPreview
+        let committedPixels = try render(vm.document)
+        try require(try render(previewState) == committedPixels && vm.currentFrame.elements[0] == vmLower
+            && vm.selectedElementIDs == [vmUpper.id], "VM preview/commit changed unselected artwork or selection")
+        vm.undo(); try require(vm.document.frames[0].elements == [vmLower, vmUpper], "VM selected erasure Undo changed original drawings")
+        vm.redo(); try require(try render(vm.document) == committedPixels, "VM selected erasure Redo changed holes")
+        let vmSaved = await vm.save(); try require(vmSaved, "Actual selected VM save failed")
+        let vmCold = StudioViewModel(storage: vmStore); await vmCold.loadProjects()
+        let vmMetadata = try requireFirst(vmCold.savedProjects)
+        let vmOpened = await vmCold.openProject(vmMetadata)
+        try require(vmOpened, "Actual selected VM cold reopen failed")
+        try require(vmCold.document == vm.document && render(vmCold.document) == committedPixels,
+            "Actual selected VM persistence lost masks/history result")
+        await vmCold.flush(); await vm.flush()
+        pass("actual selected capture rejects selection changes and commits preview Undo/Redo save/cold without broadening")
+    }
+
     static func main() async throws {
         setbuf(stdout,nil)
         var legacy = erase("old",strength: 0.3,width: 8); legacy.eraser = nil
@@ -295,6 +568,8 @@ private struct Failure: Error { let message: String }
         try require(decoded.settings(for:.eraser).width == 20 && decoded.settings(for:.eraser).opacity == 0.6 && decoded.settings(for:.eraser).eraserMode == nil,
                     "Earlier version1 preferences lost custom values")
         pass("existing version1 tool preferences without eraser mode decode unchanged")
+        try await selectedErasureRegressions()
+        try multiLayerSelectedErasureRegressions()
         print("\(passed) production eraser groups passed")
     }
     static func requireFirst<T>(_ values:[T]) throws -> T {

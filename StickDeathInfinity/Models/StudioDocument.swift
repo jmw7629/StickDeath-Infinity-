@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...27
+    static let supportedSchemaVersions = 1...29
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -106,6 +106,10 @@ struct StudioDocument: Codable, Equatable {
               layerIDs.contains(activeLayerID), frameIDs.contains(activeFrameID),
               !layerIDs.contains(""), !frameIDs.contains("") else { throw StudioDocumentError.invalid("Project identities or selection are invalid.") }
         for layer in layers {
+            guard layer.hasValidGlowSettings,
+                  (layer.glowRadius == nil && layer.glowStrength == nil) || schemaVersion >= 28 else {
+                throw StudioDocumentError.invalid("Glow needs radius 0–128 and strength 0–100% in project version 28.")
+            }
             guard !layer.name.isEmpty, layer.name.count <= 120, layer.opacity.isFinite, (0...1).contains(layer.opacity) else {
                 throw StudioDocumentError.invalid("A layer has invalid settings.")
             }
@@ -169,7 +173,7 @@ struct StudioDocument: Codable, Equatable {
             }
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
-            guard frame.elements.filter({ $0.eraser != nil }).count <= 256 else {
+            guard frame.elements.reduce(0, { $0 + ($1.eraser == nil ? 0 : 1) + ($1.selectionErasures?.count ?? 0) }) <= 256 else {
                 throw StudioDocumentError.invalid("This frame exceeds the 256 styled eraser stroke limit.")
             }
             guard frame.elements.filter({ $0.text != nil }).count <= 256 else {
@@ -205,6 +209,18 @@ struct StudioDocument: Codable, Equatable {
                     try text.validate(element: element)
                     textBytes += text.content.utf8.count
                     guard textBytes <= 262_144 else { throw StudioDocumentError.invalid("This project exceeds its editable text budget.") }
+                }
+                if let erasures = element.selectionErasures {
+                    guard schemaVersion >= 29, !erasures.isEmpty, erasures.count <= 64 else {
+                        throw StudioDocumentError.invalid("Selected erasures require project version29 and at most 64 masks per object.")
+                    }
+                    for erasure in erasures {
+                        _ = try erasure.element(for: element)
+                        eraserCount += 1; eraserSamples += erasure.points.count
+                        guard eraserCount <= 1_024, eraserSamples <= 65_536 else {
+                            throw StudioDocumentError.invalid("This project exceeds its styled eraser rendering budget.")
+                        }
+                    }
                 }
                 if let eraser = element.eraser {
                     guard schemaVersion >= 9 else { throw StudioDocumentError.invalid("Styled erasers require project version9. The original has not changed.") }
@@ -628,6 +644,7 @@ struct StudioDocumentEditor {
             }
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }) else { throw StudioDocumentError.invalid("The drawing frame is unavailable.") }
             value.frames[index].elements.append(element)
+            if element.selectionErasures != nil { value.schemaVersion = max(value.schemaVersion, 29) }
             if element.preservesLayerAlpha == true { value.schemaVersion = max(value.schemaVersion, 24) }
             if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
             if let family = element.brush?.family, [.airbrush, .watercolor, .neon].contains(family) { value.schemaVersion = max(value.schemaVersion, 25) }
@@ -646,6 +663,89 @@ struct StudioDocumentEditor {
             if element.sharpen != nil { value.schemaVersion = max(value.schemaVersion, 19) }
             if element.dodgeBurn != nil { value.schemaVersion = max(value.schemaVersion, 20) }
         }
+    }
+    /// Preview and commit share the same immutable projection and full-document
+    /// validation, so no preview can promise coverage the transaction rejects.
+    private func selectedErasureDocument(_ eraser: DrawnElement, frameID: String,
+                                         elementIDs: Set<String>,
+                                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioDocument {
+        try checkCancellation()
+        guard frameID == document.activeFrameID, !elementIDs.isEmpty, elementIDs.count <= 256,
+              let index = document.frames.firstIndex(where: { $0.id == frameID }),
+              let layer = document.layers.first(where: { $0.id == document.activeLayerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free",
+              eraser.layerID == layer.id, let descriptor = eraser.eraser,
+              eraser.translation == nil, eraser.reflection == nil, eraser.transform == nil,
+              eraser.selectionErasures == nil, !eraser.hasPixelEffect,
+              eraser.preservesLayerAlpha == nil else {
+            throw StudioDocumentError.unavailable("Selected erasing requires the active visible unlocked layer and a plain eraser stroke. Nothing changed.")
+        }
+        try descriptor.validate(element: eraser)
+        let frame = document.frames[index]
+        let targets = frame.elements.filter { elementIDs.contains($0.id) }
+        guard targets.count == elementIDs.count else {
+            throw StudioDocumentError.unavailable("The selected drawings are no longer available. Nothing changed.")
+        }
+        var targetLayerIDs = Set<String>()
+        for target in targets {
+            try checkCancellation()
+            guard let targetLayer = document.layers.first(where: { $0.id == target.layerID }),
+                  targetLayer.visible, targetLayer.opacity > 0,
+                  !targetLayer.isFullyLocked, targetLayer.lockMode == "free" else {
+                throw StudioDocumentError.unavailable("Every selected drawing must be on a visible unlocked layer. Nothing changed.")
+            }
+            targetLayerIDs.insert(targetLayer.id)
+        }
+        guard !frame.elements.contains(where: { element in
+            (element.layerID.map { targetLayerIDs.contains($0) } ?? false) && (element.hasPixelEffect || element.preservesLayerAlpha == true)
+        }) else {
+            throw StudioDocumentError.unavailable("Selected layers cannot contain backdrop-dependent effects or alpha paint. Nothing changed.")
+        }
+        let frameMasks = frame.elements.reduce(0) { $0 + ($1.eraser == nil ? 0 : 1) + ($1.selectionErasures?.count ?? 0) }
+        var projectMasks = 0, projectSamples = 0
+        for existingFrame in document.frames {
+            try checkCancellation()
+            for element in existingFrame.elements {
+                projectMasks += (element.eraser == nil ? 0 : 1) + (element.selectionErasures?.count ?? 0)
+                projectSamples += (element.eraser == nil ? 0 : element.points.count)
+                projectSamples += (element.selectionErasures ?? []).reduce(0) { $0 + $1.points.count }
+            }
+        }
+        guard elementIDs.count <= 256 - frameMasks, elementIDs.count <= 1_024 - projectMasks,
+              eraser.points.count <= (65_536 - projectSamples) / elementIDs.count else {
+            throw StudioDocumentError.unavailable("This selected erasure exceeds the frame or project eraser budget. Nothing changed.")
+        }
+        var result = document
+        for ei in frame.elements.indices where elementIDs.contains(frame.elements[ei].id) {
+            try checkCancellation()
+            let target = frame.elements[ei]
+            guard target.tool != .eraser, target.eraser == nil, !target.hasPixelEffect,
+                  target.preservesLayerAlpha != true, (target.selectionErasures?.count ?? 0) < 64 else {
+                throw StudioDocumentError.unavailable("This selection cannot accept another object erasure. Nothing changed.")
+            }
+            let mask = StudioElementErasure(points: eraser.points, width: eraser.width,
+                opacity: eraser.opacity, mode: descriptor.mode,
+                pathToElement: try target.erasurePlacement().invertedForErasure())
+            _ = try mask.element(for: target)
+            result.frames[index].elements[ei].selectionErasures = (target.selectionErasures ?? []) + [mask]
+        }
+        result.schemaVersion = max(result.schemaVersion, 29)
+        try result.validate()
+        try checkCancellation()
+        return result
+    }
+    func previewSelectedErasure(_ eraser: DrawnElement, frameID: String,
+                                elementIDs: Set<String>,
+                                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> AnimationFrame {
+        let value = try selectedErasureDocument(eraser, frameID: frameID, elementIDs: elementIDs, checkCancellation: checkCancellation)
+        return value.frames.first { $0.id == frameID }!
+    }
+    mutating func eraseSelectedElements(_ eraser: DrawnElement, frameID: String,
+                                       elementIDs: Set<String>,
+                                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        let value = try selectedErasureDocument(eraser, frameID: frameID, elementIDs: elementIDs, checkCancellation: checkCancellation)
+        try checkCancellation()
+        try change { $0 = value }
     }
     mutating func updateText(frameID: String, elementID: String, text: StudioTextDescriptor, color: String, opacity: Double) throws {
         try change { value in
@@ -700,17 +800,18 @@ struct StudioDocumentEditor {
             for element in frame.elements where ids.contains(element.id) && element.layerID == layer.id {
                 try checkCancellation()
                 guard layer.visible, layer.opacity > 0, !layer.isFullyLocked else { throw StudioDocumentError.locked }
-                guard element.points.count <= 65_536 - points else {
+                let maskPoints = (element.selectionErasures ?? []).reduce(0) { $0 + $1.points.count }
+                guard element.points.count + maskPoints <= 65_536 - points else {
                     throw StudioDocumentError.unavailable("Copy is limited to 65,536 drawing points. Copy a smaller selection.")
                 }
                 guard !element.hasPixelEffect else {
                     throw StudioDocumentError.unavailable("Copy the whole frame to preserve a pixel effect and its source artwork.")
                 }
-                points += element.points.count
+                points += element.points.count + maskPoints
                 let geometryCost = element.points.count * 40 + (element.fillMask?.spans.count ?? 0) * MemoryLayout<StudioFillMask.Span>.stride
                 let identityCost = element.id.utf8.count + element.color.utf8.count + (element.layerID?.utf8.count ?? 0)
                 let textCost = element.text?.content.utf8.count ?? 0
-                let cost = 1024 + geometryCost + identityCost + textCost
+                let cost = 1024 + geometryCost + identityCost + textCost + maskPoints * 40 + (element.selectionErasures?.count ?? 0) * 256
                 guard cost <= 8 * 1024 * 1024 - bytes else {
                     throw StudioDocumentError.unavailable("The drawing clipboard is limited to 8 MB. Copy a smaller selection.")
                 }
@@ -746,9 +847,10 @@ struct StudioDocumentEditor {
                 value.frames[index].elements.append(DrawnElement(id: id, tool: element.tool, points: element.points,
                     color: element.color, width: element.width, opacity: element.opacity, fillColor: element.fillColor,
                     layerID: layerID, brush: element.brush, shape: element.shape, fillMask: element.fillMask,
-                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha))
+                    translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures))
                 ids.insert(id)
-                if element.preservesLayerAlpha == true { value.schemaVersion = max(value.schemaVersion, 24) }
+                if element.selectionErasures != nil { value.schemaVersion = max(value.schemaVersion, 29) }
+            if element.preservesLayerAlpha == true { value.schemaVersion = max(value.schemaVersion, 24) }
                 if element.brush != nil { value.schemaVersion = max(value.schemaVersion, 2) }
             if let family = element.brush?.family, [.airbrush, .watercolor, .neon].contains(family) { value.schemaVersion = max(value.schemaVersion, 25) }
             if element.brush?.tiltEnabled == true || element.points.contains(where: { $0.tilt != nil }) {
@@ -780,10 +882,11 @@ struct StudioDocumentEditor {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
-                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha)
+                             brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
             }
             let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
+            if elements.contains(where: { $0.selectionErasures != nil }) { value.schemaVersion = max(value.schemaVersion, 29) }
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
             if elements.contains(where: { $0.brush?.tiltEnabled == true || $0.points.contains(where: { $0.tilt != nil }) }) {
@@ -1189,6 +1292,9 @@ struct StudioDocumentEditor {
         try change { value in
             guard let index = value.layers.firstIndex(where: { $0.id == id }) else { throw StudioDocumentError.invalid("The layer is unavailable.") }
             try operation(&value.layers[index])
+            if value.layers[index].glowRadius != nil || value.layers[index].glowStrength != nil {
+                value.schemaVersion = max(value.schemaVersion, 28)
+            }
         }
     }
     mutating func duplicateLayer(_ id: String) throws {
@@ -1198,13 +1304,13 @@ struct StudioDocumentEditor {
             let original = value.layers[index]
             let layer = CanvasLayer(id: UUID().uuidString, name: String((original.name + " Copy").prefix(120)), visible: original.visible,
                                     locked: original.locked, opacity: original.opacity, lockMode: original.lockMode,
-                                    blendMode: original.blendMode, glowEnabled: original.glowEnabled, glowColor: original.glowColor, colorLabel: original.colorLabel)
+                                    blendMode: original.blendMode, glowEnabled: original.glowEnabled, glowColor: original.glowColor, colorLabel: original.colorLabel, glowRadius: original.glowRadius, glowStrength: original.glowStrength)
             value.layers.insert(layer, at: index); value.activeLayerID = layer.id
             for frameIndex in value.frames.indices {
                 let copies = value.frames[frameIndex].elements.filter { $0.layerID == id }.map { element in
                     DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                                  width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: layer.id,
-                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha)
+                                 brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
                 if var instance = value.frames[frameIndex].rasterInstance(on: id) {
@@ -1238,6 +1344,7 @@ struct StudioDocumentEditor {
                 bytes += (frame.rasterAliases?.count ?? 0) * 512
                 for element in frame.elements {
                     bytes += 256 + element.points.count * 40
+                    bytes += (element.selectionErasures ?? []).reduce(0) { $0 + 256 + $1.points.count * 40 }
                     if let mask = element.fillMask {
                         bytes += mask.spans.count * MemoryLayout<StudioFillMask.Span>.stride
                     }
@@ -1303,7 +1410,7 @@ enum StudioBrushGeometryCache {
         _ = try color(element.color)
         // Translation is applied by the shared renderer after geometry creation.
         // Keep the same deterministic geometry in cache throughout a drag.
-        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil; geometryElement.transform = nil
+        var geometryElement = element; geometryElement.translation = nil; geometryElement.reflection = nil; geometryElement.transform = nil; geometryElement.selectionErasures = nil
         lock.lock()
         if var hit = entries[element.id], hit.element == geometryElement {
             clock &+= 1; hit.used = clock; entries[element.id] = hit
@@ -1439,6 +1546,7 @@ extension StudioDocumentEditor {
                   a.opacity == b.opacity, a.fillColor == b.fillColor, a.brush == b.brush, a.shape == b.shape,
                   a.fillMask == b.fillMask, a.reflection == b.reflection, a.text == b.text,
                   a.tool != .eraser, a.eraser == nil, b.eraser == nil,
+                  a.selectionErasures?.isEmpty != false, b.selectionErasures?.isEmpty != false,
                   !a.hasPixelEffect, !b.hasPixelEffect,
                   a.preservesLayerAlpha != true, b.preservesLayerAlpha != true,
                   !a.points.isEmpty, a.points.count == b.points.count,

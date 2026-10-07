@@ -16,12 +16,22 @@ struct StudioView: View {
     
     @StateObject private var spatterPictureHandoff = SpatterPictureImportHandoff()
     @State private var spatterPictureRequest: SpatterPictureImportHandoff.Request?
+    @State private var bottomImageDeletion: StudioViewModel.ImageMoveCapture?
+    @State private var showingBottomImageDeletion = false
+    @State private var menuRequest: StudioViewModel.MenuHandoff?
     @State private var spatterMovieRequest: StudioMoviePanelState.DirectRequest?
 
     var body: some View {
         Group {
             if vm.isEditing { editorBody }
             else { StudioProjectLibrary(vm: vm) }
+        }
+        .confirmationDialog("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
+            titleVisibility: .visible, presenting: bottomImageDeletion) { capture in
+            Button("Delete image", role: .destructive) { _ = vm.deleteBottomImage(capture) }
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text("Only this frame's selected picture will be removed. Its layer and drawings stay. Undo restores the picture.")
         }
         .task {
             vm.projectThumbnailRenderer = { document, raster in
@@ -30,20 +40,27 @@ struct StudioView: View {
             await vm.loadProjects()
         }
         .onChange(of: authVM.userId) { _ in
+            vm.cancelMenuHandoff(); menuRequest = nil
             // Even switching away and back invalidates the original authority.
             spatterPictureHandoff.cancel(); spatterPictureRequest = nil
+            bottomImageDeletion = nil; showingBottomImageDeletion = false
         }
         .onChange(of: scenePhase) { phase in
-            if phase != .active { spatterPictureHandoff.cancel(); spatterPictureRequest = nil; vm.stopPlayback(); Task { await vm.flush() } }
+            if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
         }
-        .onDisappear { spatterPictureHandoff.cancel(); spatterPictureRequest = nil; vm.stopPlayback(); Task { await vm.flush() } }
+        .onChange(of: vm.document.id) { _ in vm.cancelMenuHandoff(); menuRequest = nil }
+        .onChange(of: vm.isEditing) { editing in if !editing { vm.cancelMenuHandoff(); menuRequest = nil } }
+        .onDisappear { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
     }
 
     private var editorBody: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
-            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
+            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } },
+                onImageDelete: { capture in
+                    bottomImageDeletion = capture; showingBottomImageDeletion = true
+                })
             
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
@@ -59,8 +76,19 @@ struct StudioView: View {
             if vm.activePanel == .addImage { AddImagePanel(vm: vm) }
             if vm.activePanel == .rotoscope { RotoscopeSheet(vm: vm) }
         }
-        .sheet(isPresented: showMenuBinding) {
-            StudioMenuSheet(vm: vm)
+        .sheet(isPresented: showMenuBinding, onDismiss: {
+            guard let request = menuRequest else { return }
+            menuRequest = nil
+            _ = vm.consumeMenuHandoff(request, accountID: authVM.userId, isForeground: scenePhase == .active)
+        }) {
+            StudioMenuSheet(vm: vm, onNavigate: { destination in
+                guard let request = vm.prepareMenuHandoff(to: destination, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "Finish the active edit or save before opening another Studio panel."
+                    return
+                }
+                menuRequest = request
+                vm.activePanel = .none
+            })
         }
         .sheet(isPresented: showAIVoiceBinding) {
             AIVoiceMakerSheet(vm: vm)
@@ -131,6 +159,7 @@ struct StudioView: View {
 struct StudioEditorWorkspace: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void
+    let onImageDelete: (StudioViewModel.ImageMoveCapture) -> Void
     @State private var toolbar = StudioToolbarLayout()
     @State private var dragOrigin: CGRect?
     @GestureState private var dragTranslation: CGSize = .zero
@@ -150,7 +179,7 @@ struct StudioEditorWorkspace: View {
                 canvasStage(compactHeight: compact)
                 if vm.showToolbar {
                     StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm)
+                    StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
                 }
             }
         }
@@ -237,6 +266,7 @@ struct ZoomButton: View {
 // MARK: - Studio Bottom Bar
 struct StudioBottomBar: View {
     @ObservedObject var vm: StudioViewModel
+    let onImageDelete: (StudioViewModel.ImageMoveCapture) -> Void
     
     var body: some View {
         HStack(spacing: 0) {
@@ -258,35 +288,27 @@ struct StudioBottomBar: View {
             }
             .accessibilityIdentifier("studio.redo")
             
-            // Explicit artwork selection takes precedence over the frame.
-            // Both commands use the same project-local clipboard as Paste.
-            BottomBarButton(icon: "doc.on.doc", label: "COPY") {
-                if vm.selectedElementIDs.isEmpty {
-                    vm.copyFrame()
-                } else {
-                    _ = vm.copySelected()
-                }
+            // Explicit image/drawing selection determines copy scope. A later
+            // successful copy also selects the corresponding Paste payload.
+            BottomBarButton(icon: "doc.on.doc", label: "COPY", enabled: vm.canCopyBottomSelection) { vm.copyBottomSelection() }
+                .accessibilityIdentifier("studio.copy")
+                .accessibilityLabel(vm.bottomCopyLabel)
+                .accessibilityHint(vm.bottomImageSelection != nil
+                    ? "Copies only the selected image. Paste adds it to a blank frame."
+                    : vm.selectedElementIDs.isEmpty ? "Copies the current frame. Select artwork to copy only those drawings."
+                    : "Copies only selected artwork. Paste adds it to the active layer.")
+            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) { vm.pasteClipboard() }
+                .accessibilityIdentifier("studio.paste")
+                .accessibilityLabel(vm.bottomPasteLabel)
+                .accessibilityHint(vm.usesImageClipboard ? "Images paste into a blank frame on an unlocked layer. Existing images are not replaced." : "Pastes the most recently copied frame or drawings.")
+            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected || vm.bottomImageSelection != nil) {
+                if let capture = vm.bottomImageSelection {
+                    onImageDelete(capture)
+                } else { vm.deleteSelected() }
             }
-            .accessibilityIdentifier("studio.copy")
-            .accessibilityLabel(vm.selectedElementIDs.isEmpty ? "Copy frame"
-                : vm.selectedElementIDs.count == 1 ? "Copy selected drawing"
-                : "Copy \(vm.selectedElementIDs.count) selected drawings")
-            .accessibilityHint(vm.selectedElementIDs.isEmpty
-                ? "Copies the current frame. Select artwork to copy only those drawings."
-                : "Copies only selected artwork. Paste adds it to the active layer.")
-            
-            // Paste
-            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
-                vm.pasteClipboard()
-            }
-            .accessibilityIdentifier("studio.paste")
-            .accessibilityLabel(vm.copiedDrawingCount == 1 ? "Paste drawing" : vm.copiedDrawingCount > 0 ? "Paste \(vm.copiedDrawingCount) drawings" : "Paste frame")
-            
-            // Delete
-            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected) {
-                vm.deleteSelected()
-            }
-            
+            .accessibilityIdentifier("studio.delete-selection")
+            .accessibilityLabel(vm.bottomImageSelection == nil ? "Delete selected drawings" : "Delete selected image")
+
             // Layer (with red badge)
             Button(action: {
                 vm.activePanel = vm.activePanel == .layers ? .none : .layers
@@ -354,9 +376,9 @@ struct FramesViewerPanel: View {
                 
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                        ForEach(vm.frames.indices, id: \.self) { i in
+                        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
                             Button(action: {
-                                vm.currentFrameIndex = i
+                                vm.selectFrame(frame.id)
                                 vm.activePanel = .none
                             }) {
                                 VStack(spacing: 4) {
@@ -366,20 +388,23 @@ struct FramesViewerPanel: View {
                                             .frame(height: 80)
                                         
                                         // Render frame elements
-                                        StudioFrameThumbnail(vm: vm, frame: vm.frames[i])
+                                        StudioFrameThumbnail(vm: vm, frame: frame)
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1), lineWidth: vm.currentFrameIndex == i ? 2 : 1)
+                                            .stroke(vm.currentFrame.id == frame.id ? Color.red : Color.white.opacity(0.1), lineWidth: vm.currentFrame.id == frame.id ? 2 : 1)
                                     )
                                     
                                     Text("Frame \(i + 1)")
                                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                        .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.5))
+                                        .foregroundColor(vm.currentFrame.id == frame.id ? .red : .white.opacity(0.5))
                                 }
                             }
+                            .accessibilityIdentifier("studio.frames-viewer.frame." + frame.id)
+                            .accessibilityLabel("Frame \(i + 1)")
+                            .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
                         }
                         
                         // Add frame button
@@ -551,6 +576,7 @@ struct AddImageOption: View {
 // MARK: - Studio Menu Sheet
 struct StudioMenuSheet: View {
     @ObservedObject var vm: StudioViewModel
+    let onNavigate: (StudioPanelType) -> Void
     @State private var showingOnionSettings = false
     @State private var showingGridSettings = false
     @Environment(\.dismiss) var dismiss
@@ -575,10 +601,7 @@ struct StudioMenuSheet: View {
                 SectionLabel(text: "PROJECT")
                 
                 MenuSheetRow(icon: "⚙️", label: "Project Settings") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .projectSettings
-                    }
+                    onNavigate(.projectSettings)
                 }
                 
                 Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 16)
@@ -587,10 +610,7 @@ struct StudioMenuSheet: View {
                 SectionLabel(text: "TOOLS")
                 
                 MenuSheetRow(icon: "🎬", label: "Frames Viewer") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .framesViewer
-                    }
+                    onNavigate(.framesViewer)
                 }
                 
                 MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
@@ -599,45 +619,27 @@ struct StudioMenuSheet: View {
                 if showingGridSettings { StudioGridSettingsControls(vm: vm) }
                 
                 MenuSheetRow(icon: "✨", label: "Magic Cut") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .magicCut
-                    }
+                    onNavigate(.magicCut)
                 }
                 
                 MenuSheetRow(icon: "🖼️", label: "Background Library") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .backgroundLibrary
-                    }
+                    onNavigate(.backgroundLibrary)
                 }
                 
                 MenuSheetRow(icon: "🎬", label: "Rotoscope / Video") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .rotoscope
-                    }
+                    onNavigate(.rotoscope)
                 }
                 
                 MenuSheetRow(icon: "🖼️", label: "Add Picture") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .addImage
-                    }
+                    onNavigate(.addImage)
                 }
                 
                 MenuSheetRow(icon: "🗣️", label: "Voice Maker") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .aiVoice
-                    }
+                    onNavigate(.aiVoice)
                 }
                 
                 MenuSheetRow(icon: "🎨", label: "Spatter AI", accent: true) {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .spatterAI
-                    }
+                    onNavigate(.spatterAI)
                 }
                 .accessibilityIdentifier("studio.spatter.open")
                 

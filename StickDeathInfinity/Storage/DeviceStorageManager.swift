@@ -158,15 +158,8 @@ class DeviceStorageManager {
         let revisions = storage.appendingPathComponent("revisions", isDirectory: true)
         let revision = UUID()
         let destination = revisions.appendingPathComponent(revision.uuidString + ".json")
-        try data.write(to: destination, options: .withoutOverwriting)
-        let handle = try FileHandle(forWritingTo: destination)
-        do {
-            try handle.synchronize()
-            try handle.close()
-        } catch {
-            try? handle.close()
-            throw error
-        }
+        try writeRevisionFile(data, to: destination, stage: .payload)
+        try synchronizeRevisionFile(destination, stage: .payload)
         let pointer = storage.appendingPathComponent("current.json")
         if itemExists(pointer) { _ = try checkedFile(pointer, maximumBytes: 1024) }
         // Only prospective successfully selected ancestry is eligible for explicit
@@ -184,10 +177,9 @@ class DeviceStorageManager {
             payloadSHA256: Self.digest(data), payloadBytes: data.count, parent: parent)
         let lineage = try lineageDirectory(storage, create: true)
         let receiptData = try JSONEncoder().encode(receipt)
-        try receiptData.write(to: lineage.appendingPathComponent(revision.uuidString + ".json"), options: .withoutOverwriting)
-        let receiptHandle = try FileHandle(forWritingTo: lineage.appendingPathComponent(revision.uuidString + ".json"))
-        do { try receiptHandle.synchronize(); try receiptHandle.close() }
-        catch { try? receiptHandle.close(); throw error }
+        let receiptURL = lineage.appendingPathComponent(revision.uuidString + ".json")
+        try writeRevisionFile(receiptData, to: receiptURL, stage: .lineageReceipt)
+        try synchronizeRevisionFile(receiptURL, stage: .lineageReceipt)
         // Both the payload and its ancestry directory entries must be durable
         // before current.json can select them. File fsync alone is insufficient.
         try synchronizeRevisionDirectory(revisions)
@@ -195,6 +187,18 @@ class DeviceStorageManager {
         try synchronizeRevisionDirectory(storage)
         let current = try JSONEncoder().encode(CurrentRevision(version: 1, revision: revision, lineageSHA256: Self.digest(receiptData)))
         try commitCurrentRevision(current, to: pointer)
+    }
+
+    enum RevisionWriteStage { case payload, lineageReceipt }
+    /// Narrow filesystem seams: default behavior and publication ordering are unchanged.
+    /// Failure leaves unselected recovery data intact and never selects partial content.
+    func writeRevisionFile(_ data: Data, to url: URL, stage: RevisionWriteStage) throws {
+        try data.write(to: url, options: .withoutOverwriting)
+    }
+    func synchronizeRevisionFile(_ url: URL, stage: RevisionWriteStage) throws {
+        let handle = try FileHandle(forWritingTo: url)
+        do { try handle.synchronize(); try handle.close() }
+        catch { try? handle.close(); throw error }
     }
 
     /// Filesystem failure seam for production-store tests. The default commit
@@ -892,8 +896,8 @@ struct StudioStorageScanRequest: Sendable {
 // Existing v1 documents remain readable; snapshots before the first ancestry
 // receipt and failed-save orphans are intentionally not cleanup candidates.
 extension DeviceStorageManager {
-    private struct LineageReference: Codable { let revision: UUID; let sha256: String }
-    private struct LineageReceipt: Codable {
+    fileprivate struct LineageReference: Codable { let revision: UUID; let sha256: String }
+    fileprivate struct LineageReceipt: Codable {
         let version: Int
         let project: UUID
         let revision: UUID
@@ -937,12 +941,12 @@ extension DeviceStorageManager {
         let device: Int64
         let inode: UInt64
     }
-    private struct CleanupCandidate {
+    fileprivate struct CleanupCandidate {
         let receipt: LineageReceipt
         let info: stat
         let alreadyStaged: Bool
     }
-    private struct CleanupPlan {
+    fileprivate struct CleanupPlan {
         let preview: RevisionCleanupPreview
         let storage: URL
         let revisions: URL
@@ -1086,6 +1090,231 @@ extension DeviceStorageManager {
               journal.selectedRevision != receipt.revision else { throw RevisionCleanupFailure.invalid }
         return journal
     }
+    struct RevisionCleanupScanProgress: Sendable {
+        let scannedRevisions: Int
+        let preview: RevisionCleanupPreview?
+    }
+    /// Process-owned cursor. No disk cursor is trusted after cancellation or process death.
+    final class RevisionCleanupScan: @unchecked Sendable {
+        let id = UUID()
+        let projectID: UUID
+        fileprivate weak var owner: DeviceStorageManager?
+        fileprivate let storage: URL
+        fileprivate let revisions: URL
+        fileprivate let lineage: URL?
+        fileprivate let pointerData: Data
+        fileprivate let selectedRevision: UUID
+        fileprivate var next: LineageReference?
+        fileprivate var cycleAnchor: UUID?
+        fileprivate var cyclePower = 1, cycleDistance = 0
+        fileprivate var depth = 0, readBudget = 512 * 1024 * 1024
+        fileprivate var candidates: [CleanupCandidate] = []
+        fileprivate var protected: [CleanupCandidate] = []
+        fileprivate var bytes: Int64 = 0
+        fileprivate var more = false
+        fileprivate var plan: CleanupPlan?
+        fileprivate var lockFD: Int32
+        fileprivate var storageFD: Int32
+        fileprivate var revisionsFD: Int32
+        fileprivate var lineageFD: Int32
+        private let lifecycleLock = NSLock()
+        private var cancelled = false, operations = 0
+        fileprivate let idleTimeout: TimeInterval
+        fileprivate var expiry: TimeInterval = 0
+        fileprivate var timer: DispatchSourceTimer?
+        fileprivate init(owner: DeviceStorageManager, projectID: UUID, storage: URL, revisions: URL,
+                         lineage: URL?, pointerData: Data, selectedRevision: UUID, next: LineageReference?,
+                         lockFD: Int32, storageFD: Int32, revisionsFD: Int32, lineageFD: Int32, idleTimeout: TimeInterval) {
+            self.owner = owner; self.projectID = projectID; self.storage = storage; self.revisions = revisions
+            self.lineage = lineage; self.pointerData = pointerData; self.selectedRevision = selectedRevision
+            self.next = next; self.lockFD = lockFD; self.storageFD = storageFD; self.idleTimeout = idleTimeout
+            self.revisionsFD = revisionsFD; self.lineageFD = lineageFD
+            let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+            timer.setEventHandler { [weak self] in _ = self?.isActive() }
+            self.timer = timer; touch(); timer.resume()
+        }
+        fileprivate func touch() {
+            lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+            guard !cancelled else { return }
+            expiry = ProcessInfo.processInfo.systemUptime + idleTimeout
+            timer?.schedule(deadline: .now() + idleTimeout)
+        }
+        private func closeOwnedDescriptors() {
+            if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
+            if storageFD >= 0 { close(storageFD); storageFD = -1 }
+            if revisionsFD >= 0 { close(revisionsFD); revisionsFD = -1 }
+            if lineageFD >= 0 { close(lineageFD); lineageFD = -1 }
+        }
+        private func cancelLocked() {
+            cancelled = true; timer?.cancel(); timer = nil
+            if operations == 0 { closeOwnedDescriptors() }
+        }
+        func cancel() {
+            lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+            cancelLocked()
+        }
+        func isActive() -> Bool {
+            lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+            if !cancelled && ProcessInfo.processInfo.systemUptime >= expiry { cancelLocked() }
+            return !cancelled && lockFD >= 0
+        }
+        fileprivate func beginOperation() throws {
+            lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+            if !cancelled && ProcessInfo.processInfo.systemUptime >= expiry { cancelLocked() }
+            guard !cancelled && lockFD >= 0 else { throw RevisionCleanupFailure.changed }
+            operations += 1
+        }
+        fileprivate func endOperation() {
+            lifecycleLock.lock(); defer { lifecycleLock.unlock() }
+            operations -= 1
+            if operations == 0 && cancelled { closeOwnedDescriptors() }
+        }
+        deinit { timer?.cancel(); closeOwnedDescriptors() }
+
+    }
+    func beginRevisionCleanupScan(id: UUID, idleTimeout: TimeInterval = 120) throws -> RevisionCleanupScan {
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        guard idleTimeout.isFinite, (0.01...120).contains(idleTimeout) else { throw RevisionCleanupFailure.limit }
+        let storage = try revisionDirectory(animationsDir.appendingPathComponent(id.uuidString), create: false)
+        let lock = try revisionMutationLock(storage)
+        var directory: Int32 = -1, revisionsFD: Int32 = -1, lineageFD: Int32 = -1
+        var transferred = false
+        defer { if !transferred { flock(lock, LOCK_UN); close(lock); if directory >= 0 { close(directory) }; if revisionsFD >= 0 { close(revisionsFD) }; if lineageFD >= 0 { close(lineageFD) } } }
+        directory = try revisionDirectoryDescriptor(storage)
+        let pointerData = try safeRevisionRead(storage.appendingPathComponent("current.json"), maximum: 1024).data
+        let pointer = try JSONDecoder().decode(CurrentRevision.self, from: pointerData)
+        guard pointer.version == 1 else { throw RevisionCleanupFailure.invalid }
+        let lineage = try pointer.lineageSHA256.map { _ in try lineageDirectory(storage, create: false) }
+        revisionsFD = try revisionDirectoryDescriptor(storage.appendingPathComponent("revisions"))
+        if let lineage { lineageFD = try revisionDirectoryDescriptor(lineage) }
+        if lineage == nil { _ = try loadAnimation(id: id) }
+        let scan = RevisionCleanupScan(owner: self, projectID: id, storage: storage,
+            revisions: storage.appendingPathComponent("revisions"), lineage: lineage, pointerData: pointerData,
+            selectedRevision: pointer.revision, next: pointer.lineageSHA256.map { .init(revision: pointer.revision, sha256: $0) },
+            lockFD: lock, storageFD: directory, revisionsFD: revisionsFD, lineageFD: lineageFD, idleTimeout: idleTimeout)
+        transferred = true
+        return scan
+    }
+    private func requireScanAuthority(_ scan: RevisionCleanupScan) throws {
+        guard scan.owner === self, scan.isActive() else { throw RevisionCleanupFailure.changed }
+        try requireScanDirectories(scan)
+        guard try safeRevisionRead(scan.storage.appendingPathComponent("current.json"), maximum: 1024).data == scan.pointerData else {
+            throw RevisionCleanupFailure.changed
+        }
+    }
+    private func requireScanDirectories(_ scan: RevisionCleanupScan) throws {
+        func sameDirectory(_ path: URL, heldFD: Int32) throws {
+            var held = stat(), named = stat()
+            let directory = try revisionDirectoryDescriptor(path); defer { close(directory) }
+            guard fstat(heldFD, &held) == 0, fstat(directory, &named) == 0,
+                  held.st_dev == named.st_dev, held.st_ino == named.st_ino else { throw RevisionCleanupFailure.changed }
+        }
+        try sameDirectory(scan.storage, heldFD: scan.storageFD)
+        try sameDirectory(scan.revisions, heldFD: scan.revisionsFD)
+        if let lineage = scan.lineage { try sameDirectory(lineage, heldFD: scan.lineageFD) }
+        var heldLock = stat(), namedLock = stat()
+        guard fstat(scan.lockFD, &heldLock) == 0,
+              fstatat(scan.storageFD, ".revision-mutation-lock-v1", &namedLock, AT_SYMLINK_NOFOLLOW) == 0,
+              heldLock.st_mode & S_IFMT == S_IFREG, heldLock.st_nlink == 1, heldLock.st_size == 0,
+              sameRevisionFile(heldLock, namedLock) else { throw RevisionCleanupFailure.changed }
+    }
+    func advanceRevisionCleanupScan(_ scan: RevisionCleanupScan, maximumReceipts: Int = 256,
+                                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> RevisionCleanupScanProgress {
+        guard scan.owner === self else { throw RevisionCleanupFailure.changed }
+        try scan.beginOperation(); defer { scan.endOperation() }
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        do {
+            guard (1...256).contains(maximumReceipts) else { throw RevisionCleanupFailure.limit }
+            try requireScanAuthority(scan); try checkCancellation()
+            if let plan = scan.plan { scan.touch(); return .init(scannedRevisions: scan.depth, preview: plan.preview) }
+            var processed = 0
+            // Budget receipt+journal maxima plus format checks; reserve authority overhead.
+            var metadataBudget = 512 * 1024 - 4096
+            let pageStarted = ProcessInfo.processInfo.systemUptime
+            while let next = scan.next, processed < maximumReceipts, metadataBudget >= 4160 {
+                // A single bounded snapshot read can exceed this cooperative yield target.
+                if processed > 0 && ProcessInfo.processInfo.systemUptime - pageStarted >= 0.05 { break }
+                metadataBudget -= 4160
+                try checkCancellation()
+                guard scan.isActive() else { throw CancellationError() }
+                guard scan.depth < Int.max - 1 else { throw RevisionCleanupFailure.limit }
+                // Brent cycle detection retains constant metadata, not a growing UUID set.
+                if scan.cycleAnchor == nil { scan.cycleAnchor = next.revision }
+                else {
+                    scan.cycleDistance += 1
+                    guard scan.cycleAnchor != next.revision else { throw RevisionCleanupFailure.invalid }
+                    if scan.cycleDistance == scan.cyclePower {
+                        scan.cycleAnchor = next.revision; scan.cycleDistance = 0
+                        guard scan.cyclePower <= Int.max / 2 else { throw RevisionCleanupFailure.limit }
+                        scan.cyclePower *= 2
+                    }
+                }
+                guard let lineage = scan.lineage else { throw RevisionCleanupFailure.invalid }
+                let receipt = try lineageReceipt(next.revision, digest: next.sha256, in: scan.revisions, project: scan.projectID)
+                let payload = scan.revisions.appendingPathComponent(receipt.revision.uuidString + ".json")
+                let staged = lineage.appendingPathComponent(receipt.revision.uuidString + ".removing.json")
+                let journal = try removalJournal(receipt, lineage: lineage)
+                if scan.depth < 2 {
+                    guard journal == nil, !itemExists(staged) else { throw RevisionCleanupFailure.invalid }
+                    guard receipt.payloadBytes <= scan.readBudget else { throw RevisionCleanupFailure.limit }
+                    scan.readBudget -= receipt.payloadBytes
+                    let info = try verifiedSnapshot(payload, receipt: receipt)
+                    scan.protected.append(.init(receipt: receipt, info: info, alreadyStaged: false))
+                } else if itemExists(payload) || itemExists(staged) {
+                    guard !(itemExists(payload) && itemExists(staged)), !itemExists(staged) || journal != nil else { throw RevisionCleanupFailure.invalid }
+                    if scan.candidates.count < 8 && receipt.payloadBytes <= scan.readBudget {
+                        scan.readBudget -= receipt.payloadBytes
+                        let isStaged = itemExists(staged)
+                        let info = try verifiedSnapshot(isStaged ? staged : payload, receipt: receipt)
+                        if let journal { guard Int64(info.st_dev) == journal.device, UInt64(info.st_ino) == journal.inode else { throw RevisionCleanupFailure.changed } }
+                        scan.candidates.append(.init(receipt: receipt, info: info, alreadyStaged: isStaged))
+                        scan.bytes += Int64(receipt.payloadBytes)
+                    } else { scan.more = true }
+                } else { guard journal != nil else { throw RevisionCleanupFailure.invalid } }
+                scan.depth += 1; processed += 1; scan.next = receipt.parent
+            }
+            try requireScanAuthority(scan); try checkCancellation()
+            scan.touch()
+            guard scan.next == nil else { return .init(scannedRevisions: scan.depth, preview: nil) }
+            var consent = scan.pointerData
+            consent.append(Data(scan.id.uuidString.utf8))
+            for candidate in scan.candidates {
+                let info = candidate.info, receipt = candidate.receipt
+                consent.append(Data(("\n" + receipt.revision.uuidString + ":" + receipt.payloadSHA256 +
+                    ":\(info.st_dev):\(info.st_ino):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(info.st_ctimespec.tv_sec):\(info.st_ctimespec.tv_nsec):\(candidate.alreadyStaged)").utf8))
+            }
+            let preview = RevisionCleanupPreview(projectID: scan.projectID, selectedRevision: scan.selectedRevision,
+                confirmationToken: Self.digest(consent), candidates: scan.candidates.count, removableFileBytes: scan.bytes,
+                retainedRevisions: scan.lineage == nil ? 1 : min(scan.depth, 2), moreBatchesAvailable: scan.more)
+            scan.plan = CleanupPlan(preview: preview, storage: scan.storage, revisions: scan.revisions,
+                lineage: scan.lineage, candidates: scan.candidates, pointerData: scan.pointerData)
+            return .init(scannedRevisions: scan.depth, preview: preview)
+        } catch { scan.cancel(); throw error }
+    }
+    func removeObsoleteRevisions(scan: RevisionCleanupScan, expectedConfirmationToken: String,
+                                 checkCancellation: () throws -> Void = { try Task.checkCancellation() },
+                                 checkpoint: (String, UUID) throws -> Void = { _, _ in }) throws -> RevisionCleanupResult {
+        guard scan.owner === self else { throw RevisionCleanupFailure.changed }
+        try scan.beginOperation(); defer { scan.endOperation() }
+        Self.operationLock.lock(); defer { Self.operationLock.unlock() }
+        defer { scan.cancel() }
+        try requireScanAuthority(scan)
+        guard let plan = scan.plan, plan.preview.confirmationToken == expectedConfirmationToken else { throw RevisionCleanupFailure.changed }
+        // Recheck both protected payloads before any irreversible action.
+        for protected in scan.protected {
+            let info = try verifiedSnapshot(scan.revisions.appendingPathComponent(protected.receipt.revision.uuidString + ".json"), receipt: protected.receipt)
+            guard sameRevisionFile(info, protected.info) else { throw RevisionCleanupFailure.changed }
+        }
+        return try removeCleanupPlan(plan, id: scan.projectID, expectedSelectedRevision: scan.selectedRevision,
+            checkCancellation: { try checkCancellation(); try self.requireScanAuthority(scan) },
+            checkpoint: { stage, revision in
+                try checkpoint(stage, revision)
+                // Ignore cancellation until this individual journal operation finishes,
+                // but reject replacement of any owned directory before proceeding.
+                try self.requireScanDirectories(scan)
+            })
+    }
+
     private func cleanupPlan(id: UUID, checkCancellation: () throws -> Void) throws -> CleanupPlan {
         try checkCancellation()
         let project = animationsDir.appendingPathComponent(id.uuidString)
@@ -1172,6 +1401,13 @@ extension DeviceStorageManager {
         let plan = try cleanupPlan(id: id, checkCancellation: checkCancellation)
         guard plan.preview.selectedRevision == expectedSelectedRevision,
               plan.preview.confirmationToken == expectedConfirmationToken else { throw RevisionCleanupFailure.changed }
+        return try removeCleanupPlan(plan, id: id, expectedSelectedRevision: expectedSelectedRevision,
+            checkCancellation: checkCancellation, checkpoint: checkpoint)
+    }
+    private func removeCleanupPlan(_ plan: CleanupPlan, id: UUID, expectedSelectedRevision: UUID,
+                                   checkCancellation: () throws -> Void,
+                                   checkpoint: (String, UUID) throws -> Void) throws -> RevisionCleanupResult {
+        let storage = plan.storage
         guard let lineage = plan.lineage else { return RevisionCleanupResult() }
         let revisionFD = try revisionDirectoryDescriptor(plan.revisions); defer { close(revisionFD) }
         let lineageFD = try revisionDirectoryDescriptor(lineage); defer { close(lineageFD) }
@@ -1264,6 +1500,15 @@ struct StudioRevisionCleanupRequest: @unchecked Sendable {
     fileprivate let store: DeviceStorageManager
     let projectID: UUID
     init(store: DeviceStorageManager, projectID: UUID) { self.store = store; self.projectID = projectID }
+    func beginScan() throws -> DeviceStorageManager.RevisionCleanupScan { try store.beginRevisionCleanupScan(id: projectID) }
+    func advance(_ scan: DeviceStorageManager.RevisionCleanupScan) throws -> DeviceStorageManager.RevisionCleanupScanProgress {
+        guard scan.projectID == projectID else { throw DeviceStorageManager.RevisionCleanupFailure.changed }
+        return try store.advanceRevisionCleanupScan(scan)
+    }
+    func remove(scan: DeviceStorageManager.RevisionCleanupScan, confirmationToken: String) throws -> DeviceStorageManager.RevisionCleanupResult {
+        guard scan.projectID == projectID else { throw DeviceStorageManager.RevisionCleanupFailure.changed }
+        return try store.removeObsoleteRevisions(scan: scan, expectedConfirmationToken: confirmationToken)
+    }
     func preview() throws -> DeviceStorageManager.RevisionCleanupPreview { try store.previewObsoleteRevisions(id: projectID) }
     func remove(expected: UUID, confirmationToken: String) throws -> DeviceStorageManager.RevisionCleanupResult {
         try store.removeObsoleteRevisions(id: projectID, expectedSelectedRevision: expected, expectedConfirmationToken: confirmationToken)

@@ -142,7 +142,12 @@ struct StudioFrameRenderer {
             var composite = context
             composite.opacity *= layer.opacity
             composite.blendMode = blend(layer.blendMode)
-            if layer.glowEnabled { composite.addFilter(.shadow(color: Color(hex: layer.glowColor ?? "#FF0000"), radius: 5)) }
+            guard layer.hasValidGlowSettings else { return StudioDocumentError.invalid("A layer has invalid glow settings.") }
+            if layer.glowEnabled && layer.effectiveGlowStrength > 0 {
+                let scale = min(size.width / canvasSize.width, size.height / canvasSize.height)
+                composite.addFilter(.shadow(color: Color(hex: layer.glowColor ?? "#FF0000").opacity(layer.effectiveGlowStrength),
+                    radius: layer.effectiveGlowRadius * scale))
+            }
             composite.drawLayer { local in
                 failure = drawRawLayer(context: &local, frame: frame, layer: layer, canvasSize: canvasSize,
                     size: size, preparedBrushes: prepared, preparedRaster: image,
@@ -218,7 +223,29 @@ struct StudioFrameRenderer {
                                             size: CGSize, canvasSize: CGSize,
                                             brush: (geometry: StudioBrushRenderer.Geometry, color: StudioBrushColor)?,
                                             smudges: [String: CGImage]) throws {
-        if element.hasPixelEffect {
+        if let erasures = element.selectionErasures, !erasures.isEmpty {
+            guard !element.hasPixelEffect, element.preservesLayerAlpha != true, element.tool != .eraser else {
+                throw StudioDocumentError.invalid("Selected erasure requires independently rendered artwork.")
+            }
+            // The destination-out masks belong to this one isolated object.
+            // Applying them on the parent layer would destroy unselected overlap.
+            var source = element; source.selectionErasures = nil
+            var failure: Error?
+            context.drawLayer { isolated in
+                do {
+                    var drawing = isolated
+                    try drawElement(context: &drawing, element: source, size: size, canvasSize: canvasSize, brush: brush)
+                    for erasure in erasures {
+                        // Start every mask from the isolated root: drawElement
+                        // mutates its local transform and opacity while drawing.
+                        var maskContext = isolated
+                        let mask = try erasure.element(for: element)
+                        try drawElement(context: &maskContext, element: mask, size: size, canvasSize: canvasSize, brush: nil)
+                    }
+                } catch { failure = error }
+            }
+            if let failure { throw failure }
+        } else if element.hasPixelEffect {
             guard let image = smudges[element.id] else { throw StudioSmudgeReplay.Failure.unprepared }
             // Replace the entire raw layer, including pixels made transparent.
             // Opacity was applied once by the operation; layer effects occur later.

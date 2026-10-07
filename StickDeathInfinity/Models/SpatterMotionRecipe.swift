@@ -155,6 +155,59 @@ struct SpatterMotionRecipe: Equatable {
     }
 }
 
+/// Explicit active-layer styling; imported text never executes this instruction.
+struct SpatterLayerGlowInstruction: Equatable {
+    let color: String?
+    let radius: Double?
+    let strength: Double?
+    static let example = "Set active layer glow to #00FF00 with radius 12 px and strength 75%."
+    static let disableExample = "Disable active layer glow."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        return words.contains("layer") && words.contains("glow")
+    }
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use one complete active-layer glow example with #RRGGBB color, radius 0–128 px and strength 0–100%. Nothing changed."
+            case .invalidContext: return "Select an existing Studio layer before changing its glow. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let range = NSRange(text.startIndex..., in: text)
+        if try NSRegularExpression(pattern: #"\A\s*disable\s+active\s+layer\s+glow\.?\s*\z"#, options: [.caseInsensitive]).firstMatch(in: text, range: range) != nil {
+            return .init(color: nil, radius: nil, strength: nil)
+        }
+        let regex = try NSRegularExpression(pattern: #"\A\s*set\s+active\s+layer\s+glow\s+to\s+(#[0-9a-f]{6})\s+with\s+radius\s+((?:0|[1-9][0-9]*)(?:\.[0-9]+)?)\s+px\s+and\s+strength\s+((?:0|[1-9][0-9]*)(?:\.[0-9]+)?)\s*%\.?\s*\z"#, options: [.caseInsensitive])
+        guard let match = regex.firstMatch(in: text, range: range),
+              let c = Range(match.range(at: 1), in: text), let r = Range(match.range(at: 2), in: text),
+              let s = Range(match.range(at: 3), in: text), let radius = Double(text[r]), let percent = Double(text[s]),
+              radius.isFinite, (0...128).contains(radius), percent.isFinite, (0...100).contains(percent)
+        else { throw Failure.unsupported }
+        return .init(color: String(text[c]).uppercased(), radius: radius, strength: percent / 100)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.layers.contains(where: { $0.id == context.activeLayerID }) else { throw Failure.invalidContext }
+        var settings = StudioCommandLayerSettings()
+        if let color, let radius, let strength {
+            guard CanvasLayer.isValidNewGlowColor(color), radius.isFinite, (0...128).contains(radius),
+                  strength.isFinite, (0...1).contains(strength) else { throw Failure.unsupported }
+            settings.glowEnabled = true; settings.glowColor = color; settings.glowRadius = radius; settings.glowStrength = strength
+        } else {
+            guard color == nil && radius == nil && strength == nil else { throw Failure.unsupported }
+            settings.glowEnabled = false
+        }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.updateLayer(.init(layer: .id(context.activeLayerID), settings: settings))]))
+    }
+}
+
 /// A project title is data; quoted instruction-like text never becomes another action.
 struct SpatterProjectRenameInstruction: Equatable {
     let name: String
@@ -631,5 +684,75 @@ struct SpatterTwoActorBrief: Equatable {
         return .init(request: .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply(commands)), framesToAdd: count, durationSeconds: Double(count) / Double(context.fps),
             appendedAfterFrameID: last.id, firstNewFrameAlias: "duo_frame_0")
+    }
+}
+
+/// One explicit local line mask, bound to the selection captured by the editing session.
+struct SpatterSelectedErasureInstruction: Equatable {
+    let startX: Double
+    let startY: Double
+    let endX: Double
+    let endY: Double
+    let mode: StudioEraserMode
+    let width: Double
+    let strength: Double
+    static let example = "Erase selected drawings from (25%, 50%) to (75%, 50%) with hard eraser size 24 px and strength 100%."
+    enum Failure: LocalizedError {
+        case unsupported, missingSelection, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use one complete selected eraser example with canvas positions 0–100%, hard or soft mode, size 1–512 px and strength 0–100%. Nothing changed."
+            case .missingSelection: return "Select 1–256 drawn objects before opening Spatter. Images and whole layers are not selected eraser targets. Nothing changed."
+            case .invalidContext: return "The current frame or active layer is unavailable for selected erasing. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.split(whereSeparator: { $0.isWhitespace }).first?.lowercased() == "erase"
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
+            throw SpatterMotionRecipe.RecipeError.instructionTooLong
+        }
+        let number = #"((?:0|[1-9][0-9]*)(?:\.[0-9]+)?)"#
+        let pattern = #"\A\s*erase\s+selected\s+drawings\s+from\s+\("# + number
+            + #"%\s*,\s*"# + number + #"%\)\s+to\s+\("# + number + #"%\s*,\s*"# + number
+            + #"%\)\s+with\s+(hard|soft)\s+eraser\s+size\s+"# + number
+            + #"\s+px\s+and\s+strength\s+"# + number + #"%\.?\s*\z"#
+        let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else {
+            throw Failure.unsupported
+        }
+        func token(_ index: Int) throws -> String {
+            guard let range = Range(match.range(at: index), in: text) else { throw Failure.unsupported }
+            return String(text[range])
+        }
+        func value(_ index: Int, range: ClosedRange<Double>) throws -> Double {
+            let raw = try token(index)
+            guard raw.utf8.count <= 32, let value = Double(raw), value.isFinite, range.contains(value) else { throw Failure.unsupported }
+            return value
+        }
+        guard let mode = StudioEraserMode(rawValue: try token(5).lowercased()) else { throw Failure.unsupported }
+        return try .init(startX: value(1, range: 0...100), startY: value(2, range: 0...100),
+            endX: value(3, range: 0...100), endY: value(4, range: 0...100), mode: mode,
+            width: value(6, range: 1...512), strength: value(7, range: 0...100) / 100)
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard !selectedElementIDs.isEmpty, selectedElementIDs.count <= 256,
+              selectedElementIDs.allSatisfy({ !$0.isEmpty && $0.count <= 160 }) else { throw Failure.missingSelection }
+        guard [startX, startY, endX, endY].allSatisfy({ $0.isFinite && (0...100).contains($0) }),
+              width.isFinite, (1...512).contains(width), strength.isFinite, (0...1).contains(strength) else { throw Failure.unsupported }
+        guard context.width > 0, context.height > 0,
+              context.frames.contains(where: { $0.id == context.activeFrameID }),
+              let layer = context.layers.first(where: { $0.id == context.activeLayerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { throw Failure.invalidContext }
+        let points: [StrokePoint] = [.init(x: CGFloat(startX / 100 * Double(context.width)), y: CGFloat(startY / 100 * Double(context.height))),
+                                     .init(x: CGFloat(endX / 100 * Double(context.width)), y: CGFloat(endY / 100 * Double(context.height)))]
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.eraseSelectedElements(.init(frame: .id(context.activeFrameID), layer: .id(context.activeLayerID),
+                elementIDs: selectedElementIDs.sorted(), points: points, width: width, opacity: strength, mode: mode))]))
     }
 }

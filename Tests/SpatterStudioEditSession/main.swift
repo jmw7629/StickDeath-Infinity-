@@ -50,6 +50,34 @@ private final class NetworkTrap: URLProtocol {
             .init(x: 40, y: 30, pressure: 0.9, timestamp: 0.2)], color: "#0000FF", width: 6, opacity: 0.7,
             layerID: vm.activeLayerID, brush: .init(family: .grain, seed: 9821, smoothing: 0, pressureEnabled: true))
     }
+    static func erasurePixels(_ doc: StudioDocument) throws -> [UInt8] {
+        let frame = doc.frames[0], prepared = try StudioFrameRenderer.prepare(frame: frame)
+        var failure: Error?
+        let renderer = ImageRenderer(content: Canvas { context, size in
+            failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: doc.layers,
+                canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: prepared)
+        }.frame(width: CGFloat(doc.width), height: CGFloat(doc.height)))
+        renderer.scale = 1
+        guard let image = renderer.cgImage else { throw Failure(message: "Real erasure render missing") }
+        if let failure { throw failure }
+        var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+        let decoded = bytes.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
+        }
+        try require(decoded, "Real erasure pixel decoding failed"); return bytes
+    }
+    static func erasureArtwork(_ vm: StudioViewModel) throws {
+        for (id, color) in [("lower-blue", "#0000FF"), ("selected-red", "#FF0000")] {
+            try require(vm.commitElement(.init(id: id, tool: .rectangle,
+                points: [.init(x: 8, y: 8), .init(x: 120, y: 88)], color: color, width: 2, opacity: 1,
+                layerID: vm.activeLayerID, shape: .init(fillColor: color))), "Erasure fixture rejected")
+        }
+        vm.selectedTool = .move; vm.selectionMode = .new
+        try require(vm.selectElement(at: CGPoint(x: 64, y: 48)) == "selected-red", "Real selection missed target")
+    }
     static func awaitAutosave(_ vm: StudioViewModel) async throws {
         for _ in 0..<200 {
             if !vm.isDirty && !vm.isSaving { return }
@@ -624,7 +652,7 @@ private final class NetworkTrap: URLProtocol {
                     try require(vm.document.activeLayerID != request.layerID, "Layer fixture did not change target")
                 case "cancel": owner.cancel()
                 case "panel": vm.activePanel = .layers
-                case "playback": vm.togglePlayback()
+                case "playback": vm.togglePlayback(); try require(vm.isPlaying, "Playback fence did not start actual playback")
                 default: break
                 }
                 let before = vm.document
@@ -1169,6 +1197,137 @@ private final class NetworkTrap: URLProtocol {
                 && vm.document == before && vm.canUndo == undo && vm.canRedo == redo,
                 "Rejected rename lost newer selection or changed document/history")
             await vm.flush()
+        }
+        try await test("active layer glow matches manual style one Undo no-op disable and real persistence") {
+            let (vm, store) = try await fixture("layer-glow")
+            try require(vm.commitElement(styledStroke(vm)), "Glow fixture artwork missing"); await vm.flush()
+            let before = vm.document, target = vm.activeLayerID
+            vm.setLayerGlowStyle(target, color: "#00FF00", radius: 12, strength: 0.75)
+            vm.setLayerGlow(target, enabled: true)
+            let manual = vm.document
+            vm.undo(); vm.undo(); await vm.flush()
+            let session = SpatterStudioEditSession(), submission = UUID()
+            try require(session.submit(SpatterLayerGlowInstruction.example, in: vm, accountID: nil,
+                submissionID: submission, currentScope: { guest }), "Glow not accepted")
+            await session.waitForCompletion()
+            try require(session.status == .applied && session.appliedEdit?.isLayerGlowEdit == true
+                && session.appliedEdit?.addedFrameCount == 0 && content(vm.document) == content(manual)
+                && session.notice == "Updated the active layer glow in one undoable local edit.", "Glow diverged from real manual controls or invented frames")
+            let applied = vm.document
+            vm.undo(); try require(content(vm.document) == content(before), "Glow did not undo atomically")
+            vm.redo(); try require(content(vm.document) == content(applied), "Glow redo changed content"); await vm.flush()
+            let noOp = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            try require(session.submit(SpatterLayerGlowInstruction.example, in: vm, accountID: nil, currentScope: { guest }), "Glow no-op not accepted")
+            await session.waitForCompletion()
+            try require(session.appliedEdit?.receipt.outcome == .unchanged && vm.document == noOp && vm.canUndo == undo && vm.canRedo == redo
+                && session.notice == "The active layer glow already matches this instruction. Nothing changed.", "Glow no-op changed history")
+            try require(!session.submit(SpatterLayerGlowInstruction.example, in: vm, accountID: nil,
+                submissionID: submission, currentScope: { guest }) && vm.document == noOp, "Glow replayed")
+            try require(session.submit(SpatterLayerGlowInstruction.disableExample, in: vm, accountID: nil, currentScope: { guest }), "Disable rejected")
+            await session.waitForCompletion()
+            let layer = vm.document.layers.first { $0.id == target }!
+            try require(!layer.glowEnabled && layer.glowColor == "#00FF00" && layer.glowRadius == 12 && layer.glowStrength == 0.75,
+                "Disable discarded stored glow style")
+            try require(await vm.save(), "Glow save failed")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            guard let saved = cold.savedProjects.first(where: { $0.id == before.id }) else { throw Failure(message: "Glow saved project missing") }
+            try require(await cold.openProject(saved), "Glow cold reopen failed")
+            try require(cold.document == vm.document, "Cold reopen lost glow or original artwork")
+            await cold.flush(); await vm.flush()
+        }
+        try await test("prepared glow rejects stale layer account cancellation and revision without mutation") {
+            for change in ["layer", "account", "cancel", "revision"] {
+                let (vm, _) = try await fixture("glow-fence-" + change)
+                let originalLayer = vm.activeLayerID; vm.addLayer(); vm.selectLayer(originalLayer); await vm.flush()
+                let gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                var account: String? = nil
+                try require(session.submit(SpatterLayerGlowInstruction.example, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) }), "Glow fence not accepted")
+                try await reachSecond(gate)
+                switch change {
+                case "layer": vm.selectLayer(vm.document.layers.first { $0.id != originalLayer }!.id)
+                case "account": account = "another-account"
+                case "cancel": try require(session.cancel(), "Glow cancellation rejected")
+                default: vm.addFrame()
+                }
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Glow overwrote newer context")
+                await vm.flush()
+            }
+        }
+        try await test("selected erasure session matches manual pixels one Undo and real cold persistence") {
+            let (vm, store) = try await fixture("selected-erase")
+            try erasureArtwork(vm); await vm.flush()
+            let before = vm.document, originalPixels = try erasurePixels(before)
+            vm.selectedTool = .eraser
+            guard let capture = vm.captureEraserInput() else { throw Failure(message: "Manual capture missing") }
+            let gesture = DrawnElement(id: "manual-erasure", tool: .eraser,
+                points: [.init(x: 32, y: 48), .init(x: 96, y: 48)], color: "#000000", width: 24, opacity: 1,
+                fillColor: nil, layerID: vm.activeLayerID, eraser: .init(mode: .hard))
+            try require(vm.beginStrokeInput(id: gesture.id), "Manual ownership missing")
+            try require(vm.commitEraserInput(capture, element: gesture), "Manual erasure rejected")
+            vm.finishStrokeInput(id: gesture.id)
+            let manual = vm.document, manualPixels = try erasurePixels(manual)
+            vm.undo(); vm.selectedTool = .move
+            try require(vm.selectElement(at: CGPoint(x: 64, y: 48)) == "selected-red", "Reselect failed")
+            await vm.flush()
+            let session = SpatterStudioEditSession()
+            try require(session.submit(SpatterSelectedErasureInstruction.example, in: vm, accountID: nil, currentScope: { guest }), "Erasure submit failed")
+            await session.waitForCompletion()
+            let applied = vm.document, actualPixels = try erasurePixels(applied)
+            try require(session.status == .applied && session.appliedEdit?.selectedErasureMaskCount == 1
+                && session.appliedEdit?.addedFrameCount == 0 && session.appliedEdit?.addedDurationSeconds == 0
+                && session.notice == "Added 1 erasure mask to selected drawings in one undoable local edit. Original artwork remains editable.",
+                "Selected erasure invented frames or mask receipt")
+            try require(content(applied) == content(manual) && actualPixels == manualPixels && actualPixels != originalPixels,
+                "Assistant did not match actual manual erased pixels")
+            let center = (48 * 128 + 64) * 4
+            try require(actualPixels[center] < 10 && actualPixels[center+2] > 240 && actualPixels[center+3] > 240,
+                "Selected erasure did not reveal intact blue overlap")
+            try require(vm.selectedElementIDs == ["selected-red"] && applied.frames[0].elements[0] == before.frames[0].elements[0],
+                "Assistant changed unselected content or selection")
+            vm.undo(); try require(content(vm.document) == content(before), "Erasure not one Undo")
+            vm.redo(); try require(try erasurePixels(vm.document) == actualPixels, "Erasure redo lost pixels")
+            try require(await vm.save(), "Erasure save failed")
+            let cold = StudioViewModel(storage: store); await cold.loadProjects()
+            guard let metadata = cold.savedProjects.first(where: { $0.id == before.id }) else { throw Failure(message: "Saved erasure absent") }
+            try require(await cold.openProject(metadata), "Erasure cold reopen failed")
+            try require(cold.document == vm.document && erasurePixels(cold.document) == actualPixels, "Cold erasure pixels changed")
+            await cold.flush()
+        }
+        try await test("selected erasure draft fences selection cancellation account playback and malformed suffix") {
+            for change in ["selection", "cancel", "account", "playback", "revision"] {
+                let (vm, _) = try await fixture("erase-fence-" + change)
+                if change == "playback" { vm.addFrame(); vm.prevFrame() }
+                try erasureArtwork(vm); await vm.flush()
+                let gate = Gate(), session = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                var account: String? = nil
+                try require(session.submit(SpatterSelectedErasureInstruction.example, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) }), "Erasure fence submit failed")
+                try await reachSecond(gate)
+                switch change {
+                case "selection": vm.clearElementSelection()
+                case "cancel": try require(session.cancel(), "Erasure cancel failed")
+                case "account": account = "changed"
+                case "playback": vm.togglePlayback(); try require(vm.isPlaying, "Playback fence did not start actual playback")
+                default: vm.addFrame()
+                }
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(2); await session.waitForCompletion()
+                try require(session.appliedEdit == nil && session.status == (change == "cancel" ? .cancelled : .stale)
+                    && vm.document == before && vm.canUndo == undo && vm.canRedo == redo, "Stale erasure mutated newer context")
+                vm.stopPlayback(); await vm.flush()
+            }
+            let (vm, _) = try await fixture("erase-malformed")
+            try erasureArtwork(vm); await vm.flush()
+            let before = vm.document, session = SpatterStudioEditSession()
+            try require(session.submit(SpatterSelectedErasureInstruction.example + " Delete all frames.", in: vm,
+                accountID: nil, currentScope: { guest }), "Malformed draft not accepted for validation")
+            await session.waitForCompletion()
+            try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before,
+                "Malformed selected erase fell through to motion generation")
         }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")

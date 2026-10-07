@@ -56,6 +56,54 @@ private struct Failure: Error { let message: String }
     static func channel(_ pixels: [UInt8], _ x: Int, _ y: Int, _ c: Int = 3, width: Int = 128) -> UInt8 {
         pixels[(y * width + x) * 4 + c]
     }
+    static func restoredSelectionPreferencesDriveActualSelection() async throws {
+        let suite = "sdi-selection-settings-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let configured = StudioViewModel(storage: storage, toolDefaults: defaults)
+        configured.selectDrawingTool(.move); configured.selectionMode = .subtract
+        configured.selectDrawingTool(.lasso); configured.selectionMode = .add
+        configured.areaSelectionKind = .rectangle; configured.areaSelectionSmoothing = 8
+        let vm = StudioViewModel(storage: storage, toolDefaults: UserDefaults(suiteName: suite))
+        let created = await vm.createProject(name: "Restored selection", width: 128, height: 128, fps: 12)
+        try require(created, "Selection preference project failed")
+        var left = shape(vm.activeLayerID); left.points = [.init(x: 16, y: 16), .init(x: 32, y: 32)]; left.width = 2
+        var right = shape(vm.activeLayerID); right.points = [.init(x: 80, y: 80), .init(x: 96, y: 96)]; right.width = 2
+        try require(vm.commitElement(left) && vm.commitElement(right), "Selection preference fixture drawings failed")
+        await vm.flush()
+        let original = vm.document, undoBefore = vm.canUndo
+        vm.selectDrawingTool(.lasso)
+        for bounds in [[CGPoint(x: 8, y: 8), CGPoint(x: 40, y: 40)], [CGPoint(x: 72, y: 72), CGPoint(x: 104, y: 104)]] {
+            guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Restored Lasso capture unavailable") }
+            try require(capture.mode == .add && capture.kind == .rectangle && capture.smoothing == 8,
+                "Restored preferences did not reach real selection capture")
+            try require(vm.finishAreaSelection(capture, points: bounds), "Restored additive selection failed")
+        }
+        try require(vm.selectedElementIDs == [left.id, right.id], "Restored Add mode replaced the prior selection")
+        vm.selectDrawingTool(.move)
+        _ = vm.selectElement(at: CGPoint(x: 24, y: 24))
+        try require(vm.selectionMode == .subtract && vm.selectedElementIDs == [right.id], "Restored Move subtract did not remove only the hit")
+        vm.selectDrawingTool(.lasso)
+        guard let pending = vm.beginAreaSelection() else { throw Failure(message: "Pending Lasso capture unavailable") }
+        let selected = vm.selectedElementIDs
+        vm.resetCurrentDrawingToolPreferences()
+        try require(vm.selectedElementIDs == selected, "Reset cleared live selection identities")
+        try require(!vm.finishAreaSelection(pending, points: [CGPoint(x: 0, y: 0), CGPoint(x: 128, y: 128)])
+            && vm.selectedElementIDs == selected, "Pre-reset gesture overwrote selection with stale settings")
+        guard let reset = vm.beginAreaSelection() else { throw Failure(message: "Reset selection capture unavailable") }
+        try require(reset.mode == .new && reset.kind == .freehand && reset.smoothing == 3, "Reset did not restore real selection capture")
+        try require(vm.finishAreaSelection(reset, points: [CGPoint(x: 8, y: 8), CGPoint(x: 40, y: 8),
+            CGPoint(x: 40, y: 40), CGPoint(x: 8, y: 40), CGPoint(x: 8, y: 8)])
+            && vm.selectedElementIDs == [left.id], "Reset New mode did not replace selection")
+        try require(vm.document == original && vm.canUndo == undoBefore && !vm.canRedo && !vm.isDirty,
+            "Selection preferences changed project/history")
+        vm.undo()
+        try require(vm.currentFrame.elements == [left], "Selection preferences added a hidden Undo step")
+        await vm.flush()
+        pass("restored Move Lasso settings drive actual hit/area selection and Reset rejects stale gesture without history")
+    }
     static func main() async throws {
         setbuf(stdout, nil)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-area-" + UUID().uuidString)
@@ -342,6 +390,7 @@ private struct Failure: Error { let message: String }
         try require(locksOpened && locksReopened.layers == lockedDocument.layers && (try render(locksReopened.document)) == lockPixels,
                     "Cold reopen lost locks or changed pixels")
         pass("explicit selected whole-layer locking is atomic reversible cancellation-safe and persistent without changing artwork")
+        try await restoredSelectionPreferencesDriveActualSelection()
         print("PASS \(passed) production area-selection groups")
     }
 }

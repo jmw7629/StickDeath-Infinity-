@@ -47,6 +47,9 @@ final class StudioViewModel: ObservableObject {
     }
     private let storage: DeviceStorageManager
     @Published private var imageClipboard: AnimationFrame?
+    // An image copy wins only until another successful editor copy changes its
+    // clipboard generation. Failed copies and Undo never select older payloads.
+    private var imageClipboardEditorVersion: UUID?
     private var copiedImageLayer: CanvasLayer?
     var projectThumbnailRenderer: ((StudioDocument, Data?) throws -> Data)?
     private var projectThumbnailData: Data?
@@ -97,7 +100,7 @@ final class StudioViewModel: ObservableObject {
     var previousFrame: AnimationFrame? { currentFrameIndex > 0 ? frames[currentFrameIndex - 1] : nil }
     var canUndo: Bool { activeStrokeID == nil && editor.canUndo }
     var canRedo: Bool { activeStrokeID == nil && editor.canRedo }
-    var canPaste: Bool { activeStrokeID == nil && editor.canPaste }
+    var canPaste: Bool { usesImageClipboard ? canPasteImage : activeStrokeID == nil && editor.canPaste }
     var copiedDrawingCount: Int { editor.clipboardElementCount }
     var copiedDrawingClipboardID: String? { copiedDrawingCount > 0 ? editor.clipboardVersion.uuidString : nil }
     var canDeleteSelected: Bool { !editor.selectedElementIDs.isEmpty }
@@ -147,13 +150,49 @@ final class StudioViewModel: ObservableObject {
     @Published var brushTexture: Double = 0.5 { didSet { rememberDrawingToolPreferences() } }
     @Published var brushGrain: Double = 0.3 { didSet { rememberDrawingToolPreferences() } }
     @Published var brushGradientEndColor: Color = .blue { didSet { rememberDrawingToolPreferences() } }
-    @Published var fillTolerance: Double = 32
-    @Published var fillExpand: Double = 0
-    @Published var fillGapClose: Double = 0
-    @Published var fillContiguous = true
-    @Published var fillAntiAlias = true
-    @Published var fillSampleAll = false
-    @Published var activePanel: StudioPanelType = .none
+    @Published var fillTolerance: Double = 32 { didSet { rememberDrawingToolPreferences() } }
+    @Published var fillExpand: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var fillGapClose: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    @Published var fillContiguous = true { didSet { rememberDrawingToolPreferences() } }
+    @Published var fillAntiAlias = true { didSet { rememberDrawingToolPreferences() } }
+    @Published var fillSampleAll = false { didSet { rememberDrawingToolPreferences() } }
+    @Published var activePanel: StudioPanelType = .none {
+        didSet { if activePanel != .none { cancelMenuHandoff() } }
+    }
+    struct MenuHandoff: Equatable {
+        let id: UUID
+        let destination: StudioPanelType
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let accountID: String?
+    }
+    private var pendingMenuHandoff: MenuHandoff?
+    func prepareMenuHandoff(to destination: StudioPanelType, accountID: String?, isForeground: Bool) -> MenuHandoff? {
+        let allowed: [StudioPanelType] = [.projectSettings, .framesViewer, .magicCut, .backgroundLibrary, .rotoscope, .addImage, .aiVoice, .spatterAI]
+        guard activePanel == .menu, pendingMenuHandoff == nil, allowed.contains(destination),
+              isForeground, isEditing, !isSaving, !isPlaying, activeStrokeID == nil,
+              pendingBrushStroke == nil, textDraft == nil else { return nil }
+        let request = MenuHandoff(id: UUID(), destination: destination, projectID: document.id,
+            revision: document.revision, frameID: document.activeFrameID,
+            layerID: document.activeLayerID, accountID: accountID)
+        pendingMenuHandoff = request
+        return request
+    }
+    @discardableResult
+    func consumeMenuHandoff(_ request: MenuHandoff, accountID: String?, isForeground: Bool) -> Bool {
+        guard pendingMenuHandoff == request else { return false }
+        pendingMenuHandoff = nil
+        guard activePanel == .none, isForeground, isEditing, !isSaving, !isPlaying,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              accountID == request.accountID, document.id == request.projectID,
+              document.revision == request.revision, document.activeFrameID == request.frameID,
+              document.activeLayerID == request.layerID else { return false }
+        activePanel = request.destination
+        return true
+    }
+    func cancelMenuHandoff() { pendingMenuHandoff = nil }
     @Published var showToolbar = true
     @Published private(set) var isPlaying = false
     @Published var canvasScale: CGFloat = 1
@@ -273,10 +312,47 @@ final class StudioViewModel: ObservableObject {
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
             throw StudioDocumentError.locked
         }
-        guard editor.selectedElementIDs.isEmpty else {
-            throw StudioDocumentError.unavailable("Erasing within a selection is unfinished. Deselect before erasing the active layer; nothing changed.")
-        }
         return StudioEraserDescriptor(mode: eraserMode)
+    }
+    /// Freeze the complete target context even for an initially empty selection:
+    /// clearing/changing selection during a drag must never broaden its scope.
+    struct EraserInputCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let selectedIDs: Set<String>
+    }
+    func captureEraserInput(ownedStroke: String? = nil) -> EraserInputCapture? {
+        guard selectedTool == .eraser, isEditing, !isPlaying, !isSaving,
+              pendingBrushStroke == nil, textDraft == nil,
+              activeStrokeID == nil || activeStrokeID == ownedStroke,
+              let layer = layers.first(where: { $0.id == activeLayerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
+        return .init(projectID: document.id, revision: document.revision,
+            frameID: currentFrame.id, layerID: activeLayerID, selectedIDs: selectedElementIDs)
+    }
+    func eraserInputPreview(_ capture: EraserInputCapture, element: DrawnElement) throws -> AnimationFrame {
+        guard captureEraserInput(ownedStroke: element.id) == capture,
+              element.tool == .eraser, element.layerID == capture.layerID else { throw StudioCommandError.staleRevision }
+        if capture.selectedIDs.isEmpty {
+            var frame = currentFrame; frame.elements.append(element); return frame
+        }
+        return try editor.previewSelectedErasure(element, frameID: capture.frameID, elementIDs: capture.selectedIDs)
+    }
+    @discardableResult
+    func commitEraserInput(_ capture: EraserInputCapture, element: DrawnElement) -> Bool {
+        do {
+            guard captureEraserInput(ownedStroke: element.id) == capture,
+                  element.tool == .eraser, element.layerID == capture.layerID else { throw StudioCommandError.staleRevision }
+            if capture.selectedIDs.isEmpty { return commitElement(element, frameID: capture.frameID) }
+            var candidate = editor
+            try candidate.eraseSelectedElements(element, frameID: capture.frameID, elementIDs: capture.selectedIDs)
+            try preflightRasterDocument(candidate.document)
+            editor = candidate
+            pruneManagedAudio(); scheduleSave()
+            return true
+        } catch { message = error.localizedDescription; return false }
     }
     var capturedStrokeOpacity: Double {
         #if canImport(UIKit)
@@ -305,7 +381,10 @@ final class StudioViewModel: ObservableObject {
         let value = StudioDrawingToolPreferences.Entry(width: strokeWidth, opacity: strokeOpacity,
             smoothing: smoothing, family: brushFamily, tipAngle: brushTipAngle,
             texture: brushTexture, grain: brushGrain, gradientEnd: Self.preferenceRGB(brushGradientEndColor),
-            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, eraserMode: eraserMode, textStyle: textStyle,
+            shapeFilled: shapeFilled, cornerRadius: shapeCornerRadius, selectionMode: selectionMode,
+            areaSelectionKind: areaSelectionKind, areaSelectionSmoothing: areaSelectionSmoothing, fillTolerance: fillTolerance, fillExpand: fillExpand, fillGapClose: fillGapClose,
+            fillContiguous: fillContiguous, fillAntiAlias: fillAntiAlias, fillSampleAll: fillSampleAll,
+            eraserMode: eraserMode, textStyle: textStyle,
             blurHardness: blurHardness, blurRadius: blurRadius,
             sharpenHardness: sharpenHardness, sharpenRadius: sharpenRadius,
             sharpenAmount: sharpenAmount, sharpenThreshold: sharpenThreshold,
@@ -340,6 +419,12 @@ final class StudioViewModel: ObservableObject {
         lineAngleSnap = value.lineAngleSnap ?? 0; equalShapeSides = value.equalShapeSides ?? false
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
         lineArrowEnds = value.lineArrowEnds ?? .none; lineArrowLength = value.lineArrowLength ?? 16
+        selectionMode = value.selectionMode ?? .new
+        areaSelectionKind = value.areaSelectionKind ?? .freehand
+        areaSelectionSmoothing = value.areaSelectionSmoothing ?? 3
+        fillTolerance = value.fillTolerance ?? 32; fillExpand = value.fillExpand ?? 0
+        fillGapClose = value.fillGapClose ?? 0; fillContiguous = value.fillContiguous ?? true
+        fillAntiAlias = value.fillAntiAlias ?? true; fillSampleAll = value.fillSampleAll ?? false
         eraserMode = value.eraserMode ?? .hard
         textStyle = value.textStyle ?? StudioTextStyle()
         blurHardness = value.blurHardness ?? 0.5; blurRadius = value.blurRadius ?? 4
@@ -438,10 +523,17 @@ final class StudioViewModel: ObservableObject {
         let selection = editor.selectedElementIDs
         let containsTween: Bool
         let containsRename: Bool
+        let containsCut: Bool
+        let containsSelectedErasure: Bool
+        let inputFrame = currentFrame.id, inputLayer = activeLayerID, inputTool = selectedTool
         if case .apply(let commands) = request.action {
+            containsCut = commands.contains { if case .cutElements = $0 { return true }; return false }
             containsTween = commands.contains { if case .tweenFrames = $0 { return true }; return false }
             containsRename = commands.contains { if case .renameProject = $0 { return true }; return false }
-        } else { containsTween = false; containsRename = false }
+            containsSelectedErasure = commands.contains { if case .eraseSelectedElements = $0 { return true }; return false }
+        } else { containsCut = false; containsTween = false; containsRename = false; containsSelectedErasure = false }
+        if containsCut && isPlaying { throw StudioDocumentError.unavailable("Stop playback before cutting selected drawings.") }
+        if containsSelectedErasure && isPlaying { throw StudioDocumentError.unavailable("Stop playback before erasing selected drawings.") }
         if containsRename && isPlaying { throw StudioDocumentError.unavailable("Stop playback before renaming the project.") }
         if containsTween && isPlaying { throw StudioDocumentError.unavailable("Stop playback before tweening frames.") }
         var candidate = editor
@@ -475,6 +567,14 @@ final class StudioViewModel: ObservableObject {
         }
         if candidate.document.audioClips != document.audioClips, isPlaying {
             throw StudioDocumentError.unavailable("Playback started while preparing audio edits. Nothing changed.")
+        }
+        if containsCut && (isPlaying || editor.selectedElementIDs != selection ||
+            currentFrame.id != inputFrame || activeLayerID != inputLayer || selectedTool != inputTool) {
+            throw StudioDocumentError.unavailable("The selection or input context changed while cutting. Nothing was cut.")
+        }
+        if containsSelectedErasure && (isPlaying || editor.selectedElementIDs != selection ||
+            currentFrame.id != inputFrame || activeLayerID != inputLayer || selectedTool != inputTool) {
+            throw StudioDocumentError.unavailable("The selected eraser context changed. Nothing changed.")
         }
         clearMissingImageMoveTarget(in: candidate.document)
         editor = candidate
@@ -539,7 +639,12 @@ final class StudioViewModel: ObservableObject {
         try addUnits(document.audioClips.count, weight: 32)
         for frame in document.frames {
             try addUnits(frame.elements.count, weight: 32)
-            for element in frame.elements { try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0); try addUnits(element.text?.content.utf8.count ?? 0) }
+            for element in frame.elements {
+                try addUnits(element.points.count); try addUnits(element.fillMask?.spans.count ?? 0)
+                try addUnits(element.text?.content.utf8.count ?? 0)
+                try addUnits(element.selectionErasures?.count ?? 0, weight: 32)
+                for mask in element.selectionErasures ?? [] { try addUnits(mask.points.count) }
+            }
         }
         for command in commands {
             switch command {
@@ -549,6 +654,15 @@ final class StudioViewModel: ObservableObject {
                 edits += StudioCommandExecutor.batchesPrimitiveDrawing(drawing.strokes) ? 1 : drawing.strokes.count
                 try addUnits(drawing.strokes.count, weight: 32)
                 for stroke in drawing.strokes { try addUnits(stroke.points.count); try addUnits(stroke.text?.content.utf8.count ?? 0) }
+            case .eraseSelectedElements(let erasure):
+                let targets = erasure.elementIDs.count
+                guard targets > 0, targets <= 256, !erasure.points.isEmpty,
+                      erasure.points.count <= StudioCommandExecutor.maximumPointsPerStroke,
+                      erasure.points.count <= StudioCommandExecutor.maximumGeneratedPoints / targets,
+                      strokes < StudioCommandExecutor.maximumStrokes else { throw StudioCommandError.limitExceeded }
+                strokes += 1; edits += 1
+                try addUnits(targets, weight: 32)
+                try addUnits(erasure.points.count, weight: targets)
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
             case .transformElements(let selection): edits += selection.elementIDs.count; try addUnits(selection.elementIDs.count, weight: 32)
             case .duplicateFrame, .duplicateLayer, .pasteElements, .tweenFrames:
@@ -803,7 +917,7 @@ final class StudioViewModel: ObservableObject {
         do {
             editor = try StudioDocumentEditor(document: .new(name: name, width: width, height: height, fps: fps))
             projectThumbnailData = nil
-            imageClipboard = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
+            imageClipboard = nil; imageClipboardEditorVersion = nil; copiedImageLayer = nil; retainedRasterFrames.removeAll(); retainedAudioTracks.removeAll(); managedAudioTracks.removeAll()
             savedRevision = nil; lastSaveTime = nil; resetSession(); isEditing = true
             return await save()
         } catch { message = error.localizedDescription; return false }
@@ -880,7 +994,7 @@ final class StudioViewModel: ObservableObject {
             // managed; opaque historical/unrelated records remain preserved.
             let managed = stored.audioTracks.filter { importedIDs.contains($0.id) && $0.legacySourceFilename == nil }
             projectThumbnailData = stored.metadata.thumbnailData
-            imageClipboard = nil; copiedImageLayer = nil; editor = nextEditor; retainedRasterFrames = rasters
+            imageClipboard = nil; imageClipboardEditorVersion = nil; copiedImageLayer = nil; editor = nextEditor; retainedRasterFrames = rasters
             let managedIDs = Set(managed.map(\.id))
             retainedAudioTracks = stored.audioTracks.filter { !managedIDs.contains($0.id) }
             managedAudioTracks = Dictionary(uniqueKeysWithValues: managed.map { ($0.id, $0) })
@@ -946,6 +1060,7 @@ final class StudioViewModel: ObservableObject {
     }
     func flush() async { if isEditing && isDirty { _ = await save() } }
     private func resetSession() {
+        cancelMenuHandoff()
         stopPlayback(); autosaveTask?.cancel(); autosaveTask = nil
         activePanel = .none; showToolbar = true; canvasScale = 1; canvasOffset = .zero
         selectedAudioClip = nil; audioPlayheadTime = 0; message = nil; imageMoveTarget = nil
@@ -1071,6 +1186,7 @@ final class StudioViewModel: ObservableObject {
     }
     func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
     func pasteClipboard() {
+        if usesImageClipboard { _ = pasteImage(); return }
         guard copiedDrawingCount > 0 else { pasteFrame(); return }
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
             message = "Finish the current Studio operation before pasting drawings."; return
@@ -1134,6 +1250,10 @@ final class StudioViewModel: ObservableObject {
     func interruptStrokeInput(_ input: StudioStrokeInput, reason: String) {
         guard activeStrokeID == input.id else { return }
         activeStrokeID = nil
+        if input.tool == .eraser {
+            message = "Erasing cancelled. The artwork is unchanged."
+            return
+        }
         guard !input.points.isEmpty else { return }
         retainRejectedBrush(input.element, frameID: input.frameID, reason: reason, inputComplete: false, mirror: input.mirror)
     }
@@ -1201,11 +1321,30 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    var canCutSelected: Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil,
+              pendingBrushStroke == nil, textDraft == nil, !selectedElementIDs.isEmpty else { return false }
+        let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+        return selected.count == selectedElementIDs.count && selected.allSatisfy { element in
+            !element.hasPixelEffect && layers.contains { $0.id == element.layerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" }
+        }
+    }
+    @discardableResult
+    func cutSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        guard canCutSelected else { message = "Select drawings on visible unlocked layers before cutting."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.cutElements(.init(
+                    frame: .id(currentFrame.id), elementIDs: selectedElementIDs.sorted()))])), checkCancellation: checkCancellation)
+            pruneManagedImages()
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func deleteSelected() { command { try $0.deleteSelected() } }
-    enum SelectionMode: String, CaseIterable { case new, add, subtract
+    enum SelectionMode: String, Codable, CaseIterable { case new, add, subtract
         var label: String { switch self { case .new: return "⬜ New"; case .add: return "➕ Add"; case .subtract: return "➖ Sub" } }
     }
-    @Published var selectionMode: SelectionMode = .new
+    @Published var selectionMode: SelectionMode = .new { didSet { rememberDrawingToolPreferences() } }
     @Published var selectionScalePercent: Double = 100
     @Published var selectionRotationDegrees: Double = 0
     @discardableResult
@@ -1278,8 +1417,8 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
-    @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand
-    @Published var areaSelectionSmoothing: Double = 3
+    @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand { didSet { rememberDrawingToolPreferences() } }
+    @Published var areaSelectionSmoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
     struct AreaSelectionCapture: Equatable {
         let projectID: UUID
         let revision: Int
@@ -1774,6 +1913,16 @@ final class StudioViewModel: ObservableObject {
     func setLayerOpacity(_ id: String, opacity: Double) { command { try $0.updateLayer(id) { $0.opacity = opacity } } }
     func setLayerBlend(_ id: String, mode: String) { command { try $0.updateLayer(id) { $0.blendMode = mode } } }
     func setLayerGlow(_ id: String, enabled: Bool) { command { try $0.updateLayer(id) { $0.glowEnabled = enabled } } }
+    func setLayerGlowStyle(_ id: String, color: String? = nil, radius: Double? = nil, strength: Double? = nil) {
+        command { try $0.updateLayer(id) { layer in
+            if let color {
+                guard CanvasLayer.isValidNewGlowColor(color) else { throw StudioDocumentError.invalid("Choose a valid six-digit RGB glow color.") }
+                layer.glowColor = color
+            }
+            if let radius { layer.glowRadius = radius }
+            if let strength { layer.glowStrength = strength }
+        } }
+    }
     func setLayerColor(_ id: String, color: Color) {
         let hex = Self.hex(color); command { try $0.updateLayer(id) { $0.colorLabel = hex } }
     }
@@ -2506,6 +2655,36 @@ final class StudioViewModel: ObservableObject {
         return affected
     }
 
+    var usesImageClipboard: Bool {
+        imageClipboard != nil && imageClipboardEditorVersion == editor.clipboardVersion
+    }
+    var bottomImageSelection: ImageMoveCapture? {
+        selectedElementIDs.isEmpty ? currentImageMoveCapture() : nil
+    }
+    var bottomCopyLabel: String {
+        if isMovingImageOnCanvas { return "Copy selected image" }
+        return selectedElementIDs.isEmpty ? "Copy frame" : selectedElementIDs.count == 1 ? "Copy selected drawing" : "Copy \(selectedElementIDs.count) selected drawings"
+    }
+    var bottomPasteLabel: String {
+        if usesImageClipboard { return "Paste image" }
+        return copiedDrawingCount == 1 ? "Paste drawing" : copiedDrawingCount > 0 ? "Paste \(copiedDrawingCount) drawings" : "Paste frame"
+    }
+    var canCopyBottomSelection: Bool {
+        !isMovingImageOnCanvas || bottomImageSelection != nil
+    }
+    @discardableResult
+    func deleteBottomImage(_ capture: ImageMoveCapture) -> Bool {
+        guard bottomImageSelection == capture else {
+            message = "The selected image changed. Select it again before deleting. Nothing was removed."
+            return false
+        }
+        return deleteImage(capture.placement)
+    }
+    func copyBottomSelection() {
+        if !selectedElementIDs.isEmpty { _ = copySelected() }
+        else if isMovingImageOnCanvas { _ = copyImage() }
+        else { copyFrame() }
+    }
     var hasCopiedImage: Bool { imageClipboard != nil }
     @discardableResult
     func copyImage() -> Bool {
@@ -2516,6 +2695,7 @@ final class StudioViewModel: ObservableObject {
         copied.elements = []; copied.holdTicks = nil
         copiedImageLayer = sourceLayer
         imageClipboard = copied
+        imageClipboardEditorVersion = editor.clipboardVersion
         pruneManagedImages()
         return true
     }
@@ -2539,9 +2719,9 @@ final class StudioViewModel: ObservableObject {
             var candidate = editor
             let layer = CanvasLayer(id: UUID().uuidString, name: "Pasted image",
                 opacity: appearance.opacity, blendMode: appearance.blendMode,
-                glowEnabled: appearance.glowEnabled, glowColor: appearance.glowColor, colorLabel: appearance.colorLabel)
+                glowEnabled: appearance.glowEnabled, glowColor: appearance.glowColor, colorLabel: appearance.colorLabel, glowRadius: appearance.glowRadius, glowStrength: appearance.glowStrength)
             try candidate.change { value in
-                value.schemaVersion = max(value.schemaVersion, 22)
+                value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
                 value.layers.append(layer)
                 value.frames[index].rasterAssetID = assetID
                 value.frames[index].rasterLayerID = layer.id
@@ -2649,7 +2829,7 @@ extension Array {
 
 /// Area selection encloses whole editable drawings, rather than altering pixels.
 /// The exact same region is used for the visible outline and selected IDs.
-enum StudioAreaSelectionKind: String, CaseIterable {
+enum StudioAreaSelectionKind: String, Codable, CaseIterable {
     case freehand, rectangle, polygon
     var label: String {
         switch self { case .freehand: return "Freehand"; case .rectangle: return "Rectangle"; case .polygon: return "Polygon" }
@@ -2839,6 +3019,15 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var gradientEnd = StudioBrushColor(red: 0, green: 0, blue: 1)
         var shapeFilled = false
         var cornerRadius: Double = 0
+        var selectionMode: StudioViewModel.SelectionMode? = nil
+        var areaSelectionKind: StudioAreaSelectionKind? = nil
+        var areaSelectionSmoothing: Double? = nil
+        var fillTolerance: Double? = nil
+        var fillExpand: Double? = nil
+        var fillGapClose: Double? = nil
+        var fillContiguous: Bool? = nil
+        var fillAntiAlias: Bool? = nil
+        var fillSampleAll: Bool? = nil
         var eraserMode: StudioEraserMode? = nil
         var textStyle: StudioTextStyle? = nil
         var blurHardness: Double? = nil
@@ -2864,6 +3053,10 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var lineArrowLength: Double? = nil
 
         var isValid: Bool {
+            (areaSelectionSmoothing.map { $0.isFinite && (0...10).contains($0) } ?? true) &&
+            (fillTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
+            (fillExpand.map { $0.isFinite && (-5...5).contains($0) } ?? true) &&
+            (fillGapClose.map { $0.isFinite && (0...5).contains($0) } ?? true) &&
             (lineArrowLength.map { $0.isFinite && (1...100).contains($0) } ?? true) &&
             (lineRulerAngle.map { $0.isFinite && (-180...180).contains($0) } ?? true) &&
             (lineRulerLength.map { $0.isFinite && (1...4096).contains($0) } ?? true) &&

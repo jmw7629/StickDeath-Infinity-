@@ -180,7 +180,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .move, .lasso].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -253,6 +253,11 @@ struct FloatingToolSettingsPanel: View {
         // ── FILL TOOL (GREEN THEME) ──
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
+                if !vm.selectedElementIDs.isEmpty {
+                    Text(StudioFillContext.selectionUnavailable)
+                        .font(.system(size: 10)).foregroundColor(.sdStudioSecondaryText)
+                        .accessibilityIdentifier("studio.fill.selection-unavailable")
+                }
                 SettingsSlider(label: "Tolerance", value: $vm.fillTolerance, range: 0...128, unit: "", accent: .green)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
@@ -307,8 +312,13 @@ struct FloatingToolSettingsPanel: View {
                 }
                 
                 SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                Text("Erases this layer. Soft adds a feathered edge. Deselect artwork before erasing.")
+                Text(vm.selectedElementIDs.isEmpty ? "Erases this layer. Soft adds a feathered edge." : "Erases selected drawings only. Soft adds a feathered edge. Drawings with layer-wide effects require deselection.")
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                if !vm.selectedElementIDs.isEmpty {
+                    Button("Deselect drawings") { vm.clearElementSelection() }
+                        .font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                        .accessibilityIdentifier("studio.eraser.deselect")
+                }
             }
             
         // ── SMUDGE (PURPLE THEME) ──
@@ -598,9 +608,10 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock layers", "✂️ Deselect"], id: \.self) { action in
+                    ForEach(["📋 Copy", "✂️ Cut", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock layers", "✂️ Deselect"], id: \.self) { action in
                         Button(action: {
                             if action.contains("Copy") { _ = vm.copySelected() }
+                            else if action.contains("Cut") { _ = vm.cutSelected() }
                             else if action.contains("Delete") { vm.deleteSelected() }
                             else if action.contains("Deselect") { vm.clearElementSelection() }
                             else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
@@ -626,7 +637,7 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
@@ -697,6 +708,10 @@ struct FloatingToolSettingsPanel: View {
                     Button("Copy") { _ = vm.copySelected() }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .accessibilityIdentifier("studio.lasso.copy")
+                    Button("Cut") { _ = vm.cutSelected() }
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .disabled(!vm.canCutSelected)
+                        .accessibilityIdentifier("studio.lasso.cut")
                     Button("Delete") { vm.deleteSelected() }
                         .frame(maxWidth: .infinity, minHeight: 44)
                         .accessibilityIdentifier("studio.lasso.delete")

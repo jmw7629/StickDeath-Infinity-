@@ -7,6 +7,8 @@ struct StudioCanvasView: View {
     @Environment(\.displayScale) private var displayScale
     @State private var gestureActive = false
     @State private var input: StudioStrokeInput?
+    @State private var eraserCapture: StudioViewModel.EraserInputCapture?
+    @State private var strokeInputCancelled = false
     @State private var imageMoveCapture: StudioViewModel.ImageMoveCapture?
     @State private var imageMoveFrame: AnimationFrame?
     @State private var startedAsImageMove = false
@@ -82,6 +84,11 @@ struct StudioCanvasView: View {
         .onChange(of: vm.currentImageMoveCapture()) { _, _ in cancelImageMovePreview() }
         .onChange(of: vm.beginSelectionHandle()) { _, _ in cancelHandlePreview() }
         .onChange(of: vm.beginAreaSelection()) { _, _ in cancelAreaPreview(); vm.cancelPolygonSelection() }
+        .onChange(of: vm.captureEraserInput(ownedStroke: input?.id)) { _, current in
+            if let captured = eraserCapture, input?.tool == .eraser, current != captured {
+                interruptInput("Erasing cancelled because Studio changed. The artwork is unchanged.")
+            }
+        }
         .onChange(of: vm.beginColorSample()) { _, _ in colorInput.invalidate() }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { StudioSmudgeReplay.viewCache.clear(); interruptInput("Studio left the foreground before the stroke finished. The incomplete draft remains unsaved.") }
@@ -308,6 +315,7 @@ struct StudioCanvasView: View {
             .onChange(of: StudioColorSampleGesture.Layout(viewport: size,
                 scale: vm.canvasScale, offset: vm.canvasOffset)) { _, _ in
                 colorInput.invalidate(); fillInput.invalidate(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn(); cancelMovePreview(); cancelImageMovePreview(); cancelAreaPreview(); cancelHandlePreview()
+                if input?.tool == .eraser { interruptInput("Erasing cancelled because the canvas moved.") }
             }
             .overlay(alignment: .bottom) { inputStatusOverlay }
         }
@@ -319,6 +327,7 @@ struct StudioCanvasView: View {
         return width / height > ratio ? CGSize(width: height * ratio, height: height) : CGSize(width: width, height: width / ratio)
     }
     private func inputChanged(_ value: StudioTouchValue, size: CGSize) {
+                guard !strokeInputCancelled else { return }
                 if touchID == nil {
                     touchID = UUID(); colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture()
                     startedAsImageMove = vm.selectedTool == .move && vm.isMovingImageOnCanvas
@@ -413,6 +422,10 @@ struct StudioCanvasView: View {
                         let brush = styled ? try vm.brushDescriptor(elementID: id) : nil
                         let shape = try vm.shapeDescriptor()
                         let eraser = try vm.eraserDescriptor()
+                        if eraser != nil {
+                            guard let capture = vm.captureEraserInput() else { throw StudioCommandError.staleRevision }
+                            eraserCapture = capture
+                        }
                         guard vm.beginStrokeInput(id: id) else { return }
                         input = StudioStrokeInput(id: id, frameID: vm.currentFrame.id, layerID: vm.activeLayerID,
                             tool: vm.selectedTool, color: vm.strokeColorHex, width: vm.strokeWidth,
@@ -455,7 +468,10 @@ struct StudioCanvasView: View {
                     do {
                         var preview = vm.currentFrame
                         let previewElement: DrawnElement?
-                        if let mirror = input.mirror {
+                        if let capture = eraserCapture {
+                            preview = try vm.eraserInputPreview(capture, element: input.element)
+                            previewElement = nil
+                        } else if let mirror = input.mirror {
                             // Match commit ordering even where translucent gradient copies overlap.
                             preview.elements.append(contentsOf: try mirror.elements(from: input.element))
                             previewElement = nil
@@ -468,7 +484,7 @@ struct StudioCanvasView: View {
     }
     private func inputEnded(_ value: StudioTouchValue, size: CGSize) {
                 defer { clearInput() }
-                guard vm.pendingBrushStroke == nil else { return }
+                guard !strokeInputCancelled, vm.pendingBrushStroke == nil else { return }
                 if startedAsSmudge {
                     guard updateSmudge(location: value.location, size: size), let captured = smudgeInput,
                           smudgeSubmission == nil else { return }
@@ -573,14 +589,21 @@ struct StudioCanvasView: View {
                 if panOrigin != nil { return }
                 if var captured = input, !captured.points.isEmpty {
                     if let inputFailure {
+                        if captured.tool == .eraser { vm.message = inputFailure; return }
                         vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
                             reason: inputFailure, inputComplete: false, mirror: captured.mirror)
                     } else {
                         do {
                             try captured.append(location: value.location, time: value.time, pressure: value.pressure, tilt: value.tilt)
                             captured.finishEstimatedUpdates()
-                            _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
+                            if captured.tool == .eraser {
+                                guard scenePhase == .active, let capture = eraserCapture else { throw StudioCommandError.staleRevision }
+                                _ = vm.commitEraserInput(capture, element: captured.element)
+                            } else {
+                                _ = vm.commitElement(captured.element, frameID: captured.frameID, mirror: captured.mirror)
+                            }
                         } catch {
+                            if captured.tool == .eraser { vm.message = error.localizedDescription; return }
                             vm.retainRejectedBrush(captured.element, frameID: captured.frameID,
                                 reason: error.localizedDescription, inputComplete: false, mirror: captured.mirror)
                         }
@@ -840,9 +863,10 @@ struct StudioCanvasView: View {
     }
     private func clearInput(endingTouch: Bool = true) {
         if let input { vm.finishStrokeInput(id: input.id) }
-        input = nil; panOrigin = nil; strokePreviewFrame = nil; liveElement = nil; livePrepared = nil
+        input = nil; eraserCapture = nil; panOrigin = nil; strokePreviewFrame = nil; liveElement = nil; livePrepared = nil
         inputFailure = nil; previewFailure = nil; lastPreviewTime = 0
         if endingTouch {
+            strokeInputCancelled = false
             colorInput = StudioColorSampleGesture(); fillInput = StudioFillGesture(); touchID = nil
             smudgeInput = nil; startedAsSmudge = false
             blurInput = nil; startedAsBlur = false
@@ -857,6 +881,9 @@ struct StudioCanvasView: View {
         }
     }
     private func interruptInput(_ reason: String) {
+        // Keep the cancellation latched until the physical touch ends. Clearing
+        // the captured input alone would let its next move recapture new targets.
+        if gestureActive { strokeInputCancelled = true }
         vm.cancelPolygonSelection()
         fillSession.cancel(); cancelSmudge(); cancelBlur(); cancelSharpen(); cancelDodgeBurn()
         if let input { vm.interruptStrokeInput(input, reason: reason) }

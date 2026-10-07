@@ -45,6 +45,153 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            try test("Cut uses existing clipboard preserves order fresh paste IDs and one Undo") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "lower"), stroke(id: "upper")])])), editor: &editor)
+                editor.selectedElementIDs = ["lower", "upper"]
+                let before = editor.document
+                let cut = StudioCommand.cutElements(.init(frame: .id(before.activeFrameID), elementIDs: ["upper", "lower"]))
+                let wire = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([cut]))))
+                let receipt = try StudioCommandExecutor.execute(wire, editor: &editor)
+                try require(editor.document.frames.count == before.frames.count && editor.document.frames[0].elements.isEmpty,
+                    "Cut added a frame or retained selected drawings")
+                try require(editor.clipboardElements?.map(\.id) == ["lower", "upper"] && receipt.clipboardElementCount == 2,
+                    "Cut clipboard lost painting order")
+                let clipboard = editor.clipboardVersion
+                _ = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
+                try require(content(editor.document) == content(before), "Cut was not one Undo")
+                _ = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([.pasteElements(.init(frame: .id(editor.document.activeFrameID),
+                    layer: .id(editor.document.activeLayerID), clipboardID: clipboard.uuidString))])), editor: &editor)
+                let pasted = editor.document.frames[0].elements
+                try require(pasted.count == 2 && Set(pasted.map(\.id)).isDisjoint(with: ["lower", "upper"])
+                    && pasted.map(\.points) == before.frames[0].elements.map(\.points), "Cut paste lost source or reused IDs")
+            }
+            try test("Cut failure cancellation and later batch rejection preserve prior clipboard and document") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "target"), stroke(id: "prior")])])), editor: &editor)
+                try editor.copyElements(frameID: editor.document.activeFrameID, ids: ["prior"])
+                editor.selectedElementIDs = ["target"]
+                let cut = StudioCommand.cutElements(.init(frame: .id(editor.document.activeFrameID), elementIDs: ["target"]))
+                let version = editor.clipboardVersion, originalClipboard = editor.clipboardElements
+                var probe = editor, checkpoints = 0
+                _ = try StudioCommandExecutor.execute(request(probe, .apply([cut])), editor: &probe, checkCancellation: { checkpoints += 1 })
+                for stop in 1...checkpoints {
+                    var calls = 0
+                    try rejected(request(editor, .apply([cut])), editor: &editor, cancellation: {
+                        calls += 1; if calls == stop { throw CancellationError() }
+                    })
+                    try require(editor.clipboardVersion == version && editor.clipboardElements == originalClipboard, "Cancelled Cut replaced clipboard")
+                }
+                try rejected(request(editor, .apply([cut, .renameProject(.init(name: ""))])), editor: &editor)
+                try require(editor.clipboardVersion == version && editor.clipboardElements == originalClipboard, "Failed batch published Cut clipboard")
+                let before = editor.document
+                for mode in ["full", "position", "alpha"] {
+                    var locked = try StudioDocumentEditor(document: before)
+                    try locked.copyElements(frameID: before.activeFrameID, ids: ["prior"])
+                    locked.selectedElementIDs = ["target"]
+                    try locked.change { $0.layers[0].lockMode = mode }
+                    let oldVersion = locked.clipboardVersion
+                    try rejected(request(locked, .apply([cut])), editor: &locked)
+                    try require(locked.clipboardVersion == oldVersion, "Locked Cut replaced clipboard")
+                }
+                let stale = StudioCommandRequest(requestID: UUID(), projectID: before.id, expectedRevision: before.revision - 1, action: .apply([cut]))
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+                try rejected(request(editor, .apply([.cutElements(.init(frame: .id(before.activeFrameID), elementIDs: ["prior"]))])), editor: &editor)
+            }
+            try test("explicit selected erasure matches manual transaction and preserves sources with one undo") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "target"), stroke(id: "overlap")])])), editor: &editor)
+                editor.selectedElementIDs = ["target"]
+                let before = editor.document
+                let points = [StrokePoint(x: 40, y: 50), StrokePoint(x: 50, y: 60)]
+                let command = StudioCommand.eraseSelectedElements(.init(frame: .id(before.activeFrameID), layer: .id(before.activeLayerID),
+                    elementIDs: ["target"], points: points, width: 12, opacity: 0.5, mode: .soft))
+                var manual = editor
+                try manual.eraseSelectedElements(DrawnElement(id: "manual", tool: .eraser, points: points,
+                    color: "#000000", width: 12, opacity: 0.5, fillColor: nil, layerID: before.activeLayerID,
+                    eraser: .init(mode: .soft)), frameID: before.activeFrameID, elementIDs: ["target"])
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([command]))))
+                let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                try require(content(editor.document) == content(manual.document), "Typed erasure diverged from manual editor operation")
+                try require(editor.selectedElementIDs == manual.selectedElementIDs, "Pure typed erasure lost manual selection")
+                var combined = manual
+                _ = try StudioCommandExecutor.execute(request(combined, .apply([.renameProject(.init(name: "Renamed selected artwork")), command])), editor: &combined)
+                try require(combined.selectedElementIDs == manual.selectedElementIDs, "Rename/erasure batch lost selection")
+                var mixed = manual
+                _ = try StudioCommandExecutor.execute(request(mixed, .apply([command, draw(mixed, [stroke(id: "new-draw")])])), editor: &mixed)
+                try require(mixed.selectedElementIDs.isEmpty, "Mixed drawing batch unexpectedly preserved selection")
+                try require(editor.document.frames[0].elements[0].points == before.frames[0].elements[0].points &&
+                    editor.document.frames[0].elements[1] == before.frames[0].elements[1], "Erasure rewrote source or overlap")
+                try require(receipt.createdElementIDs.isEmpty && editor.document.revision == before.revision + 1, "Erasure invented source IDs or multiple revisions")
+                let after = content(editor.document)
+                _ = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
+                try require(content(editor.document) == content(before), "Erasure was not one Undo")
+                _ = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
+                try require(content(editor.document) == after, "Redo lost masks")
+            }
+            try test("selected erasure rejects stale malformed locked unseen targets and rolls back a batch") {
+                var editor = try fresh()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "target"), stroke(id: "unseen")])])), editor: &editor)
+                editor.selectedElementIDs = ["target"]
+                let frame = editor.document.activeFrameID, layer = editor.document.activeLayerID
+                func erasure(_ ids: [String] = ["target"], width: Double = 10) -> StudioCommand {
+                    .eraseSelectedElements(.init(frame: .id(frame), layer: .id(layer), elementIDs: ids,
+                        points: [.init(x: 40, y: 50)], width: width, opacity: 1, mode: .hard))
+                }
+                let valid = request(editor, .apply([erasure()]))
+                try rejected(.init(requestID: UUID(), projectID: valid.projectID, expectedRevision: valid.expectedRevision - 1, action: valid.action), editor: &editor, expected: .staleRevision)
+                for ids in [[], ["target", "target"], ["unseen"], ["target", "unseen"], ["missing"]] {
+                    try rejected(request(editor, .apply([erasure(ids)])), editor: &editor)
+                }
+                for width in [0, 513, Double.nan] { try rejected(request(editor, .apply([erasure(width: width)])), editor: &editor) }
+                try rejected(request(editor, .apply([.renameProject(.init(name: "must roll back")), erasure(width: 0)])), editor: &editor)
+                let original = editor.document
+                try editor.change { $0.layers[0].locked = true }
+                try rejected(request(editor, .apply([erasure()])), editor: &editor)
+                editor = try StudioDocumentEditor(document: original); editor.selectedElementIDs = ["target"]
+                for cancellationIndex in 1...8 {
+                    var calls = 0
+                    try rejected(request(editor, .apply([.renameProject(.init(name: "cancelled rename")), erasure()])), editor: &editor,
+                        cancellation: { calls += 1; if calls == cancellationIndex { throw CancellationError() } })
+                }
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as! [String: Any]
+                let fields = ((base["action"] as! [String: Any])["apply"] as! [[String: Any]])[0]["eraseSelectedElements"] as! [String: Any]
+                var unknown = fields; unknown["shell"] = "delete everything"
+                var nested = fields; nested["points"] = [["x": 1, "y": 1, "admin": true]]
+                var missing = fields; missing.removeValue(forKey: "mode")
+                for invalid in [unknown, nested, missing] {
+                    var object = base; object["action"] = ["apply": [["eraseSelectedElements": invalid]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Malformed selected erasure decoded") }
+                    catch is StudioCommandError { }
+                }
+                try rejected(request(editor, .apply([draw(editor, [StudioCommandStroke(id: "not-selected-mask", tool: .eraser,
+                    points: [.init(x: 1, y: 1)], color: "#000000", width: 10, opacity: 1, eraser: .init())])])), editor: &editor)
+            }
+            try test("masked frame clones consume generated mask and sample budgets atomically") {
+                // Delete each prior frame after copying: the live project stays
+                // within model limits while the request's generated work grows.
+                for (maskCount, samples, copies) in [(64, 1, 16), (8, 4096, 2)] {
+                    var editor = try fresh()
+                    _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "source")])])), editor: &editor)
+                    let layer = editor.document.activeLayerID
+                    for _ in 0..<maskCount {
+                        try editor.eraseSelectedElements(DrawnElement(id: "mask", tool: .eraser,
+                            points: Array(repeating: StrokePoint(x: 40, y: 50), count: samples), color: "#000000",
+                            width: 10, opacity: 1, fillColor: nil, layerID: layer, eraser: .init()),
+                            frameID: editor.document.activeFrameID, elementIDs: ["source"])
+                    }
+                    var commands: [StudioCommand] = [.renameProject(.init(name: "must roll back masked clones"))]
+                    var source = StudioCommandReference.id(editor.document.activeFrameID)
+                    for index in 0..<copies {
+                        let alias = "copy-\(index)"
+                        commands.append(.duplicateFrame(.init(source: source, result: alias)))
+                        commands.append(.deleteFrame(source))
+                        source = .created(alias)
+                    }
+                    try rejected(request(editor, .apply(commands)), editor: &editor, expected: .limitExceeded)
+                }
+            }
             try test("typed tween uses canonical adjacent endpoints four easings factual receipts and one undo") {
                 for easing in StudioTweenEasing.allCases {
                     var editor = try fresh()
@@ -814,7 +961,7 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     .draw(.init(frame: .id(before.activeFrameID), layer: .created("ink"), strokes: [stroke(id: "first-stroke")])),
                     .addFrame(.init(after: .id(before.activeFrameID), result: "second")),
                     .draw(.init(frame: .created("second"), layer: .created("ink"), strokes: [stroke(id: "second-stroke", tool: .line)])),
-                    .updateLayer(.init(layer: .created("ink"), settings: .init(opacity: 0.5, blend: .multiply, glowEnabled: true))),
+                    .updateLayer(.init(layer: .created("ink"), settings: .init(opacity: 0.5, blend: .multiply, glowEnabled: true, glowColor: "#00FF00", glowRadius: 18, glowStrength: 0.35))),
                     .canvasOptions(.init(grid: true, onion: true)),
                     .selectFrame(.id(before.activeFrameID))
                 ]
@@ -828,11 +975,20 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                             "receipt or retained actual audio metadata is wrong")
                 try require(after.layers[0].opacity == 0.5 && after.layers[0].blendMode == "multiply" && after.gridEnabled && after.onionEnabled,
                             "layer/settings operations did not affect actual document")
+                try require(after.layers[0].glowColor == "#00FF00" && after.layers[0].glowRadius == 18 && after.layers[0].glowStrength == 0.35 && after.schemaVersion == 28,
+                            "Typed layer command lost glow style or schema")
                 let undo = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
                 try require(undo.outcome == .undone && content(editor.document) == content(before) && !editor.canUndo && editor.canRedo,
                             "one undo did not reverse entire mixed transaction")
                 let redo = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
                 try require(redo.outcome == .redone && content(editor.document) == content(after), "redo did not restore full transaction")
+                let beforeBadGlow = editor.document
+                for settings in [StudioCommandLayerSettings(glowRadius: 129), StudioCommandLayerSettings(glowStrength: -0.1), StudioCommandLayerSettings(glowColor: "#XYZXYZ")] {
+                    var rejected = false
+                    do { _ = try StudioCommandExecutor.execute(request(editor, .apply([.updateLayer(.init(layer: .id(after.layers[0].id), settings: settings))])), editor: &editor) }
+                    catch { rejected = true }
+                    try require(rejected && editor.document == beforeBadGlow, "Invalid typed glow setting committed partial state")
+                }
             }
             try test("project identity, stale revision and replay reject before editing") {
                 var editor = try fresh()

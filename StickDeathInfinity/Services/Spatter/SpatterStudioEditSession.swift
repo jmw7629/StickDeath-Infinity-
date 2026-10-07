@@ -25,6 +25,8 @@ final class SpatterStudioEditSession: ObservableObject {
     }
     struct AppliedEdit {
         let receipt: StudioCommandReceipt
+        let selectedErasureMaskCount: Int
+        let isLayerGlowEdit: Bool
         let isAudioEdit: Bool
         let renamedProjectName: String?
         let addedAudioClipCount: Int
@@ -34,9 +36,16 @@ final class SpatterStudioEditSession: ObservableObject {
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if selectedErasureMaskCount > 0 {
+                return "Added \(selectedErasureMaskCount) erasure \(selectedErasureMaskCount == 1 ? "mask" : "masks") to selected drawings in one undoable local edit. Original artwork remains editable."
+            }
             if let renamedProjectName {
                 return receipt.outcome == .unchanged ? "The project already has this name. Nothing changed."
                     : "Renamed project to “\(renamedProjectName)” in one undoable local edit."
+            }
+            if isLayerGlowEdit {
+                return receipt.outcome == .unchanged ? "The active layer glow already matches this instruction. Nothing changed."
+                    : "Updated the active layer glow in one undoable local edit."
             }
             if isAudioEdit {
                 if removedAudioClipCount > 0 { return "Deleted the selected audio clip in one undoable local edit. Its source remains available for Undo." }
@@ -169,11 +178,18 @@ final class SpatterStudioEditSession: ObservableObject {
                 try check()
                 guard let studio else { throw SessionError.outsideStudio }
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                let isErasure = SpatterSelectedErasureInstruction.isInstruction(draft)
                 let isAudio = SpatterAudioInstruction.isAudioInstruction(draft)
                 let isRename = SpatterProjectRenameInstruction.isInstruction(draft)
+                let isGlow = !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
                 let preparedRequest: StudioCommandRequest
-                if isRename {
+                if isErasure {
+                    preparedRequest = try SpatterSelectedErasureInstruction.parse(draft).prepare(in: document,
+                        selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
+                } else if isRename {
                     preparedRequest = try SpatterProjectRenameInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
+                } else if isGlow {
+                    preparedRequest = try SpatterLayerGlowInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
                 } else if isAudio {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
@@ -196,12 +212,18 @@ final class SpatterStudioEditSession: ObservableObject {
                 // No suspension between the last fresh context check and this
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
+                let previousMaskCount = studio.document.frames.reduce(0) { count, frame in
+                    count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
+                }
                 let receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: check)
                 let newIDs = Set(receipt.createdFrameIDs)
                 let addedTicks = studio.frames.filter { newIDs.contains($0.id) }.reduce(0) { $0 + $1.durationTicks }
                 let oldAudioIDs = Set(document.editableAudioClips.map(\.id))
                 let addedAudioCount = studio.audioClips.filter { !oldAudioIDs.contains($0.id) }.count
-                let result = AppliedEdit(receipt: receipt, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
+                    count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
+                }
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, isLayerGlowEdit: isGlow, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,

@@ -487,6 +487,105 @@ private struct Failure: Error { let message: String }
         try require(pixels(image) == rendered,"Actual mixed-tool PNG differs from canonical renderer")
         pass("styled brushes survive all supported schemas, shape/fill transitions, later drawing, undo/redo, save/cold reopen and actual PNG")
     }
+    static func restoredFillPreferencesChangeRealCoverage() async throws {
+        let suite = "sdi-fill-settings-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName: suite)!
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let configured = StudioViewModel(storage: storage, toolDefaults: defaults)
+        configured.selectDrawingTool(.fill)
+        configured.fillTolerance = 17; configured.fillExpand = 1; configured.fillGapClose = 2
+        configured.fillContiguous = false; configured.fillAntiAlias = false; configured.fillSampleAll = true
+        let vm = StudioViewModel(storage: storage, toolDefaults: UserDefaults(suiteName: suite))
+        let created = await vm.createProject(name: "Restored fill", width: 128, height: 128, fps: 12)
+        try require(created, "Fill preferences fixture project failed")
+        vm.selectDrawingTool(.fill); vm.strokeColor = Color(.sRGB, red: 0, green: 0, blue: 1)
+        try require(vm.commitElement(shape(vm.activeLayerID, fill: nil)), "Fill preferences outline failed")
+        await vm.flush()
+        let original = vm.document
+        guard let context = StudioFillContext.current(vm) else { throw Failure(message: "Restored real Fill context unavailable") }
+        try require(context.settings.tolerance == 17 && context.settings.expand == 1
+            && context.settings.gapClose == 0 && !context.settings.contiguous && !context.settings.antiAlias
+            && context.sampleAllLayers && vm.fillGapClose == 2, "Restored values did not reach actual Fill capture")
+        let captured = try StudioFillService.capture(document: vm.document, frameID: context.frameID, layerID: context.layerID,
+            point: CGPoint(x: 64, y: 64), color: context.color, opacity: context.opacity,
+            settings: context.settings, sampleAllLayers: context.sampleAllLayers)
+        let fill = try StudioFillService.element(from: captured)
+        try require(vm.commitElement(fill), "Restored Fill result did not commit")
+        let allPixels = try render(vm.document)
+        try require(channel(allPixels, 4, 4, 2) == 255 && channel(allPixels, 64, 64, 2) == 255,
+            "Restored all-similar Fill failed to color separated transparent regions")
+        vm.undo()
+        try require(vm.document.frames == original.frames, "Restored Fill Undo changed existing artwork")
+        let beforeReset = vm.document
+        vm.resetCurrentDrawingToolPreferences()
+        try require(vm.document == beforeReset, "Fill Reset edited document")
+        guard let reset = StudioFillContext.current(vm) else { throw Failure(message: "Reset Fill context unavailable") }
+        try require(reset.settings.tolerance == 32 && reset.settings.expand == 0 && reset.settings.gapClose == 0
+            && reset.settings.contiguous && reset.settings.antiAlias && !reset.sampleAllLayers,
+            "Reset did not reach real Fill settings")
+        let resetCapture = try StudioFillService.capture(document: vm.document, frameID: reset.frameID, layerID: reset.layerID,
+            point: CGPoint(x: 64, y: 64), color: reset.color, opacity: reset.opacity,
+            settings: reset.settings, sampleAllLayers: reset.sampleAllLayers)
+        try require(vm.commitElement(StudioFillService.element(from: resetCapture)), "Reset Fill did not commit")
+        let resetPixels = try render(vm.document)
+        try require(channel(resetPixels, 4, 4) == 0 && channel(resetPixels, 64, 64, 2) == 255,
+            "Reset contiguous Fill did not produce different real bounded coverage")
+        await vm.flush()
+        pass("fresh VM Fill preferences and Reset drive actual capture mask renderer commit and Undo")
+    }
+    static func selectionAuthorization() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-fill-selection-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: storage), session = StudioFillSession()
+        let created = await vm.createProject(name: "Fill selection guard", width: 2048, height: 1024, fps: 12)
+        try require(created, "Selected Fill project failed")
+        let source = shape(vm.activeLayerID)
+        try require(vm.commitElement(source), "Selected Fill source failed")
+        await vm.flush()
+        vm.selectDrawingTool(.fill)
+        guard let context = StudioFillContext.current(vm) else { throw Failure(message: "Plain Fill context missing") }
+        let original = vm.document, originalUndo = vm.canUndo
+        _ = vm.selectElement(at: CGPoint(x: 64, y: 64))
+        try require(vm.selectedElementIDs == [source.id] && StudioFillContext.current(vm) == nil,
+            "Nonempty drawn selection silently allowed whole-region Fill")
+        let rejected = await session.fill(vm, context: context, point: CGPoint(x: 500, y: 500))
+        try require(!rejected && vm.message == StudioFillContext.selectionUnavailable
+            && vm.document == original && vm.selectedElementIDs == [source.id]
+            && vm.activeStrokeID == nil && !session.isFilling && vm.canUndo == originalUndo && !vm.canRedo,
+            "Selected-start Fill changed source/history or hid why it was denied")
+        vm.clearElementSelection()
+        guard let plain = StudioFillContext.current(vm) else { throw Failure(message: "Deselect failed to re-enable Fill") }
+        let task = Task { @MainActor in await session.fill(vm, context: plain, point: CGPoint(x: 500, y: 500)) }
+        let deadline = Date().addingTimeInterval(10)
+        while !session.isFilling && Date() < deadline { await Task.yield() }
+        guard session.isFilling, let owner = vm.activeStrokeID else { throw Failure(message: "Real Fill worker did not enter its owned phase") }
+        // Actual public input/selection APIs restore the same owner, tool and
+        // revision; only selected identities differ at worker completion.
+        vm.finishStrokeInput(id: owner)
+        _ = vm.selectElement(at: CGPoint(x: 64, y: 64))
+        try require(vm.beginStrokeInput(id: owner) && vm.selectedElementIDs == [source.id],
+            "Actual selection-change fixture failed")
+        let changed = await task.value
+        try require(!changed && vm.document == original && vm.selectedElementIDs == [source.id]
+            && vm.activeStrokeID == nil && !session.isFilling && vm.canUndo == originalUndo && !vm.canRedo,
+            "Late selection broadened Fill authority or changed history")
+        try require(vm.message == StudioFillContext.selectionUnavailable + " Nothing was added.",
+            "Late selection rejection lacked factual guidance")
+        vm.clearElementSelection()
+        guard let resumed = StudioFillContext.current(vm) else { throw Failure(message: "Plain Fill did not recover after rejection") }
+        let filled = await session.fill(vm, context: resumed, point: CGPoint(x: 500, y: 500))
+        try require(filled && vm.currentFrame.elements.count == original.frames[0].elements.count + 1
+            && vm.currentFrame.elements.last?.fillMask != nil && vm.currentFrame.elements.first == source,
+            "Deselect-first guard broke normal real Fill")
+        try require(vm.message == "Filled the tapped canvas region.", "Plain Fill claimed object selection clipping")
+        vm.undo()
+        try require(vm.document.frames == original.frames, "Normal Fill after rejection lost one-step Undo")
+        await vm.flush()
+        pass("selected-start and late-selection real Fill reject atomically while Deselect restores normal Fill and Undo")
+    }
     static func main() async throws {
         setbuf(stdout, nil)
         try await styledBrushShapeFillRoundtrip()
@@ -496,6 +595,8 @@ private struct Failure: Error { let message: String }
         try aggregateBudgetAndLayerCopy(); try await actualMovie(); try await rasterAndCancellation()
         try await sessionAndGestures()
         try historyCoverageBudget()
+        try await restoredFillPreferencesChangeRealCoverage()
+        try await selectionAuthorization()
         print("STUDIO_FILL_INTEGRATION=PASS groups=\(passed)")
     }
 }

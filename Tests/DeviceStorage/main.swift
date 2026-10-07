@@ -23,6 +23,25 @@ private final class CommitFailureStore: DeviceStorageManager {
     }
 }
 
+private final class RevisionSpaceFailureStore: DeviceStorageManager {
+    enum Moment: CaseIterable { case beforeWrite, partialWrite, beforeSync, afterSync }
+    var failingStage: RevisionWriteStage?
+    var moment = Moment.beforeWrite
+    var evidence: URL?
+    override func writeRevisionFile(_ data: Data, to url: URL, stage: RevisionWriteStage) throws {
+        if failingStage == stage && (moment == .beforeWrite || moment == .partialWrite) {
+            if moment == .partialWrite { try Data(data.prefix(max(1, data.count / 2))).write(to: url, options: .withoutOverwriting); evidence = url }
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try super.writeRevisionFile(data, to: url, stage: stage)
+    }
+    override func synchronizeRevisionFile(_ url: URL, stage: RevisionWriteStage) throws {
+        if failingStage == stage && moment == .beforeSync { evidence = url; throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
+        try super.synchronizeRevisionFile(url, stage: stage)
+        if failingStage == stage && moment == .afterSync { evidence = url; throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
+    }
+}
+
 @main struct DeviceStorageTests {
     static let red = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAEUlEQVR4nGP8z4AATEhsPBwAM9EBBzDn4UwAAAAASUVORK5CYII=")!
     static let blue = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAIAAAAmkwkpAAAAE0lEQVR4nGNkYPjPAANMcBZeDgAx0wEH1s7nlgAAAABJRU5ErkJggg==")!
@@ -181,6 +200,38 @@ private final class CommitFailureStore: DeviceStorageManager {
             store.failCommit = false
             try store.saveAnimation(project(id: p.id, frames: [blue]))
             try require(try store.loadAnimation(id: p.id)!.frames[0].imageData == blue, "Retry did not commit")
+        }
+        test("payload and lineage ENOSPC stages preserve published bytes and unselected evidence through retry") {
+            for stage in [DeviceStorageManager.RevisionWriteStage.payload, .lineageReceipt] {
+                for moment in RevisionSpaceFailureStore.Moment.allCases {
+                    let (_, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+                    let store = RevisionSpaceFailureStore(documentsDirectory: root)
+                    var original = project(); original.editableDocumentData = Data("original editable bytes".utf8)
+                    original.audioTracks = [AudioTrack(id: UUID(), name: "Original tone", format: "wav", audioData: tone, startTime: 0, duration: 0.01)]
+                    try store.saveAnimation(original)
+                    let storage = store.animationsDir.appendingPathComponent(original.id.uuidString + "/.sdi")
+                    let pointer = storage.appendingPathComponent("current.json"), pointerBytes = try Data(contentsOf: pointer)
+                    var ownedBefore: [URL: Data] = [:]
+                    let enumerator = FileManager.default.enumerator(at: storage, includingPropertiesForKeys: [.isRegularFileKey])!
+                    for case let url as URL in enumerator where try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                        ownedBefore[url] = try Data(contentsOf: url)
+                    }
+                    var updated = original; updated.frames = [StoredAnimationFrame(imageData: blue)]
+                    updated.editableDocumentData = Data("new editable bytes".utf8)
+                    store.failingStage = stage; store.moment = moment
+                    var actualFailure: NSError?
+                    do { try store.saveAnimation(updated) } catch { actualFailure = error as NSError }
+                    try require(actualFailure != nil && ((actualFailure!.domain == NSCocoaErrorDomain && actualFailure!.code == CocoaError.Code.fileWriteOutOfSpace.rawValue) || (actualFailure!.domain == NSPOSIXErrorDomain && actualFailure!.code == 28)), "Wrong or missing injected disk-full error")
+                    try require(try Data(contentsOf: pointer) == pointerBytes, "Failure published partial selector")
+                    try require(try encoded(store.loadAnimation(id: original.id)!) == encoded(original), "Disk-full save changed selected media/document")
+                    for (url, bytes) in ownedBefore { try require(try Data(contentsOf: url) == bytes, "Existing owned artifact changed") }
+                    let failedBytes = try store.evidence.map { try Data(contentsOf: $0) }
+                    store.failingStage = nil
+                    try store.saveAnimation(updated)
+                    try require(try encoded(store.loadAnimation(id: original.id)!) == encoded(updated), "Retry failed to publish full document/media")
+                    if let url = store.evidence, let failedBytes { try require(try Data(contentsOf: url) == failedBytes, "Retry deleted or adopted unselected failure evidence") }
+                }
+            }
         }
         test("interrupted first save can retry without deleting staged evidence") {
             let (_, root) = try fixture(); let store = CommitFailureStore(documentsDirectory: root); let p = project()

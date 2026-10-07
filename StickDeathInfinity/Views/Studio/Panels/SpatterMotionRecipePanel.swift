@@ -24,19 +24,21 @@ struct SpatterMotionRecipePanel: View {
     private var isBriefDraft: Bool { SpatterSceneBrief.isBrief(draft) }
     private var isStickDraft: Bool { SpatterStickFigureRecipe.isStickFigureInstruction(draft) }
     private var isRenameDraft: Bool { SpatterProjectRenameInstruction.isInstruction(draft) }
+    private var isErasureDraft: Bool { SpatterSelectedErasureInstruction.isInstruction(draft) }
+    private var isGlowDraft: Bool { !isRenameDraft && SpatterLayerGlowInstruction.isInstruction(draft) }
     private var isAudioDraft: Bool { SpatterAudioInstruction.isAudioInstruction(draft) }
     private var exampleText: String {
-        isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
+        isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
-        isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
+        isErasureDraft ? "Erase only the selected drawings along a straight path. Original geometry stays editable. Unselected drawings keep their original editable geometry. One Undo restores all selected drawings." : isGlowDraft ? "Change the active layer glow across its frames using the same Layers controls. One Undo reverses the complete style edit." : isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
             ? "Edit the selected clip's volume, mute, fades, placement or source range, or duplicate, split or delete the selected clip. Original audio stays unchanged. One Undo reverses the edit."
             : isBriefDraft ? "A supported two-action brief makes 16–20 editable stick-figure poses with frame holds, in one Undo step. Color, direction, action order and duration follow the brief. This bounded local planner is not open-ended AI video generation."
             : isStickDraft ? "Procedural walking, running, jumping and waving append 8–20 editable stick-figure frames on a new layer. This is a local motion recipe, not open-ended AI video generation. Current project FPS and existing frames are preserved; one Undo reverses the edit."
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
-        isRenameDraft ? "Use one name in double quotes, with 1–120 characters and no control characters. Stop playback before applying. The quoted name is text, never another instruction." : isTwoActorDraft ? "Give each actor its own color, action and direction. Use 12–60 project FPS; duration must fit 8–24 ticks. Longer durations reject without stretching poses. No soundtrack or publication is generated." : isAudioDraft
+        isErasureDraft ? "Select drawings before opening Spatter. Use canvas percentages, hard or soft mode, size 1–512 pixels and strength 0–100%. Every selected layer must be visible and unlocked, without backdrop-dependent effects or alpha paint. Apply adds masks; it adds no frames." : isGlowDraft ? "Use a six-digit #RRGGBB color, radius 0–128 canvas pixels and strength 0–100%. Disable preserves the stored style. Select the target layer before opening Spatter; Apply changes only that layer." : isRenameDraft ? "Use one name in double quotes, with 1–120 characters and no control characters. Stop playback before applying. The quoted name is text, never another instruction." : isTwoActorDraft ? "Give each actor its own color, action and direction. Use 12–60 project FPS; duration must fit 8–24 ticks. Longer durations reject without stretching poses. No soundtrack or publication is generated." : isAudioDraft
             ? "Volume uses 0–100%. Fade durations use seconds and must fit the selected clip. Move uses an absolute start in seconds and track 1–4; it does not inherit drag snapping. Trim uses a source offset and duration in seconds; the original recording stays unchanged. Duplicate adds one clip immediately after the selected clip, retaining its source range, fades, gain and track. Split uses an absolute timeline time in seconds inside the selected clip and rounds to an audio sample. Delete removes only the selected clip; one Undo restores it. Choose a complete audio example, edit its values, then Apply."
             : isBriefDraft ? "Use walks, runs, jumps or waves; at least one action travels. Specify left to right or right to left and 0.5–10 seconds covering at least 16 project ticks. Timing rounds to a project tick; no sound or props are generated."
             : isStickDraft ? "Start/end positions are the figure's feet baseline in canvas percentages. Height uses the shorter canvas side; every pose must fit. Edit the example's action, frame count, color, positions and size."
@@ -67,17 +69,17 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
-                    Text("Use a complete example. These bounded recipes create editable motion or change selected audio; open-ended AI briefs remain unfinished. Export renders the resulting project. Nothing publishes automatically.")
+                    Text("Use a complete example. These bounded recipes create editable motion, change selected audio, rename the project, style active-layer glow or erase selected drawings; open-ended AI briefs remain unfinished. Export renders the resulting project. Nothing publishes automatically.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
                     Text(exampleText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
-                    Button(isAudioDraft || isRenameDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
+                    Button(isAudioDraft || isRenameDraft || isErasureDraft || isGlowDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
                     Menu("Use an audio instruction") {
@@ -89,6 +91,21 @@ struct SpatterMotionRecipePanel: View {
                     .frame(minHeight: 44)
                     .disabled(session.isWorking || session.isClosed)
                     .accessibilityIdentifier("spatter.audio.examples")
+                    Menu("Use a layer glow instruction") {
+                        Button("Set active layer glow") { draft = SpatterLayerGlowInstruction.example }
+                            .accessibilityIdentifier("spatter.layer.glow-example")
+                        Button("Disable active layer glow") { draft = SpatterLayerGlowInstruction.disableExample }
+                            .accessibilityIdentifier("spatter.layer.glow-disable-example")
+                    }.frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.layer.glow-examples")
+                    Button("Use selected eraser example") { draft = SpatterSelectedErasureInstruction.example }
+                        .disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.selection.erase-example")
+                    if isErasureDraft {
+                        Text("Selected drawings: \(vm.selectedElementIDs.count)")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .accessibilityIdentifier("spatter.selection.erase-targets")
+                    }
                     Button("Use project rename example") { draft = SpatterProjectRenameInstruction.example }
                         .frame(minHeight: 44)
                         .disabled(session.isWorking || session.isClosed)
@@ -126,7 +143,7 @@ struct SpatterMotionRecipePanel: View {
                         .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
-                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
+                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                     Button("Apply local edit") {
                         draftFocused = false

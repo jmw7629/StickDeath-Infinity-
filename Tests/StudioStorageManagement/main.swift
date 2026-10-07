@@ -287,5 +287,106 @@ private func rejects(_ operation: () throws -> Void) throws {
             try require(try mutating.loadAnimation(id: project.id)?.metadata.title == "Version 0", "Changed selector no longer readable")
         }
         print("PASS selector mutation before/after staging preserves newly selected original")
+
+        // The only large fixture uses production commits, not fabricated ancestry receipts.
+        let (longStore, initialLong, longPath) = try revisionFixture("long-lineage", saves: 10)
+        let early = try longStore.previewObsoleteRevisions(id: initialLong.id)
+        _ = try longStore.removeObsoleteRevisions(id: initialLong.id, expectedSelectedRevision: early.selectedRevision, expectedConfirmationToken: early.confirmationToken)
+        let oldestReceipt = try FileManager.default.contentsOfDirectory(at: longPath.appendingPathComponent("lineage-v1"), includingPropertiesForKeys: nil)
+            .first { url in
+                guard url.pathExtension == "json", !url.lastPathComponent.contains("cleanup"),
+                      let data = try? Data(contentsOf: url), let value = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+                return value["parent"] == nil || value["parent"] is NSNull
+            }!
+        let oldestBytes = try Data(contentsOf: oldestReceipt)
+        var longProject = initialLong
+        for version in 10..<4100 { longProject.metadata.title = "Long version \(version)"; try longStore.saveAnimation(longProject) }
+        let orphan = longPath.appendingPathComponent("revisions/unknown-unselected.json")
+        let orphanBytes = Data("unknown original recovery source".utf8); try orphanBytes.write(to: orphan)
+        func finish(_ manager: DeviceStorageManager, _ scan: DeviceStorageManager.RevisionCleanupScan, startingAt: Int = 0) throws -> DeviceStorageManager.RevisionCleanupPreview {
+            var count = startingAt
+            while true {
+                let step = try manager.advanceRevisionCleanupScan(scan, maximumReceipts: 128)
+                try require(step.scannedRevisions - count <= 125 && step.scannedRevisions >= count, "Page exceeded requested receipt bound")
+                count = step.scannedRevisions
+                if let preview = step.preview { return preview }
+            }
+        }
+        let longScan = try longStore.beginRevisionCleanupScan(id: longProject.id)
+        let firstPage = try longStore.advanceRevisionCleanupScan(longScan, maximumReceipts: 7)
+        try require((1...7).contains(firstPage.scannedRevisions) && firstPage.preview == nil, "Partial ancestry offered destructive preview")
+        let otherManager = DeviceStorageManager(documentsDirectory: longStore.animationsDir.deletingLastPathComponent())
+        try rejects { try otherManager.saveAnimation(longProject) }
+        let contender = Process()
+        contender.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
+        contender.arguments = ["hold-revision-lock", longPath.appendingPathComponent(".revision-mutation-lock-v1").path]
+        contender.standardInput = Pipe(); contender.standardOutput = Pipe()
+        try contender.run(); contender.waitUntilExit()
+        try require(contender.terminationStatus == 2, "Separate process acquired scan-owned flock")
+        // A rejected foreign owner cannot revoke the legitimate scan.
+        try rejects { _ = try otherManager.advanceRevisionCleanupScan(longScan) }
+        try require(longScan.isActive(), "Foreign manager canceled legitimate scan")
+        let longPreview = try finish(longStore, longScan, startingAt: firstPage.scannedRevisions)
+        try require(longPreview.candidates == 8 && longPreview.moreBatchesAvailable && longPreview.retainedRevisions == 2,
+                    "Long ancestry did not retain bounded candidates/current+previous")
+        let resultLong = try longStore.removeObsoleteRevisions(scan: longScan, expectedConfirmationToken: longPreview.confirmationToken)
+        try require(resultLong.removedRevisions == 8 && resultLong.removedFileBytes == longPreview.removableFileBytes && !longScan.isActive(), "Long cleanup receipt or lease release incorrect")
+        try require(try Data(contentsOf: orphan) == orphanBytes && longStore.loadAnimation(id: longProject.id)?.metadata.title == longProject.metadata.title,
+                    "Long cleanup changed unknown orphan or current project")
+        try rejects { _ = try longStore.removeObsoleteRevisions(scan: longScan, expectedConfirmationToken: longPreview.confirmationToken) }
+        print("PASS 4100 real committed receipts, deep authorized missing payloads, bounded pages, cross-process ownership and exact removal")
+
+        // A malformed receipt beyond page32 invalidates all earlier candidates.
+        let corruptScan = try longStore.beginRevisionCleanupScan(id: longProject.id)
+        try Data("corrupt deep receipt".utf8).write(to: oldestReceipt)
+        let beforeCorrupt = try payloads(longPath)
+        try rejects { _ = try finish(longStore, corruptScan) }
+        try require(!corruptScan.isActive() && (try payloads(longPath)) == beforeCorrupt, "Deep corruption authorized deletion or retained lease")
+        try oldestBytes.write(to: oldestReceipt)
+        let canceled = try longStore.beginRevisionCleanupScan(id: longProject.id)
+        _ = try longStore.advanceRevisionCleanupScan(canceled, maximumReceipts: 3)
+        canceled.cancel()
+        try rejects { _ = try longStore.advanceRevisionCleanupScan(canceled) }
+        try longStore.saveAnimation(longProject)
+        print("PASS deep corruption and page cancellation preserve all payloads and release actual save ownership")
+
+        for childName in ["revisions", "lineage-v1", ".revision-mutation-lock-v1"] {
+            let (swapped, value, path) = try revisionFixture("scan-swap-" + childName)
+            let scan = try swapped.beginRevisionCleanupScan(id: value.id)
+            _ = try swapped.advanceRevisionCleanupScan(scan, maximumReceipts: 1)
+            let childPath = path.appendingPathComponent(childName), retainedPath = path.appendingPathComponent("retained-" + childName)
+            try FileManager.default.moveItem(at: childPath, to: retainedPath)
+            try FileManager.default.copyItem(at: retainedPath, to: childPath)
+            try rejects { _ = try swapped.advanceRevisionCleanupScan(scan) }
+            try require(!scan.isActive(), "Replaced child namespace retained scan authority")
+            try FileManager.default.removeItem(at: childPath)
+            try FileManager.default.moveItem(at: retainedPath, to: childPath)
+            try require(try swapped.loadAnimation(id: value.id)?.metadata.title == value.metadata.title, "Namespace rejection changed current source")
+            try swapped.saveAnimation(value)
+        }
+        print("PASS replaced revision/lineage directories and named lock inode revoke scan without deletion")
+
+        let (leaseStore, leaseProject, _) = try revisionFixture("scan-lease")
+        let expiring = try leaseStore.beginRevisionCleanupScan(id: leaseProject.id, idleTimeout: 0.05)
+        // Do not poll isActive: only the timer can release the lock for this save.
+        var expiryReleased = false
+        for _ in 0..<200 {
+            usleep(10_000)
+            do { try leaseStore.saveAnimation(leaseProject); expiryReleased = true; break } catch DeviceStorageManager.RevisionCleanupFailure.busy { }
+        }
+        try require(expiryReleased && !expiring.isActive(), "Abandoned scan timer did not release ownership")
+        var abandoned: DeviceStorageManager.RevisionCleanupScan? = try leaseStore.beginRevisionCleanupScan(id: leaseProject.id)
+        weak var weakAbandoned = abandoned
+        abandoned = nil
+        try require(weakAbandoned == nil, "Expiry timer retained abandoned scan")
+        try leaseStore.saveAnimation(leaseProject)
+        let partialScan = try leaseStore.beginRevisionCleanupScan(id: leaseProject.id)
+        let partialPreview = try finish(leaseStore, partialScan)
+        let partialResult = try leaseStore.removeObsoleteRevisions(scan: partialScan, expectedConfirmationToken: partialPreview.confirmationToken,
+            checkpoint: { stage, _ in if stage == "payload-removed" { partialScan.cancel() } })
+        try require(partialResult.removedRevisions == 1 && partialResult.stoppedReason != nil && !partialScan.isActive(),
+                    "Cancel during removal failed to report completed work and release lease")
+        try leaseStore.saveAnimation(leaseProject)
+        print("PASS automatic idle expiry, deinit release and cancel-after-removal accurate partial receipt")
     }
 }

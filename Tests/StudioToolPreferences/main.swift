@@ -122,6 +122,61 @@ private struct Failure: Error { let message: String }
         vm.selectDrawingTool(.fill); try require(vm.strokeOpacity == 0.3, "Fill opacity was overwritten by eraser")
         pass("rectangle ellipse fill and eraser keep independent applicable settings")
 
+        vm.selectDrawingTool(.fill)
+        vm.fillTolerance = 17.5; vm.fillExpand = -2; vm.fillGapClose = 3
+        vm.fillContiguous = false; vm.fillAntiAlias = false; vm.fillSampleAll = true
+        vm.selectDrawingTool(.brush)
+        try require(vm.fillTolerance == 32 && vm.fillExpand == 0 && vm.fillGapClose == 0
+            && vm.fillContiguous && vm.fillAntiAlias && !vm.fillSampleAll, "Fill settings leaked into another tool")
+        vm.selectDrawingTool(.fill)
+        try require(vm.fillTolerance == 17.5 && vm.fillExpand == -2 && vm.fillGapClose == 3
+            && !vm.fillContiguous && !vm.fillAntiAlias && vm.fillSampleAll, "Switching lost fill controls")
+        let fillCold = StudioViewModel(storage: storage, toolDefaults: UserDefaults(suiteName: suite))
+        fillCold.selectDrawingTool(.fill)
+        try require(fillCold.fillTolerance == 17.5 && fillCold.fillExpand == -2 && fillCold.fillGapClose == 3
+            && !fillCold.fillContiguous && !fillCold.fillAntiAlias && fillCold.fillSampleAll, "Fresh VM lost fill preferences")
+        let beforeFillReset = vm.document
+        vm.resetCurrentDrawingToolPreferences()
+        try require(vm.fillTolerance == 32 && vm.fillExpand == 0 && vm.fillGapClose == 0
+            && vm.fillContiguous && vm.fillAntiAlias && !vm.fillSampleAll && vm.strokeOpacity == 1,
+            "Fill Reset did not restore every displayed control")
+        try require(vm.document == beforeFillReset && !vm.canUndo && !vm.isDirty, "Fill preferences or Reset changed artwork/history")
+        let resetCold = StudioViewModel(storage: storage, toolDefaults: UserDefaults(suiteName: suite))
+        resetCold.selectDrawingTool(.fill)
+        try require(resetCold.fillTolerance == 32 && resetCold.fillExpand == 0 && resetCold.fillGapClose == 0
+            && resetCold.fillContiguous && resetCold.fillAntiAlias && !resetCold.fillSampleAll, "Fill Reset was not persisted")
+        vm.selectDrawingTool(.brush)
+        try require(vm.strokeWidth == 18 && vm.strokeOpacity == 0.4 && vm.brushFamily == .hatchLeft,
+            "Fill Reset changed another tool")
+        pass("all fill controls persist independently through fresh VM and Reset without artwork/history edits")
+
+        var legacyFill = StudioDrawingToolPreferences()
+        legacyFill.values[DrawingTool.fill.rawValue] = .init(opacity: 0.3)
+        let legacyFillBytes = try legacyFill.encoded()
+        let legacyFillDecoded = try StudioDrawingToolPreferences.decode(legacyFillBytes)
+        try require(legacyFillDecoded.settings(for: .fill).fillTolerance == nil
+            && legacyFillDecoded.settings(for: .fill).opacity == 0.3, "Old version1 Fill settings did not decode")
+        for invalid in [Double.nan, Double.infinity, -1, 129] {
+            var corrupt = legacyFill; corrupt.values[DrawingTool.fill.rawValue]?.fillTolerance = invalid
+            try rejects { _ = try corrupt.encoded() }
+        }
+        for invalid in [-6.0, 6, Double.nan] {
+            var corrupt = legacyFill; corrupt.values[DrawingTool.fill.rawValue]?.fillExpand = invalid
+            try rejects { _ = try corrupt.encoded() }
+        }
+        for invalid in [-1.0, 6, Double.infinity] {
+            var corrupt = legacyFill; corrupt.values[DrawingTool.fill.rawValue]?.fillGapClose = invalid
+            try rejects { _ = try corrupt.encoded() }
+        }
+        vm.selectDrawingTool(.fill)
+        let validFillBytes = defaults.data(forKey: StudioViewModel.toolPreferencesKey)
+        vm.fillTolerance = .nan
+        try require(defaults.data(forKey: StudioViewModel.toolPreferencesKey) == validFillBytes,
+            "Invalid runtime Fill setting poisoned stored preferences")
+        vm.selectDrawingTool(.brush); vm.selectDrawingTool(.fill)
+        try require(vm.fillTolerance == 32, "Invalid runtime Fill setting survived tool restore")
+        pass("optional version1 fill fields preserve legacy data and reject invalid persisted/runtime ranges")
+
         let persisted = try StudioDrawingToolPreferences.decode(defaults.data(forKey: StudioViewModel.toolPreferencesKey)!)
         let end = persisted.settings(for: .brush).gradientEnd
         try require(end.green > 0.99 && end.red < 0.01 && end.blue < 0.01, "Actual gradient endpoint was not serialized")
@@ -353,6 +408,60 @@ private struct Failure: Error { let message: String }
         await reopenedRename.restoreProject(duplicateMetadata.id)
         try require(reopenedRename.savedProjects.count == 2 && reopenedRename.recoverableProjects.isEmpty, "VM restore did not refresh listings")
         pass("project duplicate uses distinct identity and actual archive validation; recoverable removal and restore refresh actual library")
+        let selectionSuite = "sdi-selection-preferences-" + UUID().uuidString
+        let selectionDefaults = UserDefaults(suiteName: selectionSuite)!
+        defer { selectionDefaults.removePersistentDomain(forName: selectionSuite) }
+        let selectionVM = StudioViewModel(toolDefaults: selectionDefaults)
+        let selectionDocument = selectionVM.document
+        selectionVM.selectDrawingTool(.move); selectionVM.selectionMode = .add
+        selectionVM.selectDrawingTool(.lasso)
+        try require(selectionVM.selectionMode == .new, "Move mode leaked into Lasso")
+        selectionVM.selectionMode = .subtract; selectionVM.areaSelectionKind = .polygon; selectionVM.areaSelectionSmoothing = 7
+        selectionVM.selectDrawingTool(.move)
+        try require(selectionVM.selectionMode == .add, "Move mode was not independently remembered")
+        let selectionCold = StudioViewModel(toolDefaults: UserDefaults(suiteName: selectionSuite))
+        selectionCold.selectDrawingTool(.lasso)
+        try require(selectionCold.selectionMode == .subtract && selectionCold.areaSelectionKind == .polygon
+            && selectionCold.areaSelectionSmoothing == 7 && selectionCold.selectedElementIDs.isEmpty,
+            "Fresh Lasso preferences failed or persisted selection identities")
+        selectionCold.resetCurrentDrawingToolPreferences()
+        try require(selectionCold.selectionMode == .new && selectionCold.areaSelectionKind == .freehand
+            && selectionCold.areaSelectionSmoothing == 3 && selectionCold.selectedElementIDs.isEmpty,
+            "Lasso Reset missed exposed controls")
+        selectionCold.selectDrawingTool(.move)
+        try require(selectionCold.selectionMode == .add, "Lasso Reset erased Move preferences")
+        selectionCold.resetCurrentDrawingToolPreferences()
+        try require(selectionCold.selectionMode == .new, "Move Reset failed")
+        let resetSelectionCold = StudioViewModel(toolDefaults: UserDefaults(suiteName: selectionSuite))
+        resetSelectionCold.selectDrawingTool(.lasso)
+        try require(resetSelectionCold.selectionMode == .new && resetSelectionCold.areaSelectionKind == .freehand
+            && resetSelectionCold.areaSelectionSmoothing == 3, "Selection Reset did not persist")
+        try require(selectionVM.document == selectionDocument && !selectionVM.canUndo && !selectionVM.canRedo,
+            "Selection preferences changed document/history")
+        var legacySelection = StudioDrawingToolPreferences()
+        legacySelection.values[DrawingTool.lasso.rawValue] = .init()
+        let legacySelectionBytes = try legacySelection.encoded()
+        try require(StudioDrawingToolPreferences.decode(legacySelectionBytes).settings(for: .lasso).selectionMode == nil,
+            "Legacy version1 selection defaults failed")
+        for value in [-1.0, 11, Double.nan, Double.infinity] {
+            var invalid = legacySelection; invalid.values[DrawingTool.lasso.rawValue]?.areaSelectionSmoothing = value
+            try rejects { _ = try invalid.encoded() }
+        }
+        var invalidEnums = legacySelection
+        invalidEnums.values[DrawingTool.lasso.rawValue]?.selectionMode = .add
+        invalidEnums.values[DrawingTool.lasso.rawValue]?.areaSelectionKind = .polygon
+        let validEnums = String(decoding: try invalidEnums.encoded(), as: UTF8.self)
+        for (old, new) in [("\"add\"", "\"unknown-mode\""), ("\"polygon\"", "\"unknown-kind\"")] {
+            let invalid = validEnums.replacingOccurrences(of: old, with: new)
+            try require(invalid != validEnums, "Invalid enum fixture was unchanged")
+            try rejects { _ = try StudioDrawingToolPreferences.decode(Data(invalid.utf8)) }
+        }
+        selectionCold.selectDrawingTool(.lasso)
+        let selectionBytes = selectionDefaults.data(forKey: StudioViewModel.toolPreferencesKey)
+        selectionCold.areaSelectionSmoothing = .nan
+        try require(selectionDefaults.data(forKey: StudioViewModel.toolPreferencesKey) == selectionBytes,
+            "Invalid selection smoothing poisoned stored settings")
+        pass("Move and Lasso independent settings persist reset and validate without storing selected identities")
         print("PASS \(passed) production tool-preference groups")
     }
 }

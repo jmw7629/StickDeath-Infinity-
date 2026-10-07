@@ -389,6 +389,102 @@ private func rejects(_ action: () throws -> Void) throws {
             let cache = DeviceStorageManager.snapshotEncodingCacheFootprint
             try require(cache.entries <= 32 && cache.bytes <= DeviceStorageManager.maximumSnapshotFrameCacheBytes, "Snapshot fragment cache exceeded bounded key/data capacity")
         }
+        try await test("bottom image copy paste isolates chosen alias and delete confirmation target survives history and reopen") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            let primary = vm.currentFrame.rasterLayerID!
+            let line = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 10)], color: "#00FF00", width: 4, opacity: 1, layerID: primary)
+            try require(vm.commitElement(line), "Real unrelated drawing fixture failed")
+            vm.duplicateLayer(primary); let alias = vm.activeLayerID
+            vm.selectedTool = .move
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0.1, y: 0.2, width: 0.7, height: 0.6)), "Alias crop failed")
+            let descriptor = vm.currentFrame.rasterInstance(on: alias)!
+            try require(vm.setImageCanvasMove(true) && vm.bottomCopyLabel == "Copy selected image", "Bottom image selection scope absent")
+            let sourceBytes = vm.managedImageByteCount
+            vm.copyBottomSelection()
+            try require(vm.usesImageClipboard && vm.bottomPasteLabel == "Paste image" && !vm.canPaste, "Bottom copy did not retain correct paste scope")
+            let occupied = vm.document
+            vm.pasteClipboard(); try require(vm.document == occupied, "Bottom image paste replaced occupied frame")
+            vm.addFrame(); try require(vm.canPaste, "Bottom image paste unavailable on blank frame")
+            vm.pasteClipboard()
+            try require(vm.currentFrame.rasterAssetID == asset && vm.currentFrame.rasterLayerInstances.count == 1 && vm.currentFrame.elements.isEmpty,
+                "Bottom image copy included sibling/drawings or pasted whole frame")
+            try require(vm.currentFrame.rasterCrop == descriptor.crop && vm.currentFrame.rasterPlacement == descriptor.placement && vm.managedImageByteCount == sourceBytes,
+                "Bottom image paste lost selected geometry or duplicated bytes")
+            let pastedPixels = try render(vm).bytes
+            try require(vm.setImageCanvasMove(true), "Pasted image selection unavailable")
+            let capture = vm.bottomImageSelection!
+            let beforeCancellation = vm.document
+            // A confirmation dismissed without invoking its destructive action
+            // leaves the captured document untouched; deselection invalidates it.
+            try require(vm.setImageCanvasMove(false), "Deselect failed")
+            try require(!vm.deleteBottomImage(capture) && vm.document == beforeCancellation, "Stale bottom image confirmation deleted artwork")
+            try require(vm.setImageCanvasMove(true), "Reselect failed")
+            try require(vm.bottomImageSelection?.selectionID != capture.selectionID, "Reselect reused selection identity")
+            try require(!vm.deleteBottomImage(capture) && vm.document == beforeCancellation,
+                "Deselect/reselect revived an old bottom delete confirmation")
+            try require(vm.deleteBottomImage(vm.bottomImageSelection!) && vm.currentFrame.rasterAssetID == nil, "Confirmed bottom image command failed")
+            vm.undo(); try require(try render(vm).bytes == pastedPixels, "One Undo lost bottom-deleted image")
+            vm.redo(); try require(vm.currentFrame.rasterAssetID == nil, "Redo retained deleted image")
+            vm.undo()
+            let saved = await vm.save(); try require(saved, "Bottom command save failed")
+            let metadata = try store.loadAnimation(id: vm.document.id)!.metadata
+            let reopened = StudioViewModel(storage: store), opened = await reopened.openProject(metadata)
+            try require(opened && !reopened.usesImageClipboard && !reopened.hasCopiedImage && !reopened.canPaste, "Transient bottom clipboard escaped project lifecycle")
+            try require(try render(reopened).bytes == pastedPixels && reopened.originalImageSource(asset)?.originalData == image.originalData,
+                "Bottom image commands lost actual pixels/original on cold reopen")
+        }
+        try await test("latest successful global copy chooses bottom paste without failed copy fallback") {
+            let (vm, _) = try await project(root); _ = try attach(image, to: vm)
+            vm.selectedTool = .move; try require(vm.setImageCanvasMove(true), "Image selection")
+            vm.copyBottomSelection(); try require(vm.usesImageClipboard, "Initial image copy scope")
+            vm.copyFrame("missing-frame")
+            try require(vm.usesImageClipboard, "Rejected frame copy discarded previous image clipboard")
+            vm.setLayerLockMode(vm.currentFrame.rasterLayerID!, mode: .full)
+            try require(!vm.copyImage() && vm.usesImageClipboard, "Rejected image copy changed clipboard scope")
+            vm.undo()
+            vm.copyFrame()
+            try require(!vm.usesImageClipboard && vm.bottomPasteLabel == "Paste frame", "Frame copy failed to supersede image scope")
+            let count = vm.frames.count; vm.pasteClipboard()
+            try require(vm.frames.count == count + 1, "Bottom paste ignored latest frame copy")
+            vm.selectedTool = .move; try require(vm.setImageCanvasMove(true), "Image reselection")
+            vm.copyBottomSelection(); try require(vm.usesImageClipboard, "Second image copy failed")
+            let line = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 10)], color: "#00FF00", width: 4, opacity: 1, layerID: vm.activeLayerID)
+            try require(vm.commitElement(line), "Drawing copy fixture failed")
+            vm.selectedTool = .lasso
+            try require(vm.selectVisibleArtwork() && vm.copySelected(), "Actual selected drawing copy failed")
+            try require(!vm.usesImageClipboard && vm.bottomPasteLabel == "Paste drawing", "Drawing copy did not supersede image scope")
+            let elementCount = vm.currentFrame.elements.count, frameCount = vm.frames.count
+            vm.pasteClipboard()
+            try require(vm.currentFrame.elements.count == elementCount + 1 && vm.frames.count == frameCount, "Bottom paste used stale image/frame instead of drawing")
+        }
+        try await test("frame viewer stable targets survive reorder and reject deleted IDs with real cold pixels") {
+            let (vm, store) = try await project(root); _ = try attach(image, to: vm)
+            let targetID = vm.currentFrame.id, expectedPixels = try render(vm).bytes
+            vm.addFrame(); let blankID = vm.currentFrame.id
+            let blankPixels = try render(vm).bytes
+            try require(blankPixels != expectedPixels, "Distinct frame fixture failed")
+            // This is the same stable ID captured by the viewer button; its
+            // ordinal changes after a real reorder while the identity remains.
+            vm.moveFrame(targetID, offset: 1)
+            try require(vm.frames.last?.id == targetID && vm.currentFrame.id == blankID, "Reorder changed explicit selection")
+            vm.selectFrame(targetID)
+            try require(vm.currentFrame.id == targetID && vm.currentFrameIndex == 1 && (try render(vm).bytes) == expectedPixels,
+                "Stable viewer target selected a different ordinal's artwork")
+            let saved = await vm.save(); try require(saved, "Viewer target save failed")
+            let metadata = try store.loadAnimation(id: vm.document.id)!.metadata
+            let reopened = StudioViewModel(storage: store)
+            let opened = await reopened.openProject(metadata)
+            try require(opened && reopened.currentFrame.id == targetID && (try render(reopened).bytes) == expectedPixels,
+                "Cold reopen lost selected frame identity or pixels")
+            reopened.deleteFrame(targetID)
+            let afterDelete = reopened.document, undo = reopened.canUndo, redo = reopened.canRedo
+            reopened.selectFrame(targetID)
+            try require(reopened.document == afterDelete && reopened.canUndo == undo && reopened.canRedo == redo &&
+                reopened.currentFrame.id == blankID && (try render(reopened).bytes) == blankPixels,
+                "Deleted viewer target changed another frame/history")
+            reopened.undo()
+            try require(reopened.frames.contains { $0.id == targetID }, "Frame Undo lost stable target")
+        }
         try await test("image clipboard preserves transforms pixels originals and one-step history without replacing content") {
             let (vm, store) = try await project(root)
             let asset = try attach(image, to: vm)

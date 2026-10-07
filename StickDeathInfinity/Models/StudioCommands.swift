@@ -100,11 +100,22 @@ struct StudioCommandLayerSettings: Codable {
     var blend: StudioCommandBlend? = nil
     var glowEnabled: Bool? = nil
     var glowColor: String? = nil
+    var glowRadius: Double? = nil
+    var glowStrength: Double? = nil
 }
 
 enum StudioCommand: Codable {
     struct RenameProject: Codable { let name: String }
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
+    struct EraseSelectedElements: Codable {
+        let frame: StudioCommandReference
+        let layer: StudioCommandReference
+        let elementIDs: [String]
+        let points: [StrokePoint]
+        let width: Double
+        let opacity: Double
+        let mode: StudioEraserMode
+    }
     struct TweenFrames: Codable { let after: StudioCommandReference; let to: StudioCommandReference; let inbetweenCount: Int; let easing: StudioTweenEasing }
     struct SetFrameHold: Codable { let frame: StudioCommandReference; let ticks: Int }
     struct AddFrame: Codable { let after: StudioCommandReference; let result: String }
@@ -143,6 +154,7 @@ enum StudioCommand: Codable {
         }
     }
 
+    case eraseSelectedElements(EraseSelectedElements)
     case renameProject(RenameProject)
     case cropImage(CropImage)
     case setFrameHold(SetFrameHold)
@@ -155,11 +167,13 @@ enum StudioCommand: Codable {
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
     case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
+    case cutElements(DeleteElements)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
+        case "eraseSelectedElements": self = .eraseSelectedElements(try container.decode(EraseSelectedElements.self, forKey: key))
         case "renameProject": self = .renameProject(try container.decode(RenameProject.self, forKey: key))
         case "cropImage": self = .cropImage(try container.decode(CropImage.self, forKey: key))
         case "tweenFrames": self = .tweenFrames(try container.decode(TweenFrames.self, forKey: key))
@@ -190,6 +204,7 @@ enum StudioCommand: Codable {
         case "translateElements": self = .translateElements(try container.decode(TranslateElements.self, forKey: key))
         case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
         case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
+        case "cutElements": self = .cutElements(try container.decode(DeleteElements.self, forKey: key))
         case "copyElements": self = .copyElements(try container.decode(DeleteElements.self, forKey: key))
         case "pasteElements": self = .pasteElements(try container.decode(PasteElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
@@ -213,6 +228,7 @@ enum StudioCommand: Codable {
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
+        case .eraseSelectedElements(let value): try container.encode(value, forKey: StudioWireKey("eraseSelectedElements"))
         case .draw(let value): try container.encode(value, forKey: StudioWireKey("draw"))
         case .addFrame(let value): try container.encode(value, forKey: StudioWireKey("addFrame"))
         case .duplicateFrame(let value): try container.encode(value, forKey: StudioWireKey("duplicateFrame"))
@@ -229,6 +245,7 @@ enum StudioCommand: Codable {
         case .translateElements(let value): try container.encode(value, forKey: StudioWireKey("translateElements"))
         case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
         case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
+        case .cutElements(let value): try container.encode(value, forKey: StudioWireKey("cutElements"))
         case .copyElements(let value): try container.encode(value, forKey: StudioWireKey("copyElements"))
         case .pasteElements(let value): try container.encode(value, forKey: StudioWireKey("pasteElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
@@ -390,6 +407,7 @@ enum StudioCommandExecutor {
             "cropImage": ["layer", "frame", "assetID", "crop"],
             "setFrameHold": ["frame", "ticks"],
             "tweenFrames": ["after", "to", "inbetweenCount", "easing"],
+            "eraseSelectedElements": ["frame", "layer", "elementIDs", "points", "width", "opacity", "mode"],
             "renameProject": ["name"],
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
@@ -408,6 +426,7 @@ enum StudioCommandExecutor {
             "translateElements": ["frame", "elementIDs", "dx", "dy"],
             "orderElements": ["frame", "elementIDs", "direction"],
             "reflectElements": ["frame", "elementIDs", "axis"],
+            "cutElements": ["frame", "elementIDs"],
             "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"]
         ]
@@ -454,9 +473,19 @@ enum StudioCommandExecutor {
             }
             if kind == "updateLayer" {
                 guard let settings = fields["settings"] else { throw StudioCommandError.malformed }
-                _ = try object(settings, keys: ["name", "visible", "opacity", "lock", "blend", "glowEnabled", "glowColor"])
+                _ = try object(settings, keys: ["name", "visible", "opacity", "lock", "blend", "glowEnabled", "glowColor", "glowRadius", "glowStrength"])
             }
             if kind == "updateText" { guard let text = fields["text"] else { throw StudioCommandError.malformed }; try textDescriptor(text) }
+            if kind == "eraseSelectedElements" {
+                guard let points = fields["points"] as? [Any] else { throw StudioCommandError.malformed }
+                guard points.count <= maximumPointsPerStroke, points.count <= maximumInputPoints - inputPoints,
+                      strokes < maximumStrokes else { throw StudioCommandError.limitExceeded }
+                inputPoints += points.count; strokes += 1
+                for point in points {
+                    let fields = try object(point, keys: ["x", "y", "pressure", "timestamp", "tilt"])
+                    if let tilt = fields["tilt"] { _ = try object(tilt, keys: ["altitude", "azimuth"]) }
+                }
+            }
             if kind == "draw" {
                 guard let values = fields["strokes"] as? [Any] else { throw StudioCommandError.malformed }
                 guard values.count <= maximumStrokes - strokes else { throw StudioCommandError.limitExceeded }; strokes += values.count
@@ -518,8 +547,15 @@ enum StudioCommandExecutor {
             candidate = editor
             try candidate.change { $0 = result }
             try candidate.adoptClipboard(from: stagedClipboard)
-            let onlyRenames = commands.allSatisfy { if case .renameProject = $0 { return true }; return false }
-            if candidate.document != original && !onlyRenames { candidate.selectedElementIDs.removeAll() }
+            // These operations preserve the same selection as their manual paths.
+            // A mixed batch containing any other operation keeps existing clearing semantics.
+            let preservesSelection = commands.allSatisfy {
+                switch $0 {
+                case .renameProject, .eraseSelectedElements: return true
+                default: return false
+                }
+            }
+            if candidate.document != original && !preservesSelection { candidate.selectedElementIDs.removeAll() }
             outcome = candidate.document == original ? .unchanged : .applied
         case .undo:
             guard candidate.canUndo else { throw StudioCommandError.noHistory }
@@ -555,8 +591,15 @@ enum StudioCommandExecutor {
             guard values.count <= maximumGeneratedElements - elements else { throw StudioCommandError.limitExceeded }
             elements += values.count
             for value in values {
+                let masks = value.selectionErasures ?? []
+                guard masks.count <= maximumGeneratedElements - elements else { throw StudioCommandError.limitExceeded }
+                elements += masks.count
                 guard value.points.count <= maximumGeneratedPoints - points else { throw StudioCommandError.limitExceeded }
                 points += value.points.count
+                for mask in masks {
+                    guard mask.points.count <= maximumGeneratedPoints - points else { throw StudioCommandError.limitExceeded }
+                    points += mask.points.count
+                }
             }
         }
     }
@@ -619,6 +662,38 @@ enum StudioCommandExecutor {
             try editor.duplicateAudioClip(value.clipID, newClipID: value.newClipID)
         case .updateAudioClip(let value):
             try editor.updateAudioClip(value.clipID, settings: value.settings)
+        case .eraseSelectedElements(let value):
+            // Erasure is explicitly bound to existing identities, never aliases
+            // created by an earlier command or a silently changed selection.
+            guard case .id = value.frame, case .id = value.layer else { throw StudioCommandError.invalidReference }
+            let frameID = try frame(value.frame), layerID = try layer(value.layer)
+            guard !value.elementIDs.isEmpty, value.elementIDs.count <= 256,
+                  Set(value.elementIDs).count == value.elementIDs.count,
+                  value.elementIDs.allSatisfy({ !$0.isEmpty && $0.count <= 160 }) else { throw StudioCommandError.missingSelection }
+            guard Set(value.elementIDs) == editor.selectedElementIDs else { throw StudioCommandError.missingSelection }
+            guard !value.points.isEmpty, value.points.count <= maximumPointsPerStroke,
+                  value.points.count <= maximumInputPoints - budget.inputPoints,
+                  budget.strokes < maximumStrokes,
+                  value.elementIDs.count <= maximumGeneratedElements - budget.elements,
+                  value.points.count <= (maximumGeneratedPoints - budget.points) / value.elementIDs.count else {
+                throw StudioCommandError.limitExceeded
+            }
+            for (index, point) in value.points.enumerated() {
+                if index % 256 == 0 { try checkCancellation() }
+                guard point.x.isFinite, point.y.isFinite,
+                      (0...Double(document.width)).contains(Double(point.x)),
+                      (0...Double(document.height)).contains(Double(point.y)),
+                      point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+                      point.timestamp.map({ $0.isFinite && $0 >= 0 }) ?? true,
+                      point.tilt?.isValid ?? true else { throw StudioCommandError.invalidGeometry }
+            }
+            budget.strokes += 1; budget.inputPoints += value.points.count
+            budget.elements += value.elementIDs.count; budget.points += value.points.count * value.elementIDs.count
+            let eraser = DrawnElement(id: "typed-selected-erasure", tool: .eraser,
+                points: value.points, color: "#000000", width: value.width, opacity: value.opacity,
+                fillColor: nil, layerID: layerID, eraser: .init(mode: value.mode))
+            try editor.eraseSelectedElements(eraser, frameID: frameID,
+                elementIDs: Set(value.elementIDs), checkCancellation: checkCancellation)
         case .draw(let draw):
             let frameID = try frame(draw.frame), layerID = try layer(draw.layer)
             guard !draw.strokes.isEmpty, draw.strokes.count <= maximumStrokes - budget.strokes else { throw StudioCommandError.limitExceeded }
@@ -716,6 +791,8 @@ enum StudioCommandExecutor {
             let id = try layer(value.layer), settings = value.settings
             guard settings.name.map(isValidLayerName) ?? true,
                   settings.opacity.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+                  settings.glowRadius.map({ $0.isFinite && (0...128).contains($0) }) ?? true,
+                  settings.glowStrength.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
                   settings.glowColor.map(validColor) ?? true else { throw StudioCommandError.invalidSettings }
             try editor.updateLayer(id) { target in
                 if let name = settings.name { target.name = name }
@@ -725,6 +802,8 @@ enum StudioCommandExecutor {
                 if let blend = settings.blend { target.blendMode = blend.rawValue }
                 if let enabled = settings.glowEnabled { target.glowEnabled = enabled }
                 if let color = settings.glowColor { target.glowColor = color }
+                if let radius = settings.glowRadius { target.glowRadius = radius }
+                if let strength = settings.glowStrength { target.glowStrength = strength }
             }
         case .moveLayer(let value):
             let id = try layer(value.target), index = document.layers.firstIndex { $0.id == id }!
@@ -733,6 +812,27 @@ enum StudioCommandExecutor {
         case .selectLayer(let reference): editor.selectLayer(try layer(reference))
         case .deleteLayer(let reference):
             try editor.deleteLayer(try layer(reference), checkCancellation: checkCancellation)
+        case .cutElements(let value):
+            guard case .id = value.frame else { throw StudioCommandError.invalidReference }
+            let id = try frame(value.frame), ids = Set(value.elementIDs)
+            guard id == document.activeFrameID, !ids.isEmpty, ids.count <= maximumGeneratedElements,
+                  ids.count == value.elementIDs.count, ids == editor.selectedElementIDs else {
+                throw StudioCommandError.missingSelection
+            }
+            let selected = document.frames.first { $0.id == id }!.elements.filter { ids.contains($0.id) }
+            guard selected.count == ids.count else { throw StudioCommandError.invalidReference }
+            for element in selected {
+                try checkCancellation()
+                guard let targetLayer = document.layers.first(where: { $0.id == element.layerID }),
+                      targetLayer.visible, targetLayer.opacity > 0, !targetLayer.isFullyLocked,
+                      targetLayer.lockMode == "free" else { throw StudioDocumentError.locked }
+            }
+            // Both operations stage in the executor's private editor. Neither
+            // artwork nor the prior clipboard is published on any later failure.
+            try editor.copyElements(frameID: id, ids: ids, checkCancellation: checkCancellation)
+            try checkCancellation()
+            try editor.deleteSelected()
+            try checkCancellation()
         case .copyElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,

@@ -401,6 +401,116 @@ private final class NetworkTrap: URLProtocol {
         try await test("no URLSession HTTP requests occur across local parsing editing failures and persistence") {
             try require(NetworkTrap.count==0,"Local motion foundation attempted HTTP")
         }
+        try await test("active layer glow grammar binds exact typed target and rejects malformed authority") {
+            let document = try StudioDocument.new(name: "Glow", width: 64, height: 64, fps: 12)
+            let value = try SpatterLayerGlowInstruction.parse(SpatterLayerGlowInstruction.example)
+            let id = UUID(), request = try value.prepare(in: .init(document: document), requestID: id)
+            guard case .apply(let commands) = request.action, commands.count == 1,
+                  case .updateLayer(let update) = commands[0], update.layer == .id(document.activeLayerID)
+            else { throw Failure(message: "Glow parser granted unrelated authority") }
+            try require(update.settings.glowEnabled == true && update.settings.glowColor == "#00FF00"
+                && update.settings.glowRadius == 12 && update.settings.glowStrength == 0.75
+                && request.projectID == document.id && request.expectedRevision == document.revision && request.requestID == id,
+                "Glow lost values or context")
+            let disabled = try SpatterLayerGlowInstruction.parse(SpatterLayerGlowInstruction.disableExample)
+            try require(disabled.color == nil && disabled.radius == nil && disabled.strength == nil, "Disable changed stored style")
+            for text in ["Set all layers glow to #00FF00 with radius 12 px and strength 75%.",
+                SpatterLayerGlowInstruction.example + " Delete selected audio clip.", "Disable active layer glow. upload project",
+                "Set active layer glow to #00FF00FF with radius 12 px and strength 75%.",
+                "Set active layer glow to #00FF00 with radius 01 px and strength 75%.",
+                "Set active layer glow to #00FF00 with radius 129 px and strength 75%.",
+                "Set active layer glow to #00FF00 with radius NaN px and strength 75%.",
+                "Set active layer glow to #00FF00 with radius 12 px and strength 101%.",
+                "Set active layer glow to #00FF00 with radius 12 px and strength 1e2%.",
+                "Set active layer glow to #00FF00 with radius " + String(repeating: "9", count: 310) + " px and strength 75%."] {
+                do { _ = try SpatterLayerGlowInstruction.parse(text); throw Failure(message: "Malformed glow accepted: \(text)") }
+                catch is SpatterLayerGlowInstruction.Failure { }
+            }
+            for text in ["Set active layer glow to #abcdef with radius 0 px and strength 0%.",
+                         "Set active layer glow to #FFFFFF with radius 128 px and strength 100%."] {
+                _ = try SpatterLayerGlowInstruction.parse(text).prepare(in: .init(document: document))
+            }
+            do { _ = try value.prepare(in: .init(document: document), checkCancellation: { throw CancellationError() }); throw Failure(message: "Cancelled glow prepared") }
+            catch is CancellationError { }
+        }
+        try await test("selected eraser grammar binds two canvas points captured identities and one typed command") {
+            let document = try StudioDocument.new(name: "Selected erase", width: 320, height: 160, fps: 12)
+            let context = StudioCommandContext(document: document), id = UUID()
+            let instruction = try SpatterSelectedErasureInstruction.parse(SpatterSelectedErasureInstruction.example)
+            try require(SpatterSelectedErasureInstruction.isInstruction(SpatterSelectedErasureInstruction.example), "Example did not route")
+            let request = try instruction.prepare(in: context, selectedElementIDs: ["target-z", "target-a"], requestID: id)
+            guard case .apply(let commands) = request.action, commands.count == 1,
+                  case .eraseSelectedElements(let erase) = commands[0] else { throw Failure(message: "Eraser granted unrelated authority") }
+            try require(request.requestID == id && request.projectID == document.id && request.expectedRevision == document.revision
+                && erase.frame == .id(document.activeFrameID) && erase.layer == .id(document.activeLayerID)
+                && erase.elementIDs == ["target-a", "target-z"] && erase.points.count == 2
+                && erase.points[0].x == 80 && erase.points[0].y == 80 && erase.points[1].x == 240 && erase.points[1].y == 80
+                && erase.width == 24 && erase.opacity == 1 && erase.mode == .hard, "Eraser ignored values or captured context")
+            for text in ["Erase selected drawings from (0%, 100%) to (100%, 0%) with soft eraser size 512 px and strength 0%.",
+                         "  ERASE selected drawings from (0.5%, 25.25%) to (0.5%, 25.25%) with hard eraser size 1 px and strength 50.5%  "] {
+                _ = try SpatterSelectedErasureInstruction.parse(text).prepare(in: context, selectedElementIDs: ["target"])
+            }
+            let encoded = try JSONEncoder().encode(request)
+            _ = try StudioCommandExecutor.decode(encoded)
+        }
+        try await test("selected eraser rejects injected malformed nonfinite and unbounded syntax") {
+            let example = SpatterSelectedErasureInstruction.example
+            var invalid = [example + " Delete selected audio clip.", "Please " + example,
+                example.replacingOccurrences(of: "selected drawings", with: "all drawings"),
+                example.replacingOccurrences(of: "hard eraser", with: "magic eraser"),
+                example.replacingOccurrences(of: "24 px", with: "0 px"),
+                example.replacingOccurrences(of: "24 px", with: "513 px"),
+                example.replacingOccurrences(of: "strength 100%", with: "strength 100.1%"),
+                example.replacingOccurrences(of: "25%", with: "100.1%"),
+                example.replacingOccurrences(of: "25%", with: String(repeating: "9", count: 300) + "%")]
+            for number in ["NaN", "Infinity", "-1", "+1", "01", "1e1", ".5", "1."] {
+                invalid.append(example.replacingOccurrences(of: "25%", with: number + "%"))
+                invalid.append(example.replacingOccurrences(of: "24 px", with: number + " px"))
+                invalid.append(example.replacingOccurrences(of: "strength 100%", with: "strength " + number + "%"))
+            }
+            for text in invalid {
+                do { _ = try SpatterSelectedErasureInstruction.parse(text); throw Failure(message: "Malformed eraser accepted: \(text)") }
+                catch is SpatterSelectedErasureInstruction.Failure { }
+            }
+            do { _ = try SpatterSelectedErasureInstruction.parse(String(repeating: "x", count: 1025)); throw Failure(message: "Oversized eraser accepted") }
+            catch SpatterMotionRecipe.RecipeError.instructionTooLong { }
+        }
+        try await test("selected eraser preparation and actual command execution preserve atomic selection authority") {
+            var document = try StudioDocument.new(name: "Selected authority", width: 128, height: 128, fps: 12)
+            document.schemaVersion = 5
+            document.frames[0].elements = [.init(id: "selected", tool: .rectangle,
+                points: [.init(x: 8, y: 8), .init(x: 120, y: 120)], color: "#FF0000", width: 2,
+                opacity: 1, layerID: document.activeLayerID, shape: .init(fillColor: "#FF0000"))]
+            let value = try SpatterSelectedErasureInstruction.parse(SpatterSelectedErasureInstruction.example)
+            let context = StudioCommandContext(document: document)
+            let invalidSelections: [Set<String>] = [[], [""], Set((0...256).map { "target-\($0)" })]
+            for ids in invalidSelections {
+                do { _ = try value.prepare(in: context, selectedElementIDs: ids); throw Failure(message: "Invalid selection prepared") }
+                catch SpatterSelectedErasureInstruction.Failure.missingSelection { }
+            }
+            for stop in 1...2 {
+                var count = 0
+                do { _ = try value.prepare(in: context, selectedElementIDs: ["selected"], checkCancellation: {
+                    count += 1; if count == stop { throw CancellationError() }
+                }); throw Failure(message: "Cancelled eraser prepared") }
+                catch is CancellationError { }
+            }
+            var locked = document; locked.layers[0].lockMode = "alpha"
+            do { _ = try value.prepare(in: .init(document: locked), selectedElementIDs: ["selected"]); throw Failure(message: "Locked context prepared") }
+            catch SpatterSelectedErasureInstruction.Failure.invalidContext { }
+            var editor = try StudioDocumentEditor(document: document)
+            editor.selectedElementIDs = ["selected"]
+            let request = try value.prepare(in: context, selectedElementIDs: editor.selectedElementIDs)
+            _ = try StudioCommandExecutor.execute(request, editor: &editor)
+            try require(editor.document.frames[0].elements[0].selectionErasures?.count == 1
+                && editor.document.frames.count == 1 && editor.selectedElementIDs == ["selected"], "Real command missed target or changed frames/selection")
+            editor.undo()
+            try require(content(editor.document) == content(document) && !editor.canUndo, "Selected erase was not one reversible edit")
+            var stale = try StudioDocumentEditor(document: document)
+            do { _ = try StudioCommandExecutor.execute(request, editor: &stale); throw Failure(message: "Changed selection silently broadened") }
+            catch StudioCommandError.missingSelection { }
+            try require(stale.document == document && !stale.canUndo, "Changed selection partially applied")
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

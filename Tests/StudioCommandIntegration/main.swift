@@ -38,12 +38,19 @@ private final class NetworkTrap: URLProtocol {
         }
         throw Failure(message: "Actual production autosave did not complete within four seconds")
     }
-    static func largeProject(_ storage: DeviceStorageManager) async throws -> StudioViewModel {
+    static func largeProject(_ storage: DeviceStorageManager, withMasks: Bool = false) async throws -> StudioViewModel {
         var document = try StudioDocument.new(name: "Large editable project", width: 64, height: 64, fps: 12)
         let points = Array(repeating: StrokePoint(x: 16, y: 16), count: 100_000)
         document.frames[0].elements = (0..<2).map {
             .init(id: "existing-\($0)", tool: .brush, points: points, color: "#FF0000", width: 2,
                   opacity: 1, layerID: document.activeLayerID)
+        }
+        if withMasks {
+            document.schemaVersion = 29
+            let target = document.frames[0].elements[0]
+            document.frames[0].elements[0].selectionErasures = Array(repeating: .init(
+                points: Array(repeating: .init(x: 16, y: 16), count: 4096), width: 10, opacity: 0.5,
+                mode: .soft, pathToElement: try target.erasurePlacement().invertedForErasure()), count: 16)
         }
         let metadata = AnimationMetadata(id: document.id, title: document.name, fps: document.fps,
             canvasWidth: document.width, canvasHeight: document.height, frameCount: 1, layerCount: 1,
@@ -72,6 +79,32 @@ private final class NetworkTrap: URLProtocol {
         do {
             try require(URLProtocol.registerClass(NetworkTrap.self), "Could not register offline HTTP request trap")
             try require(AppConfig.backendURL == nil, "This offline integration process unexpectedly has backend configuration")
+            try await test("native Cut entry point pastes across frame layer and cold reopens without extra frames") {
+                let storage = store("cut-drawings"), vm = StudioViewModel(storage: store("cut-drawings"))
+                try require(await vm.createProject(name: "Cut drawings", width: 64, height: 64, fps: 12), "Cut create failed")
+                let source = DrawnElement(id: "cut-source", tool: .line, points: [.init(x: 8, y: 32), .init(x: 56, y: 32)],
+                    color: "#FF0000", width: 8, opacity: 1, layerID: vm.activeLayerID)
+                try require(vm.commitElement(source), "Cut source rejected")
+                vm.selectedTool = .move
+                try require(vm.selectElement(at: CGPoint(x: 32, y: 32)) == source.id, "Cut real selection failed")
+                await vm.flush()
+                let original = vm.document
+                try require(vm.canCutSelected && vm.cutSelected(), "Actual Cut command failed")
+                try require(vm.frames.count == 1 && vm.currentFrame.elements.isEmpty && vm.canPaste, "Cut made unwanted frame or lost clipboard")
+                vm.undo(); try require(vm.currentFrame.elements == [source], "Cut Undo did not restore source")
+                vm.redo(); vm.addFrame(); vm.addLayer()
+                let count = vm.frames.count, destination = vm.activeLayerID
+                vm.pasteClipboard()
+                try require(vm.frames.count == count && vm.currentFrame.elements.count == 1
+                    && vm.currentFrame.elements[0].id != source.id && vm.currentFrame.elements[0].points == source.points
+                    && vm.currentFrame.elements[0].layerID == destination, "Cut cross-frame/layer paste was not exact")
+                try require(await vm.save(), "Cut save failed")
+                let cold = StudioViewModel(storage: storage); await cold.loadProjects()
+                guard let metadata = cold.savedProjects.first(where: { $0.id == original.id }) else { throw Failure(message: "Cut saved project absent") }
+                try require(await cold.openProject(metadata), "Cut cold open failed")
+                try require(cold.document == vm.document, "Cut cold reopen lost artwork")
+                await cold.flush()
+            }
             try await test("library context exposes no stale project and refuses typed/wire commands") {
                 let vm = StudioViewModel(storage: store("library"))
                 let context = vm.commandScreenContext
@@ -86,6 +119,69 @@ private final class NetworkTrap: URLProtocol {
                     } catch StudioDocumentError.unavailable { }
                 }
                 try require(vm.document == before && !vm.isEditing && vm.savedProjects.isEmpty, "rejected library command created or changed a project")
+            }
+            try await test("selected erasure wire preserves multi-layer selection history and actual cold storage") {
+                let storage = store("selected-eraser"), vm = StudioViewModel(storage: store("selected-eraser"))
+                try require(await vm.createProject(name: "Selected erasure", width: 64, height: 64, fps: 12), "Create failed")
+                let frame = vm.currentFrame.id
+                _ = try vm.applyStudioCommands(command(vm, .apply([draw(vm, id: "first"),
+                    .addLayer(.init(name: "Second", result: "second")),
+                    .draw(.init(frame: .id(frame), layer: .created("second"), strokes: [
+                        .init(id: "second", tool: .line, points: [.init(x: 16, y: 44), .init(x: 40, y: 44)], color: "#0000FF", width: 8, opacity: 1)]))])))
+                try require(await vm.save(), "Setup save failed")
+                vm.selectedTool = .lasso
+                try require(vm.selectVisibleArtwork() && vm.selectedElementIDs == ["first", "second"], "Real multi-layer selection failed")
+                vm.selectedTool = .eraser
+                let before = vm.document, selection = vm.selectedElementIDs
+                let operation = StudioCommand.eraseSelectedElements(.init(frame: .id(frame), layer: .id(vm.activeLayerID),
+                    elementIDs: selection.sorted(), points: [.init(x: 28, y: 12), .init(x: 28, y: 52)], width: 10, opacity: 0.5, mode: .soft))
+                let receipt = try vm.applyStudioCommands(JSONEncoder().encode(command(vm, .apply([operation]))))
+                let changed = vm.document
+                try require(receipt.outcome == .applied && vm.selectedElementIDs == selection &&
+                    changed.frames[0].elements.allSatisfy { $0.selectionErasures?.count == 1 }, "Typed multi-layer masks or selection missing")
+                vm.undo(); try require(content(vm.document) == content(before), "VM Undo lost original sources")
+                vm.redo(); try require(content(vm.document) == content(changed), "VM Redo lost masks")
+                try require(await vm.save(), "Mask save failed")
+                let reopened = StudioViewModel(storage: storage)
+                try require(await reopened.openProject(storage.listAnimations().first!), "Mask project did not cold reopen")
+                try require(content(reopened.document) == content(changed) && NetworkTrap.count == 0, "Cold storage changed masks or contacted network")
+            }
+            try await test("selected erasure rejects changed live selection or tool during staging") {
+                let vm = StudioViewModel(storage: store("selected-eraser-fence"))
+                try require(await vm.createProject(name: "Captured eraser", width: 64, height: 64, fps: 12), "Create failed")
+                _ = try vm.applyStudioCommands(command(vm, .apply([draw(vm, id: "target")])))
+                try require(await vm.save(), "Setup save failed")
+                for change in ["selection", "tool"] {
+                    vm.selectedTool = .lasso; try require(vm.selectVisibleArtwork(), "Selection failed")
+                    vm.selectedTool = .eraser
+                    let operation = StudioCommand.eraseSelectedElements(.init(frame: .id(vm.currentFrame.id), layer: .id(vm.activeLayerID),
+                        elementIDs: ["target"], points: [.init(x: 28, y: 24)], width: 10, opacity: 1, mode: .hard))
+                    let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                    var calls = 0
+                    do {
+                        _ = try vm.applyStudioCommands(command(vm, .apply([operation])), checkCancellation: {
+                            calls += 1
+                            if calls == 4 {
+                                if change == "selection" { vm.clearElementSelection() }
+                                else { vm.selectedTool = .brush }
+                            }
+                        })
+                        throw Failure(message: "Changed live eraser context committed")
+                    } catch StudioDocumentError.unavailable { }
+                    try require(calls >= 4 && vm.document == before && vm.canUndo == undo && vm.canRedo == redo,
+                        "Rejected erasure replaced an intervening selection/tool change")
+                    try require(change == "selection" ? vm.selectedElementIDs.isEmpty : vm.selectedTool == .brush,
+                        "Rejected erasure overwrote the newer UI context")
+                }
+            }
+            try await test("existing selected-erasure samples count toward interactive command work") {
+                let vm = try await largeProject(store("masked-work-boundary"), withMasks: true)
+                let before = vm.document
+                do {
+                    _ = try vm.applyStudioCommands(command(vm, .apply([strokes(vm, count: 3, prefix: "mask-heavy")])))
+                    throw Failure(message: "Nested mask samples were omitted from repeated validation budget")
+                } catch StudioDocumentError.unavailable { }
+                try require(vm.document == before && !vm.canUndo && !vm.isDirty, "Mask-work rejection changed source or history")
             }
             try await test("styled brush wire commands persist through actual VM cold reopen without network") {
                 let storage = store("styled-brush"), vm = StudioViewModel(storage: storage)
@@ -374,6 +470,53 @@ private final class NetworkTrap: URLProtocol {
                     && vm.document.frames[0].elements.count == 5 && vm.document.revision == before.revision + 1,
                     "near-boundary command was truncated or lost atomic history")
                 vm.undo(); try require(content(vm.document) == content(before), "near-boundary undo failed")
+                await vm.flush()
+            }
+            try await test("real menu dismissal handoff consumes once and rejects stale ownership without changing content") {
+                let vm = StudioViewModel(storage: store("menu-handoff"))
+                try require(await vm.createProject(name: "Menu", width: 64, height: 64, fps: 12), "Menu project creation failed")
+                let original = vm.document
+                let destinations: [StudioPanelType] = [.projectSettings, .framesViewer, .magicCut, .backgroundLibrary, .rotoscope, .addImage, .aiVoice, .spatterAI]
+                for destination in destinations {
+                    vm.activePanel = .menu
+                    guard let request = vm.prepareMenuHandoff(to: destination, accountID: "owner", isForeground: true) else { throw Failure(message: "Visible menu destination denied") }
+                    try require(vm.activePanel == .menu, "Preparation navigated before sheet dismissal")
+                    vm.activePanel = .none
+                    try require(vm.consumeMenuHandoff(request, accountID: "owner", isForeground: true) && vm.activePanel == destination,
+                                "Actual dismissal did not open its captured destination")
+                    try require(!vm.consumeMenuHandoff(request, accountID: "owner", isForeground: true), "Menu request replayed")
+                }
+                try require(vm.document == original && !vm.canUndo, "Navigation changed document/history")
+                @MainActor func prepare() throws -> StudioViewModel.MenuHandoff {
+                    vm.activePanel = .menu
+                    guard let request = vm.prepareMenuHandoff(to: .addImage, accountID: "owner", isForeground: true) else { throw Failure(message: "Menu fixture not eligible") }
+                    vm.activePanel = .none
+                    return request
+                }
+                let superseded = try prepare()
+                vm.activePanel = .layers; vm.activePanel = .none
+                try require(!vm.consumeMenuHandoff(superseded, accountID: "owner", isForeground: true), "Newer panel did not revoke old destination")
+                let lifecycle = try prepare()
+                vm.cancelMenuHandoff() // Same invalidation used by host background/account/disappearance callbacks.
+                try require(!vm.consumeMenuHandoff(lifecycle, accountID: "owner", isForeground: true), "Returning to same account/foreground revived canceled request")
+                let account = try prepare()
+                try require(!vm.consumeMenuHandoff(account, accountID: "other", isForeground: true) && vm.activePanel == .none, "Cross-account request opened")
+                try require(!vm.consumeMenuHandoff(account, accountID: "owner", isForeground: true), "Rejected account request was reusable")
+                let background = try prepare()
+                try require(!vm.consumeMenuHandoff(background, accountID: "owner", isForeground: false), "Background navigation opened")
+                let revision = try prepare()
+                vm.addFrame()
+                try require(!vm.consumeMenuHandoff(revision, accountID: "owner", isForeground: true), "Edited project accepted stale destination")
+                await vm.flush()
+                let replacedProject = try prepare()
+                await vm.backToProjects()
+                try require(await vm.createProject(name: "Other menu project", width: 64, height: 64, fps: 12), "Replacement project failed")
+                try require(!vm.consumeMenuHandoff(replacedProject, accountID: "owner", isForeground: true), "Original menu opened in replacement project")
+                vm.activePanel = .menu
+                try require(vm.prepareMenuHandoff(to: .layers, accountID: "owner", isForeground: true) == nil,
+                            "Unadvertised destination was accepted")
+                try require(vm.prepareMenuHandoff(to: .addImage, accountID: "owner", isForeground: false) == nil,
+                            "Background menu prepared a request")
                 await vm.flush()
             }
             try require(NetworkTrap.count == 0, "offline VM command integration attempted a URLSession HTTP request")

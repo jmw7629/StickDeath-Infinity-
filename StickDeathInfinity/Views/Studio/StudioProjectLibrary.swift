@@ -363,19 +363,17 @@ private struct StudioPortableProjectFile: FileDocument {
 
 private struct StudioStorageSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var cleanup = StudioRevisionCleanupController()
     @State private var usage: StudioStorageUsage?
     @State private var error: String?
     @State private var notice: String?
     @State private var scanning = false
     @State private var confirmingClear = false
     @State private var cleanupProject: UUID?
-    @State private var cleanupPreview: DeviceStorageManager.RevisionCleanupPreview?
     @State private var confirmingCleanup = false
-    @State private var cleanupBusy = false
-    @State private var cleanupNotice: String?
-    @State private var cleanupTask: Task<Void, Never>?
     @State private var refresh = UUID()
     @State private var cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
 
@@ -411,19 +409,27 @@ private struct StudioStorageSheet: View {
                             Text(project.title).tag(Optional(project.id))
                                 .accessibilityIdentifier("studio.storage.project-option." + project.id.uuidString)
                         }
-                    }.disabled(cleanupBusy)
+                    }.disabled(cleanup.isBusy)
                     .accessibilityIdentifier("studio.storage.project-picker")
-                    .onChange(of: cleanupProject) { _, _ in cleanupPreview = nil; cleanupNotice = nil }
+                    .onChange(of: cleanupProject) { _, _ in cleanup.cancel(); confirmingCleanup = false }
                     Button("Review older saved versions") { previewCleanup() }
-                        .disabled(cleanupProject == nil || cleanupBusy)
+                        .disabled(cleanupProject == nil || cleanup.isBusy)
                         .accessibilityIdentifier("studio.storage.review-revisions")
-                    if cleanupBusy { ProgressView("Checking project storage…") }
-                    if let preview = cleanupPreview {
+                    if cleanup.isBusy {
+                        ProgressView(cleanup.isRemoving ? "Removing reviewed versions…" : "Checked \(cleanup.scannedRevisions) saved versions…")
+                            .accessibilityIdentifier("studio.storage.revision-scanning")
+                    }
+                    if cleanup.hasReview {
+                        Button(cleanup.isRemoving ? "Stop after current removal" : "Cancel review") {
+                            cleanup.cancelByUser(); confirmingCleanup = false
+                        }.accessibilityIdentifier("studio.storage.cancel-review")
+                    }
+                    if let preview = cleanup.preview {
                         Text("\(preview.candidates) verified obsolete versions · \(bytes(preview.removableFileBytes)) of file contents. Current and previous saved versions stay on this device.")
                             .font(.caption).accessibilityIdentifier("studio.storage.revision-preview")
                         if preview.candidates > 0 {
                             Button("Remove reviewed old versions", role: .destructive) { confirmingCleanup = true }
-                                .disabled(cleanupBusy).accessibilityIdentifier("studio.storage.remove-revisions")
+                                .disabled(cleanup.isBusy).accessibilityIdentifier("studio.storage.remove-revisions")
                         } else {
                             Text("No eligible old versions. Historical and unverified recovery files are preserved.").font(.caption)
                         }
@@ -431,7 +437,7 @@ private struct StudioStorageSheet: View {
                             Text("More versions remain. Review another bounded batch after this one finishes.").font(.caption)
                         }
                     }
-                    if let cleanupNotice { Text(cleanupNotice).font(.caption).accessibilityIdentifier("studio.storage.revision-result") }
+                    if let cleanupNotice = cleanup.notice { Text(cleanupNotice).font(.caption).accessibilityIdentifier("studio.storage.revision-result") }
                 }
                 Section("Regenerable working memory") {
                     LabeledContent("Estimated frame cache memory", value: bytes(Int64(cacheBytes)))
@@ -444,7 +450,7 @@ private struct StudioStorageSheet: View {
             }
             .accessibilityIdentifier("studio.storage.list")
             .navigationTitle("Device Storage")
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { cleanup.cancel(); dismiss() } } }
             .confirmationDialog(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
                                 isPresented: Binding(get: { confirmingClear || confirmingCleanup },
                                     set: { if !$0 { confirmingClear = false; confirmingCleanup = false } }),
@@ -487,42 +493,149 @@ private struct StudioStorageSheet: View {
                 scanning = false
             }
         }.preferredColorScheme(.dark)
-        .onChange(of: scenePhase) { _, phase in if phase != .active { cleanupTask?.cancel(); dismiss() } }
-        .onDisappear { cleanupTask?.cancel() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cleanup.cancel(); dismiss() } }
+        .onChange(of: authVM.userId) { _, _ in cleanup.cancel(); dismiss() }
+        .onChange(of: vm.isEditing) { _, editing in if editing { cleanup.cancel(); dismiss() } }
+        .onChange(of: cleanup.refreshID) { _, _ in refresh = UUID() }
+        .onChange(of: cleanup.preview?.confirmationToken) { _, token in if token == nil { confirmingCleanup = false } }
+        .onDisappear { cleanup.cancel() }
     }
     private func previewCleanup() {
-        guard let id = cleanupProject, !cleanupBusy else { return }
-        cleanupBusy = true; cleanupPreview = nil; cleanupNotice = nil
-        cleanupTask = Task {
-            defer { cleanupBusy = false }
-            do {
-                let request = try vm.obsoleteRevisionCleanupRequest(id: id)
-                let worker = Task.detached(priority: .utility) { try request.preview() }
-                let preview = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-                try Task.checkCancellation()
-                cleanupPreview = preview
-            } catch is CancellationError { }
-            catch { cleanupNotice = error.localizedDescription }
-        }
+        guard let id = cleanupProject, !cleanup.isBusy else { return }
+        do { cleanup.review(try vm.obsoleteRevisionCleanupRequest(id: id)) }
+        catch { cleanup.fail(error) }
     }
     private func performCleanup() {
-        guard let preview = cleanupPreview, !cleanupBusy else { return }
-        cleanupBusy = true; cleanupNotice = nil
-        cleanupTask = Task {
-            defer { cleanupBusy = false; cleanupPreview = nil; refresh = UUID() }
-            do {
-                let request = try vm.obsoleteRevisionCleanupRequest(id: preview.projectID)
-                let worker = Task.detached(priority: .utility) { try request.remove(expected: preview.selectedRevision, confirmationToken: preview.confirmationToken) }
-                let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
-                cleanupNotice = "Removed \(result.removedRevisions) obsolete versions (\(bytes(result.removedFileBytes)) of file contents). Current, previous, original and unverified recovery files remain." + (result.stoppedReason.map { " " + $0 } ?? "")
-            } catch is CancellationError { cleanupNotice = "Cancelled before any versions were removed." }
-            catch { cleanupNotice = error.localizedDescription }
-        }
+        guard let id = cleanup.preview?.projectID else { return }
+        // Revalidate the visible library context before granting removal authority.
+        do { _ = try vm.obsoleteRevisionCleanupRequest(id: id); cleanup.remove() }
+        catch { cleanup.fail(error) }
     }
     private func bytes(_ amount: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: amount, countStyle: .file)
     }
     private func row(_ title: String, _ bucket: StudioStorageUsage.Bucket) -> some View {
         LabeledContent(title, value: "\(bytes(bucket.bytes)) · \(bucket.files) files")
+    }
+}
+
+/// Owns one explicit storage review, including its utility worker and project
+/// lease. A new view/account/project generation cannot adopt an old result.
+@MainActor private final class StudioRevisionCleanupController: ObservableObject {
+    @Published private(set) var preview: DeviceStorageManager.RevisionCleanupPreview?
+    @Published private(set) var notice: String?
+    @Published private(set) var isBusy = false
+    @Published private(set) var isRemoving = false
+    @Published private(set) var scannedRevisions = 0
+    @Published private(set) var refreshID = UUID()
+    var hasReview: Bool { isBusy || preview != nil }
+    private var generation = UUID()
+    private var request: StudioRevisionCleanupRequest?
+    private var scan: DeviceStorageManager.RevisionCleanupScan?
+    private var task: Task<Void, Never>?
+    private var expiryTask: Task<Void, Never>?
+
+    func cancel() {
+        generation = UUID()
+        task?.cancel(); task = nil
+        expiryTask?.cancel(); expiryTask = nil
+        scan?.cancel(); scan = nil; request = nil
+        preview = nil; notice = nil; scannedRevisions = 0
+        isBusy = false; isRemoving = false
+    }
+    func cancelByUser() {
+        if isRemoving {
+            // Keep the worker and its factual partial receipt until the current
+            // atomic removal completes. Cancellation is not a zero-byte result.
+            task?.cancel()
+        } else {
+            cancel(); notice = "Review cancelled. No saved versions were removed."
+        }
+    }
+    func fail(_ error: Error) { cancel(); notice = error.localizedDescription }
+
+    func review(_ request: StudioRevisionCleanupRequest) {
+        cancel()
+        let generation = self.generation
+        isBusy = true
+        task = Task { [weak self] in
+            guard let self else { return }
+            var opened: DeviceStorageManager.RevisionCleanupScan?
+            var retained = false
+            defer {
+                if !retained { opened?.cancel() }
+                if self.generation == generation { self.isBusy = false; self.task = nil }
+            }
+            do {
+                let starter = Task.detached(priority: .utility) { try request.beginScan() }
+                let scan = try await withTaskCancellationHandler { try await starter.value } onCancel: { starter.cancel() }
+                opened = scan
+                try Task.checkCancellation()
+                guard self.generation == generation else { throw CancellationError() }
+                self.scan = scan
+                while true {
+                    let worker = Task.detached(priority: .utility) { try request.advance(scan) }
+                    let page = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                    try Task.checkCancellation()
+                    guard self.generation == generation else { throw CancellationError() }
+                    self.scannedRevisions = page.scannedRevisions
+                    if let preview = page.preview {
+                        self.preview = preview
+                        if preview.candidates > 0 {
+                            retained = true; self.request = request
+                            self.watchExpiry(scan, generation: generation)
+                        } else { self.scan = nil }
+                        break
+                    }
+                    await Task.yield()
+                }
+            } catch {
+                guard self.generation == generation else { return }
+                self.scan = nil; self.request = nil; self.preview = nil
+                if !(error is CancellationError) { self.notice = error.localizedDescription }
+            }
+        }
+    }
+    private func watchExpiry(_ scan: DeviceStorageManager.RevisionCleanupScan, generation: UUID) {
+        expiryTask = Task { [weak self, weak scan] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+                guard let self, self.generation == generation else { return }
+                guard let scan, scan.isActive() else {
+                    self.cancel(); self.notice = "Storage review expired. Review the saved versions again before removing any."
+                    return
+                }
+            }
+        }
+    }
+    func remove() {
+        guard !isBusy, let preview, let request, let scan else { return }
+        guard scan.isActive() else {
+            cancel(); notice = "Storage review expired. Review the saved versions again before removing any."
+            return
+        }
+        let generation = self.generation
+        expiryTask?.cancel(); expiryTask = nil
+        isBusy = true; isRemoving = true; notice = nil
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                scan.cancel()
+                if self.generation == generation {
+                    self.scan = nil; self.request = nil; self.preview = nil
+                    self.isBusy = false; self.isRemoving = false; self.task = nil; self.refreshID = UUID()
+                }
+            }
+            do {
+                let worker = Task.detached(priority: .utility) { try request.remove(scan: scan, confirmationToken: preview.confirmationToken) }
+                let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                guard self.generation == generation else { return }
+                let bytes = ByteCountFormatter.string(fromByteCount: result.removedFileBytes, countStyle: .file)
+                self.notice = "Removed \(result.removedRevisions) obsolete versions (\(bytes) of file contents). Current, previous, original and unverified recovery files remain." + (result.stoppedReason.map { " " + $0 } ?? "")
+            } catch {
+                guard self.generation == generation else { return }
+                self.notice = error is CancellationError ? "Cancelled before any versions were removed." : error.localizedDescription
+            }
+        }
     }
 }

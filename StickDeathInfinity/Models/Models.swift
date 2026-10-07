@@ -101,6 +101,20 @@ struct DrawnElement: Codable, Identifiable, Equatable {
     /// Schema24: paint RGB over preceding raw-layer coverage without changing its alpha.
     var preservesLayerAlpha: Bool? = nil
 
+    /// Schema29: local erasure coverage; source geometry remains editable.
+    var selectionErasures: [StudioElementErasure]? = nil
+
+    func erasurePlacement() throws -> StudioElementTransform {
+        if let translation { try translation.validate() }
+        if let reflection { try reflection.validate() }
+        let reflected = StudioElementTransform(a: reflection?.horizontal == true ? -1 : 1,
+                                              d: reflection?.vertical == true ? -1 : 1)
+        let translated = StudioElementTransform(tx: translation?.x ?? 0, ty: translation?.y ?? 0)
+        let result = (transform ?? StudioElementTransform()).after(translated).after(reflected)
+        try result.validate()
+        return result
+    }
+
     var hasPixelEffect: Bool { smudge != nil || blur != nil || sharpen != nil || dodgeBurn != nil }
 
     var selectionBounds: CGRect? {
@@ -184,6 +198,15 @@ struct StudioElementTransform: Codable, Equatable, Sendable {
         }
     }
     func point(_ p: CGPoint) -> CGPoint { CGPoint(x: a*p.x+c*p.y+tx, y: b*p.x+d*p.y+ty) }
+    func invertedForErasure() throws -> Self {
+        try validate()
+        let determinant = a*d-b*c
+        let result = Self(a: d/determinant, b: -b/determinant,
+                          c: -c/determinant, d: a/determinant,
+                          tx: (c*ty-d*tx)/determinant, ty: (b*tx-a*ty)/determinant)
+        try result.validate()
+        return result
+    }
     func inversePoint(_ p: CGPoint) throws -> CGPoint {
         try validate()
         let determinant = a*d-b*c, x = p.x-tx, y = p.y-ty
@@ -282,6 +305,38 @@ struct StudioEraserDescriptor: Codable, Equatable {
               element.points.allSatisfy({ $0.x.isFinite && $0.y.isFinite && abs($0.x) <= 100_000 && abs($0.y) <= 100_000 }) else {
             throw Failure.invalid
         }
+    }
+}
+
+/// A world-space eraser path captured relative to one object's complete placement.
+/// Keeping the inverse affine (rather than transformed points/width) preserves
+/// circular coverage when the object has anisotropic scale or reflection.
+struct StudioElementErasure: Codable, Equatable {
+    var version = 1
+    var points: [StrokePoint]
+    var width: CGFloat
+    var opacity: Double
+    var mode: StudioEraserMode
+    var pathToElement: StudioElementTransform
+
+    func element(for target: DrawnElement) throws -> DrawnElement {
+        guard version == 1, [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle, .fill, .text].contains(target.tool), target.eraser == nil,
+              !target.hasPixelEffect, target.preservesLayerAlpha != true else {
+            throw StudioEraserDescriptor.Failure.invalid
+        }
+        guard points.allSatisfy({ point in
+            (point.pressure.map { $0.isFinite && (0...1).contains($0) } ?? true) &&
+            (point.timestamp?.isFinite ?? true) && (point.tilt?.isValid ?? true)
+        }) else { throw StudioEraserDescriptor.Failure.invalid }
+        try pathToElement.validate()
+        let placement = try target.erasurePlacement().after(pathToElement)
+        try placement.validate()
+        let result = DrawnElement(id: target.id + "-selection-erasure", tool: .eraser,
+            points: points, color: "#000000", width: width, opacity: opacity,
+            fillColor: nil, layerID: target.layerID,
+            eraser: StudioEraserDescriptor(mode: mode), transform: placement)
+        try result.eraser!.validate(element: result)
+        return result
     }
 }
 
@@ -466,7 +521,8 @@ struct StudioMirrorCapture: Equatable {
     func elements(from source: DrawnElement) throws -> [DrawnElement] {
         guard width.isFinite, height.isFinite, (1...8192).contains(width), (1...8192).contains(height),
               [.pencil,.pen,.brush,.marker,.crayon,.line,.rectangle,.circle].contains(source.tool),
-              source.translation == nil, source.reflection == nil, source.transform == nil else {
+              source.translation == nil, source.reflection == nil, source.transform == nil,
+              source.selectionErasures?.isEmpty != false else {
             throw StudioBrushError.invalidSettings("This mirror draft cannot be applied. The original remains unchanged.")
         }
         var result = [source]
@@ -782,20 +838,38 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
     var blendMode: String = "normal"   // normal, multiply, screen, overlay, etc.
     var glowEnabled: Bool = false
     var glowColor: String?
+    /// Document-space radius; omitted fields retain legacy full-resolution appearance.
+    var glowRadius: Double?
+    var glowStrength: Double?
+    var effectiveGlowRadius: Double { glowRadius ?? 5 }
+    var effectiveGlowStrength: Double { glowStrength ?? 1 }
+    var hasValidGlowSettings: Bool {
+        effectiveGlowRadius.isFinite && (0...128).contains(effectiveGlowRadius) &&
+        effectiveGlowStrength.isFinite && (0...1).contains(effectiveGlowStrength)
+    }
+    /// New user edits use canonical RGB; historical colors remain opaque metadata.
+    static func isValidNewGlowColor(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        return bytes.count == 7 && bytes.first == 35 && bytes.dropFirst().allSatisfy {
+            (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+        }
+    }
+
     var colorLabel: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, visible, locked, opacity, lockMode, blendMode
-        case glowEnabled, glowColor, colorLabel
+        case glowEnabled, glowColor, glowRadius, glowStrength, colorLabel
     }
 
     init(id: String, name: String, visible: Bool = true, locked: Bool = false, opacity: Double = 1,
          lockMode: String = "free", blendMode: String = "normal", glowEnabled: Bool = false,
-         glowColor: String? = nil, colorLabel: String? = nil) {
+         glowColor: String? = nil, colorLabel: String? = nil, glowRadius: Double? = nil, glowStrength: Double? = nil) {
         self.id = id; self.name = name; self.visible = visible; self.locked = locked
         self.opacity = opacity; self.lockMode = locked ? "full" : lockMode
         self.blendMode = blendMode; self.glowEnabled = glowEnabled
         self.glowColor = glowColor; self.colorLabel = colorLabel
+        self.glowRadius = glowRadius; self.glowStrength = glowStrength
     }
 
     init(from decoder: Decoder) throws {
@@ -810,6 +884,8 @@ struct CanvasLayer: Codable, Identifiable, Equatable {
         glowEnabled = try c.decodeIfPresent(Bool.self, forKey: .glowEnabled) ?? false
         glowColor = try c.decodeIfPresent(String.self, forKey: .glowColor)
         colorLabel = try c.decodeIfPresent(String.self, forKey: .colorLabel)
+        glowRadius = try c.decodeIfPresent(Double.self, forKey: .glowRadius)
+        glowStrength = try c.decodeIfPresent(Double.self, forKey: .glowStrength)
     }
 
     var isFullyLocked: Bool { locked || lockMode == "full" }

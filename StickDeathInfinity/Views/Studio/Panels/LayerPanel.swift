@@ -247,6 +247,8 @@ struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
     let layer: CanvasLayer
     @State private var draftOpacity: Double?
+    @State private var draftGlowRadius: Double?
+    @State private var draftGlowStrength: Double?
     @State private var pendingDeletion: StudioViewModel.LayerDeleteCapture?
     @State private var pendingRename: StudioViewModel.LayerRenameCapture?
     @State private var proposedName = ""
@@ -320,7 +322,7 @@ struct LayerDetailView: View {
                         Image(systemName: "chevron.up.chevron.down")
                     }.font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
                         .padding(12).background(Color.white.opacity(0.05)).cornerRadius(8)
-                }
+                }.accessibilityIdentifier("studio.layer.blend." + layer.id)
             }
             
             // GLOW toggle
@@ -330,16 +332,42 @@ struct LayerDetailView: View {
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
-                Toggle("", isOn: Binding(get: { layer.glowEnabled }, set: { vm.setLayerGlow(layer.id, enabled: $0) }))
+                Toggle("Glow", isOn: Binding(get: { layer.glowEnabled }, set: { vm.setLayerGlow(layer.id, enabled: $0) }))
+                    .accessibilityIdentifier("studio.layer.glow." + layer.id)
                     .labelsHidden()
                     .scaleEffect(0.8)
                 
                 Spacer()
             }
             
-            // Color dots
+            if layer.glowEnabled {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Glow color").font(.caption)
+                    HStack(spacing: 8) {
+                        ForEach(["#FF0000", "#FF8800", "#FFFF00", "#00FF00", "#0088FF", "#AA44FF", "#FFFFFF"], id: \.self) { hex in
+                            Button {
+                                vm.setLayerGlowStyle(layer.id, color: hex)
+                            } label: {
+                                Circle().fill(Color(hex: hex)).frame(width: 24, height: 24)
+                                    .overlay(Circle().stroke(.white, lineWidth: (layer.glowColor ?? "#FF0000").uppercased() == hex ? 3 : 0))
+                            }.frame(minWidth: 32, minHeight: 44).accessibilityLabel("Glow color " + hex)
+                                .accessibilityIdentifier("studio.layer.glow-color." + hex)
+                        }
+                    }
+                    Text("Strength \(Int((draftGlowStrength ?? layer.effectiveGlowStrength) * 100))%")
+                    Slider(value: Binding(get: { draftGlowStrength ?? layer.effectiveGlowStrength }, set: { draftGlowStrength = $0 }), in: 0...1) { editing in
+                        if !editing, let value = draftGlowStrength { vm.setLayerGlowStyle(layer.id, strength: value); draftGlowStrength = nil }
+                    }.accessibilityLabel("Glow strength").accessibilityIdentifier("studio.layer.glow-strength." + layer.id)
+                    Text("Radius \(Int(draftGlowRadius ?? layer.effectiveGlowRadius)) canvas points")
+                    Slider(value: Binding(get: { draftGlowRadius ?? layer.effectiveGlowRadius }, set: { draftGlowRadius = $0 }), in: 0...128, step: 1) { editing in
+                        if !editing, let value = draftGlowRadius { vm.setLayerGlowStyle(layer.id, radius: value); draftGlowRadius = nil }
+                    }.accessibilityLabel("Glow radius").accessibilityIdentifier("studio.layer.glow-radius." + layer.id)
+                }.font(.caption).foregroundColor(.white.opacity(0.8)).tint(.red)
+            }
+
+            // Layer label color (independent of rendered glow).
             HStack(spacing: 6) {
-                Text("Color:")
+                Text("Label:")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white.opacity(0.4))
                 

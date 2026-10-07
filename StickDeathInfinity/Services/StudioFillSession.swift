@@ -12,9 +12,12 @@ struct StudioFillContext: Equatable {
     let opacity: Double
     let settings: StudioFillRegion.Settings
     let sampleAllLayers: Bool
+    let selectedElementIDs: Set<String>
+
+    static let selectionUnavailable = "Object-clipped Fill is unavailable. Deselect drawings in Move or Lasso before filling a canvas region."
 
     @MainActor static func current(_ vm: StudioViewModel, ownedStroke: String? = nil) -> Self? {
-        guard vm.isEditing, !vm.isPlaying, vm.selectedTool == .fill,
+        guard vm.isEditing, !vm.isPlaying, vm.selectedTool == .fill, vm.selectedElementIDs.isEmpty,
               vm.activeStrokeID == ownedStroke, vm.pendingBrushStroke == nil,
               vm.fillTolerance.isFinite, (0...128).contains(vm.fillTolerance),
               vm.fillExpand.isFinite, (-5...5).contains(vm.fillExpand),
@@ -28,7 +31,7 @@ struct StudioFillContext: Equatable {
             width: vm.canvasWidth, height: vm.canvasHeight, color: vm.strokeColorHex, opacity: opacity,
             settings: .init(tolerance: Int(vm.fillTolerance.rounded()), contiguous: vm.fillContiguous,
                 expand: Int(vm.fillExpand.rounded()), gapClose: vm.fillContiguous ? Int(vm.fillGapClose.rounded()) : 0,
-                antiAlias: vm.fillAntiAlias), sampleAllLayers: vm.fillSampleAll)
+                antiAlias: vm.fillAntiAlias), sampleAllLayers: vm.fillSampleAll, selectedElementIDs: vm.selectedElementIDs)
     }
 }
 
@@ -73,6 +76,10 @@ final class StudioFillSession: ObservableObject {
 
     @discardableResult
     func fill(_ vm: StudioViewModel, context: StudioFillContext, point: CGPoint) async -> Bool {
+        guard vm.selectedElementIDs.isEmpty else {
+            vm.message = StudioFillContext.selectionUnavailable
+            return false
+        }
         guard !isFilling, StudioFillContext.current(vm) == context else {
             vm.message = "Studio changed before fill started. Tap the current artwork again."
             return false
@@ -99,11 +106,12 @@ final class StudioFillSession: ObservableObject {
                 onCancel: { worker.cancel() })
             guard !Task.isCancelled, !worker.isCancelled, operationID == id,
                   StudioFillContext.current(vm, ownedStroke: id) == context else {
-                vm.message = "Fill was cancelled or Studio changed. Nothing was added."
+                vm.message = vm.selectedElementIDs.isEmpty ? "Fill was cancelled or Studio changed. Nothing was added."
+                    : StudioFillContext.selectionUnavailable + " Nothing was added."
                 return false
             }
             let committed = vm.commitElement(element, frameID: context.frameID)
-            if committed { vm.message = "Filled the selected artwork region." }
+            if committed { vm.message = "Filled the tapped canvas region." }
             return committed
         } catch is CancellationError {
             vm.message = "Fill cancelled. Nothing was added."

@@ -9,6 +9,14 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
                  color: "#FF0000", width: 5, opacity: 0.7, layerID: layer)
 }
 
+private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
+    var failingStage: RevisionWriteStage?
+    override func synchronizeRevisionFile(_ url: URL, stage: RevisionWriteStage) throws {
+        try super.synchronizeRevisionFile(url, stage: stage)
+        if failingStage == stage { throw CocoaError(.fileWriteOutOfSpace) }
+    }
+}
+
 @main @MainActor struct StudioDocumentTests {
     private static func linkedRasterJourneys() throws {
         var original = try StudioDocument.new(name: "Linked pictures", width: 320, height: 240, fps: 12)
@@ -568,7 +576,91 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
             try linkedRasterJourneys()
-            print("STUDIO_DOCUMENT_TESTS=PASS 20 journeys")
+            // Historical disabled colors were opaque metadata, including eight-digit and
+            // noncanonical strings. Opening and editing unrelated content must preserve them.
+            for historicalColor in ["#FF000080", "legacy-custom-color"] {
+                var historicalGlow = try StudioDocument.new(name: "Historical glow", width: 128, height: 128, fps: 12)
+                historicalGlow.layers[0].glowEnabled = false
+                historicalGlow.layers[0].glowColor = historicalColor
+                let bytes = try JSONEncoder().encode(historicalGlow)
+                var reopenedHistorical = try StudioDocumentEditor(document: JSONDecoder().decode(StudioDocument.self, from: bytes))
+                try reopenedHistorical.updateLayer(historicalGlow.activeLayerID) { $0.name = "Renamed without rewriting color" }
+                let roundtrip = try JSONDecoder().decode(StudioDocument.self, from: JSONEncoder().encode(reopenedHistorical.document))
+                try roundtrip.validate()
+                try require(roundtrip.layers[0].glowColor == historicalColor && !roundtrip.layers[0].glowEnabled && roundtrip.schemaVersion == historicalGlow.schemaVersion,
+                            "Unrelated legacy edit rejected, rewrote or migrated opaque disabled glow color")
+            }
+            let glowStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("GlowDocuments"), cachesDirectory: root.appendingPathComponent("GlowCaches"))
+            let glowVM = StudioViewModel(storage: glowStore)
+            let glowCreated = await glowVM.createProject(name: "Glow persistence", width: 128, height: 128, fps: 12)
+            try require(glowCreated, "Glow project failed to create")
+            let glowID = glowVM.activeLayerID
+            try require(glowVM.layers[0].effectiveGlowRadius == 5 && glowVM.layers[0].effectiveGlowStrength == 1,
+                        "Legacy glow defaults changed")
+            glowVM.commitElement(stroke(layer: glowID))
+            glowVM.setLayerGlow(glowID, enabled: true)
+            let beforeGlow = glowVM.document
+            glowVM.setLayerGlowStyle(glowID, color: "#00FF00", radius: 24, strength: 0.4)
+            let afterGlow = glowVM.document
+            try require(afterGlow.schemaVersion == 28 && afterGlow.layers[0].glowColor == "#00FF00" && afterGlow.layers[0].glowRadius == 24 && afterGlow.layers[0].glowStrength == 0.4,
+                        "Actual VM did not commit the complete glow style")
+            glowVM.undo()
+            try require(glowVM.layers == beforeGlow.layers, "Glow style was not one undo transaction")
+            glowVM.redo()
+            try require(glowVM.layers == afterGlow.layers, "Glow style redo lost appearance")
+            glowVM.duplicateLayer(glowID)
+            try require(glowVM.layers.allSatisfy { $0.glowColor == "#00FF00" && $0.glowRadius == 24 && $0.glowStrength == 0.4 }, "Layer duplication lost glow appearance")
+            let beforeInvalidGlow = glowVM.document
+            for invalid in [Double.nan, Double.infinity, -1, 129] {
+                glowVM.setLayerGlowStyle(glowID, radius: invalid)
+                try require(glowVM.document == beforeInvalidGlow, "Invalid glow radius partially changed document")
+            }
+            glowVM.setLayerGlowStyle(glowID, strength: 1.1)
+            glowVM.setLayerGlowStyle(glowID, color: "#GG0000")
+            glowVM.setLayerGlowStyle(glowID, color: "#FF000080")
+            glowVM.setLayerGlowStyle(glowID, color: "FF0000")
+            try require(glowVM.document == beforeInvalidGlow, "Invalid glow color/strength changed document")
+            let savedGlow = await glowVM.save(); try require(savedGlow, "Glow save failed")
+            let expectedGlow = glowVM.document
+            let glowReopened = StudioViewModel(storage: glowStore)
+            await glowReopened.loadProjects()
+            guard let glowProject = glowReopened.savedProjects.first(where: { $0.id == expectedGlow.id }) else { throw Failure(text: "Saved glow project absent") }
+            let openedGlow = await glowReopened.openProject(glowProject)
+            try require(openedGlow && glowReopened.document == expectedGlow, "Cold reopen lost exact glow document")
+            var legacyVersionWithNewFields = expectedGlow; legacyVersionWithNewFields.schemaVersion = 27
+            var invalidVersionRejected = false
+            do { try legacyVersionWithNewFields.validate() } catch { invalidVersionRejected = true }
+            try require(invalidVersionRejected, "New glow metadata accepted in unsupported old schema")
+            print("PASS actual glow VM transaction, duplication, invalid rollback, atomic save and cold reopen")
+            for stage in [DeviceStorageManager.RevisionWriteStage.payload, .lineageReceipt] {
+                let spaceStore = VMRevisionSpaceFailureStore(documentsDirectory: root.appendingPathComponent("Space-\(UUID().uuidString)"))
+                let spaceVM = StudioViewModel(storage: spaceStore)
+                let createdSpace = await spaceVM.createProject(name: "Space recovery", width: 128, height: 128, fps: 12)
+                try require(createdSpace, "Disk-full VM fixture failed")
+                let savedBefore = spaceVM.document
+                spaceVM.commitElement(stroke(layer: spaceVM.activeLayerID))
+                let dirtyBefore = spaceVM.document
+                spaceStore.failingStage = stage
+                let failedSpace = await spaceVM.save()
+                await spaceVM.backToProjects()
+                try require(!failedSpace && spaceVM.isDirty && spaceVM.isEditing && spaceVM.document == dirtyBefore && spaceVM.message?.contains("Save failed") == true,
+                            "Durable-stage disk-full failure discarded dirty editor or claimed success")
+                let reopenedSpace = StudioViewModel(storage: spaceStore)
+                await reopenedSpace.loadProjects()
+                guard let savedSpace = reopenedSpace.savedProjects.first(where: { $0.id == savedBefore.id }) else { throw Failure(text: "Published project disappeared after disk-full save") }
+                let openedSpace = await reopenedSpace.openProject(savedSpace)
+                try require(openedSpace && reopenedSpace.document == savedBefore, "Cold reader adopted failed durable revision")
+                spaceStore.failingStage = nil
+                let retriedSpace = await spaceVM.save()
+                try require(retriedSpace && !spaceVM.isDirty && spaceVM.document == dirtyBefore, "Retry did not save exact retained edits")
+                let finalSpace = StudioViewModel(storage: spaceStore)
+                await finalSpace.loadProjects()
+                guard let finalMetadata = finalSpace.savedProjects.first(where: { $0.id == dirtyBefore.id }) else { throw Failure(text: "Retried project absent") }
+                let openedFinal = await finalSpace.openProject(finalMetadata)
+                try require(openedFinal && finalSpace.document == dirtyBefore, "Retry cold reopen lost dirty artwork")
+            }
+            print("PASS actual VM payload/receipt disk-full dirty retention, old cold reader, retry and final cold reopen")
+            print("STUDIO_DOCUMENT_TESTS=PASS 22 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)
