@@ -249,6 +249,10 @@ final class StudioSmokeUITests: XCTestCase {
             // leaves On My iPhone as a back button; Browse is one level above it.
             // Only tap the actual navigation Cancel, never the covered overlay.
             for _ in 0..<5 {
+                // Files presents asynchronously after SwiftUI becomes idle.
+                // Wait for a real actionable navigation control at each level.
+                _ = try hittableElement(in: navigation.matching(NSPredicate(format: "label IN %@",
+                    ["Cancel", "On My iPhone", "Browse", "Locations"])), timeout: 10)
                 if let cancel = navigation.matching(NSPredicate(format: "label == %@", "Cancel"))
                     .allElementsBoundByIndex.first(where: { $0.exists && $0.isHittable }) {
                     cancel.tap()
