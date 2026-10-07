@@ -3,13 +3,16 @@ import AVFoundation
 import CoreGraphics
 import ImageIO
 
-/// Imports one decoded reference frame, not a movie track. The original movie
+/// Imports decoded reference frames, not a movie track. The original movie
 /// remains with its owner. Only the returned oriented SDR PNG enters the editor's
 /// existing managed-image transaction, history, save and export paths.
 actor StudioVideoFrameImportService {
     static let shared = StudioVideoFrameImportService()
     static let maximumPixels = 4_194_304
     static let maximumDimension = 4096
+    static let maximumSequenceFrames = 24
+    static let maximumSequencePNGBytes = 32 * 1024 * 1024
+    static let maximumSequencePixels = 32_000_000
     private var busy = false
 
     /// Immutable mapping captured before the system picker opens. The trim end
@@ -43,9 +46,10 @@ actor StudioVideoFrameImportService {
         let durationSeconds: Double
     }
     enum Failure: LocalizedError {
-        case busy, invalidTime, invalidMapping, outsideTrim, unsupportedVideo, geometry, outsideVideo, encoding, timedOut
+        case busy, invalidTime, invalidMapping, outsideTrim, unsupportedVideo, geometry, outsideVideo, encoding, timedOut, sequenceLimit
         var errorDescription: String? {
             switch self {
+            case .sequenceLimit: return "Import 1–24 frames at a time, with at most 32 million decoded pixels and 32 MB of PNG images. Choose fewer frames or a smaller source video."
             case .busy: return "Another video frame is being prepared. Wait or cancel it first."
             case .invalidTime: return "The selected Studio frame has an invalid time. No reference was added."
             case .invalidMapping: return "Use a valid source trim, a Studio start no later than the playhead, and speed between 0.25× and 4×."
@@ -62,11 +66,25 @@ actor StudioVideoFrameImportService {
     func extract(from url: URL, projectFrameIndex: Int, fps: Int,
                  mapping: Mapping = Mapping(),
                  scratchParent: URL = FileManager.default.temporaryDirectory) async throws -> Frame {
+        let frames = try await extractSequence(from: url, projectFrameIndex: projectFrameIndex, fps: fps,
+            frameCount: 1, mapping: mapping, scratchParent: scratchParent)
+        return frames[0]
+    }
+
+    /// All-or-nothing preparation. One owned movie copy and one generator serve
+    /// the entire bounded sequence; no document edit occurs in this service.
+    func extractSequence(from url: URL, projectFrameIndex: Int, fps: Int, frameCount: Int,
+                         mapping: Mapping = Mapping(),
+                         scratchParent: URL = FileManager.default.temporaryDirectory) async throws -> [Frame] {
         try Task.checkCancellation()
         guard !busy else { throw Failure.busy }
-        guard projectFrameIndex >= 0, projectFrameIndex <= 216_000, (1...120).contains(fps) else { throw Failure.invalidTime }
-        let projectSeconds = Double(projectFrameIndex) / Double(fps)
-        let sourceSeconds = try mapping.sourceTime(projectSeconds: projectSeconds)
+        guard (1...Self.maximumSequenceFrames).contains(frameCount) else { throw Failure.sequenceLimit }
+        guard projectFrameIndex >= 0, projectFrameIndex <= 216_000 - (frameCount - 1),
+              (1...120).contains(fps) else { throw Failure.invalidTime }
+        let requests = try (0..<frameCount).map { offset -> Request in
+            let project = Double(projectFrameIndex + offset) / Double(fps)
+            return Request(projectSeconds: project, sourceSeconds: try mapping.sourceTime(projectSeconds: project))
+        }
         guard ["mp4", "mov"].contains(url.pathExtension.lowercased()) else { throw Failure.unsupportedVideo }
         busy = true
         defer { busy = false }
@@ -76,10 +94,9 @@ actor StudioVideoFrameImportService {
         let owned = try StudioImageProviderFile.materialize(from: url, scratchParent: scratchParent)
         do {
             let copiedURL = try owned.url()
-            let frame = try await withThrowingTaskGroup(of: Frame.self) { group in
-                group.addTask { try await Self.decode(copiedURL, name: owned.displayName,
-                    time: CMTime(seconds: sourceSeconds, preferredTimescale: 600_000),
-                    projectSeconds: projectSeconds, mapping: mapping) }
+            let frames = try await withThrowingTaskGroup(of: [Frame].self) { group in
+                group.addTask { try await Self.decodeSequence(copiedURL, name: owned.displayName,
+                    requests: requests, mapping: mapping) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 30_000_000_000)
                     throw Failure.timedOut
@@ -91,7 +108,7 @@ actor StudioVideoFrameImportService {
             try Task.checkCancellation()
             _ = try owned.url()
             try owned.cleanup()
-            return frame
+            return frames
         } catch {
             let operation = error
             do { try owned.cleanup() }
@@ -100,8 +117,9 @@ actor StudioVideoFrameImportService {
         }
     }
 
-    private static func decode(_ url: URL, name: String, time: CMTime,
-                               projectSeconds: Double, mapping: Mapping) async throws -> Frame {
+    private struct Request: Sendable { let projectSeconds: Double; let sourceSeconds: Double }
+    private static func decodeSequence(_ url: URL, name: String, requests: [Request],
+                                       mapping: Mapping) async throws -> [Frame] {
         let asset = AVURLAsset(url: url, options: [
             AVURLAssetPreferPreciseDurationAndTimingKey: true,
             AVURLAssetReferenceRestrictionsKey: AVAssetReferenceRestrictions.forbidAll.rawValue
@@ -116,7 +134,7 @@ actor StudioVideoFrameImportService {
             guard try await asset.load(.isReadable), !(try await asset.load(.hasProtectedContent)) else { throw Failure.unsupportedVideo }
             let duration = try await asset.load(.duration)
             guard duration.isNumeric, duration.seconds > 0, duration.seconds <= 3600 else { throw Failure.unsupportedVideo }
-            guard time < duration else { throw Failure.outsideVideo }
+            guard requests.allSatisfy({ $0.sourceSeconds < duration.seconds }) else { throw Failure.outsideVideo }
             if let end = mapping.sourceEndSeconds, end > duration.seconds { throw Failure.outsideVideo }
             let tracks = try await asset.loadTracks(withMediaType: .video)
             guard tracks.count == 1, let track = tracks.first else { throw Failure.unsupportedVideo }
@@ -129,19 +147,34 @@ actor StudioVideoFrameImportService {
                   oriented.width.isFinite, oriented.height.isFinite,
                   oriented.width > 0, oriented.height > 0,
                   oriented.width <= CGFloat(maximumDimension), oriented.height <= CGFloat(maximumDimension) else { throw Failure.geometry }
-            try Task.checkCancellation()
-            let result = try await generator.image(at: time)
-            try Task.checkCancellation()
-            let image = result.image
-            guard image.width > 0, image.height > 0, image.width <= maximumDimension,
-                  image.height <= maximumDimension, image.width * image.height <= maximumPixels else { throw Failure.geometry }
-            let png = try encode(image)
-            let title = String(name.prefix(85)) + String(format: " @ %.3fs", time.seconds)
-            let imported = StudioImageImportService.ImportedImage(id: UUID(), name: title, container: .png,
-                originalData: png, originalWidth: image.width, originalHeight: image.height, originalOrientation: 1,
-                width: image.width, height: image.height, normalizedPNG: png)
-            return Frame(image: imported, requestedSeconds: projectSeconds,
-                sourceRequestedSeconds: time.seconds, mapping: mapping, actualSeconds: result.actualTime.seconds, durationSeconds: duration.seconds)
+            guard size.width * size.height * CGFloat(requests.count) <= CGFloat(maximumSequencePixels) else { throw Failure.sequenceLimit }
+            var frames: [Frame] = []
+            frames.reserveCapacity(requests.count)
+            var pngBytes = 0, pixels = 0
+            for request in requests {
+                try Task.checkCancellation()
+                let time = CMTime(seconds: request.sourceSeconds, preferredTimescale: 600_000)
+                let result = try await generator.image(at: time)
+                try Task.checkCancellation()
+                let image = result.image
+                guard image.width > 0, image.height > 0, image.width <= maximumDimension,
+                      image.height <= maximumDimension, image.width * image.height <= maximumPixels else { throw Failure.geometry }
+                let framePixels = image.width * image.height
+                guard framePixels <= maximumSequencePixels - pixels else { throw Failure.sequenceLimit }
+                pixels += framePixels
+                let png = try encode(image)
+                guard png.count <= maximumSequencePNGBytes - pngBytes else { throw Failure.sequenceLimit }
+                pngBytes += png.count
+                let title = String(name.prefix(85)) + String(format: " @ %.3fs", time.seconds)
+                let imported = StudioImageImportService.ImportedImage(id: UUID(), name: title, container: .png,
+                    originalData: png, originalWidth: image.width, originalHeight: image.height, originalOrientation: 1,
+                    width: image.width, height: image.height, normalizedPNG: png)
+                frames.append(Frame(image: imported, requestedSeconds: request.projectSeconds,
+                    sourceRequestedSeconds: time.seconds, mapping: mapping, actualSeconds: result.actualTime.seconds,
+                    durationSeconds: duration.seconds))
+                await Task.yield()
+            }
+            return frames
         } onCancel: {
             generator.cancelAllCGImageGeneration()
             asset.cancelLoading()

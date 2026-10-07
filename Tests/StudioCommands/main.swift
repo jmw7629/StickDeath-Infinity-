@@ -45,6 +45,77 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             try body(); passed += 1; print("PASS \(name)")
         }
         do {
+            try test("typed tween uses canonical adjacent endpoints four easings factual receipts and one undo") {
+                for easing in StudioTweenEasing.allCases {
+                    var editor = try fresh()
+                    let first = editor.document.activeFrameID
+                    _ = try StudioCommandExecutor.execute(request(editor, .apply([
+                        draw(editor, [stroke(id: "start")]),
+                        .duplicateFrame(.init(source: .id(first), result: "end"))
+                    ])), editor: &editor)
+                    let last = editor.document.frames[1].id
+                    _ = try StudioCommandExecutor.execute(request(editor, .apply([
+                        .translateElements(.init(frame: .id(last), elementIDs: editor.document.frames[1].elements.map(\.id), dx: 100, dy: 0)),
+                        .setFrameHold(.init(frame: .id(first), ticks: 2)), .setFrameHold(.init(frame: .id(last), ticks: 3))
+                    ])), editor: &editor)
+                    let before = content(editor.document)
+                    let command = StudioCommand.tweenFrames(.init(after: .id(first), to: .id(last), inbetweenCount: 1, easing: easing))
+                    let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request(editor, .apply([command]))))
+                    let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                    let frames = editor.document.frames
+                    try require(frames.count == 3 && frames[0] == before.frames[0] && frames[2] == before.frames[1], "Tween changed endpoint artwork or holds")
+                    let factor = easing == .easeIn ? 0.25 : easing == .easeOut ? 0.75 : 0.5
+                    let generated = frames[1].elements[0]
+                    // Translation is canonical affine metadata; the renderer
+                    // applies it without destructively rewriting source points.
+                    let transform = generated.transform ?? StudioElementTransform()
+                    for (index, point) in generated.points.enumerated() {
+                        let rendered = transform.point(CGPoint(x: point.x + (generated.translation?.x ?? 0),
+                                                               y: point.y + (generated.translation?.y ?? 0)))
+                        let original = before.frames[0].elements[0].points[index]
+                        try require(abs(rendered.x - (original.x + 100 * factor)) < 0.00001 &&
+                            abs(rendered.y - original.y) < 0.00001, "Typed tween did not use chosen canonical easing in rendered coordinates")
+                    }
+                    try require(frames[1].durationTicks == 1, "Typed tween changed generated exposure")
+                    try require(receipt.createdFrameIDs == [frames[1].id] && Set(receipt.createdElementIDs) == Set(frames[1].elements.map(\.id)), "Tween receipt invented or omitted generated identities")
+                    let after = content(editor.document)
+                    _ = try StudioCommandExecutor.execute(request(editor, .undo), editor: &editor)
+                    try require(content(editor.document) == before, "Tween undo did not restore exact endpoint document")
+                    _ = try StudioCommandExecutor.execute(request(editor, .redo), editor: &editor)
+                    try require(content(editor.document) == after, "Tween redo regenerated identities or geometry")
+                    try require(StudioCommandContext(document: editor.document).supportedTweenEasings.contains(easing), "Typed context omitted easing")
+                }
+            }
+            try test("typed tween rejects bounds stale context unknown wire fields and cancellation atomically") {
+                var editor = try fresh()
+                let first = editor.document.activeFrameID
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "start")]),
+                    .duplicateFrame(.init(source: .id(first), result: "end"))])), editor: &editor)
+                let last = editor.document.frames[1].id
+                func tween(_ count: Int) -> StudioCommand { .tweenFrames(.init(after: .id(first), to: .id(last), inbetweenCount: count, easing: .linear)) }
+                for count in [0, 25, Int.max] {
+                    try rejected(request(editor, .apply([tween(count)])), editor: &editor, expected: .limitExceeded)
+                }
+                var stale = request(editor, .apply([tween(2)]))
+                stale = .init(requestID: stale.requestID, projectID: stale.projectID, expectedRevision: stale.expectedRevision - 1, action: stale.action)
+                try rejected(stale, editor: &editor, expected: .staleRevision)
+                let valid = request(editor, .apply([tween(2)]))
+                var probe = editor, checkpoints = 0
+                _ = try StudioCommandExecutor.execute(valid, editor: &probe, checkCancellation: { checkpoints += 1 })
+                var cancelledChecks = 0
+                try rejected(valid, editor: &editor, cancellation: {
+                    cancelledChecks += 1
+                    if cancelledChecks == checkpoints { throw CancellationError() }
+                })
+                try require(cancelledChecks == checkpoints, "Did not cancel at final real transaction checkpoint")
+                var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as! [String: Any]
+                var action = object["action"] as! [String: Any], commands = action["apply"] as! [[String: Any]]
+                var fields = commands[0]["tweenFrames"] as! [String: Any]
+                fields["shell"] = "untrusted capability"; commands[0]["tweenFrames"] = fields
+                action["apply"] = commands; object["action"] = action
+                do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Tween accepted unknown wire field") }
+                catch StudioCommandError.malformed { }
+            }
             try test("all native brush families pass strict typed wire and one reversible canonical transaction") {
                 for family in StudioBrushFamily.allCases {
                     var editor = try fresh(); let before = content(editor.document)

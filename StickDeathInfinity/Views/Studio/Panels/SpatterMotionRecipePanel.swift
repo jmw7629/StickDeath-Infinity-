@@ -18,20 +18,23 @@ struct SpatterMotionRecipePanel: View {
     private let example = "Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px."
     // Match the production session's audio dispatch without parsing, editing or
     // making a provider request. Partially typed instructions remain editable.
+    private var isBriefDraft: Bool { SpatterSceneBrief.isBrief(draft) }
     private var isStickDraft: Bool { SpatterStickFigureRecipe.isStickFigureInstruction(draft) }
     private var isAudioDraft: Bool { SpatterAudioInstruction.isAudioInstruction(draft) }
     private var exampleText: String {
-        isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
+        isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
         isAudioDraft
             ? "Edit the selected clip's volume, mute state or fades. Its source, placement and track settings stay unchanged. One Undo reverses the edit."
+            : isBriefDraft ? "A supported two-action brief makes 16–20 editable stick-figure poses with frame holds, in one Undo step. Color, direction, action order and duration follow the brief. This bounded local planner is not open-ended AI video generation."
             : isStickDraft ? "Procedural walking, running, jumping and waving append 8–20 editable stick-figure frames on a new layer. This is a local motion recipe, not open-ended AI video generation. Current project FPS and existing frames are preserved; one Undo reverses the edit."
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
         isAudioDraft
             ? "Volume uses 0–100%. Fade durations use seconds and must fit the selected clip. Choose a complete audio example, edit its values, then Apply."
+            : isBriefDraft ? "Use walks, runs, jumps or waves; at least one action travels. Specify left to right or right to left and 0.5–10 seconds covering at least 16 project ticks. Timing rounds to a project tick; no sound or props are generated."
             : isStickDraft ? "Start/end positions are the figure's feet baseline in canvas percentages. Height uses the shorter canvas side; every pose must fit. Edit the example's action, frame count, color, positions and size."
             : "Positions use canvas percentages. Radius uses the shorter canvas side; line width is in pixels. The full outline must fit inside the canvas."
     }
@@ -70,7 +73,7 @@ struct SpatterMotionRecipePanel: View {
                     Text(exampleText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
-                    Button(isAudioDraft ? "Use motion example in draft" : "Use example in draft") { draft = isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
+                    Button(isAudioDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
                     Menu("Use an audio instruction") {
@@ -90,6 +93,10 @@ struct SpatterMotionRecipePanel: View {
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("spatter.local-edit.guidance")
 
+                    Button("Use a two-action brief") { draft = SpatterSceneBrief.example }
+                        .disabled(session.isWorking || session.isClosed)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("spatter.motion.brief-example")
                     Menu("Stick figure examples") {
                         ForEach(SpatterStickFigureRecipe.Action.allCases) { action in
                             Button(action.rawValue.capitalized) { draft = action.example }

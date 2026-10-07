@@ -128,6 +128,74 @@ private final class Counter: @unchecked Sendable {
                 passed += 1; print("PASS \(name)")
             } catch { print("FAIL \(name): \(error)"); throw error }
         }
+        try await test("single image attachment preserves a clipboard copied at its final checkpoint") {
+            let (vm, _) = try await fixture("image-clipboard-fence")
+            let imported = try await StudioImageImportService.shared.importImage(from: source, scratchParent: scratch)
+            let before = vm.document
+            try require(!vm.canPaste, "Fixture unexpectedly has clipboard content")
+            var checkpoints = 0
+            do {
+                _ = try vm.attachImportedImage(imported, expectedProjectID: before.id, expectedRevision: before.revision,
+                    frameID: before.activeFrameID, layerID: before.activeLayerID, checkCancellation: {
+                        checkpoints += 1
+                        if checkpoints == 2 { vm.copyFrame() }
+                    })
+                throw Failure(message: "Image import overwrote newer clipboard")
+            } catch is StudioDocumentError { }
+            try require(checkpoints == 2 && vm.document == before && vm.managedImageByteCount == 0 && vm.canPaste,
+                "Rejected image changed document/assets or discarded clipboard")
+            vm.pasteClipboard()
+            try require(vm.frames.count == before.frames.count + 1 && vm.frames.allSatisfy { $0.rasterAssetID == nil },
+                "Preserved copied frame cannot Paste")
+        }
+        try await test("image picker and ready preview preserve a live text draft for actual Apply") {
+            for ready in [false, true] {
+                let (vm, _) = try await fixture("text-session-\(ready)")
+                let session = StudioImageImportSession(scratchParent: scratch)
+                if ready { try await prepare(session, vm) }
+                let before = vm.document
+                try require(vm.beginTextEditing(), "Text draft could not begin")
+                vm.textInput = "Keep this text"
+                if ready { try require(!session.apply(currentScope: scope), "Ready image replaced text context") }
+                else { try require(session.beginPicker(in: vm, scope: scope) == nil, "Image picker accepted live text") }
+                try require(vm.document == before && vm.textDraft != nil && vm.textInput == "Keep this text" && vm.managedImageByteCount == 0,
+                    "Rejected import lost draft, changed history or retained image bytes")
+                try require(vm.applyTextEditing(), "Preserved draft cannot Apply")
+                try require(vm.currentFrame.elements.contains { $0.text?.content == "Keep this text" }, "Actual text was not committed")
+                session.close()
+            }
+        }
+        try await test("direct single and sequence image attachment reject initial and reentrant text drafts") {
+            let imported = try await StudioImageImportService.shared.importImage(from: source, scratchParent: scratch)
+            for sequence in [false, true] { for late in [false, true] {
+                let (vm, _) = try await fixture("text-handoff-\(sequence)-\(late)")
+                let before = vm.document
+                if !late { try require(vm.beginTextEditing(), "Initial text draft"); vm.textInput = "Still editable" }
+                var checkpoints = 0
+                let checkpoint: () throws -> Void = {
+                    checkpoints += 1
+                    if late && checkpoints == 2 {
+                        try require(vm.beginTextEditing(), "Late text draft"); vm.textInput = "Still editable"
+                    }
+                }
+                do {
+                    if sequence {
+                        _ = try vm.attachImportedImageSequence([imported], expectedProjectID: before.id,
+                            expectedRevision: before.revision, frameID: before.activeFrameID,
+                            layerID: before.activeLayerID, checkCancellation: checkpoint)
+                    } else {
+                        _ = try vm.attachImportedImage(imported, expectedProjectID: before.id,
+                            expectedRevision: before.revision, frameID: before.activeFrameID,
+                            layerID: before.activeLayerID, checkCancellation: checkpoint)
+                    }
+                    throw Failure(message: "Image handoff invalidated text")
+                } catch is StudioDocumentError { }
+                try require(vm.document == before && vm.textDraft != nil && vm.managedImageByteCount == 0,
+                    "Rejected image attachment changed source/history/draft")
+                try require(vm.applyTextEditing() && vm.currentFrame.elements.contains { $0.text?.content == "Still editable" },
+                    "Original draft cannot commit after rejected handoff")
+            } }
+        }
         try await test("Files image decodes a factual preview before one real attach, undo, redo, save and reopen") {
             let (vm, store) = try await fixture("files")
             let before = vm.document, session = StudioImageImportSession(scratchParent: scratch)
@@ -319,6 +387,39 @@ private final class Counter: @unchecked Sendable {
             try await prepare(session, vm); try require(session.apply(currentScope: scope), "Attachment failed")
             let after = vm.document; session.cancel()
             try require(vm.document == after && session.notice?.contains("remains in the project") == true, "Dismissal silently removed or denied applied image")
+        }
+        try await test("video sequence preview inserts after captured frame atomically and cold reopens") {
+            let (vm, store) = try await fixture("video-sequence-session")
+            let movie = root.appendingPathComponent("sequence-session.mov")
+            try await VideoFrameFixture.makeMovie(movie, rotate: true)
+            let before = vm.document
+            let session = StudioImageImportSession(scratchParent: scratch)
+            let token = session.beginPicker(in: vm, scope: scope, videoFrameCount: 3)!
+            try require(session.receiveVideoFrame(movie, token: token, currentScope: { scope }), "Sequence picker rejected")
+            await session.waitForCompletion()
+            try require(session.status == .preview && session.previewFrameCount == 3 && vm.document == before,
+                "Sequence preview changed project or did not retain all frames: \(session.notice ?? "none")")
+            try fm.removeItem(at: movie)
+            try require(session.apply(currentScope: scope), "Owned sequence could not apply after movie removal")
+            let after = vm.document
+            try require(after.frames.count == before.frames.count + 3 && after.frames[0] == before.frames[0]
+                && after.activeFrameID == after.frames[1].id && after.revision == before.revision + 1,
+                "Sequence insertion changed original frame, playhead or transaction count")
+            let ids = after.frames[1...3].compactMap(\.rasterAssetID)
+            try require(ids.count == 3 && Set(ids).count == 3 && Set(after.frames[1...3].compactMap(\.rasterLayerID)).count == 1,
+                "Sequence assets or shared image layer are inconsistent")
+            let originals = ids.map { vm.originalImageSource($0)!.originalData }
+            vm.undo(); try require(content(vm.document) == content(before), "Sequence Undo did not restore original document")
+            vm.redo(); try require(content(vm.document) == content(after), "Sequence Redo lost frames or assets")
+            try require(await vm.save(), "Sequence save failed")
+            let stored = try store.loadAnimation(id: after.id)!
+            await vm.backToProjects()
+            let reopened = StudioViewModel(storage: store)
+            try require(await reopened.openProject(stored.metadata), "Sequence cold reopen failed")
+            try require(reopened.document.frames == after.frames && ids.enumerated().allSatisfy {
+                reopened.originalImageSource($0.element)?.originalData == originals[$0.offset]
+            }, "Sequence cold reopen changed frame ordering or original PNG bytes")
+            await reopened.backToProjects()
         }
         try await test("video reference uses captured project time and survives source removal undo and cold reopen") {
             let (vm, store) = try await fixture("video-reference")

@@ -143,6 +143,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
                         selectedClipID: captured.selectedAudioClipID, requestID: submissionID)
+                } else if SpatterSceneBrief.isBrief(draft) {
+                    let brief = try SpatterSceneBrief.parse(draft)
+                    preparedRequest = try brief.prepare(in: document, requestID: submissionID).request
                 } else if SpatterStickFigureRecipe.isStickFigureInstruction(draft) {
                     let recipe = try SpatterStickFigureRecipe.parse(draft)
                     preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request
@@ -156,8 +159,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
                 let receipt = try studio.applyStudioCommands(preparedRequest)
+                let newIDs = Set(receipt.createdFrameIDs)
+                let addedTicks = studio.frames.filter { newIDs.contains($0.id) }.reduce(0) { $0 + $1.durationTicks }
                 let result = AppliedEdit(receipt: receipt, isAudioEdit: isAudio, addedFrameCount: receipt.createdFrameIDs.count,
-                    fps: studio.fps, addedDurationSeconds: Double(receipt.createdFrameIDs.count) / Double(studio.fps))
+                    fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps))
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {

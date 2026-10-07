@@ -73,6 +73,75 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             do { try invalid.validate(); throw Failure(text: "future version accepted") } catch StudioDocumentError.invalid { }
             print("PASS real frame clipboard, full editable archive roundtrip and validation")
 
+            for version in [23, 24, 25, 26] {
+                var clipboardEditor = try StudioDocumentEditor(document: .new(name: "Schema clipboard", width: 256, height: 256, fps: 12))
+                var element = stroke(layer: clipboardEditor.document.activeLayerID)
+                if version == 26 {
+                    element.tool = .line; element.shape = .init(version: 2, arrowEnds: .both, arrowLength: 12)
+                } else {
+                    element.brush = .init(family: version == 25 ? .neon : version == 23 ? .calligraphy : .round, seed: 42)
+                    if version == 23 { element.brush?.version = 2; element.brush?.tiltEnabled = true }
+                    if version == 24 { element.preservesLayerAlpha = true }
+                }
+                try clipboardEditor.commit(element, frameID: clipboardEditor.document.activeFrameID)
+                clipboardEditor.copyFrame(); clipboardEditor.undo()
+                try require(clipboardEditor.document.schemaVersion < version, "Fixture did not undo to an older schema")
+                try clipboardEditor.pasteFrame()
+                try require(clipboardEditor.document.schemaVersion == version && clipboardEditor.document.frames.count == 2,
+                    "Frame paste lost schema upgrade \(version)")
+                let copied = clipboardEditor.document.frames[1].elements[0]
+                try require(copied.id != element.id && copied.brush == element.brush && copied.shape == element.shape &&
+                    copied.preservesLayerAlpha == element.preservesLayerAlpha && copied.points == element.points,
+                    "Frame paste lost modern descriptor or reused identity")
+                try clipboardEditor.document.validate()
+                let reopened = try StudioDocumentArchive.decode(StudioDocumentArchive(document: clipboardEditor.document, rasterFrameIndices: [:]).encoded())
+                try require(reopened.document == clipboardEditor.document, "Modern pasted frame failed archive roundtrip")
+            }
+            print("PASS copied frames restore tilt/alpha/new-brush/arrow schema after Undo to older document")
+
+            var lockEditor = try StudioDocumentEditor(document: .new(name: "Alpha deletion", width: 256, height: 256, fps: 12))
+            let lockedLayer = lockEditor.document.activeLayerID
+            let lockedStroke = stroke(layer: lockedLayer)
+            try lockEditor.commit(lockedStroke, frameID: lockEditor.document.activeFrameID)
+            try lockEditor.updateLayer(lockedLayer) { $0.lockMode = "alpha" }
+            lockEditor.selectedElementIDs = [lockedStroke.id]
+            let lockedBefore = lockEditor.document, undoBefore = lockEditor.canUndo, redoBefore = lockEditor.canRedo
+            do { try lockEditor.deleteSelected(); throw Failure(text: "Alpha-locked deletion accepted") }
+            catch StudioDocumentError.locked { }
+            try require(lockEditor.document == lockedBefore && lockEditor.selectedElementIDs == [lockedStroke.id] &&
+                lockEditor.canUndo == undoBefore && lockEditor.canRedo == redoBefore, "Alpha deletion changed document/history/selection")
+            lockEditor.undo()
+            try require(lockEditor.document.layers[0].lockMode == "free" && lockEditor.document.frames[0].elements.count == 1,
+                "Rejected deletion inserted an Undo entry")
+            try lockEditor.updateLayer(lockedLayer) { $0.lockMode = "position" }
+            lockEditor.selectedElementIDs = [lockedStroke.id]; try lockEditor.deleteSelected()
+            try require(lockEditor.document.frames[0].elements.isEmpty, "Position lock deletion semantics changed")
+            print("PASS alpha lock prevents selected deletion atomically; position-lock behavior preserved")
+
+            var high = try StudioDocument.new(name: "Revision edge", width: 256, height: 256, fps: 12)
+            high.revision = Int.max - 3
+            var edge = try StudioDocumentEditor(document: high)
+            try edge.addFrame()
+            try require(edge.document.revision == Int.max - 2 && edge.canUndo, "Last valid revision could not commit")
+            try edge.document.validate()
+            let atLimit = edge.document
+            edge.selectedElementIDs = ["selection-must-survive"]
+            do { try edge.addFrame(); throw Failure(text: "Revision overflow edit accepted") }
+            catch StudioDocumentError.invalid { }
+            edge.undo()
+            try require(edge.document == atLimit && edge.canUndo && !edge.canRedo && edge.selectedElementIDs == ["selection-must-survive"],
+                "Exhausted change/Undo consumed history, selection or published invalid revision")
+            high.revision = Int.max - 4
+            var redoEdge = try StudioDocumentEditor(document: high)
+            try redoEdge.addFrame(); redoEdge.undo()
+            let beforeRedo = redoEdge.document
+            try require(beforeRedo.revision == Int.max - 2 && redoEdge.canRedo, "Redo edge fixture")
+            redoEdge.selectedElementIDs = ["selection-must-survive"]; redoEdge.redo()
+            try require(redoEdge.document == beforeRedo && redoEdge.canRedo && !redoEdge.canUndo && redoEdge.selectedElementIDs == ["selection-must-survive"],
+                "Exhausted Redo consumed history or selection")
+            try redoEdge.document.validate()
+            print("PASS revision boundary preserves valid documents/history/selection for change, Undo and Redo")
+
             let documents = root.appendingPathComponent("Documents")
             let store = DeviceStorageManager(documentsDirectory: documents, cachesDirectory: root.appendingPathComponent("Caches"))
             let vm = StudioViewModel(storage: store)

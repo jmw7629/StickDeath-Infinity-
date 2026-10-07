@@ -263,6 +263,10 @@ struct SpatterStickFigureRecipe: Equatable {
     let end: Point
     let heightPercent: Double
     let lineWidth: Double
+    // Composite briefs use a common neutral pose at both ends of every action.
+    // Existing single-action recipes retain their original motion unchanged.
+    var neutralTransitions = false
+    var neutralFacing: Double? = nil
     enum Failure: LocalizedError {
         case syntax, limits, bounds, context
         var errorDescription: String? {
@@ -309,7 +313,7 @@ struct SpatterStickFigureRecipe: Equatable {
         let h = Double(min(context.width, context.height)) * heightPercent / 100
         let first = Point(x: start.x * width / 100, y: start.y * height / 100)
         let final = Point(x: end.x * width / 100, y: end.y * height / 100)
-        let facing = final.x < first.x ? -1.0 : 1.0
+        let facing = neutralFacing ?? (final.x < first.x ? -1.0 : 1.0)
         let layer = "stick_layer", firstAlias = "stick_frame_0"
         var commands: [StudioCommand] = [.addLayer(.init(name: "Spatter · " + action.rawValue, result: layer))]
         var after: StudioCommandReference = .id(last.id)
@@ -327,8 +331,9 @@ struct SpatterStickFigureRecipe: Equatable {
             try checkCancellation()
             let t = Double(index) / Double(frameCount - 1)
             let phase = t * .pi * (action == .running ? 4 : 2)
+            let envelope = neutralTransitions ? pow(sin(t * .pi), 2) : 1
             let jump = action == .jumping ? 4 * t * (1 - t) : 0
-            let bob = (action == .walking || action == .running) ? cos(phase * 2) * h * 0.012 : 0
+            let bob = (action == .walking || action == .running) ? cos(phase * 2) * h * 0.012 * envelope : 0
             let x = first.x + (final.x - first.x) * t
             let baseline = first.y + (final.y - first.y) * t - jump * h * 0.35
             func p(_ dx: Double, _ dy: Double) -> Point { .init(x: x + dx * h * facing, y: baseline + dy * h + bob) }
@@ -337,8 +342,8 @@ struct SpatterStickFigureRecipe: Equatable {
             for side in [-1.0, 1.0] {
                 let gait = phase + (side < 0 ? .pi : 0)
                 let moving = action == .walking || action == .running
-                let stride = moving ? sin(gait) * 0.15 : 0
-                let lift = moving ? max(0, cos(gait)) * (action == .running ? 0.16 : 0.10) : jump * 0.08
+                let stride = moving ? sin(gait) * 0.15 * envelope : 0
+                let lift = moving ? max(0, cos(gait)) * (action == .running ? 0.16 : 0.10) * envelope : jump * 0.08
                 let legRoot = hip
                 let foot = p(side * 0.10 + stride, -0.02 - lift)
                 let knee = try joint(legRoot, foot, length: h * 0.25, bend: -facing)
@@ -346,11 +351,14 @@ struct SpatterStickFigureRecipe: Equatable {
                 let armRoot = shoulder
                 let hand: Point
                 if action == .waving && side > 0 {
-                    hand = p(0.25 + sin(t * .pi * 4) * 0.06, -0.92 + cos(t * .pi * 4) * 0.025)
+                    hand = neutralTransitions
+                        ? p(0.10 + (0.15 + sin(t * .pi * 4) * 0.06) * envelope,
+                            -0.43 + (-0.49 + cos(t * .pi * 4) * 0.025) * envelope)
+                        : p(0.25 + sin(t * .pi * 4) * 0.06, -0.92 + cos(t * .pi * 4) * 0.025)
                 } else if action == .jumping {
-                    hand = p(side * (0.13 + jump * 0.10), -0.43 - jump * 0.42)
+                    hand = p(side * (neutralTransitions ? 0.10 + jump * 0.13 : 0.13 + jump * 0.10), -0.43 - jump * 0.42)
                 } else {
-                    hand = p(side * 0.10 - stride, -0.43 + (moving ? cos(gait) * 0.025 : 0))
+                    hand = p(side * 0.10 - stride, -0.43 + (moving ? cos(gait) * 0.025 * envelope : 0))
                 }
                 let elbow = try joint(armRoot, hand, length: h * 0.20, bend: side * facing)
                 segments += [(armRoot, elbow), (elbow, hand)]
@@ -381,6 +389,90 @@ struct SpatterStickFigureRecipe: Equatable {
         try checkCancellation()
         return .init(request: .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply(commands)), framesToAdd: frameCount, durationSeconds: Double(frameCount) / Double(context.fps),
+            appendedAfterFrameID: last.id, firstNewFrameAlias: firstAlias)
+    }
+}
+
+/// A fully consumed, local two-action brief grammar. It does not call a provider
+/// or infer unsupported characters, props, soundtracks or publication permission.
+struct SpatterSceneBrief: Equatable {
+    let color: String
+    let actions: [SpatterStickFigureRecipe.Action]
+    let movesRight: Bool
+    let seconds: Double
+    static let example = "A red stick figure walks left to right, then waves; 2 seconds."
+    static func isBrief(_ text: String) -> Bool {
+        let words = text.lowercased().split(whereSeparator: { $0.isWhitespace })
+        return words.first == "a" || words.first == "an"
+    }
+    enum Failure: LocalizedError {
+        case syntax, timing
+        var errorDescription: String? {
+            switch self {
+            case .syntax: return "Use: A red stick figure walks left to right, then waves; 2 seconds. Choose walks, runs, jumps or waves, left to right or right to left, and a named or #RRGGBB color. At least one action must travel. Other clauses are unsupported; nothing changed."
+            case .timing: return "Choose 0.5–10 seconds covering at least 16 project-FPS ticks. The local brief uses 16–20 editable poses with frame holds; timing rounds to the nearest project tick. Nothing changed."
+            }
+        }
+    }
+    private static let syntax = try? NSRegularExpression(pattern:
+        #"\A\s*(?:a|an)\s+([^\s]+)\s+stick\s+figure\s+(walks|runs|jumps|waves)\s+(left\s+to\s+right|right\s+to\s+left)\s*,\s*then\s+(walks|runs|jumps|waves)\s*;\s*([0-9]+(?:\.[0-9]+)?)\s+seconds?\.?\s*\z"#, options: [.caseInsensitive])
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard let syntax, let match = syntax.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { throw Failure.syntax }
+        func token(_ index: Int) -> String { String(text[Range(match.range(at: index), in: text)!]).lowercased() }
+        let verbs: [String: SpatterStickFigureRecipe.Action] = ["walks": .walking, "runs": .running, "jumps": .jumping, "waves": .waving]
+        guard let first = verbs[token(2)], let second = verbs[token(4)], first != .waving || second != .waving else { throw Failure.syntax }
+        guard let seconds = Double(token(5)), seconds.isFinite, (0.5...10).contains(seconds) else { throw Failure.timing }
+        // Reuse the established color validation without maintaining another list.
+        let checked = try SpatterStickFigureRecipe.parse("Append 8 frames of a \(token(1)) stick figure walking from (25%, 80%) to (75%, 80%), height 35%, line width 3 px.")
+        return .init(color: checked.color, actions: [first, second], movesRight: token(3).hasPrefix("left"), seconds: seconds)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> SpatterMotionRecipe.Prepared {
+        try checkCancellation()
+        guard (1...60).contains(context.fps), seconds.isFinite, (0.5...10).contains(seconds),
+              actions.count == 2, actions.contains(where: { $0 != .waving }) else { throw Failure.timing }
+        let ticks = Int((seconds * Double(context.fps)).rounded())
+        guard ticks >= 16 else { throw Failure.timing }
+        let count = min(20, ticks), firstCount = count / 2
+        guard context.frames.count <= 1000 - count, context.layers.count < 128, let last = context.frames.last else {
+            throw SpatterStickFigureRecipe.Failure.context
+        }
+        let layer = "brief_layer", firstAlias = "brief_frame_0"
+        var commands: [StudioCommand] = [.addLayer(.init(name: "Spatter · two-action brief", result: layer))]
+        var after = StudioCommandReference.id(last.id), offset = 0
+        var x = movesRight ? 25.0 : 75.0
+        let movingCount = actions.filter { $0 != .waving }.count
+        let distance = (movesRight ? 50.0 : -50.0) / Double(movingCount)
+        for (index, action) in actions.enumerated() {
+            try checkCancellation()
+            let end = action == .waving ? x : x + distance
+            var recipe = SpatterStickFigureRecipe(frameCount: index == 0 ? firstCount : count - firstCount,
+                color: color, action: action, start: .init(x: x, y: 80), end: .init(x: end, y: 80), heightPercent: 35, lineWidth: 3)
+            recipe.neutralTransitions = true; recipe.neutralFacing = movesRight ? 1 : -1
+            // Facing is tied to the brief even for stationary waving.
+            let plan = try recipe.prepare(in: context, requestID: requestID, checkCancellation: checkCancellation)
+            guard case .apply(let generated) = plan.request.action else { throw Failure.syntax }
+            for command in generated {
+                guard case .draw(let drawing) = command else { continue }
+                let alias = "brief_frame_\(offset)"
+                let strokes = drawing.strokes.enumerated().map { part, stroke in
+                    StudioCommandStroke(id: "brief-\(requestID.uuidString)-\(offset)-\(part)", tool: stroke.tool,
+                        points: stroke.points, color: stroke.color, width: stroke.width, opacity: stroke.opacity)
+                }
+                commands.append(.addFrame(.init(after: after, result: alias)))
+                commands.append(.draw(.init(frame: .created(alias), layer: .created(layer), strokes: strokes)))
+                let hold = ticks / count + (offset < ticks % count ? 1 : 0)
+                if hold > 1 { commands.append(.setFrameHold(.init(frame: .created(alias), ticks: hold))) }
+                after = .created(alias); offset += 1
+            }
+            x = end
+        }
+        commands.append(.selectFrame(.created(firstAlias)))
+        guard offset == count, commands.count <= StudioCommandExecutor.maximumCommands else { throw StudioCommandError.limitExceeded }
+        try checkCancellation()
+        return .init(request: .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply(commands)), framesToAdd: count, durationSeconds: Double(ticks) / Double(context.fps),
             appendedAfterFrameID: last.id, firstNewFrameAlias: firstAlias)
     }
 }

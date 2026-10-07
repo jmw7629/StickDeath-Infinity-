@@ -104,7 +104,7 @@ actor StudioAudioMixService {
     private struct Clip {
         let assetID: UUID
         let start: Int
-        let end: Int
+        var end: Int
         let sourceStart: Int
         let volume: Float
         let fadeEnvelope: AudioFadeEnvelope?
@@ -163,14 +163,29 @@ actor StudioAudioMixService {
         guard Set(clips.map(\.assetID)) == Set(trackMap.keys) else { throw MixError.unresolvedLegacyAudio }
         // Sort UUIDs for deterministic decode/progress ordering; clip summation
         // order is the canonical array order, including overlaps on one lane.
-        var assets: [UUID: [Float]] = [:], decodedSamples = 0
+        var assets: [UUID: [Float]] = [:], sourceFrameExtents: [UUID: Double] = [:], decodedSamples = 0
         for id in trackMap.keys.sorted(by: { $0.uuidString < $1.uuidString }) {
             let asset = try await decode(trackMap[id]!, remainingSamples: limits.maximumDecodedSamples - decodedSamples,
                                          completedBefore: decodedSamples, progress: progress)
-            decodedSamples += asset.count; assets[id] = asset
+            decodedSamples += asset.samples.count; assets[id] = asset.samples
+            sourceFrameExtents[id] = asset.exactOutputFrames
         }
-        for clip in clips {
-            guard clip.sourceStart + clip.end - clip.start <= assets[clip.assetID]!.count / 2 else { throw MixError.invalidTimeline }
+        for index in clips.indices {
+            let clip = clips[index], available = assets[clip.assetID]!.count / 2
+            let requestedEnd = clip.sourceStart + clip.end - clip.start
+            if requestedEnd > available {
+                let exact = sourceFrameExtents[clip.assetID]!, canonical = document.audioClips[index]
+                // Core Audio can end at floor of a fractional converted frame.
+                // End this clip at that proven source EOF: never manufacture a
+                // sample, shorten any interior edit, or tolerate a real overrun.
+                guard abs(exact - exact.rounded()) >= 0.0000001,
+                      available == Int(exact.rounded(.down)), requestedEnd == Int(exact.rounded(.up)),
+                      requestedEnd == available + 1,
+                      (canonical.sourceOffset + canonical.duration) * Self.sampleRate > Double(available),
+                      canonical.sourceOffset + canonical.duration <= exact / Self.sampleRate + 0.000000001,
+                      clip.end - clip.start > 1 else { throw MixError.invalidTimeline }
+                clips[index].end -= 1
+            }
         }
         try Task.checkCancellation()
         let owner = try MixOwnedFile(parent: parent)
@@ -233,29 +248,47 @@ actor StudioAudioMixService {
         }
     }
 
+    private struct DecodedAsset {
+        let samples: [Float]
+        let exactOutputFrames: Double
+    }
     private func decode(_ track: AudioTrack, remainingSamples: Int, completedBefore: Int,
-                        progress: @Sendable (Progress) async throws -> Void) async throws -> [Float] {
+                        progress: @Sendable (Progress) async throws -> Void) async throws -> DecodedAsset {
         let reader = try MixAudioReader(data: track.audioData!)
         guard reader.container == track.format.lowercased() else { throw MixError.invalidAsset }
         guard (8000...96000).contains(reader.originalRate), (1...2).contains(reader.originalChannels),
               reader.originalFrames > 0 else { throw MixError.unsupportedAudio }
         let duration = Double(reader.originalFrames) / reader.originalRate
         guard duration <= 300, abs(duration - track.duration) <= 1 / reader.originalRate + 0.000000001 else { throw MixError.invalidAsset }
-        let expectedFrames = Int((duration * Self.sampleRate).rounded())
-        guard expectedFrames > 0, expectedFrames <= remainingSamples / 2 else { throw MixError.resourceLimit }
-        var result: [Float] = []; result.reserveCapacity(expectedFrames * 2)
+        // A nonintegral rate conversion has two adjacent integral endpoints.
+        // Core Audio may emit floor rather than rounded frames at EOF; neither
+        // implies a damaged source. Accept only that mathematical one-frame
+        // interval, retain actual samples, and prove the entire source was read.
+        // Same-rate and integral conversions still require an exact count.
+        let convertedFrames = Double(reader.originalFrames) * Self.sampleRate / reader.originalRate
+        let nearest = convertedFrames.rounded()
+        let integral = abs(convertedFrames - nearest) < 0.0000001
+        let minimumFrames = Int(integral ? nearest : convertedFrames.rounded(.down))
+        let maximumFrames = Int(integral ? nearest : convertedFrames.rounded(.up))
+        guard minimumFrames > 0, maximumFrames <= remainingSamples / 2 else { throw MixError.resourceLimit }
+        var result: [Float] = []; result.reserveCapacity(maximumFrames * 2)
         while true {
             try Task.checkCancellation()
             let chunk = try reader.read(frames: 4096)
             if chunk.isEmpty { break }
-            guard chunk.count <= remainingSamples - result.count, chunk.count <= expectedFrames * 2 - result.count else { throw MixError.invalidSamples }
+            guard chunk.count <= remainingSamples - result.count, chunk.count <= maximumFrames * 2 - result.count else {
+                throw MixError.invalidSamples
+            }
             guard chunk.allSatisfy(\.isFinite) else { throw MixError.invalidSamples }
             result.append(contentsOf: chunk)
-            try await progress(.init(phase: .decoding, completed: completedBefore + result.count, total: completedBefore + expectedFrames * 2))
+            try await progress(.init(phase: .decoding, completed: completedBefore + result.count, total: completedBefore + maximumFrames * 2))
             await Task.yield()
         }
-        guard result.count == expectedFrames * 2 else { throw MixError.invalidSamples }
-        return result
+        guard result.count % 2 == 0, (minimumFrames...maximumFrames).contains(result.count / 2) else {
+            throw MixError.invalidSamples
+        }
+        try reader.verifySourceConsumed(outputFrames: result.count / 2)
+        return DecodedAsset(samples: result, exactOutputFrames: convertedFrames)
     }
     private func verifyOutput(_ data: Data, frames: Int, expectedPeak: Float, expectedOverRange: Int,
                               expectedPCM: SHA256.Digest,
@@ -307,6 +340,7 @@ private final class MixAudioReader {
     let originalChannels: Int
     let originalFrames: Int64
     let container: String
+    private let pcmBytesPerFrame: UInt32?
     init(data: Data) throws {
         memory = MixAudioMemory(data)
         // Recoverable truncated RIFF/FORM must not become a shorter valid mix.
@@ -362,8 +396,34 @@ private final class MixAudioReader {
             var client = mixPCMFormat(); size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
             guard ExtAudioFileSetProperty(ext, kExtAudioFileProperty_ClientDataFormat, size, &client) == noErr else { throw StudioAudioMixService.MixError.unsupportedAudio }
             originalRate = format.mSampleRate; originalChannels = Int(format.mChannelsPerFrame); originalFrames = frames; container = kind
+            pcmBytesPerFrame = format.mFormatID == kAudioFormatLinearPCM && format.mBytesPerFrame > 0 ? format.mBytesPerFrame : nil
             self.file = opened; self.extended = ext
         } catch { if let ext { ExtAudioFileDispose(ext) }; AudioFileClose(opened); throw error }
+    }
+    func verifySourceConsumed(outputFrames: Int) throws {
+        guard let extended, let file else { throw StudioAudioMixService.MixError.codecFailure }
+        var position: Int64 = 0
+        guard ExtAudioFileTell(extended, &position) == noErr else { throw StudioAudioMixService.MixError.codecFailure }
+        if position == originalFrames { return }
+        let exact = Double(originalFrames) * StudioAudioMixService.sampleRate / originalRate
+        // ExtAudioFileTell maps emitted client frames back into integral source
+        // frames. For 16538 PCM frames at 44.1kHz, 18000 emitted 48kHz frames
+        // map to 16537.5 and Tell reports 16537, despite complete physical data.
+        // Admit this specific quantization only after independently proving the
+        // complete PCM byte extent. Compressed, same-rate and integral cases
+        // retain strict EOF equality; arbitrary short sources are not tolerated.
+        guard let pcmBytesPerFrame, originalRate != StudioAudioMixService.sampleRate,
+              abs(exact - exact.rounded()) >= 0.0000001,
+              outputFrames == Int(exact.rounded(.down)),
+              position == Int64((Double(outputFrames) * originalRate / StudioAudioMixService.sampleRate).rounded(.down)) else {
+            throw StudioAudioMixService.MixError.invalidSamples
+        }
+        var audioBytes: UInt64 = 0
+        var size = UInt32(MemoryLayout<UInt64>.size)
+        let expected = UInt64(originalFrames).multipliedReportingOverflow(by: UInt64(pcmBytesPerFrame))
+        guard !expected.overflow,
+              AudioFileGetProperty(file, kAudioFilePropertyAudioDataByteCount, &size, &audioBytes) == noErr,
+              audioBytes == expected.partialValue else { throw StudioAudioMixService.MixError.invalidSamples }
     }
     func read(frames: Int) throws -> [Float] {
         guard let extended else { throw StudioAudioMixService.MixError.codecFailure }

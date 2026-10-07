@@ -43,6 +43,7 @@ targets:
         GENERATE_INFOPLIST_FILE: false
     dependencies:
       - package: supabase-swift
+        product: Supabase
       # StoreKit 2 is built into iOS 15+ — no external package needed
       # Stripe SDK removed: iOS subscriptions use StoreKit IAP per Apple policy
     entitlements:
@@ -66,6 +67,24 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.uitests
         TEST_TARGET_NAME: StickDeathInfinity
 
+  StickDeathInfinityAuthTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests/AuthState
+    dependencies:
+      - target: StickDeathInfinity
+      - package: supabase-swift
+        product: Supabase
+    settings:
+      base:
+        INFOPLIST_FILE: ""
+        GENERATE_INFOPLIST_FILE: true
+        PRODUCT_BUNDLE_IDENTIFIER: com.willisnmb.stickdeathinfinity.authtests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/StickDeathInfinity.app/StickDeathInfinity"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+        SWIFT_VERSION: "5.0"
+
 schemes:
   StickDeathInfinity:
     build:
@@ -75,6 +94,15 @@ schemes:
     test:
       targets:
         - StickDeathInfinityUITests
+
+  StickDeathInfinityAuthTests:
+    build:
+      targets:
+        StickDeathInfinity: [test]
+        StickDeathInfinityAuthTests: [test]
+    test:
+      targets:
+        - StickDeathInfinityAuthTests
 
 packages:
   supabase-swift:

@@ -34,6 +34,35 @@ struct AppConfig {
         return SupabaseConfiguration(url: url, publishableKey: key)
     }
 
+    enum OAuthProvider: String, CaseIterable, Hashable, Sendable {
+        case google, github, microsoft
+        var title: String {
+            switch self { case .google: return "Google"; case .github: return "GitHub"; case .microsoft: return "Microsoft" }
+        }
+    }
+    struct OAuthConfiguration: Equatable, Sendable {
+        let enabledProviders: Set<OAuthProvider>
+        /// Public deployment contract only. The configured Supabase Azure
+        /// provider must enforce this same tenant policy server-side.
+        let microsoftTenant: String?
+    }
+    static var oauthConfiguration: OAuthConfiguration {
+        oauthConfiguration(from: Bundle.main.infoDictionary ?? [:])
+    }
+    static func oauthConfiguration(from values: [String: Any]) -> OAuthConfiguration {
+        let raw = configuredString(values["SDI_OAUTH_PROVIDERS"]) ?? ""
+        let names = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        // Unknown/unexpanded deployment values fail closed, not partially on.
+        guard names.allSatisfy({ OAuthProvider(rawValue: $0) != nil }) else {
+            return .init(enabledProviders: [], microsoftTenant: nil)
+        }
+        var enabled = Set(names.compactMap(OAuthProvider.init(rawValue:)))
+        let tenant = configuredString(values["SDI_MICROSOFT_TENANT"])
+        let validTenant = tenant.map { ["common", "organizations", "consumers"].contains($0) || UUID(uuidString: $0) != nil } ?? false
+        if !validTenant { enabled.remove(.microsoft) }
+        return .init(enabledProviders: enabled, microsoftTenant: validTenant ? tenant : nil)
+    }
+
     static var liveKitWSURL: URL? {
         liveKitWSURL(from: Bundle.main.infoDictionary ?? [:])
     }

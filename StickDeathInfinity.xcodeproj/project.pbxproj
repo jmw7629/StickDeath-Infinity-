@@ -159,14 +159,18 @@
 		87E5516AADC428BFE6ACC6D3 /* StudioBlurSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3512BE45C7B7FA53F429379F /* StudioBlurSession.swift */; };
 		C07376334803C49CED91D484 /* StudioSharpenSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BD3A068BBECA60ABB83D144 /* StudioSharpenSession.swift */; };
 		93DE111B5F25B092FBE62817 /* StudioDodgeBurnSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7C85B5E0BF2257B209119DC /* StudioDodgeBurnSession.swift */; };
-/* End PBXBuildFile section */
+DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167DF61D75773FC9A39D49CE; };
+		A1DAE47624167521029F1A9B /* frameworkBuild */ = {isa = PBXBuildFile; productRef = 78279A7AFBC995917F5DE1A6; };
+		/* End PBXBuildFile section */
 
 		/* Begin PBXContainerItemProxy section */
 		6A54E5C3DF03204AD4261323 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = 0AEB550C38C3C1411E9E6734 /* Project object */; proxyType = 1; remoteGlobalIDString = 95F69DAADC24CD2B6E75776A; remoteInfo = StickDeathInfinity; };
+		019801EC2EDD8B12220AD46C /* proxy */ = {isa = PBXContainerItemProxy; containerPortal = 0AEB550C38C3C1411E9E6734; proxyType = 1; remoteGlobalIDString = 95F69DAADC24CD2B6E75776A; remoteInfo = StickDeathInfinity; };
 		/* End PBXContainerItemProxy section */
 
 		/* Begin PBXTargetDependency section */
 		B678FBF53579479664466D8E /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = 95F69DAADC24CD2B6E75776A /* StickDeathInfinity */; targetProxy = 6A54E5C3DF03204AD4261323 /* PBXContainerItemProxy */; };
+		295B57727A3B5D70C6D340A8 /* dependency */ = {isa = PBXTargetDependency; target = 95F69DAADC24CD2B6E75776A; targetProxy = 019801EC2EDD8B12220AD46C; };
 		/* End PBXTargetDependency section */
 
 		/* Begin PBXFileReference section */
@@ -336,7 +340,9 @@
 		3512BE45C7B7FA53F429379F /* StudioBlurSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioBlurSession.swift"; sourceTree = SOURCE_ROOT; };
 		1BD3A068BBECA60ABB83D144 /* StudioSharpenSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioSharpenSession.swift"; sourceTree = SOURCE_ROOT; };
 		E7C85B5E0BF2257B209119DC /* StudioDodgeBurnSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioDodgeBurnSession.swift"; sourceTree = SOURCE_ROOT; };
-/* End PBXFileReference section */
+167DF61D75773FC9A39D49CE /* source */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tests/AuthState/AuthStateTests.swift; sourceTree = SOURCE_ROOT; };
+		BD0DCA309307BF9D0201B758 /* product */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = StickDeathInfinityAuthTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		/* End PBXFileReference section */
 
 		/* Begin PBXFrameworksBuildPhase section */
 		9D7130BE9AD5A408DC6FDF12 /* Frameworks */ = {
@@ -348,6 +354,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		3E879DC50964B345B0DDDD49 /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		495168AC208A83BF351E529D /* frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A1DAE47624167521029F1A9B,); runOnlyForDeploymentPostprocessing = 0; };
 		/* End PBXFrameworksBuildPhase section */
 
 		/* Begin PBXGroup section */
@@ -385,14 +392,16 @@
 				08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */,
 				29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */,
 				801AD5DE5029C5501A10D7D3 /* StickDeathInfinity */,
-				F35AEC2E38F2F9ACFEFB2B5F /* Products */,
+				167DF61D75773FC9A39D49CE /* AuthStateTests.swift */,
+                F35AEC2E38F2F9ACFEFB2B5F /* Products */,
 			);
 			sourceTree = "<group>";
 		};
 		F35AEC2E38F2F9ACFEFB2B5F /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				53B3985D9CCD9B1435660103 /* StickDeathInfinityUITests.xctest */,
+				BD0DCA309307BF9D0201B758 /* StickDeathInfinityAuthTests.xctest */,
+                53B3985D9CCD9B1435660103 /* StickDeathInfinityUITests.xctest */,
 				C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */,
 			);
 			name = Products;
@@ -859,6 +868,17 @@
 			productReference = 53B3985D9CCD9B1435660103 /* StickDeathInfinityUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		7CF4EEFC04B74FE3CC450CB9 /* target */ = {isa = PBXNativeTarget;
+            buildConfigurationList = 67AD0245200CFF979AB73A94;
+            buildPhases = (AC4CC727F20F22FBB1CA756A, 495168AC208A83BF351E529D, AD907A46BA4D44FB3955A19B,);
+            buildRules = ();
+            dependencies = (295B57727A3B5D70C6D340A8,);
+            name = StickDeathInfinityAuthTests;
+            packageProductDependencies = (78279A7AFBC995917F5DE1A6,);
+            productName = StickDeathInfinityAuthTests;
+            productReference = BD0DCA309307BF9D0201B758;
+            productType = "com.apple.product-type.bundle.unit-test";
+        };
 		/* End PBXNativeTarget section */
 
 		/* Begin PBXProject section */
@@ -870,6 +890,7 @@
 				LastUpgradeCheck = 1500;
 				ORGANIZATIONNAME = "Willis NMB Designs";
 				TargetAttributes = {
+                    7CF4EEFC04B74FE3CC450CB9 = {CreatedOnToolsVersion = 16.4; TestTargetID = 95F69DAADC24CD2B6E75776A; };
 					8B10E3BC3E99ACBCF2291ABC = {CreatedOnToolsVersion = 16.4; TestTargetID = 95F69DAADC24CD2B6E75776A; };
 					95F69DAADC24CD2B6E75776A = {
 						CreatedOnToolsVersion = 15.0;
@@ -892,6 +913,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+                7CF4EEFC04B74FE3CC450CB9 /* StickDeathInfinityAuthTests */,
 				8B10E3BC3E99ACBCF2291ABC /* StickDeathInfinityUITests */,
 				95F69DAADC24CD2B6E75776A /* StickDeathInfinity */,
 			);
@@ -916,6 +938,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		5549B6DD951F419639287345 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
+		AD907A46BA4D44FB3955A19B /* resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 		/* End PBXResourcesBuildPhase section */
 
 		/* Begin PBXSourcesBuildPhase section */
@@ -1068,6 +1091,7 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		32C33FB6C0F7328041516213 /* Sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (3CFE3ECC446ABC4F168F5898 /* StudioSmokeUITests.swift in Sources */,); runOnlyForDeploymentPostprocessing = 0; };
+		AC4CC727F20F22FBB1CA756A /* sources */ = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (DB3FF26E51A52E86F882890D,); runOnlyForDeploymentPostprocessing = 0; };
 		/* End PBXSourcesBuildPhase section */
 
 		/* Begin XCBuildConfiguration section */
@@ -1280,6 +1304,38 @@
 			};
 			name = Release;
 		};
+		8E9D4E29B309C1F560488613 /* debug */ = {isa = XCBuildConfiguration;
+            buildSettings = {
+                BUNDLE_LOADER = "$(TEST_HOST)";
+                CODE_SIGN_STYLE = Automatic;
+                DEVELOPMENT_TEAM = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StickDeathInfinity.app/StickDeathInfinity";
+            };
+            name = Debug;
+        };
+		639D994AFBB7D36664E3DCEA /* release */ = {isa = XCBuildConfiguration;
+            buildSettings = {
+                BUNDLE_LOADER = "$(TEST_HOST)";
+                CODE_SIGN_STYLE = Automatic;
+                DEVELOPMENT_TEAM = "";
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@loader_path/Frameworks",);
+                PRODUCT_BUNDLE_IDENTIFIER = com.willisnmb.stickdeathinfinity.authtests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_HOST = "$(BUILT_PRODUCTS_DIR)/StickDeathInfinity.app/StickDeathInfinity";
+            };
+            name = Release;
+        };
 		/* End XCBuildConfiguration section */
 
 		/* Begin XCConfigurationList section */
@@ -1302,6 +1358,7 @@
 			defaultConfigurationName = Release;
 		};
 		5497ED0BB1555F27E0223D03 /* Build configuration list for PBXNativeTarget "StickDeathInfinityUITests" */ = {isa = XCConfigurationList; buildConfigurations = (704480D270F891BAF0463F0F, 63E0CE2B078A3EDDD2A221D9,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		67AD0245200CFF979AB73A94 /* configs */ = {isa = XCConfigurationList; buildConfigurations = (8E9D4E29B309C1F560488613, 639D994AFBB7D36664E3DCEA,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
 		/* End XCConfigurationList section */
 
 		/* Begin XCRemoteSwiftPackageReference section */
@@ -1321,6 +1378,7 @@
 			package = AD8BA8041B6CA7947F5006AE /* Supabase */;
 			productName = Supabase;
 		};
+		78279A7AFBC995917F5DE1A6 /* supabase */ = {isa = XCSwiftPackageProductDependency; package = AD8BA8041B6CA7947F5006AE; productName = Supabase; };
 		/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 0AEB550C38C3C1411E9E6734 /* Project object */;

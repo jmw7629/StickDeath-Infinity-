@@ -113,6 +113,62 @@ private func rejects(_ action: () throws -> Void) throws {
                 await reopened.backToProjects()
                 print("PASS \(action.rawValue): \(count) editable frames, prompt color, fixed bone lengths, every preparation cancellation checkpoint, one Undo/Redo and cold reopen")
             }
+            for (briefIndex, text) in [SpatterSceneBrief.example,
+                "A blue stick figure waves right to left, then runs; 3 seconds.",
+                "A #00FFFF stick figure jumps left to right, then walks; 1.25 seconds."].enumerated() {
+                let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("brief-\(briefIndex)"))
+                let vm = StudioViewModel(storage: store)
+                let created = await vm.createProject(name: "Two-action brief", width: 256, height: 256, fps: 24)
+                try require(created, "Brief create")
+                vm.activePanel = .spatterAI
+                let before = vm.document, brief = try SpatterSceneBrief.parse(text)
+                let context = vm.commandScreenContext.document!
+                var checks = 0
+                let prepared = try brief.prepare(in: context, checkCancellation: { checks += 1 })
+                for boundary in 1...checks {
+                    var at = 0
+                    try rejects { _ = try brief.prepare(in: context, checkCancellation: { at += 1; if at == boundary { throw CancellationError() } }) }
+                }
+                let session = SpatterStudioEditSession()
+                try require(session.submit(text, in: vm, accountID: nil, currentScope: { scope }), "Brief session submission")
+                try await idle(session)
+                try require(session.status == .applied, "Brief session rejected: \(session.notice ?? "nil")")
+                let frames = Array(vm.frames.suffix(prepared.framesToAdd)), result = vm.document
+                try require(frames.allSatisfy { $0.elements.count == 10 && $0.elements.allSatisfy { $0.color == brief.color } }, "Brief lost editable/color-specific pose")
+                let ticks = frames.reduce(0) { $0 + $1.durationTicks }
+                try require(ticks == Int((brief.seconds * 24).rounded()) && session.appliedEdit?.addedDurationSeconds == Double(ticks) / 24,
+                    "Brief ignored duration or reported frame count as duration")
+                let boundary = frames.count / 2
+                for (first, next) in zip(frames[boundary - 1].elements, frames[boundary].elements) {
+                    for (a, b) in zip(first.points, next.points) {
+                        try require(hypot(Double(a.x - b.x), Double(a.y - b.y)) < 0.000001, "Action boundary jumps position/pose")
+                    }
+                }
+                let firstX = frames.first!.elements[0].points[0].x, lastX = frames.last!.elements[0].points[0].x
+                try require(brief.movesRight ? lastX > firstX : lastX < firstX, "Brief direction ignored")
+                let firstActionTravel = abs(frames[boundary - 1].elements[0].points[0].x - firstX)
+                try require(brief.actions[0] == .waving ? firstActionTravel < 0.001 : firstActionTravel > 20,
+                    "Brief action order ignored")
+                vm.undo(); try require(vm.frames == before.frames && vm.layers == before.layers, "Brief is not one Undo")
+                vm.redo(); try require(vm.frames == result.frames, "Brief Redo changed poses")
+                let saved = await vm.save(); try require(saved, "Brief save")
+                let stored = try store.loadAnimation(id: result.id)!, reopened = StudioViewModel(storage: store)
+                let opened = await reopened.openProject(stored.metadata)
+                try require(opened && reopened.frames == result.frames, "Brief cold reopen lost timing/poses")
+                if briefIndex == 0 {
+                    let output = try await StudioMovieExportService().export(snapshot: .init(document: reopened.document,
+                        retainedAudioTracks: [], rasterDataByID: [:]), outputParent: root, background: .white)
+                    let duration = try await AVURLAsset(url: output.movieURL).load(.duration).seconds
+                    try require(abs(duration - Double(ticks + 1) / 24) < 0.001, "Brief MP4 duration ignores frame holds")
+                }
+                await reopened.backToProjects(); await vm.backToProjects()
+                print("PASS composite brief: color/direction/action order, neutral continuity, timed receipt, cancellation, one Undo, reopen and export")
+            }
+            for text in [SpatterSceneBrief.example + " Upload it", "A red stick figure flies left to right, then waves; 2 seconds.",
+                         "A red stick figure waves left to right, then waves; 2 seconds.",
+                         "A red stick figure walks left to right, then waves; 500 seconds."] {
+                try rejects { _ = try SpatterSceneBrief.parse(text) }
+            }
             try require(poseSignatures.count == 4, "Different actions produced the same motion")
             for text in [SpatterStickFigureRecipe.Action.walking.example + " upload to YouTube", SpatterStickFigureRecipe.Action.walking.example.replacingOccurrences(of: "20 frames", with: "100 frames"), SpatterStickFigureRecipe.Action.walking.example.replacingOccurrences(of: "walking", with: "flying"), SpatterStickFigureRecipe.Action.walking.example.replacingOccurrences(of: "35%", with: "nan%") ] {
                 try rejects { _ = try SpatterStickFigureRecipe.parse(text) }

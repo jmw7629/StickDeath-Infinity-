@@ -225,10 +225,22 @@ struct StudioBottomBar: View {
             }
             .accessibilityIdentifier("studio.redo")
             
-            // Copy
+            // Explicit artwork selection takes precedence over the frame.
+            // Both commands use the same project-local clipboard as Paste.
             BottomBarButton(icon: "doc.on.doc", label: "COPY") {
-                vm.copyFrame()
+                if vm.selectedElementIDs.isEmpty {
+                    vm.copyFrame()
+                } else {
+                    _ = vm.copySelected()
+                }
             }
+            .accessibilityIdentifier("studio.copy")
+            .accessibilityLabel(vm.selectedElementIDs.isEmpty ? "Copy frame"
+                : vm.selectedElementIDs.count == 1 ? "Copy selected drawing"
+                : "Copy \(vm.selectedElementIDs.count) selected drawings")
+            .accessibilityHint(vm.selectedElementIDs.isEmpty
+                ? "Copies the current frame. Select artwork to copy only those drawings."
+                : "Copies only selected artwork. Paste adds it to the active layer.")
             
             // Paste
             BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
@@ -884,7 +896,7 @@ struct SpatterAISheet: View {
     }
 
     private func sendMessage() {
-        guard let context = SpatterContext.studio(vm.commandScreenContext), let snapshot = context.studio else {
+        guard let context = SpatterContext.studio(vm.commandScreenContext) else {
             contextError = "This Studio project is no longer open. Your draft has been kept."
             return
         }
@@ -892,7 +904,7 @@ struct SpatterAISheet: View {
         let submitted = prompt
         if spatterVM.submit(submitted, context: context, stillCurrent: { [weak vm] in
             guard let vm else { return false }
-            return vm.isEditing && vm.document.id == snapshot.projectID && vm.document.revision == snapshot.revision
+            return SpatterContext.studio(vm.commandScreenContext) == context
         }) { prompt = "" }
     }
 }

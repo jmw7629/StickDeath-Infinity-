@@ -25,9 +25,7 @@ struct StickDeathInfinityApp: App {
                     // Handle OAuth callback (Google Sign In redirect)
                     // URL scheme: stickdeath://auth/callback?...
                     if url.scheme == "stickdeath" && url.host == "auth" {
-                        Task {
-                            try? await AuthService.shared.handleOAuthCallback(url: url)
-                        }
+                        authVM.rejectUnsolicitedOAuthCallback()
                     }
                 }
         }

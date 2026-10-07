@@ -33,7 +33,8 @@ actor StudioVideoAudioImportService {
     }
 
     func extract(from url: URL, mapping: StudioVideoFrameImportService.Mapping = .init(),
-                 scratchParent: URL = FileManager.default.temporaryDirectory) async throws -> Result {
+                 scratchParent: URL = FileManager.default.temporaryDirectory,
+                 progress: @escaping @Sendable (StudioAudioImportService.Progress) async throws -> Void = { _ in }) async throws -> Result {
         try Task.checkCancellation()
         guard !busy else { throw Failure.busy }
         _ = try mapping.sourceTime(projectSeconds: mapping.projectStartSeconds)
@@ -44,7 +45,7 @@ actor StudioVideoAudioImportService {
         do {
             let source = try owned.url()
             let decoded = try await withThrowingTaskGroup(of: Decoded.self) { group in
-                group.addTask { try await Self.decode(source, mapping: mapping) }
+                group.addTask { try await Self.decode(source, mapping: mapping, progress: progress) }
                 group.addTask {
                     try await Task.sleep(nanoseconds: 60_000_000_000)
                     throw Failure.timedOut
@@ -92,7 +93,8 @@ actor StudioVideoAudioImportService {
         let sourceDuration: Double
         let outputDuration: Double
     }
-    private static func decode(_ url: URL, mapping: StudioVideoFrameImportService.Mapping) async throws -> Decoded {
+    private static func decode(_ url: URL, mapping: StudioVideoFrameImportService.Mapping,
+                               progress: @escaping @Sendable (StudioAudioImportService.Progress) async throws -> Void) async throws -> Decoded {
         let started = ContinuousClock.now
         func checkpoint() throws {
             try Task.checkCancellation()
@@ -169,6 +171,11 @@ actor StudioVideoAudioImportService {
                             destination: bytes.baseAddress!.advanced(by: startFrame * bytesPerFrame))
                     }) == noErr else { throw Failure.decodeFailed }
                     actualFrames += count; endFrame = startFrame + count
+                    // Only report frames actually supplied by AVFoundation.
+                    // Genuine timeline gaps can leave completed below total;
+                    // final owned-file validation does not reset this progress.
+                    try await progress(.init(phase: .decoding, completed: Int64(actualFrames), total: Int64(outputFrames)))
+                    try checkpoint()
                     await Task.yield()
                 }
                 try checkpoint()

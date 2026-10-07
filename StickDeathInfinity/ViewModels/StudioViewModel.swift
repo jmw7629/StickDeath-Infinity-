@@ -424,13 +424,21 @@ final class StudioViewModel: ObservableObject {
         try requireOpenCommandEditor()
         try validateCommandWorkBudget(request)
         let clipboardVersion = editor.clipboardVersion
+        let selection = editor.selectedElementIDs
+        let containsTween: Bool
+        if case .apply(let commands) = request.action {
+            containsTween = commands.contains { if case .tweenFrames = $0 { return true }; return false }
+        } else { containsTween = false }
+        if containsTween && isPlaying { throw StudioDocumentError.unavailable("Stop playback before tweening frames.") }
         var candidate = editor
         let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
         if candidate.document.audioClips != document.audioClips {
             guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before applying audio edits.") }
             _ = try audioTracksForSave(candidate.document)
         }
-        try preflightRasterDocument(candidate.document)
+        if containsTween {
+            try storage.preflightAnimation(storageProject(candidate.document, rasters: retainedRasterFrames))
+        } else { try preflightRasterDocument(candidate.document) }
         try checkCancellation()
         // A caller's synchronous cancellation probe may also change the live
         // editor. Recheck its ownership and revision before publishing the
@@ -439,6 +447,9 @@ final class StudioViewModel: ObservableObject {
         guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
         guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
         guard editor.clipboardVersion == clipboardVersion else { throw StudioCommandError.staleClipboard }
+        if containsTween && (isPlaying || editor.selectedElementIDs != selection) {
+            throw StudioDocumentError.unavailable("Playback or selection changed while preparing the tween. Nothing changed.")
+        }
         if candidate.document.audioClips != document.audioClips, isPlaying {
             throw StudioDocumentError.unavailable("Playback started while preparing audio edits. Nothing changed.")
         }
@@ -505,7 +516,7 @@ final class StudioViewModel: ObservableObject {
                 for stroke in drawing.strokes { try addUnits(stroke.points.count); try addUnits(stroke.text?.content.utf8.count ?? 0) }
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
             case .transformElements(let selection): edits += selection.elementIDs.count; try addUnits(selection.elementIDs.count, weight: 32)
-            case .duplicateFrame, .duplicateLayer, .pasteElements:
+            case .duplicateFrame, .duplicateLayer, .pasteElements, .tweenFrames:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
                 // rather than undercounting a reference we have not staged yet.
@@ -857,6 +868,39 @@ final class StudioViewModel: ObservableObject {
                 expectedRevision: document.revision, action: .apply(commands)))
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+
+    struct TweenCapture: Identifiable, Equatable {
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let activeFrameID: String
+        let nextFrameID: String
+        let layerID: String
+        let clipboardVersion: UUID
+        let selection: Set<String>
+        var id: String { frameID }
+    }
+    func prepareTween(_ frameID: String) -> TweenCapture? {
+        guard isEditing, !isSaving, !isPlaying, textDraft == nil, activeStrokeID == nil, pendingBrushStroke == nil,
+              let index = frames.firstIndex(where: { $0.id == frameID }), index + 1 < frames.count else { return nil }
+        return .init(projectID: document.id, revision: document.revision, frameID: frameID, activeFrameID: document.activeFrameID,
+            nextFrameID: frames[index + 1].id, layerID: document.activeLayerID,
+            clipboardVersion: editor.clipboardVersion, selection: editor.selectedElementIDs)
+    }
+    func applyTween(_ capture: TweenCapture, count: Int, easing: StudioTweenEasing,
+                    checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard prepareTween(capture.frameID) == capture else {
+            throw StudioDocumentError.unavailable("The endpoint frames or editor state changed. Reopen Tween; nothing changed.")
+        }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+            expectedRevision: capture.revision, action: .apply([.tweenFrames(.init(after: .id(capture.frameID),
+                to: .id(capture.nextFrameID), inbetweenCount: count, easing: easing))])), checkCancellation: {
+                    try checkCancellation()
+                    guard self.prepareTween(capture.frameID) == capture else {
+                        throw StudioDocumentError.unavailable("The captured tween endpoints or editor state changed. Nothing changed.")
+                    }
+                })
     }
 
     func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
@@ -1691,7 +1735,7 @@ final class StudioViewModel: ObservableObject {
                              frameID: String, trackNumber: Int,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, let frame = frames.firstIndex(where: { $0.id == frameID }) else {
             throw StudioDocumentError.unavailable("The project or selected frame changed. Import again in the current project.")
@@ -1705,6 +1749,8 @@ final class StudioViewModel: ObservableObject {
               audioTrack(forAssetID: track.id) == nil else {
             throw StudioDocumentError.invalid("The decoded audio asset has invalid metadata or conflicts with an existing asset.")
         }
+        let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
+        let selectedClipID = selectedAudioClip?.id
         let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
             startTime: Double(document.startTick(ofFrame: frame)) / Double(fps), duration: track.duration, assetID: track.id)
         var candidate = editor
@@ -1721,6 +1767,14 @@ final class StudioViewModel: ObservableObject {
             try storage.preflightAnimation(storageProject(candidate.document, rasters: retainedRasterFrames, audioTracks: tracks))
         }
         try checkCancellation()
+        // The cancellation checkpoint is caller-supplied and can reenter Studio.
+        // Never overwrite a newer edit, clipboard or selection with this snapshot.
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, editor.clipboardVersion == clipboardVersion,
+              editor.selectedElementIDs == selectedIDs, selectedAudioClip?.id == selectedClipID else {
+            throw StudioDocumentError.unavailable("The editor changed before the audio could be attached. No audio was added.")
+        }
         // Publish the bytes and the single undoable document edit together.
         managedAudioTracks = next; editor = candidate; selectedAudioClip = clip
         stopPlayback(); scheduleSave()
@@ -1748,10 +1802,16 @@ final class StudioViewModel: ObservableObject {
         managedAudioTracks = managedAudioTracks.filter { needed.contains($0.key) }
         pruneManagedImages()
     }
+    /// A pending text draft owns its captured frame and document revision until
+    /// Apply or Cancel. Audio commands must not invalidate that editable draft.
+    private var canMutateAudioDocument: Bool {
+        isEditing && !isSaving && !isPlaying && activeStrokeID == nil &&
+            pendingBrushStroke == nil && textDraft == nil
+    }
     /// The same command entry point is usable by Studio UI and validated assistants.
     /// Source bytes stay immutable; only a selected clip in the captured revision changes.
     func editSelectedAudioClip(_ id: String, expectedRevision: Int, edit: StudioAudioClipEdit) throws {
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard canMutateAudioDocument,
               document.revision == expectedRevision, selectedCurrentAudioClip?.id == id,
               let index = document.audioClips.firstIndex(where: { $0.id == id }),
               let assetID = document.audioClips[index].assetID,
@@ -1792,7 +1852,7 @@ final class StudioViewModel: ObservableObject {
     }
     /// Capture the selected canonical clip, never an arbitrary or stale list row.
     func prepareAudioDuplication() -> AudioDuplicationCapture? {
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard canMutateAudioDocument,
               let clip = selectedCurrentAudioClip, let assetID = clip.assetID,
               let asset = audioTrack(forAssetID: assetID), asset.audioData?.isEmpty == false else { return nil }
         return .init(projectID: document.id, revision: document.revision, clip: clip)
@@ -1968,7 +2028,7 @@ final class StudioViewModel: ObservableObject {
     func setAudioTrackMuted(_ track: Int, muted: Bool, expectedRevision: Int,
                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard canMutateAudioDocument,
               expectedRevision == document.revision, (1...4).contains(track) else {
             throw StudioDocumentError.unavailable("Stop playback before muting this track.")
         }
@@ -1986,7 +2046,7 @@ final class StudioViewModel: ObservableObject {
         }
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard canMutateAudioDocument,
               document.id == projectID, document.revision == expectedRevision else {
             throw StudioDocumentError.unavailable("The project changed while setting track mute. Nothing was changed.")
         }
@@ -2001,7 +2061,7 @@ final class StudioViewModel: ObservableObject {
         let volume: Double
     }
     func prepareAudioTrackVolume(_ track: Int) -> AudioTrackVolumeCapture? {
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard canMutateAudioDocument,
               (1...4).contains(track),
               document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else { return nil }
         return .init(projectID: document.id, revision: document.revision, track: track,
@@ -2043,7 +2103,7 @@ final class StudioViewModel: ObservableObject {
             playbackFrameIndex = target; isPlaying = true
         } else {
             playbackFrameIndex = nil; isPlaying = false
-            guard isEditing, activeStrokeID == nil, pendingBrushStroke == nil else { return }
+            guard canMutateAudioDocument else { return }
             if editor.selectFrame(frames[target].id) { scheduleSave() }
         }
     }
@@ -2063,7 +2123,7 @@ final class StudioViewModel: ObservableObject {
                              expectedProjectID: UUID, expectedRevision: Int, frameID: String, layerID: String,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, document.activeLayerID == layerID,
               let index = document.frames.firstIndex(where: { $0.id == frameID }) else {
@@ -2073,6 +2133,7 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("This frame already contains an imported image or original record. Add a new blank frame; nothing was replaced.")
         }
         guard let layer = document.layers.first(where: { $0.id == layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
+        let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
         let assetID = "image-" + imported.id.uuidString
         guard retainedRasterFrames[assetID] == nil else { throw StudioDocumentError.invalid("This image identity is already owned by the project.") }
         let source = StoredImageSource(id: imported.id, name: imported.name, container: imported.container.rawValue,
@@ -2100,14 +2161,89 @@ final class StudioViewModel: ObservableObject {
         try checkCancellation()
         // No suspension occurs between the state guard, exact storage preflight
         // and publication of one history transaction plus its immutable bytes.
-        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil,
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               document.id == expectedProjectID, document.revision == expectedRevision,
-              document.activeFrameID == frameID, document.activeLayerID == layerID else {
+              document.activeFrameID == frameID, document.activeLayerID == layerID,
+              editor.clipboardVersion == clipboardVersion, editor.selectedElementIDs == selectedIDs else {
             throw StudioDocumentError.unavailable("The editor changed before the image could be attached. No image was added.")
         }
         retainedRasterFrames = next; editor = candidate
         scheduleSave()
         return assetID
+    }
+    /// Atomically append a bounded reference sequence after the captured frame.
+    /// Existing frames and originals are never replaced; the new images share
+    /// one reference layer behind all drawing layers and one Undo transaction.
+    @discardableResult
+    func attachImportedImageSequence(_ imports: [StudioImageImportService.ImportedImage],
+                                     expectedProjectID: UUID, expectedRevision: Int, frameID: String, layerID: String,
+                                     checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
+        try checkCancellation()
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, document.activeLayerID == layerID,
+              let index = document.frames.firstIndex(where: { $0.id == frameID }) else {
+            throw StudioDocumentError.unavailable("The project, frame, layer, save or drawing state changed. Import again in the current editor.")
+        }
+        guard (1...24).contains(imports.count), document.frames.count <= 1000 - imports.count,
+              document.layers.count < 128 else {
+            throw StudioDocumentError.invalid("Import 1–24 reference frames within the 1,000-frame and 128-layer project limits.")
+        }
+        guard let layer = document.layers.first(where: { $0.id == layerID }), layer.visible, !layer.isFullyLocked else {
+            throw StudioDocumentError.locked
+        }
+        let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
+        let imageLayer = CanvasLayer(id: UUID().uuidString, name: "Video reference")
+        var records: [String: StoredAnimationFrame] = [:], frames: [AnimationFrame] = []
+        var pngBytes = 0, pixels = 0
+        for imported in imports {
+            try checkCancellation()
+            guard imported.normalizedPNG.count <= 32 * 1024 * 1024 - pngBytes,
+                  imported.width > 0, imported.height > 0,
+                  imported.width <= (32_000_000 - pixels) / imported.height else {
+                throw StudioDocumentError.invalid("Reference sequences are limited to 32 MB of PNG data and 32 million pixels.")
+            }
+            pngBytes += imported.normalizedPNG.count
+            pixels += imported.width * imported.height
+            let assetID = "image-" + imported.id.uuidString
+            guard retainedRasterFrames[assetID] == nil, records[assetID] == nil else {
+                throw StudioDocumentError.invalid("Every imported frame must have a new, unique image identity.")
+            }
+            let source = StoredImageSource(id: imported.id, name: imported.name, container: imported.container.rawValue,
+                originalData: imported.originalData, originalWidth: imported.originalWidth, originalHeight: imported.originalHeight,
+                originalOrientation: imported.originalOrientation, normalizedWidth: imported.width, normalizedHeight: imported.height,
+                catalogueAttribution: imported.catalogueAttribution)
+            try StudioRasterImage.validate(source: source, normalized: imported.normalizedPNG)
+            records[assetID] = StoredAnimationFrame(imageData: imported.normalizedPNG, layerData: nil, sourceImage: source)
+            var frame = AnimationFrame(id: UUID().uuidString, elements: [])
+            frame.rasterAssetID = assetID; frame.rasterLayerID = imageLayer.id
+            frame.rasterPlacement = StudioRasterPlacement.aspectFit(imageWidth: imported.width, imageHeight: imported.height,
+                canvasWidth: document.width, canvasHeight: document.height)
+            frames.append(frame)
+        }
+        var candidate = editor
+        try candidate.change { value in
+            value.schemaVersion = max(value.schemaVersion, 3)
+            value.layers.append(imageLayer)
+            value.frames.insert(contentsOf: frames, at: index + 1)
+            value.activeFrameID = frames[0].id
+        }
+        let needed = candidate.referencedRasterAssetIDsIncludingHistoryAndClipboard.union(imageClipboard?.rasterAssetID.map { [$0] } ?? [])
+        var next = retainedRasterFrames.filter { $0.value.sourceImage == nil || needed.contains($0.key) }
+        next.merge(records) { _, new in new }
+        try validateManagedImageCapacity(next)
+        try storage.preflightAnimation(storageProject(candidate.document, rasters: next))
+        try checkCancellation()
+        guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              document.id == expectedProjectID, document.revision == expectedRevision,
+              document.activeFrameID == frameID, document.activeLayerID == layerID,
+              editor.clipboardVersion == clipboardVersion, editor.selectedElementIDs == selectedIDs else {
+            throw StudioDocumentError.unavailable("The editor changed before the reference sequence could be attached. No frames were added.")
+        }
+        candidate.selectedElementIDs.removeAll()
+        retainedRasterFrames = next; editor = candidate
+        scheduleSave()
+        return frames.map(\.id)
     }
     struct ImageCutCapture: Equatable {
         let projectID: UUID

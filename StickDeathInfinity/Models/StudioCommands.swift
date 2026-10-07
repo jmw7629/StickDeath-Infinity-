@@ -96,6 +96,7 @@ struct StudioCommandLayerSettings: Codable {
 
 enum StudioCommand: Codable {
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
+    struct TweenFrames: Codable { let after: StudioCommandReference; let to: StudioCommandReference; let inbetweenCount: Int; let easing: StudioTweenEasing }
     struct SetFrameHold: Codable { let frame: StudioCommandReference; let ticks: Int }
     struct AddFrame: Codable { let after: StudioCommandReference; let result: String }
     struct Duplicate: Codable { let source: StudioCommandReference; let result: String }
@@ -131,6 +132,7 @@ enum StudioCommand: Codable {
 
     case cropImage(CropImage)
     case setFrameHold(SetFrameHold)
+    case tweenFrames(TweenFrames)
     case updateAudioClip(UpdateAudioClip)
     case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
@@ -143,6 +145,7 @@ enum StudioCommand: Codable {
         let (container, key) = try singleCommandKey(decoder)
         switch key.stringValue {
         case "cropImage": self = .cropImage(try container.decode(CropImage.self, forKey: key))
+        case "tweenFrames": self = .tweenFrames(try container.decode(TweenFrames.self, forKey: key))
         case "setFrameHold": self = .setFrameHold(try container.decode(SetFrameHold.self, forKey: key))
         case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
         case "rotateImage": self = .rotateImage(try container.decode(RotateImage.self, forKey: key))
@@ -177,6 +180,7 @@ enum StudioCommand: Codable {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
         case .cropImage(let value): try container.encode(value, forKey: StudioWireKey("cropImage"))
+        case .tweenFrames(let value): try container.encode(value, forKey: StudioWireKey("tweenFrames"))
         case .setFrameHold(let value): try container.encode(value, forKey: StudioWireKey("setFrameHold"))
         case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
         case .rotateImage(let value): try container.encode(value, forKey: StudioWireKey("rotateImage"))
@@ -287,6 +291,8 @@ struct StudioCommandContext {
     let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades"]
     let supportedTools: [DrawingTool]
     let supportedBrushFamilies = StudioBrushFamily.allCases
+    let supportedTweenEasings = StudioTweenEasing.allCases
+    let maximumTweenInbetweens = 24
     let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
 
     init(document: StudioDocument) {
@@ -345,6 +351,7 @@ enum StudioCommandExecutor {
         let arguments: [String: Set<String>] = [
             "cropImage": ["frame", "assetID", "crop"],
             "setFrameHold": ["frame", "ticks"],
+            "tweenFrames": ["after", "to", "inbetweenCount", "easing"],
             "updateAudioClip": ["clipID", "settings"],
             "rotateImage": ["frame", "assetID", "direction"],
             "reflectImage": ["frame", "assetID", "axis"],
@@ -374,7 +381,7 @@ enum StudioCommandExecutor {
             if ["selectFrame", "selectLayer", "deleteFrame", "deleteLayer"].contains(kind) { try reference(body); continue }
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
-            for key in ["frame", "layer", "after", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
+            for key in ["frame", "layer", "after", "to", "source", "target"] where keys.contains(key) { try reference(fields[key]) }
             if kind == "canvasOptions" {
                 if let settings = fields["gridSettings"] { _ = try object(settings, keys: ["spacing", "opacity", "tint"]) }
                 if let settings = fields["onionSettings"] { _ = try object(settings, keys: ["previousCount", "nextCount", "opacity", "tinted"]) }
@@ -580,6 +587,18 @@ enum StudioCommandExecutor {
         case .updateText(let value):
             try editor.updateText(frameID: frame(value.frame), elementID: value.elementID,
                 text: value.text, color: value.color, opacity: value.opacity)
+        case .tweenFrames(let value):
+            guard (1...24).contains(value.inbetweenCount) else { throw StudioCommandError.limitExceeded }
+            let first = try frame(value.after), last = try frame(value.to)
+            // Charge generated geometry before interpolation; the actual editor
+            // validates endpoint compatibility and owns interpolation/undo.
+            let elements = document.frames.first { $0.id == first }!.elements
+            for _ in 0..<value.inbetweenCount {
+                try checkCancellation()
+                try budget.generate(elements)
+            }
+            _ = try editor.tweenFrames(after: first, to: last, inbetweenCount: value.inbetweenCount,
+                easing: value.easing, checkCancellation: checkCancellation)
         case .setFrameHold(let value):
             let id = try frame(value.frame)
             guard (1...600).contains(value.ticks) else { throw StudioCommandError.invalidSettings }

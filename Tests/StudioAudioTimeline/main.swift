@@ -47,6 +47,162 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             vm.displayAudioPlaybackTime(0, playing: false)
             try check(vm.document == before && vm.audioClips.count == 1, "busy import altered document")
         }
+        try await test("final audio attachment checkpoint preserves reentrant frame edits, clipboard, playback and selection") {
+            for mode in 0..<4 {
+                let localStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("attach-fence-\(mode)"))
+                let local = StudioViewModel(storage: localStorage)
+                let made = await local.createProject(name: "Audio ownership fence", width: 64, height: 64, fps: 8)
+                try check(made, "fence fixture create")
+                _ = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                    expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+                let incoming = AudioTrack(id: UUID(), name: "Pending soundtrack", format: imported.track.format,
+                    audioData: imported.track.audioData, startTime: 0, duration: imported.track.duration)
+                let before = local.document
+                var newer = before, checkpoints = 0
+                do {
+                    _ = try local.attachImportedAudio(incoming, expectedProjectID: before.id,
+                        expectedRevision: before.revision, frameID: before.activeFrameID, trackNumber: 2,
+                        checkCancellation: {
+                            checkpoints += 1
+                            if checkpoints == 2 {
+                                switch mode {
+                                case 0: local.addFrame()
+                                case 1: local.copyFrame()
+                                case 2: local.displayAudioPlaybackTime(0, playing: true)
+                                default: local.selectedAudioClip = nil
+                                }
+                                newer = local.document
+                            }
+                        })
+                    throw Failure(message: "stale audio attachment accepted mode \(mode)")
+                } catch is StudioDocumentError { }
+                try check(checkpoints == 2 && local.document == newer, "newer editor state overwritten")
+                try check(local.audioTrack(forAssetID: incoming.id)?.id == nil && local.audioClips == before.audioClips,
+                    "rejected import published managed bytes or clips")
+                try check(local.audioTrack(forAssetID: imported.id)?.audioData == imported.track.audioData,
+                    "existing source ownership was lost")
+                switch mode {
+                case 0:
+                    try check(local.frames.count == before.frames.count + 1, "new frame was lost")
+                    local.undo()
+                    try check(local.frames == before.frames && local.audioClips == before.audioClips,
+                        "new frame Undo history was replaced")
+                case 1:
+                    try check(local.canPaste, "new clipboard was lost")
+                    local.pasteClipboard()
+                    try check(local.frames.count == before.frames.count + 1, "preserved clipboard cannot paste")
+                case 2:
+                    try check(local.isPlaying, "new playback was stopped by rejected import")
+                    local.displayAudioPlaybackTime(0, playing: false)
+                default:
+                    try check(local.selectedAudioClip == nil, "new audio selection was overwritten")
+                }
+            }
+        }
+        try await test("audio attachment preserves initial and reentrant text drafts for real Apply") {
+            for late in [false, true] {
+                let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("audio-text-\(late)")))
+                let made = await local.createProject(name: "Audio text protection", width: 160, height: 120, fps: 12)
+                try check(made, "Audio text fixture")
+                let before = local.document
+                if !late { try check(local.beginTextEditing(), "Initial text draft"); local.textInput = "Keep my text" }
+                var checkpoints = 0
+                do {
+                    _ = try local.attachImportedAudio(imported.track, expectedProjectID: before.id,
+                        expectedRevision: before.revision, frameID: before.activeFrameID, trackNumber: 1,
+                        checkCancellation: {
+                            checkpoints += 1
+                            if late && checkpoints == 2 {
+                                try check(local.beginTextEditing(), "Late text draft"); local.textInput = "Keep my text"
+                            }
+                        })
+                    throw Failure(message: "Audio attachment invalidated text")
+                } catch is StudioDocumentError { }
+                try check(local.document == before && local.textDraft != nil && local.textInput == "Keep my text" &&
+                    local.audioTrack(forAssetID: imported.id)?.id == nil, "Rejected audio changed document/draft/assets")
+                try check(local.applyTextEditing() && local.currentFrame.elements.contains { $0.text?.content == "Keep my text" },
+                    "Preserved text cannot Apply after audio rejection")
+            }
+        }
+        try await test("audio edits and captures preserve a pending text draft") {
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("audio-edit-draft")))
+            let made = await local.createProject(name: "Audio draft", width: 160, height: 120, fps: 8)
+            try check(made, "Create draft fixture")
+            let clipID = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+            local.audioPlayheadTime = 0.75
+            let before = local.document
+            try check(local.beginTextEditing(), "Begin text draft"); local.textInput = "Keep my words"
+            for edit in [StudioAudioClipEdit.place(start: 0.25, track: 2), .trim(sourceOffset: 0.25, duration: 1), .volume(0.4), .mute(true)] {
+                do { try local.editSelectedAudioClip(clipID, expectedRevision: before.revision, edit: edit)
+                    throw Failure(message: "Audio edit stranded draft")
+                } catch is StudioDocumentError { }
+            }
+            try check(local.prepareAudioDuplication() == nil && local.prepareAudioFades() == nil &&
+                local.prepareAudioClipVolume() == nil && local.prepareAudioTrim() == nil &&
+                local.prepareAudioSplit() == nil && local.prepareAudioTrackVolume(1) == nil, "Audio capture accepted draft")
+            do { try local.setAudioTrackMuted(1, muted: true, expectedRevision: before.revision)
+                throw Failure(message: "Track mute stranded draft")
+            } catch is StudioDocumentError { }
+            try check(local.document == before && local.textInput == "Keep my words" && local.textDraft != nil,
+                "Rejected edits mutated document or draft")
+            try check(local.applyTextEditing() && local.currentFrame.elements.contains { $0.text?.content == "Keep my words" },
+                "Preserved draft cannot Apply")
+        }
+        try await test("audio final callbacks preserve a newly opened text draft") {
+            for mode in 0..<7 {
+                let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("audio-late-draft-\(mode)")))
+                let made = await local.createProject(name: "Late audio draft", width: 160, height: 120, fps: 8)
+                try check(made, "Create late draft fixture")
+                _ = try local.attachImportedAudio(imported.track, expectedProjectID: local.document.id,
+                    expectedRevision: local.document.revision, frameID: local.document.activeFrameID, trackNumber: 1)
+                local.audioPlayheadTime = 0.75
+                let before = local.document
+                let duplication = local.prepareAudioDuplication()!, fades = local.prepareAudioFades()!
+                let volume = local.prepareAudioClipVolume()!, trim = local.prepareAudioTrim()!
+                let split = local.prepareAudioSplit()!, trackVolume = local.prepareAudioTrackVolume(1)!
+                var checkpoints = 0
+                let checkpoint: () throws -> Void = {
+                    checkpoints += 1
+                    if checkpoints == 2 {
+                        try check(local.beginTextEditing(), "Open draft at final checkpoint")
+                        local.textInput = "Late words"
+                    }
+                }
+                do {
+                    switch mode {
+                    case 0: _ = try local.duplicateAudioClip(duplication, checkCancellation: checkpoint)
+                    case 1: try local.setAudioFades(fades, fadeIn: 0.2, fadeOut: 0.2, checkCancellation: checkpoint)
+                    case 2: try local.setAudioClipVolume(volume, volume: 0.4, checkCancellation: checkpoint)
+                    case 3: try local.trimAudioClip(trim, sourceOffset: 0.25, duration: 1, checkCancellation: checkpoint)
+                    case 4: _ = try local.splitAudioClip(split, checkCancellation: checkpoint)
+                    case 5: try local.setAudioTrackMuted(1, muted: true, expectedRevision: before.revision, checkCancellation: checkpoint)
+                    default: try local.setAudioTrackVolume(trackVolume, volume: 0.4, checkCancellation: checkpoint)
+                    }
+                    throw Failure(message: "Late draft overwritten mode \(mode)")
+                } catch is StudioDocumentError { }
+                try check(checkpoints == 2 && local.document == before && local.textDraft != nil && local.textInput == "Late words",
+                    "Late audio mutation changed draft/history mode \(mode)")
+                try check(local.applyTextEditing() && local.currentFrame.elements.contains { $0.text?.content == "Late words" },
+                    "Late draft cannot Apply mode \(mode)")
+                local.undo()
+                try check(local.currentFrame.elements == before.frames[0].elements && local.audioClips == before.audioClips,
+                    "Rejected audio created an Undo entry")
+            }
+        }
+        try await test("paused audio scrubbing cannot move the frame underneath a text draft") {
+            let local = StudioViewModel(storage: DeviceStorageManager(documentsDirectory: root.appendingPathComponent("audio-scrub-draft")))
+            let made = await local.createProject(name: "Scrub draft", width: 160, height: 120, fps: 8)
+            try check(made, "Create scrub fixture")
+            let first = local.document.activeFrameID
+            local.addFrame(); local.selectFrame(first)
+            let before = local.document
+            try check(local.beginTextEditing(), "Open scrub draft"); local.textInput = "First frame words"
+            local.displayAudioPlaybackTime(1.0 / 8, playing: false)
+            try check(local.document == before && local.textDraft != nil, "Scrub changed draft frame/revision")
+            try check(local.applyTextEditing() && local.document.activeFrameID == first &&
+                local.currentFrame.elements.contains { $0.text?.content == "First frame words" }, "Draft lost after scrub")
+        }
         try await test("historical clip decoding supplies additive defaults and preserves bytes") {
             var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(vm.audioClips[0])) as! [String: Any]
             object.removeValue(forKey: "sourceOffset"); object.removeValue(forKey: "isMuted")

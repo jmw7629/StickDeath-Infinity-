@@ -7,6 +7,7 @@ import SwiftUI
 
 struct StudioTimeline: View {
     @ObservedObject var vm: StudioViewModel
+    @State private var tweenCapture: StudioViewModel.TweenCapture?
 
     var body: some View {
         HStack(spacing: 6) {
@@ -75,6 +76,12 @@ struct StudioTimeline: View {
                                     .accessibilityIdentifier("studio.frame-menu.copy")
                                 Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
                                     .accessibilityIdentifier("studio.frame-menu.duplicate")
+                                Button("Tween to next frame…") {
+                                    tweenCapture = vm.prepareTween(frame.id)
+                                    if tweenCapture == nil { vm.message = "Select a frame with a following endpoint, stop playback and finish any draft before tweening." }
+                                }
+                                .disabled(i + 1 >= vm.frames.count)
+                                .accessibilityIdentifier("studio.frame-menu.tween")
                                 Menu("Frame exposure") {
                                     ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
                                         Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
@@ -145,5 +152,46 @@ struct StudioTimeline: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
         .background(Color(hex: "0A0A10"))
+        .sheet(item: $tweenCapture) { capture in
+            StudioTweenOptions(vm: vm, capture: capture)
+        }
+    }
+}
+
+
+private struct StudioTweenOptions: View {
+    @ObservedObject var vm: StudioViewModel
+    let capture: StudioViewModel.TweenCapture
+    @Environment(\.dismiss) private var dismiss
+    @State private var count = 6
+    @State private var easing: StudioTweenEasing = .easeInOut
+    @State private var error: String?
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Editable in-betweens") {
+                    Stepper("\(count) new frames", value: $count, in: 1...24)
+                        .accessibilityIdentifier("studio.tween.count")
+                    Picker("Easing", selection: $easing) {
+                        ForEach(StudioTweenEasing.allCases) { value in Text(value.title).tag(value) }
+                    }.pickerStyle(.menu).accessibilityIdentifier("studio.tween.easing")
+                    Text("Adds \(String(format: "%.2f", Double(count) / Double(vm.fps))) seconds. Endpoint artwork and exposure holds stay unchanged. Existing audio stays at its current times.")
+                    Text("Drawings pair by order and must use matching styles, sample counts and layers. Copy a frame, then move, scale or rotate its drawings to create the next pose. Raster references, erasers, effects and alpha paint are unsupported. Each new frame stays independently editable; later endpoint changes do not regenerate it.")
+                        .font(.footnote)
+                }
+                if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("studio.tween.error") }
+                Button("Insert in-betweens") {
+                    do { try vm.applyTween(capture, count: count, easing: easing); dismiss() }
+                    catch { self.error = error.localizedDescription }
+                }.disabled(vm.prepareTween(capture.frameID) != capture)
+                    .accessibilityIdentifier("studio.tween.apply")
+                if vm.prepareTween(capture.frameID) != capture {
+                    Text("The editor changed. Close this sheet and reopen Tween for the current endpoints.").foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Tween frames")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
+        }.preferredColorScheme(.dark)
     }
 }

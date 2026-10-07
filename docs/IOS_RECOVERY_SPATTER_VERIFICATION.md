@@ -1,4 +1,26 @@
-## Current native result: 1e32cd6
+# Current verification status — October 6, 2026
+
+Native SwiftUI is the product. The current owner scope is [PRODUCT_SCOPE_2026_09_19.md](PRODUCT_SCOPE_2026_09_19.md) and GitHub #116: one snapping toolbar with one dismissible tool-options popup, no user messaging or calls, invitation-based shared Studio rooms, War Room, device-first projects, and owner approval of every Spatter public release. Publication also requires creator consent and rights; private saves do not authorize uploads.
+
+PR #115 is draft and unmerged at public source `19318eb76862156240c21967d635312e08db7b3d`. [Run 37543336235](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/37543336235) has passed source security, Spatter production tests and native production tests. Its native app build passed, but the completed simulator suite failed: 63 passed, five failed, zero skipped, 68 completed. The original logs, result archive and simulator app are preserved and hash-verified. Three settings-reset failures and two pixel journeys are under correction; PR #115 remains ineligible for merge.
+
+Local follow-up `802919f573742340fb597ff8fa157a8ae6e6979a` includes bounded editable rotoscope sequences, two-action editable Spatter briefs, safe media attachment, fractional audio sample-rate conversion and authentication/session isolation. The actual movie import → edited audio → save/cold reopen → mixed H.264/AAC MP4 journey and all 36 mixer groups passed. The existing Spatter edit-session suite and all 13 production clipboard groups passed. Combined native app/auth-test-target compilation passed in 477.407 seconds; app/UI-test-target compilation passed in 58.164 seconds with unchanged dependency resolution. These are compile results, not new simulator execution results. The changes are not yet published on the PR branch.
+
+Issue #123 is closed for its bounded scope-removal/clipboard integration and preservation contract, based on independent review, verified source/assets and the original green integration run. This does not close room/backend functionality or approve the whole PR.
+
+The subsequent local batch adds default-disabled Google/GitHub/Microsoft OAuth and guards against audio edits stranding an active text draft. Bounded independent static review passed. Image import passed 26 groups; after correcting a test callback's actor isolation, the audio timeline suite passed all 62 groups in 99.328 seconds. Native app/auth-test-target compilation passed in 325.058 seconds and app/UI-target compilation passed in 20.093 seconds, with unchanged dependency resolution. The compiled source manifest is `c81514601593c0db19be823e6e8cf1e2cfa80c371c419d336fe05fcb42c8cf87`; only this result paragraph changed after the build. The original failed fixture compilation is preserved. Native OAuth test execution and actual configured-provider journeys remain unverified. See [AUTH_PROVIDER_CONFIGURATION.md](AUTH_PROVIDER_CONFIGURATION.md) for deployment gates. No paid AI API calls were used.
+
+The current follow-up also adds offline troubleshooting grounded in the captured Studio state and fixes alpha-lock guidance. All 18 production conversation tests passed without cloud requests. A real exported-AAC marker test passed, distinguishing the correct source trim from an ignored trim after movie import, cold reopen and export. Editable user-pose tweening with four easings is implemented and independently reviewed; all six production core groups passed, including actual persistence, PNG pixels and MP4 timing. After correcting a test fixture to measure canonical transformed points, all 52 typed-command cases passed. The original fixture failure is retained. Native app and UI-target compilation passed in 485.459 seconds with all 2,699 manifest inputs unchanged and dependency resolution preserved; simulator execution of the new feature remains pending. The added native journey raises the inventory to 69 without changing per-case allowances. Corrections to the existing settings and selection journeys now require the full slider inside its popup before interaction, scroll in either direction and verify actual transform values. Pixel, geometry, undo/redo and cold-reopen assertions remain intact. Independent narrow static review passed; app/UI-target compilation passed again in 32.165 seconds against manifest `0a4d3308e82032b43408ee2529e6b001e60ab2b62fff8d642c79d82ac738a485`. Corrected simulator execution remains pending.
+
+The [private review companion](https://stickdeath-infinity-review.joewillisny.chatgpt.site/?view=native) remains on successfully deployed version85. Version88 failed with a hosting account egress-limit error. Saved versions are not successful deployments. The companion and its source-labelled native evidence are not a live SwiftUI runtime or proof of current-head parity.
+
+Independent reviews cover specific historical hashes and recent bounded deltas. Current whole-PR review coverage is not established. Signing/TestFlight, physical-device behavior, authenticated backend flows, provider/OAuth configuration and broader product acceptance remain distinct gates. No full app completion is claimed.
+
+## Historical evidence archive
+
+Everything below records earlier source revisions and their then-current limitations. References to a “current” run or preview inside this archive apply only to that historical checkpoint. They do not override the status or product scope above.
+
+## Historical native result: 1e32cd6
 
 Workflow 34716493547 passed every production stage and the actual iOS app build. On iOS 18.5 / iPhone 16 Pro simulator, 14 of 16 native journeys passed, none skipped. Both real MP4 receipts and native share-sheet cancellation journeys passed. Toolbar docking, the sole popup, shape settings, drawing, images, PNG and local Spatter journeys passed.
 
@@ -8,9 +30,9 @@ The follow-up also retains a cancelled picker touch until physical completion ac
 
 # Native iOS recovery and Studio verification
 
-Codex owns the Studio continuation under Joseph Willis's 2026-09-08 ownership transfer, recorded in issue #110. Recovery PR #111 and local Spatter editing PR #112 are merged. Native SwiftUI Studio is the product. Media, community, messaging, calls, collaboration, calendar, challenges, publishing and profile remain in scope. Historical demo values are not live product evidence.
+Codex owns the Studio continuation under Joseph Willis's 2026-09-08 ownership transfer, recorded in issue #110. Recovery PR #111 and local Spatter editing PR #112 are merged. Native SwiftUI Studio is the product. Studio, media, community, invitation-based collaboration, calendar, challenges, publishing and profile remain in scope. User messaging, text chat, voice calls and video calls were removed by the owner; historical screenshots do not reinstate them. Historical demo values are not live product evidence.
 
-## Current Studio continuation — PR #115
+## Historical Studio continuation — PR #115
 
 [Run 34713868475](https://github.com/jmw7629/StickDeath-Infinity-/actions/runs/34713868475) at `5084b9439be42278d3aab8e60136492be2f09426` passed source security, Spatter, every native production suite and the actual iOS app build. Its iPhone 16 Pro / iOS 18.5 simulator suite completed **16 journeys: 12 passed, four failed, zero skipped**. The fresh-simulator setup succeeded. This is a red native UI gate, not an executor timeout, and PR #115 remains draft and unmerged.
 
@@ -101,7 +123,7 @@ Typed Studio commands use validated project/revision preconditions, bounded tran
 
 [Private Studio review](https://stickdeath-infinity-review.joewillisny.chatgpt.site) reuses the original React Studio with isolated browser projects. Its v8 publication at web source `21adcecea9b044c74f51c91a6bff30f510463d81` passed actual HTTPS Chromium/WebKit drawing, undo/redo, frame clipboard, save/reopen, PNG decoding, font and native screenshot/recording checks. The current gallery shows tested native recovery `d29a45b`; the later `33ee2c2` recording is being prepared for a separately verified update. The evidence gallery labels its native source separately. A browser companion is not a native iOS build and does not prove exact pixel parity.
 
-Remaining gates include the complete next-head native regression suite; exposed Studio tools/brushes/layers and full document journeys; real audio/video workflows and MP4/GIF; Spatter document generation/export; authenticated and moderated community/calls; consent-aware official publication with owner OAuth; signing, physical devices and TestFlight. The local full Xcode build still lacks a matching installed simulator runtime, so approved macOS CI supplies actual native evidence. The two verified bounded slices above are merged; no full release, physical-device or TestFlight verification is claimed.
+Remaining gates include the complete next-head native regression suite; exposed Studio tools/brushes/layers and full document journeys; real audio/video workflows and MP4/GIF; Spatter document generation/export; authenticated and moderated community/collaboration; consent-aware official publication with owner OAuth; signing, physical devices and TestFlight. The local full Xcode build still lacks a matching installed simulator runtime, so approved macOS CI supplies actual native evidence. The two verified bounded slices above are merged; no full release, physical-device or TestFlight verification is claimed.
 
 ## Historical compiler recovery
 

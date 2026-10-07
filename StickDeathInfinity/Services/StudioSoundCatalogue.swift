@@ -38,7 +38,8 @@ struct StudioSoundCatalogue: Sendable {
         let manifest = try JSONDecoder().decode(Manifest.self, from: data)
         guard manifest.schemaVersion == 1, (1...5000).contains(manifest.sounds.count),
               Set(manifest.sounds.map(\.id)).count == manifest.sounds.count,
-              Set(manifest.sounds.map(\.filename)).count == manifest.sounds.count else { throw CatalogueError.invalid }
+              Set(manifest.sounds.map(\.filename)).count == manifest.sounds.count,
+              Set(manifest.sounds.map(\.originalSHA256)).count == manifest.sounds.count else { throw CatalogueError.invalid }
         for sound in manifest.sounds {
             guard Self.hash(sound.sha256), Self.hash(sound.originalSHA256), sound.id == sound.sha256,
                   ["wav", "aiff", "aifc", "caf", "m4a", "mp3", "aac"].contains((sound.filename as NSString).pathExtension),
@@ -46,7 +47,8 @@ struct StudioSoundCatalogue: Sendable {
                   (1...StudioAudioImportService.maximumEncodedBytes).contains(sound.byteCount),
                   sound.duration.isFinite, sound.duration > 0, sound.duration <= 300,
                   sound.sampleRate.isFinite, (8000...192000).contains(sound.sampleRate), (1...2).contains(sound.channels),
-                  sound.waveformPeaks.count == 256, sound.waveformPeaks.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
+                  sound.waveformPeaks.count == 256, sound.waveformPeaks.contains(where: { $0 > 0 }),
+                  sound.waveformPeaks.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
                   [sound.title, sound.category, sound.author].allSatisfy(Self.label),
                   sound.license == "CC0-1.0", sound.licenseURL == "https://creativecommons.org/publicdomain/zero/1.0/",
                   let source = URL(string: sound.sourceURL), source.scheme == "https", source.user == nil,

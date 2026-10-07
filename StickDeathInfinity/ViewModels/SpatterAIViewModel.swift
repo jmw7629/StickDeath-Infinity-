@@ -183,7 +183,7 @@ final class SpatterAIViewModel: ObservableObject {
     User messaging, text chat, phone and video calls are removed. Every generated public video needs owner approval of its exact render.
     """
 
-    private static func currentGuide(for query: String) -> String? {
+    private static func authorityGuide(for query: String) -> String? {
         let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
         func mentions(_ values: String...) -> Bool { !words.isDisjoint(with: values) }
         if mentions("messaging", "messenger", "calls", "calling", "phone", "livekit") {
@@ -195,6 +195,12 @@ final class SpatterAIViewModel: ObservableObject {
         if mentions("refund", "billing", "subscription", "charge", "charged", "payment", "stripe") {
             return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent."
         }
+        return nil
+    }
+
+    private static func currentGuide(for query: String) -> String? {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
+        func mentions(_ values: String...) -> Bool { !words.isDisjoint(with: values) }
         if mentions("camera", "photo", "photograph") && mentions("take", "capture", "permission", "denied") {
             return "Open Add Picture in Studio, then Take Photo. The app asks for camera permission only when you choose capture. Review the still image, then explicitly Add it to the project; cancelling changes nothing. There is no microphone recording. If access is denied, enable camera access in iOS Settings before retrying. Hardware availability varies; Photos and Files remain alternatives."
         }
@@ -217,7 +223,7 @@ final class SpatterAIViewModel: ObservableObject {
             return "In Studio's Spatter edit panel, open Stick figure examples, choose walking, running, jumping or waving, edit the complete instruction, then Apply. Use 8–20 frames; color, baseline start/end, height and line width affect the editable result. It adds a new layer, preserves current FPS and supports one Undo. This is bounded procedural motion, not open-ended AI video generation. Use Export to render a file."
         }
         if mentions("alpha") && mentions("lock", "locking") {
-            return "Alpha locking is not available yet. Full layer locking prevents edits to that layer. Move's Lock layers locks each selected element's entire layer across all frames; use the Layers panel to unlock it."
+            return "Alpha lock preserves existing layer transparency while painting with Pencil, Pen, Brush, Marker or Crayon. Select Alpha in the Layers lock options; painting an empty transparent layer will not reveal new pixels. Unlock before fill, erasing, effects, transforms, deleting or pasting. Full lock prevents layer edits; Move's Lock layers applies full locking across all frames."
         }
         if mentions("layers", "layer") {
             return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha lock keeps existing transparency while brush painting; unlock before fill, erasing, transforms or pasting. Imported-image layer duplication remains unavailable."
@@ -231,8 +237,35 @@ final class SpatterAIViewModel: ObservableObject {
         return nil
     }
 
+    /// Explain observed blockers, never infer account access or diagnose lost data.
+    /// The supplied snapshot is immutable and completion must still match it.
+    private static func studioTroubleshooting(for query: String, context: SpatterContext) -> String? {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
+        guard !words.isDisjoint(with: ["why", "cannot", "cant", "not", "unable", "blocked", "stuck", "working"]),
+              !words.isDisjoint(with: ["draw", "drawing", "paint", "painting", "brush", "move", "delete", "erase", "eraser", "selection"]),
+              !words.contains("account") else { return nil }
+        guard let state = context.studio else {
+            return "No Studio project is open in this conversation. Open your project and ask from Studio so I can check its current tool, layer and selection. I cannot diagnose the editor from this screen."
+        }
+        var findings: [String] = []
+        if state.isPlaying { findings.append("Playback is running. Stop playback before editing artwork.") }
+        if state.isSaving { findings.append("The project is saving. Wait for saving to finish before editing.") }
+        if let layer = state.activeLayer {
+            if layer.fullyLocked { findings.append("The active layer is fully locked. Open Layers and unlock it before editing.") }
+            if !layer.visible { findings.append("The active layer is hidden. Show it in Layers to see and edit its artwork.") }
+            if layer.opacity == 0 { findings.append("The active layer has 0% opacity. Raise its opacity in Layers to make its artwork visible.") }
+        }
+        if !words.isDisjoint(with: ["move", "delete", "selection"]), state.selectedElementCount == 0 {
+            findings.append("No drawn elements are selected. Select artwork with Move, Marquee or Lasso before moving or deleting it. Imported images use their separate image controls.")
+        }
+        if findings.isEmpty {
+            return "The captured Studio state does not show playback, saving, a fully locked or hidden layer, zero layer opacity, or a missing selection relevant to this question. That does not prove the tool is working. Check the selected tool's own options and any visible error; describe the action and error for more specific guidance. I have not changed your project."
+        }
+        return findings.joined(separator: "\n\n")
+    }
+
     static func localGuidance(for query: String, context: SpatterContext) -> String {
-        if let guide = currentGuide(for: query) { return "💀 Current Studio guide\n\n" + guide + "\n\nGuidance only; no project changes were made." }
+        if let guide = authorityGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query) { return "💀 Current Studio guide\n\n" + guide + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }

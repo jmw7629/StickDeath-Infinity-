@@ -7,6 +7,92 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testTweenEasingEditableFramesUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.rectangle", app: app, forward: true).tap()
+        try resetToolPreferencesInPopup(app)
+        let fill = app.buttons["studio.shape.fill"]
+        XCTAssertEqual(fill.value as? String, "None"); fill.tap()
+        XCTAssertEqual(fill.value as? String, "Solid")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        func frames(_ target: XCUIApplication) -> XCUIElementQuery {
+            target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
+        }
+        func redCenter(_ raster: Raster) throws -> Double {
+            var sum = 0.0, count = 0
+            for y in 0..<raster.height { for x in 0..<raster.width {
+                let i = (y * raster.width + x) * 4
+                if raster.bytes[i] > 180 && raster.bytes[i + 1] < 90 && raster.bytes[i + 2] < 90 {
+                    sum += Double(x); count += 1
+                }
+            } }
+            XCTAssertGreaterThan(count, 40, "Real red rectangle pixels are required")
+            return sum / Double(max(1, count)) / Double(raster.width)
+        }
+        let firstID = frames(app).firstMatch.identifier
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.6)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let first = try pixels(canvas.screenshot().image), frame = canvas.frame
+        app.buttons["studio.add-frame"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let lastID = frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }!.identifier
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.6, dy: 0.4)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.6)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let last = try pixels(canvas.screenshot().image)
+        let startX = try redCenter(first), endX = try redCenter(last)
+        XCTAssertGreaterThan(endX - startX, 0.25)
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Tween to next frame…", in: app).tap()
+        try waitForButton("Cancel", in: app).tap()
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected", "Cancelled tween must retain the previous frame")
+        XCTAssertEqual(frames(app).count, 2)
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Tween to next frame…", in: app).tap()
+        let count = app.steppers["studio.tween.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        for _ in 0..<4 { count.buttons["Decrement"].tap() }
+        XCTAssertTrue(count.label.contains("2 new frames"))
+        app.buttons["studio.tween.easing"].tap()
+        try waitForButton("Ease in", in: app).tap()
+        try waitForButton("Insert in-betweens", in: app).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 4)
+        let inserted = frames(app).matching(NSPredicate(format: "label == %@", "Frame 2")).firstMatch
+        let insertedID = inserted.identifier
+        inserted.tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let middle = try pixels(canvas.screenshot().image)
+        XCTAssertEqual((try redCenter(middle) - startX) / (endX - startX), 1.0 / 9.0, accuracy: 0.06,
+                       "Ease-in must change the actual intermediate artwork")
+        app.buttons[firstID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(first, pixels(canvas.screenshot().image)), 4)
+        app.buttons[lastID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(last, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 2)
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 4)
+        app.buttons[insertedID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertEqual(frames(reopened).count, 4)
+        XCTAssertEqual(reopened.buttons[insertedID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(restored.screenshot().image)), 4)
+        capture(reopened, name: "tween-ease-in-editable-cold-reopened")
+    }
+
+    @MainActor
     func testProjectLibraryDuplicateRecoveryAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate() }
@@ -1216,18 +1302,29 @@ final class StudioSmokeUITests: XCTestCase {
     @MainActor
     private func sharpenSetting(_ name: String, in target: XCUIApplication) throws -> XCUIElement {
         let slider = target.sliders["studio.setting." + name]
+        let scroll = target.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
         for attempt in 0...5 {
-            if slider.exists && slider.isHittable { return slider }
-            guard attempt < 5 else { break }
-            let scroll = target.scrollViews.containing(.button, identifier: "studio.tool-settings.reset").firstMatch
             XCTAssertTrue(scroll.exists, "Sharpen popup must scroll to every real setting")
-            scroll.swipeUp()
+            guard scroll.exists else { break }
+            let viewport = scroll.frame
+            let sliderFrame = slider.exists ? slider.frame : CGRect.null
+            // A partially clipped slider can report hittable while its adjustment
+            // coordinates reach the canvas underneath. Require its whole track.
+            if !sliderFrame.isNull && viewport.contains(sliderFrame) && slider.isHittable { return slider }
+            guard attempt < 5 else { break }
+            // Reset leaves this popup at its bottom. Revisit Size by scrolling
+            // down; reveal settings below the viewport by scrolling up.
+            if !sliderFrame.isNull && sliderFrame.minY < viewport.minY {
+                scroll.swipeDown()
+            } else {
+                scroll.swipeUp()
+            }
         }
+        capture(target, name: "tool-setting-unreachable-" + name)
         captureHierarchy(target, name: "sharpen-setting-unreachable-" + name)
         XCTFail("Sharpen setting is unreachable: " + name)
         throw NSError(domain: "SharpenNative", code: 1)
     }
-
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
@@ -1895,6 +1992,7 @@ final class StudioSmokeUITests: XCTestCase {
             thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.54)))
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         let original = try pixels(canvas.screenshot().image), originalInk = exportInkMask(original)
+        capture(app, name: "selection-transform-original-artwork")
         XCTAssertGreaterThan(originalInk.count, 12)
         try selectToolbarTool("move", app: app)
         app.buttons["studio.tool-settings.close"].tap()
@@ -1906,16 +2004,25 @@ final class StudioSmokeUITests: XCTestCase {
         let scroll = popup.scrollViews.firstMatch
         func revealTransformControl(_ control: XCUIElement) throws {
             for _ in 0..<4 {
-                if control.isHittable { return }
                 XCTAssertTrue(scroll.exists, "Transform controls have no reachable popup scroll container")
-                scroll.swipeUp(velocity: .slow)
+                let viewport = scroll.frame.insetBy(dx: 0, dy: 12)
+                // A partially clipped slider can report hittable while its
+                // thumb is behind the popup footer. Require its entire track.
+                if control.isHittable && viewport.contains(control.frame) { return }
+                if control.frame.midY < viewport.midY { scroll.swipeDown(velocity: .slow) }
+                else { scroll.swipeUp(velocity: .slow) }
             }
-            XCTAssertTrue(control.isHittable, "Transform control is unreachable in its sole popup")
+            XCTAssertTrue(control.isHittable && scroll.frame.insetBy(dx: 0, dy: 12).contains(control.frame),
+                          "Transform control is not fully visible inside its sole popup")
         }
         try revealTransformControl(scale)
         scale.adjust(toNormalizedSliderPosition: 0.4667) // roughly 200% in 25...400
+        let actualScale = try XCTUnwrap(Double((scale.value as? String ?? "").filter { "0123456789.-".contains($0) }))
+        XCTAssertTrue((180...220).contains(actualScale), "Scale gesture did not reach the actual control; value=\(actualScale)")
         try revealTransformControl(angle)
         angle.adjust(toNormalizedSliderPosition: 0.75) // roughly 90 degrees
+        let actualAngle = try XCTUnwrap(Double((angle.value as? String ?? "").filter { "0123456789.-".contains($0) }))
+        XCTAssertTrue((75...105).contains(actualAngle), "Angle gesture did not reach the actual control; value=\(actualAngle)")
         try revealTransformControl(apply)
         capture(app, name: "selection-scale-rotate-popup")
         apply.tap()
@@ -1924,6 +2031,7 @@ final class StudioSmokeUITests: XCTestCase {
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.04)).tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         let changed = try pixels(canvas.screenshot().image), changedInk = exportInkMask(changed)
+        capture(app, name: "selection-transform-before-pixel-verification")
         XCTAssertGreaterThan(changedInk.count, originalInk.count * 3 / 2,
                              "Scale changed controls without increasing actual ink")
         let originalRows = originalInk.map { $0 / original.width }, changedRows = changedInk.map { $0 / changed.width }

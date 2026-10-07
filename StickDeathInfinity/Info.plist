@@ -62,6 +62,10 @@
     </array>
 	<key>SPATTER_BACKEND_URL</key>
 	<string>$(SPATTER_BACKEND_URL)</string>
+    <key>SDI_OAUTH_PROVIDERS</key>
+    <string>$(SDI_OAUTH_PROVIDERS)</string>
+    <key>SDI_MICROSOFT_TENANT</key>
+    <string>$(SDI_MICROSOFT_TENANT)</string>
     <key>SUPABASE_URL</key>
     <string>$(SUPABASE_URL)</string>
     <key>SUPABASE_PUBLISHABLE_KEY</key>

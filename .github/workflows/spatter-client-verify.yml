@@ -125,6 +125,41 @@ jobs:
             Tests/StudioDocument/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-document-tests"
           "$RUNNER_TEMP/sdi-studio-document-tests"
+      - name: Verify editable tween easing history persistence and real exports
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioColorSamplingService.swift \
+            Tests/StudioTween/main.swift \
+            StickDeathInfinity/Services/StudioColorSamplingSession.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            -o "$RUNNER_TEMP/sdi-tween-tests"
+          "$RUNNER_TEMP/sdi-tween-tests"
       - name: Verify production floating toolbar geometry and contextual dismissal
         shell: bash
         run: |
@@ -897,6 +932,18 @@ jobs:
             Tests/StudioVideoFrameImport/main.swift \
             -o "$RUNNER_TEMP/sdi-video-frame-import-tests"
           "$RUNNER_TEMP/sdi-video-frame-import-tests"
+      - name: Verify bounded actual movie frame sequences and trim boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
+            Tests/StudioVideoFrameImport/Fixtures.swift \
+            Tests/StudioVideoFrameSequence/main.swift \
+            -o "$RUNNER_TEMP/sdi-video-sequence-tests"
+          "$RUNNER_TEMP/sdi-video-sequence-tests"
       - name: Verify real movie soundtrack trim speed cancellation and owned cleanup
         shell: bash
         run: |
@@ -1116,6 +1163,43 @@ jobs:
             Tests/StudioImageLibrary/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-image-library-tests"
           "$RUNNER_TEMP/sdi-studio-image-library-tests" StickDeathInfinity/Resources/StudioImages
+      - name: Verify atomic image sequence insertion history and cold persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            StickDeathInfinity/Services/StudioImagePickerTransfer.swift \
+            StickDeathInfinity/Services/StudioImageImportSession.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            StickDeathInfinity/Services/StudioImageLibraryThumbnails.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            Tests/StudioImageSequence/main.swift \
+            -o "$RUNNER_TEMP/sdi-image-sequence-tests"
+          "$RUNNER_TEMP/sdi-image-sequence-tests"
       - name: Verify real local and cloud Spatter conversation state
         shell: bash
         run: |
@@ -1455,6 +1539,49 @@ jobs:
             Tests/StudioMoviePreview/main.swift \
             -o "$RUNNER_TEMP/sdi-StudioMoviePreview-tests"
           "$RUNNER_TEMP/sdi-StudioMoviePreview-tests"
+      - name: Verify actual movie import cold reopen and synchronized mixed MP4
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioVideoAudioImportService.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            Tests/StudioVideoFrameImport/Fixtures.swift \
+            Tests/StudioMovieImportExport/main.swift \
+            -o "$RUNNER_TEMP/sdi-movie-import-export-tests"
+          "$RUNNER_TEMP/sdi-movie-import-export-tests"
       - name: Verify MP4 panel state and completion-owned share lifetime
         shell: bash
         run: |
@@ -1627,11 +1754,12 @@ jobs:
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 68 cases x 180 seconds, three measured
+    # Match the bounded inventory: 69 cases x 180 seconds, three measured
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
+    # The separate five-case auth suite adds a bounded 17 minutes on the same runner.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
     # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 237
+    timeout-minutes: 257
     steps:
       - name: Require successful production verification
         shell: bash
@@ -1691,7 +1819,23 @@ jobs:
           set -euo pipefail
           SDI_SMOKE_SIMULATOR_UDID="$(python3 scripts/native-smoke/select_simulator.py)"
           export SDI_SMOKE_SIMULATOR_UDID
+          printf 'simulator_udid=%s\n' "$SDI_SMOKE_SIMULATOR_UDID" >> "$GITHUB_OUTPUT"
           bash scripts/native-smoke/run_smoke_ci.sh
+      - name: Exercise actual authentication state with isolated local transport
+        id: native-auth
+        if: ${{ !cancelled() && steps.native-smoke.outputs.simulator_udid != '' }}
+        timeout-minutes: 17
+        env:
+          SDI_SMOKE_SIMULATOR_UDID: ${{ steps.native-smoke.outputs.simulator_udid }}
+        run: python3 scripts/native-smoke/run_auth_ci.py
+      - name: Preserve native authentication evidence
+        if: always() && steps.native-auth.outputs.artifact_path != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-auth-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ steps.native-auth.outputs.artifact_path }}
+          retention-days: 3
+          if-no-files-found: error
       - name: Preserve owned simulator setup receipt even when creation fails
         if: always() && steps.native-smoke.outputs.simulator_setup_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

@@ -26,13 +26,14 @@ struct StudioImageImportPanel: View {
     @State private var projectStart = 0.0
     @State private var playbackRate = 1.0
     @State private var usesSourceEnd = false
+    @State private var videoFrameCount = 1
 
     private var videoMapping: StudioVideoFrameImportService.Mapping {
         .init(sourceStartSeconds: sourceStart, sourceEndSeconds: usesSourceEnd ? sourceEnd : nil,
               projectStartSeconds: projectStart, speed: playbackRate)
     }
     private var mappedTime: Double? {
-        try? videoMapping.sourceTime(projectSeconds: Double(vm.document.startTick(ofFrame: vm.currentFrameIndex)) / Double(vm.fps))
+        try? videoMapping.sourceTime(projectSeconds: Double(vm.document.startTick(ofFrame: vm.currentFrameIndex) + (videoFrameCount > 1 ? vm.currentFrame.durationTicks : 0)) / Double(vm.fps))
     }
     private var timingIsLocked: Bool {
         session.isWorking || session.status == .picking || session.preview != nil
@@ -40,6 +41,12 @@ struct StudioImageImportPanel: View {
     private var videoTiming: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Reference timing").font(.specialElite(16))
+            Stepper("Frames to extract: \(videoFrameCount)", value: $videoFrameCount, in: 1...24)
+                .accessibilityIdentifier("studio.video.frame-count")
+            if videoFrameCount > 1 {
+                Text("Inserts after the selected frame at project FPS. Up to 24 frames, 32 MB PNG and 32 megapixels total; no originals are replaced.")
+                    .font(.caption)
+            }
             timingField("Source in (seconds)", value: $sourceStart, identifier: "studio.video.source-in")
             Toggle("Trim source end", isOn: $usesSourceEnd).tint(.red)
                 .accessibilityIdentifier("studio.video.use-end")
@@ -57,7 +64,7 @@ struct StudioImageImportPanel: View {
                 }
             }.pickerStyle(.segmented).accessibilityIdentifier("studio.video.speed")
             if let mappedTime {
-                Text(String(format: "Current Studio frame → source %.3fs", mappedTime))
+                Text(String(format: videoFrameCount > 1 ? "First inserted frame → source %.3fs" : "Current Studio frame → source %.3fs", mappedTime))
                     .font(.caption).accessibilityIdentifier("studio.video.mapped-time")
             } else {
                 Text("Adjust the trim or Studio start so the current frame maps inside the source range.")
@@ -142,20 +149,20 @@ struct StudioImageImportPanel: View {
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                     if videoFrameMode { videoTiming }
                     AddImageOption(icon: "photo.on.rectangle.angled", title: "Photo Library", subtitle: videoFrameMode ? "Choose a video using the system picker" : "Choose a picture using the system picker") {
-                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init()) else { return }
+                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1) else { return }
                         refreshScope(); photosRequest = .init(id: token)
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || (videoFrameMode && mappedTime == nil))
                     .accessibilityIdentifier("studio.image.photos")
                     AddImageOption(icon: "folder.fill", title: "Files", subtitle: videoFrameMode ? "Choose a video to extract the current frame" : "Import an image from Files") {
-                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init()) else { return }
+                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1) else { return }
                         refreshScope(); filesRequest = .init(id: token)
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || (videoFrameMode && mappedTime == nil))
                     .accessibilityIdentifier("studio.image.files")
                     if !videoFrameMode {
                     AddImageOption(icon: "square.grid.2x2.fill", title: "Image Library", subtitle: "Free offline scenery, props and effects") {
-                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init()) else { return }
+                        guard let token = session.beginPicker(in: vm, scope: scope, videoMapping: videoFrameMode ? videoMapping : .init(), videoFrameCount: videoFrameMode ? videoFrameCount : 1) else { return }
                         refreshScope(); libraryRequest = .init(id: token)
                     }
                     .disabled(session.isClosed || session.isWorking || filesRequest != nil || photosRequest != nil || libraryRequest != nil)
@@ -186,9 +193,9 @@ struct StudioImageImportPanel: View {
                         Text("\(preview.width) × \(preview.height) pixels · orientation corrected")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                             .accessibilityIdentifier("studio.image.dimensions")
-                        Text(videoFrameMode ? "The orientation-corrected SDR reference PNG is saved inside this project. The source movie stays in Photos or Files; the selected trim and speed choose this snapshot, but no movie track or audio is attached. Keep the source movie for future frames." : "Fits inside the canvas without cropping. Files preserves the selected file bytes. Photos preserves the still image provided by the picker, without paired Live Photo motion or audio. Studio uses an SDR PNG; animated images, depth and HDR effects are not included.")
+                        Text(videoFrameMode ? "Decoded SDR reference PNGs are saved inside this project. The source movie stays in Photos or Files. Multiple frames insert after the current frame without replacing originals; no movie track or audio is attached. Import a soundtrack separately in Audio." : "Fits inside the canvas without cropping. Files preserves the selected file bytes. Photos preserves the still image provided by the picker, without paired Live Photo motion or audio. Studio uses an SDR PNG; animated images, depth and HDR effects are not included.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
-                        Button("Add to current frame") { _ = session.apply(currentScope: scope) }
+                        Button(session.previewFrameCount > 1 ? "Insert \(session.previewFrameCount) frames" : "Add to current frame") { _ = session.apply(currentScope: scope) }
                             .buttonStyle(.borderedProminent).tint(.red)
                             .disabled(!session.canApply(currentScope: scope))
                             .accessibilityIdentifier("studio.image.apply")

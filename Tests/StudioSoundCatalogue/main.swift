@@ -59,6 +59,25 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
             try require(catalogue.search("zzzz-no-sound", category: nil).isEmpty, "invented search result")
             try require(catalogue.search("", category: item.category).allSatisfy { $0.category == item.category }, "category leaked")
         }
+        try await test("catalogue rejects silent placeholders and reencoded duplicates without touching original assets") {
+            let invalid = root.appendingPathComponent("invalid-metadata")
+            try fm.createDirectory(at: invalid, withIntermediateDirectories: false)
+            let original = try Data(contentsOf: bundle.appendingPathComponent("catalogue.json"))
+            for mode in 0..<2 {
+                var object = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+                var entries = object["sounds"] as! [[String: Any]]
+                if mode == 0 { entries[0]["waveformPeaks"] = [Float](repeating: 0, count: 256) }
+                else { entries[1]["originalSHA256"] = entries[0]["originalSHA256"] }
+                object["sounds"] = entries
+                try JSONSerialization.data(withJSONObject: object).write(to: invalid.appendingPathComponent("catalogue.json"))
+                do {
+                    _ = try StudioSoundCatalogue(directory: invalid)
+                    throw CatalogueFailure(message: "silent or duplicate original accepted")
+                } catch StudioSoundCatalogue.CatalogueError.invalid { }
+            }
+            try require(try Data(contentsOf: bundle.appendingPathComponent("catalogue.json")) == original,
+                        "original catalogue was modified")
+        }
         let sound = catalogue.sounds.first(where: { $0.id == "7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a" })!
         let resource = try catalogue.checkedResource(sound)
         let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("documents"))

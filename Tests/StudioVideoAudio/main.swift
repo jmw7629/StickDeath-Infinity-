@@ -6,6 +6,14 @@ private struct Failure: Error { let message: String }
 private func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw Failure(message: message) }
 }
+private actor ChunkReceipt {
+    var frames: Int64 = 0
+    var total: Int64 = 0
+    func record(_ progress: StudioAudioImportService.Progress) {
+        frames = progress.completed; total = progress.total
+    }
+    func snapshot() -> (Int64, Int64) { (frames, total) }
+}
 @main @MainActor struct VideoAudioTests {
     static func idle(_ session: StudioAudioPreviewSession) async throws {
         for _ in 0..<14_000 {
@@ -85,7 +93,39 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
         cancelled.cancel()
         do { _ = try await cancelled.value; throw Failure(message: "cancel succeeded") } catch is CancellationError { }
         try clean()
+        let chunk = ChunkReceipt()
+        do {
+            _ = try await service.extract(from: movie, scratchParent: scratch) { progress in
+                guard case .decoding = progress.phase else { return }
+                await chunk.record(progress)
+                throw CancellationError()
+            }
+            throw Failure(message: "Cancellation after a decoded chunk returned success")
+        } catch is CancellationError { }
+        let receipt = await chunk.snapshot()
+        try require(receipt.0 > 0 && receipt.0 < receipt.1 && receipt.1 == 88_200,
+            "Cancellation callback did not follow the first actual bounded PCM chunk")
+        try clean()
         try require(try Data(contentsOf: movie) == original, "original movie changed")
+        // One real one-second audio track occupies only the middle of a
+        // two-second movie. Leading/trailing gaps must retain their timing.
+        let gapMovie = root.appendingPathComponent("audio-gaps.mov")
+        let gapComposition = AVMutableComposition()
+        let gapVideo = gapComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try gapVideo.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 2, preferredTimescale: 600)), of: video, at: .zero)
+        let gapAudio = gapComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!
+        try gapAudio.insertTimeRange(CMTimeRange(start: .zero, duration: CMTime(seconds: 1, preferredTimescale: 600)),
+            of: sound, at: CMTime(seconds: 0.5, preferredTimescale: 600))
+        let gapExport = AVAssetExportSession(asset: gapComposition, presetName: AVAssetExportPresetPassthrough)!
+        gapExport.outputURL = gapMovie; gapExport.outputFileType = .mov
+        await gapExport.export()
+        try require(gapExport.status == .completed, "Gap fixture export failed")
+        let gap = try await service.extract(from: gapMovie, scratchParent: scratch)
+        try require(abs(gap.audio.duration - 2) < 0.002 && gap.audio.waveformPeaks.prefix(50).allSatisfy { $0 == 0 }
+            && gap.audio.waveformPeaks.suffix(50).allSatisfy { $0 == 0 }
+            && gap.audio.waveformPeaks[80..<176].max()! > 0.1,
+            "Movie audio gaps were collapsed or replaced with a silent soundtrack")
+        try clean()
         let docs = root.appendingPathComponent("documents")
         let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
         let vm = StudioViewModel(storage: storage)
@@ -95,8 +135,8 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
         let session = StudioAudioPreviewSession(scratchParent: scratch)
         let mapping = StudioVideoFrameImportService.Mapping(sourceStartSeconds: 1, sourceEndSeconds: 2,
             projectStartSeconds: 0.25, speed: 2)
-        try require(session.importFile(movie, prepare: {
-            try await service.extract(from: movie, mapping: mapping, scratchParent: scratch).audio
+        try require(session.importFile(movie, prepare: { progress in
+            try await service.extract(from: movie, mapping: mapping, scratchParent: scratch, progress: progress).audio
         }, stillCurrent: { vm.document.id == projectID && vm.document.revision == revision }, attach: {
             try vm.attachImportedAudio($0, expectedProjectID: projectID, expectedRevision: revision,
                 frameID: frameID, trackNumber: 2)
@@ -131,6 +171,6 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             "Cold reopen changed movie clip timing or managed audio bytes")
         await reopened.backToProjects(); try clean()
         print("PASS prepared movie import: selected-frame placement, single edit, measured waveform, managed bytes, undo/redo, actual save/cold reopen")
-        print("PASS 9 production movie-audio groups: actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
+        print("PASS 11 production movie-audio groups: actual PCM/waveform, canonical asset, trim/speed/placement, no-audio, bounds, unsafe source, cancellation, cleanup/original preservation")
     }
 }

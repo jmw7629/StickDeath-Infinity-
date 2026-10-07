@@ -384,11 +384,14 @@ struct StudioDocumentEditor {
 
     mutating func change(_ operation: (inout StudioDocument) throws -> Void) throws {
         let previous = document
+        guard previous.revision < Int.max - 2 else {
+            throw StudioDocumentError.invalid("This project has reached its edit revision limit. No changes were made.")
+        }
         var next = document
         try operation(&next)
-        try next.validate()
         guard next != previous else { return }
         next.revision = previous.revision + 1; next.modifiedAt = Date()
+        try next.validate()
         undoDocuments.append(previous)
         trimHistory()
         redoDocuments.removeAll(); document = next
@@ -637,6 +640,14 @@ struct StudioDocumentEditor {
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
+            if elements.contains(where: { $0.brush?.tiltEnabled == true || $0.points.contains(where: { $0.tilt != nil }) }) {
+                value.schemaVersion = max(value.schemaVersion, 23)
+            }
+            if elements.contains(where: { $0.preservesLayerAlpha == true }) { value.schemaVersion = max(value.schemaVersion, 24) }
+            if elements.contains(where: { $0.brush.map { [.airbrush, .watercolor, .neon].contains($0.family) } ?? false }) {
+                value.schemaVersion = max(value.schemaVersion, 25)
+            }
+            if elements.contains(where: { $0.tool == .line && $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 26) }
             if elements.contains(where: { $0.fillMask != nil }) { value.schemaVersion = max(value.schemaVersion, 6) }
             if elements.contains(where: { $0.translation != nil }) { value.schemaVersion = max(value.schemaVersion, 7) }
             if elements.contains(where: { $0.reflection != nil }) { value.schemaVersion = max(value.schemaVersion, 8) }
@@ -975,7 +986,8 @@ struct StudioDocumentEditor {
             let index = value.frames.firstIndex(where: { $0.id == value.activeFrameID })!
             let affected = value.frames[index].elements.filter { selection.contains($0.id) }
             for element in affected {
-                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible, !layer.isFullyLocked else { throw StudioDocumentError.locked }
+                guard let layer = value.layers.first(where: { $0.id == element.layerID }), layer.visible,
+                      !layer.isFullyLocked, layer.lockMode != "alpha" else { throw StudioDocumentError.locked }
             }
             value.frames[index].elements.removeAll { selection.contains($0.id) }
         }
@@ -1055,12 +1067,12 @@ struct StudioDocumentEditor {
         }
     }
     mutating func undo() {
-        guard var previous = undoDocuments.popLast() else { return }
+        guard document.revision < Int.max - 2, var previous = undoDocuments.popLast() else { return }
         redoDocuments.append(document); previous.revision = document.revision + 1; previous.modifiedAt = Date()
         document = previous; selectedElementIDs.removeAll()
     }
     mutating func redo() {
-        guard var next = redoDocuments.popLast() else { return }
+        guard document.revision < Int.max - 2, var next = redoDocuments.popLast() else { return }
         undoDocuments.append(document); next.revision = document.revision + 1; next.modifiedAt = Date()
         document = next; selectedElementIDs.removeAll()
     }
@@ -1217,5 +1229,125 @@ struct StudioGridSettings: Codable, Equatable {
         guard isValid, length.isFinite, (0...8192).contains(length) else { return [] }
         let count = min(1025, Int(floor(length / spacing)) + 1)
         return (0..<count).map { Double($0) * spacing }
+    }
+}
+
+/// Deliberately non-overshooting timing for editable, baked in-between frames.
+enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
+    case linear, easeIn, easeOut, easeInOut
+    var id: String { rawValue }
+    var title: String {
+        switch self { case .linear: return "Linear"; case .easeIn: return "Ease in"
+        case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out" }
+    }
+    func progress(_ t: Double) -> Double {
+        let t = min(1, max(0, t))
+        switch self {
+        case .linear: return t
+        case .easeIn: return t * t
+        case .easeOut: return t * (2 - t)
+        case .easeInOut: return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        }
+    }
+}
+
+extension StudioDocumentEditor {
+    /// Endpoint drawings pair in their existing order. Equal styles and sample
+    /// topology make this explicit interpolation, never guessed object tracking.
+    @discardableResult
+    mutating func tweenFrames(after frameID: String, to nextFrameID: String,
+                              inbetweenCount: Int, easing: StudioTweenEasing,
+                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
+        try checkCancellation()
+        guard (1...24).contains(inbetweenCount), document.frames.count <= 1000 - inbetweenCount,
+              let index = document.frames.firstIndex(where: { $0.id == frameID }),
+              index + 1 < document.frames.count, document.frames[index + 1].id == nextFrameID else {
+            throw StudioDocumentError.invalid("Choose adjacent endpoint frames and 1–24 in-betweens within the 1,000-frame limit.")
+        }
+        let start = document.frames[index], end = document.frames[index + 1]
+        guard start.rasterAssetID == nil, end.rasterAssetID == nil,
+              !start.elements.isEmpty, start.elements.count == end.elements.count,
+              start.elements.count <= 1024 else {
+            throw StudioDocumentError.unavailable("Tween needs matching ordered drawings in both frames. Raster references and empty or unequal drawing sets are unsupported; nothing changed.")
+        }
+        let totalPoints = start.elements.reduce(0) { $0 + $1.points.count + ($1.fillMask?.spans.count ?? 0) + ($1.text?.content.utf8.count ?? 0) }
+        guard totalPoints <= 65_536 / inbetweenCount,
+              start.elements.count <= 1024 / inbetweenCount else {
+            throw StudioDocumentError.unavailable("Tween is limited to 65,536 generated points and 1,024 generated drawings. Use fewer in-betweens or simpler poses.")
+        }
+        for (a, b) in zip(start.elements, end.elements) {
+            try checkCancellation()
+            guard let layer = document.layers.first(where: { $0.id == a.layerID }), layer.visible,
+                  layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
+            guard a.layerID == b.layerID, a.tool == b.tool, a.color == b.color, a.width == b.width,
+                  a.opacity == b.opacity, a.fillColor == b.fillColor, a.brush == b.brush, a.shape == b.shape,
+                  a.fillMask == b.fillMask, a.reflection == b.reflection, a.text == b.text,
+                  a.tool != .eraser, a.eraser == nil, b.eraser == nil,
+                  !a.hasPixelEffect, !b.hasPixelEffect,
+                  a.preservesLayerAlpha != true, b.preservesLayerAlpha != true,
+                  !a.points.isEmpty, a.points.count == b.points.count,
+                  (a.brush == nil || zip(a.points, b.points).allSatisfy({ pair in pair.0.pressure == pair.1.pressure && pair.0.timestamp == pair.1.timestamp && pair.0.tilt == pair.1.tilt })),
+                  a.fillMask == nil || a.points == b.points else {
+                throw StudioDocumentError.unavailable("Pair the same drawing order, tools, styles and sample counts on the same layers. Text content, brush samples, fill coverage and reflections must match. Erasers, alpha paint and pixel effects cannot tween.")
+            }
+        }
+        var generated: [AnimationFrame] = []
+        for step in 1...inbetweenCount {
+            try checkCancellation()
+            let t = easing.progress(Double(step) / Double(inbetweenCount + 1))
+            var elements: [DrawnElement] = []
+            for (a, b) in zip(start.elements, end.elements) {
+                try checkCancellation()
+                let points = zip(a.points, b.points).map { from, to -> StrokePoint in
+                    var p = from
+                    p.x += (to.x - from.x) * CGFloat(t); p.y += (to.y - from.y) * CGFloat(t)
+                    return p
+                }
+                let transform = try StudioTweenAffine.interpolate(a, b, progress: t)
+                elements.append(DrawnElement(id: UUID().uuidString, tool: a.tool, points: points,
+                    color: a.color, width: a.width, opacity: a.opacity, fillColor: a.fillColor, layerID: a.layerID,
+                    brush: a.brush, shape: a.shape, fillMask: a.fillMask, reflection: a.reflection,
+                    text: a.text, transform: transform))
+            }
+            generated.append(AnimationFrame(id: UUID().uuidString, elements: elements))
+        }
+        let ids = generated.map(\.id)
+        try checkCancellation()
+        try change { value in
+            value.schemaVersion = max(value.schemaVersion, 11)
+            value.frames.insert(contentsOf: generated, at: index + 1)
+            value.activeFrameID = ids[0]
+        }
+        selectedElementIDs.removeAll()
+        return ids
+    }
+}
+
+private enum StudioTweenAffine {
+    /// QR decomposition avoids singular matrix-lerp at a half-turn. Keep handedness,
+    /// interpolate scale/shear and shortest-arc rotation; validate every result.
+    static func interpolate(_ from: DrawnElement, _ to: DrawnElement, progress t: Double) throws -> StudioElementTransform {
+        func placement(_ element: DrawnElement) -> StudioElementTransform {
+            (element.transform ?? .init()).after(.init(tx: element.translation?.x ?? 0, ty: element.translation?.y ?? 0))
+        }
+        func components(_ m: StudioElementTransform) throws -> (Double, Double, Double, Double) {
+            try m.validate()
+            let sx = hypot(m.a, m.b), rotation = atan2(m.b, m.a)
+            return (sx, (m.a * m.d - m.b * m.c) / sx, (m.a * m.c + m.b * m.d) / sx, rotation)
+        }
+        let a = placement(from), b = placement(to)
+        let x = try components(a), y = try components(b)
+        guard x.1 * y.1 > 0 else {
+            throw StudioDocumentError.unavailable("A tween cannot cross a reflection that collapses the artwork. Keep endpoint handedness the same.")
+        }
+        func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * t }
+        var angle = (y.3 - x.3).truncatingRemainder(dividingBy: 2 * .pi)
+        if angle > .pi { angle -= 2 * .pi }; if angle < -.pi { angle += 2 * .pi }
+        let rotation = x.3 + angle * t, c = cos(rotation), s = sin(rotation)
+        let sx = mix(x.0, y.0), sy = mix(x.1, y.1), shear = mix(x.2, y.2)
+        let result = StudioElementTransform(a: c * sx, b: s * sx, c: c * shear - s * sy,
+            d: s * shear + c * sy, tx: mix(a.tx, b.tx), ty: mix(a.ty, b.ty))
+        try result.validate()
+        return result
     }
 }

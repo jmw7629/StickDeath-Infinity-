@@ -74,13 +74,24 @@ struct LoginView: View {
                             SocialAuthButton(
                                 icon: "apple.logo",
                                 title: "Continue with Apple",
-                                action: { Task { await authVM.signInWithApple() } }
+                                action: { showError = true; Task { if await authVM.signInWithApple() { onSuccess() } } }
                             )
-                            SocialAuthButton(
-                                icon: "g.circle.fill",
-                                title: "Continue with Google",
-                                action: { Task { await authVM.signInWithGoogle() } }
-                            )
+                            ForEach(AppConfig.OAuthProvider.allCases, id: \.self) { provider in
+                                VStack(spacing: 4) {
+                                    SocialAuthButton(
+                                        icon: provider == .google ? "g.circle.fill" : provider == .github ? "chevron.left.forwardslash.chevron.right" : "square.grid.2x2.fill",
+                                        title: "Continue with \(provider.title)",
+                                        action: {
+                                            showError = true
+                                            Task { if await authVM.signIn(provider: provider) { onSuccess() } }
+                                        }
+                                    )
+                                    .disabled(authVM.isLoading || authVM.providerUnavailableReason(provider) != nil)
+                                    if let reason = authVM.providerUnavailableReason(provider) {
+                                        Text(reason).font(.caption).foregroundColor(.sdTextSecondary)
+                                    }
+                                }
+                            }
                         }
                         .padding(.horizontal, 24)
                         .padding(.bottom, 24)
@@ -154,8 +165,7 @@ struct LoginView: View {
                         Button {
                             showError = true
                             Task {
-                                await authVM.signIn(email: email, password: password)
-                                if authVM.isAuthenticated {
+                                if await authVM.signIn(email: email, password: password) {
                                     onSuccess()
                                 }
                             }

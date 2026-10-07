@@ -860,8 +860,8 @@ private struct AudioFilesImportControls: View {
             case .success(let urls):
                 guard let url = urls.first, let target = lease else { return }
                 let mapping = capturedMovieMapping
-                let prepare: (() async throws -> StudioAudioImportService.ImportedAudio)? = mapping.map { captured in
-                    { try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured).audio }
+                let prepare: StudioAudioPreviewSession.AudioPreparation? = mapping.map { captured in
+                    { progress in try await StudioVideoAudioImportService.shared.extract(from: url, mapping: captured, progress: progress).audio }
                 }
                 _ = audio.importFile(url, prepare: prepare, stillCurrent: { target.isCurrent(vm) }, attach: { imported in
                     try vm.attachImportedAudio(imported, expectedProjectID: target.projectID,
