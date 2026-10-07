@@ -104,7 +104,47 @@ private struct Failure: Error { let message: String }
         await vm.flush()
         pass("restored Move Lasso settings drive actual hit/area selection and Reset rejects stale gesture without history")
     }
+    static func vertexAlignedDrawingEnclosure() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-vertex-enclosure-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: store)
+        let created = await vm.createProject(name: "Vertex aligned enclosure", width: 128, height: 128, fps: 12)
+        try require(created, "Vertex fixture project")
+        // This exact point was falsely excluded by SwiftUI Path's even-odd test
+        // in the preserved image-area probe. It lies strictly inside the outline.
+        let corner = CGPoint(x: 122.42640687119285, y: 94.14213562373095)
+        let line = DrawnElement(id: UUID().uuidString, tool: .line,
+            points: [.init(x: corner.x - 0.75, y: corner.y + 0.25),
+                     .init(x: corner.x - 0.25, y: corner.y + 0.25)],
+            color: "#FF0000", width: 0.5, opacity: 1, layerID: vm.activeLayerID)
+        try require(vm.commitElement(line), "Real vertex fixture drawing")
+        let bounds = try StudioSelectionRegion.drawingBounds(line)!
+        try require(bounds.maxX == corner.x && bounds.minY == corner.y && bounds.width == 1 && bounds.height == 0.5,
+                    "Real stroke bounds no longer contain the exact regression corner")
+        let outline = StudioImageRotationGeometry(placement: .init(x: 39, y: 59, width: 82, height: 42), degrees: 45).corners
+        let saved = await vm.save(); try require(saved, "Vertex fixture save")
+        let document = vm.document, undo = vm.canUndo, redo = vm.canRedo, artwork = try render(document)
+        for kind in [StudioAreaSelectionKind.freehand, .polygon] {
+            vm.selectedTool = .lasso; vm.areaSelectionKind = kind; vm.areaSelectionSmoothing = 0; vm.selectionMode = .new
+            let region = try StudioSelectionRegion(points: outline, kind: kind, smoothing: 0)
+            try require(region.contains(bounds), "Enclosed drawing touching the polygon vertex ray was falsely rejected")
+            guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Vertex fixture capture") }
+            try require(vm.finishAreaSelection(capture, points: outline) && vm.selectedElementIDs == [line.id],
+                        "Actual freehand/polygon operation failed to select the enclosed drawing")
+            try require(vm.document == document && vm.canUndo == undo && vm.canRedo == redo && !vm.isDirty,
+                        "Vertex enclosure changed document/history")
+        }
+        let partial = [CGPoint(x: corner.x - 2, y: corner.y - 1), CGPoint(x: corner.x - 0.1, y: corner.y - 1),
+                       CGPoint(x: corner.x - 0.1, y: corner.y + 2), CGPoint(x: corner.x - 2, y: corner.y + 2)]
+        try require(!StudioSelectionRegion(points: partial, kind: .polygon, smoothing: 0).contains(bounds),
+                    "Partially enclosed drawing was accepted")
+        try require(try render(vm.document) == artwork, "Selection changed actual artwork pixels")
+        await vm.flush()
+        pass("vertex-aligned drawing bounds use robust even-odd enclosure through real freehand and polygon selection")
+    }
     static func main() async throws {
+        try await vertexAlignedDrawingEnclosure()
         setbuf(stdout, nil)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-area-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

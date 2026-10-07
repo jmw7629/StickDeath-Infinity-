@@ -7,15 +7,16 @@ struct StudioImageLibraryView: View {
     let onSelect: (StudioImageCatalogue, StudioImageCatalogue.Image) -> Void
     let onClose: () -> Void
     @State private var catalogue: StudioImageCatalogue?
-    @State private var optionalCatalogue: StudioImageCatalogue?
-    @State private var pack: StudioImagePackCache.Descriptor?
+    @State private var optionalCatalogues: [String: StudioImageCatalogue] = [:]
+    @State private var packs: [StudioImagePackCache.Descriptor] = []
+    @State private var activePackID: String?
     @State private var packTask: Task<Void, Never>?
     @State private var packBusy = false
-    @State private var packNeedsRemoval = false
+    @State private var packsNeedingRemoval = Set<String>()
     @State private var packNotice: String?
     @State private var packRequest = UUID()
     @Environment(\.scenePhase) private var scenePhase
-    private var sources: [StudioImageCatalogue] { [catalogue, optionalCatalogue].compactMap { $0 } }
+    private var sources: [StudioImageCatalogue] { [catalogue].compactMap { $0 } + packs.compactMap { optionalCatalogues[$0.id] } }
     private func source(for image: StudioImageCatalogue.Image) -> StudioImageCatalogue? {
         sources.first { $0.availableImages.contains(image) }
     }
@@ -25,7 +26,7 @@ struct StudioImageLibraryView: View {
     @State private var collection = "All"
     @State private var preferenceNotice: String?
     private func preferences(_ catalogue: StudioImageCatalogue) -> StudioImageLibraryPreferences {
-        .init(allowedIDs: Set(catalogue.images.map(\.id) + (pack?.tiles.map { "kenney.1-bit-scenery.x\($0.x).y\($0.y)" } ?? [])))
+        .init(allowedIDs: Set(catalogue.images.map(\.id) + packs.flatMap(\.imageIDs)))
     }
     @State private var category: StudioImageCatalogue.Category?
     @State private var includeCartoonWeapons = true
@@ -51,19 +52,16 @@ struct StudioImageLibraryView: View {
                     Text("\(sources.reduce(0) { $0 + $1.availableImages.count }) free pictures · available offline")
                         .font(.specialElite(16)).foregroundColor(.white)
                         .accessibilityIdentifier("studio.image-library.count")
-                    if let pack {
-                        HStack {
-                            Text("\(pack.title) · optional picture pack").font(.caption)
-                            Spacer()
-                            if packBusy {
-                                Button("Cancel") { cancelPack() }
-                            } else if optionalCatalogue != nil || packNeedsRemoval {
-                                Button("Remove download") { changePack(remove: true) }
-                            } else {
-                                Button("Download 643 KB") { changePack(remove: false) }
-                            }
-                        }.foregroundColor(.white.opacity(0.8))
-                            .accessibilityIdentifier("studio.image-library.pack")
+                    if let first = packs.first {
+                        packRow(first)
+                        DisclosureGroup("More optional picture packs") {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
+                                }.padding(.vertical, 8)
+                            }.frame(maxHeight: 170)
+                            .accessibilityIdentifier("studio.image-library.pack-list")
+                        }.font(.caption).foregroundColor(.white.opacity(0.8))
                         if packBusy { ProgressView("Downloading and verifying pictures…").tint(.red) }
                         if let packNotice { Text(packNotice).font(.caption).foregroundColor(.white.opacity(0.7)) }
                     }
@@ -166,11 +164,24 @@ struct StudioImageLibraryView: View {
             do {
                 let loaded = try await StudioImageCatalogue.loadBundled()
                 try Task.checkCancellation(); catalogue = loaded; failure = nil
-                pack = try? StudioImagePackCache.descriptor()
-                if let pack {
-                    do { optionalCatalogue = try await StudioImagePackCache.shared.installed(pack) }
+                do {
+                    packs = try StudioImagePackCache.descriptors()
+                } catch {
+                    // Keep the original pinned pack available if expansion metadata is damaged.
+                    packs = (try? StudioImagePackCache.descriptor()).map { [$0] } ?? []
+                    packNotice = "Additional picture packs are unavailable in this installation. Bundled pictures are still available."
+                }
+                optionalCatalogues = [:]; packsNeedingRemoval = []
+                for item in packs {
+                    do {
+                        let installed = try await StudioImagePackCache.shared.installed(item)
+                        try Task.checkCancellation(); optionalCatalogues[item.id] = installed
+                    }
                     catch is CancellationError { throw CancellationError() }
-                    catch { packNeedsRemoval = true; packNotice = "Downloaded pictures could not be verified. Remove the downloaded copy and try again." }
+                    catch {
+                        packsNeedingRemoval.insert(item.id)
+                        packNotice = "A downloaded pack could not be verified. Remove its downloaded copy and try again."
+                    }
                 }
                 let store = preferences(loaded); favorites = Set(store.favorites); recent = store.recent
             } catch is CancellationError { }
@@ -183,12 +194,35 @@ struct StudioImageLibraryView: View {
             else { loadID = UUID() }
         }
     }
-    private func cancelPack() {
-        packRequest = UUID(); packTask?.cancel(); packTask = nil; packBusy = false
+    @ViewBuilder
+    private func packRow(_ item: StudioImagePackCache.Descriptor) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("\(item.title) · \(item.imageCount) pictures").font(.caption)
+                Spacer()
+                if packBusy && activePackID == item.id {
+                    Button("Cancel") { cancelPack() }
+                        .accessibilityIdentifier("studio.image-library.pack.cancel." + item.id)
+                } else if optionalCatalogues[item.id] != nil || packsNeedingRemoval.contains(item.id) {
+                    Button("Remove download") { changePack(item, remove: true) }.disabled(packBusy)
+                        .accessibilityIdentifier("studio.image-library.pack.remove." + item.id)
+                } else {
+                    Button("Download \((item.archiveBytes + 1023) / 1024) KB") { changePack(item, remove: false) }.disabled(packBusy)
+                        .accessibilityIdentifier("studio.image-library.pack.download." + item.id)
+                }
+            }
+            if item.mayContainWeapons {
+                Text("Mixed pixel artwork may include cartoon weapons; hidden when that filter is off.")
+                    .font(.caption2).foregroundColor(.white.opacity(0.6))
+            }
+        }.foregroundColor(.white.opacity(0.8))
     }
-    private func changePack(remove: Bool) {
-        guard let pack, !packBusy else { return }
-        let request = UUID(); packRequest = request; packBusy = true; packNotice = nil
+    private func cancelPack() {
+        packRequest = UUID(); packTask?.cancel(); packTask = nil; packBusy = false; activePackID = nil
+    }
+    private func changePack(_ pack: StudioImagePackCache.Descriptor, remove: Bool) {
+        guard !packBusy else { return }
+        let request = UUID(); packRequest = request; packBusy = true; activePackID = pack.id; packNotice = nil
         packTask = Task {
             do {
                 if remove { try await StudioImagePackCache.shared.remove(pack) }
@@ -196,12 +230,12 @@ struct StudioImageLibraryView: View {
                 let installed = try await StudioImagePackCache.shared.installed(pack)
                 try Task.checkCancellation()
                 guard packRequest == request else { return }
-                optionalCatalogue = installed; packNeedsRemoval = false; packBusy = false; packTask = nil
+                optionalCatalogues[pack.id] = installed; packsNeedingRemoval.remove(pack.id); packBusy = false; activePackID = nil; packTask = nil
                 packNotice = remove ? "Downloaded library copy removed. Pictures already added to your projects are kept." : "Pictures verified and available offline."
             } catch is CancellationError { }
             catch {
                 guard packRequest == request else { return }
-                packBusy = false; packTask = nil; packNotice = error.localizedDescription
+                packBusy = false; activePackID = nil; packTask = nil; packNotice = error.localizedDescription
             }
         }
     }

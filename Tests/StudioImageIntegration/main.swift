@@ -73,8 +73,8 @@ private func rejects(_ action: () throws -> Void) throws {
     static func pixel(_ actual: [UInt8], _ expected: [UInt8]) throws {
         try require(zip(actual, expected).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 2 }, "RGBA \(actual) != \(expected)")
     }
-    static func render(_ vm: StudioViewModel, transparent: Bool = false, scale: Double = 1) throws -> Raster {
-        let doc = vm.document, frame = vm.currentFrame, data = vm.rasterData(frame.rasterAssetID)
+    static func render(_ vm: StudioViewModel, transparent: Bool = false, scale: Double = 1, frameOverride: AnimationFrame? = nil) throws -> Raster {
+        let doc = vm.document, frame = frameOverride ?? vm.currentFrame, data = vm.rasterData(frame.rasterAssetID)
         let brush = try StudioFrameRenderer.prepare(frame: frame)
         let raster = try StudioFrameRenderer.prepareRaster(frame: frame, layers: doc.layers, data: data, maximumDimension: 128)
         var failure: Error?
@@ -204,6 +204,58 @@ private func rejects(_ action: () throws -> Void) throws {
                 try require(vm.originalImageSource(asset)?.originalData == bytes,
                     "Numerical fit changed the original asymmetric input")
             }
+        }
+        try await test("bottom frame Copy captures displayed playback content without changing selection locks or history") {
+            let (vm, _) = try await project(root)
+            let frameA = vm.currentFrame.id
+            let line = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 20, y: 20), .init(x: 100, y: 20)], color: "#00FF00", width: 8, opacity: 1, layerID: vm.activeLayerID)
+            try require(vm.commitElement(line), "Playback Copy frame A fixture")
+            let pixelsA = try render(vm).bytes
+            vm.addFrame(); let frameB = vm.currentFrame.id, asset = try attach(image, to: vm)
+            let pixelsB = try render(vm).bytes
+            try require(pixelsA != pixelsB, "Playback fixture frames are indistinguishable")
+            let imageLayer = vm.currentFrame.rasterLayerID!
+            vm.setLayerLockMode(imageLayer, mode: .full)
+            vm.selectFrame(frameA)
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo, selection = vm.selectedElementIDs
+            vm.togglePlayback(); vm.advancePlaybackFrame()
+            try require(vm.isPlaying && vm.currentFrame.id == frameB && vm.document.activeFrameID == frameA && vm.canCopyBottomSelection,
+                        "Actual playback did not display B while retaining editing frame A")
+            vm.copyBottomSelection()
+            try require(vm.document == before && vm.selectedElementIDs == selection && vm.canUndo == undo && vm.canRedo == redo && vm.isPlaying,
+                        "Read-only playback Copy changed editing selection locks history or playback")
+            vm.advancePlaybackFrame()
+            try require(vm.currentFrame.id == frameA, "Playback did not advance beyond copied B")
+            vm.stopPlayback()
+            vm.copyFrame("missing-playback-frame")
+            try require(vm.document == before && vm.canPaste && vm.bottomPasteLabel == "Paste frame",
+                        "Rejected explicit-ID copy destroyed successful playback clipboard")
+            vm.pasteClipboard()
+            try require(vm.frames.count == before.frames.count + 1 && vm.currentFrame.rasterAssetID == asset &&
+                        vm.currentFrame.elements.isEmpty && render(vm).bytes == pixelsB && vm.layers == before.layers,
+                        "Bottom Copy pasted editing A instead of displayed B or changed locks")
+            try require(vm.frames.first(where: { $0.id == frameA }) == before.frames.first(where: { $0.id == frameA }) &&
+                        vm.frames.first(where: { $0.id == frameB }) == before.frames.first(where: { $0.id == frameB }) &&
+                        vm.originalImageSource(asset)?.originalData == original && vm.rasterData(asset) == image.normalizedPNG,
+                        "Playback frame Copy/Paste changed source frames or managed image bytes")
+            vm.undo()
+            try require(vm.frames == before.frames && vm.document.activeFrameID == frameA, "Paste was not one Undo transaction")
+            // Explicit timeline-ID Copy remains authoritative even while another frame is shown.
+            vm.togglePlayback(); vm.advancePlaybackFrame()
+            try require(vm.currentFrame.id == frameB, "Explicit-ID playback fixture")
+            vm.copyFrame(frameA); vm.stopPlayback(); vm.pasteClipboard()
+            try require(vm.currentFrame.rasterAssetID == nil && render(vm).bytes == pixelsA,
+                        "Displayed-frame fix overrode explicit timeline-ID copy")
+            vm.undo(); vm.selectFrame(frameA); vm.selectDrawingTool(.move); vm.selectionMode = .new
+            try require(vm.selectElement(at: .init(x: 50, y: 20)) == line.id, "Stopped-copy explicit selection fixture")
+            let stopped = vm.document, selected = vm.selectedElementIDs
+            vm.copyFrame()
+            try require(vm.document == stopped && vm.selectedElementIDs == selected && selected == [line.id],
+                        "Stopped frame Copy changed explicit selection")
+            vm.pasteFrame()
+            try require(vm.currentFrame.rasterAssetID == nil && render(vm).bytes == pixelsA,
+                        "Stopped frame Copy no longer captures editing frame")
         }
         try await test("frame clipboard retains image beyond deleted original and expired undo history") {
             let (vm, store) = try await project(root), id = try attach(image, to: vm), originalFrame = vm.currentFrame.id
@@ -640,6 +692,404 @@ private func rejects(_ action: () throws -> Void) throws {
             let warm = Date()
             for _ in 0..<240 { _ = try StudioRasterImage.prepare(assetID: "key-149", data: image.normalizedPNG, managed: true, maximumDimension: 128) }
             print("RASTER_CACHE_150_KEYS_SECONDS=\(warm.timeIntervalSince(start)) WARM_240_PREPARES_SECONDS=\(Date().timeIntervalSince(warm)) BYTES=\(footprint.bytes)")
+        }
+        try await test("arbitrary image angle uses real rotated alpha pixels inverse hit testing Undo and cold PNG") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            let placement = StudioRasterPlacement(x: 40, y: 60, width: 80, height: 40)
+            let original = vm.document
+            guard let capture = vm.prepareImagePlacement() else { throw Failure(message: "Angle capture") }
+            try require(vm.placeImage(capture, at: placement, rotationDegrees: 45), "Actual angle command failed")
+            try require(vm.document.schemaVersion == 30 && vm.currentFrame.rasterRotationDegrees == 45, "Angle descriptor absent")
+            let rotated = try render(vm, transparent: true)
+            try pixel(rotated.pixel(66, 66), [255, 0, 0, 255])
+            try pixel(rotated.pixel(94, 94), [0, 0, 128, 128])
+            try pixel(rotated.pixel(38, 38), [0, 0, 0, 0])
+            try require(vm.setImageCanvasMove(true), "Select rotated image")
+            try require(vm.beginImageMove(at: CGPoint(x: 38, y: 38)) == nil && vm.beginImageMove(at: CGPoint(x: 66, y: 66)) != nil,
+                        "Image hit test used bounding box instead of inverse rotation")
+            let moving = vm.currentImageMoveCapture()!
+            let unmodified = vm.document
+            let movedPreview = try vm.imageMovePreview(moving, delta: CGSize(width: -500, height: -500))
+            let previewPlacement = movedPreview.rasterInstance(on: moving.placement.layerID)!.placement!
+            try StudioImageRotationGeometry(placement: previewPlacement, degrees: 45).validate(canvasWidth: 160, canvasHeight: 160)
+            let resizedPreview = try vm.imageResizePreview(moving, corner: .bottomRight, delta: CGSize(width: 12, height: 12))
+            let resizedPlacement = resizedPreview.rasterInstance(on: moving.placement.layerID)!.placement!
+            try require(abs(resizedPlacement.width / resizedPlacement.height - 2) < 0.000001 && vm.document == unmodified,
+                        "Rotated handle preview distorted source or committed history")
+            try require(vm.finishImageResize(moving, corner: .bottomRight, delta: CGSize(width: 12, height: 12)), "Rotated resize commit")
+            try require(vm.currentFrame.rasterPlacement == resizedPlacement && vm.currentFrame.rasterRotationDegrees == 45, "Resize preview/commit mismatch")
+            vm.undo(); try require(try render(vm, transparent: true).bytes == rotated.bytes, "Resize Undo failed")
+            vm.undo(); try require(vm.currentFrame.rasterRotationDegrees == nil && vm.currentFrame.rasterPlacement == original.frames[0].rasterPlacement, "Angle Undo lost original placement")
+            vm.redo(); try require(try render(vm, transparent: true).bytes == rotated.bytes, "Angle Redo pixels")
+            let saved = await vm.save(); try require(saved, "Save arbitrary image angle")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && cold.currentFrame.rasterRotationDegrees == 45 && render(cold, transparent: true).bytes == rotated.bytes,
+                        "Cold reopen discarded editable angle")
+            try require(cold.originalImageSource(asset)?.originalData == image.originalData, "Rotation altered original bytes")
+            let output = try await StudioExportService().export(document: cold.document, format: .pngSequence,
+                outputParent: root, background: .transparent, rasterData: { cold.rasterData($0) })
+            try require(try decoded(output.imageURLs[0]).bytes == rotated.bytes, "Actual angle PNG mismatch")
+        }
+        try await test("angle composes with flips quarter turns crop linked instances and frame clipboard") {
+            let (vm, _) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 30), "Set angle")
+            let initial = try render(vm, transparent: true)
+            try require(vm.reflectImage(vm.prepareImagePlacement()!, axis: .horizontal), "Reflect angled image")
+            let mirrored = try render(vm, transparent: true)
+            try require(vm.currentFrame.rasterRotationDegrees == -30, "Canvas flip did not reverse residual angle")
+            for (x, y) in [(60, 70), (100, 90), (80, 80)] {
+                try pixel(mirrored.pixel(159-x, y), initial.pixel(x, y))
+            }
+            try require(vm.reflectImage(vm.prepareImagePlacement()!, axis: .horizontal), "Restore flip")
+            try require(try render(vm, transparent: true).bytes == initial.bytes, "Double flip changed angle pixels")
+            for _ in 0..<4 { try require(vm.rotateImage(vm.prepareImagePlacement()!, direction: .clockwise), "Angled quarter turn") }
+            try require(try render(vm, transparent: true).bytes == initial.bytes, "Four quarter turns lost angle")
+            let primary = vm.prepareImagePlacement()!.layerID
+            vm.selectLayer(primary)
+            vm.duplicateLayer(primary)
+            let alias = vm.activeLayerID
+            try require(vm.currentFrame.rasterInstance(on: alias)?.rotationDegrees == 30, "Layer duplicate lost angle")
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0, y: 0, width: 0.5, height: 1)), "Rotated crop")
+            try require(vm.currentFrame.rasterInstance(on: primary)?.crop == nil && vm.currentFrame.rasterInstance(on: alias)?.rotationDegrees == 30,
+                        "Crop changed linked sibling or lost angle")
+            let sourceFrame = vm.currentFrame
+            vm.copyFrame(); vm.pasteFrame()
+            try require(vm.currentFrame.rasterRotationDegrees == sourceFrame.rasterRotationDegrees && vm.currentFrame.rasterAliases == sourceFrame.rasterAliases,
+                        "Frame clipboard dropped rotation metadata")
+            try require(vm.rasterData(asset) == image.normalizedPNG, "Transform changed immutable normalized bytes")
+        }
+        try await test("copied image angle survives Undo to older schema and paste into blank frame") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            let beforeAngle = vm.document
+            try require(beforeAngle.schemaVersion < 30, "Clipboard fixture must begin before angle schema")
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Clipboard angle fixture")
+            let expected = try render(vm, transparent: true)
+            try require(vm.copyImage(), "Copy angled image")
+            vm.undo()
+            try require(vm.document.schemaVersion == beforeAngle.schemaVersion && vm.currentFrame.rasterRotationDegrees == nil && vm.hasCopiedImage,
+                        "Undo fixture did not preserve angled clipboard outside old document")
+            vm.addFrame()
+            try require(vm.currentFrame.rasterAssetID == nil && vm.document.schemaVersion < 30 && vm.canPasteImage,
+                        "Blank frame fixture unexpectedly retained angle schema or lost clipboard")
+            try require(vm.pasteImage(), "Pasting copied angle into pre-angle schema failed")
+            try require(vm.document.schemaVersion == 30 && vm.currentFrame.rasterRotationDegrees == 45 && vm.currentFrame.rasterAssetID == asset,
+                        "Image paste omitted angle schema/identity")
+            try require(try render(vm, transparent: true).bytes == expected.bytes && vm.originalImageSource(asset)?.originalData == image.originalData,
+                        "Pasted angle changed pixels or original bytes")
+            let saved = await vm.save(); try require(saved, "Save pasted angle")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && cold.document.schemaVersion == 30 && render(cold, transparent: true).bytes == expected.bytes,
+                        "Cold reopen lost pasted angle schema/pixels")
+        }
+        try await test("arbitrary image angle bounds stale locks cancellation and schema validation are atomic") {
+            let (vm, _) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            let capture = vm.prepareImagePlacement()!, before = vm.document
+            for angle in [Double.nan, Double.infinity, -181, 181] {
+                try require(!vm.placeImage(capture, at: capture.original, rotationDegrees: angle) && vm.document == before, "Invalid angle changed document")
+            }
+            try require(!vm.placeImage(capture, at: .init(x: 0, y: 0, width: 160, height: 160), rotationDegrees: 45) && vm.document == before,
+                        "Out-of-canvas angle changed document")
+            var checkpoints = 0
+            try require(!vm.placeImage(capture, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45,
+                checkCancellation: { checkpoints += 1; if checkpoints == 3 { throw CancellationError() } }) && vm.document == before,
+                "Cancellation committed angle")
+            try require(vm.placeImage(capture, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Valid angle failed")
+            let updated = vm.document
+            try require(!vm.placeImage(capture, at: capture.original, rotationDegrees: 0) && vm.document == updated, "Stale angle overwrote later edit")
+            var unsupported = updated; unsupported.schemaVersion = 29
+            do { try unsupported.validate(); throw Failure(message: "Old schema accepted new angle") } catch is StudioDocumentError { }
+            var editor = try StudioDocumentEditor(document: updated)
+            try editor.updateLayer(capture.layerID) { $0.lockMode = "position" }
+            let locked = editor.document
+            do {
+                try editor.updateImagePlacement(frameID: locked.activeFrameID, assetID: asset,
+                    placement: capture.original, rotationDegrees: 0, layerID: capture.layerID)
+                throw Failure(message: "Position lock accepted image angle")
+            } catch StudioDocumentError.locked { }
+            try require(editor.document == locked, "Rejected locked angle changed document")
+            let narrow = StudioRasterPlacement(x: -20, y: 110, width: 200, height: 20)
+            try StudioImageRotationGeometry(placement: narrow, degrees: 90).validate(canvasWidth: 160, canvasHeight: 240)
+        }
+        try await test("image rotation handle preview and release share editable pixels one Undo source bytes and cold PNG") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40)), "Handle fixture placement")
+            try require(vm.setImageCanvasMove(true), "Handle selection")
+            let capture = vm.currentImageMoveCapture()!, before = vm.document
+            let start = CGPoint(x: 80, y: 20), current = CGPoint(x: 80 + 30 * sqrt(2.0), y: 80 - 30 * sqrt(2.0))
+            let preview = try vm.imageRotationPreview(capture, start: start, current: current)
+            try require(vm.document == before && preview.rasterRotationDegrees.map { abs($0 - 45) < 0.000001 } == true,
+                        "Rotation preview changed history or calculated wrong angle")
+            let previewPixels = try render(vm, transparent: true, frameOverride: preview)
+            try pixel(previewPixels.pixel(66, 66), [255, 0, 0, 255])
+            try pixel(previewPixels.pixel(94, 94), [0, 0, 128, 128])
+            try require(vm.finishImageRotation(capture, start: start, current: current), "Rotation handle release")
+            try require(vm.currentFrame == preview && render(vm, transparent: true).bytes == previewPixels.bytes,
+                        "Handle release differs from actual preview pixels")
+            vm.undo(); try require(vm.currentFrame == before.frames.first(where: { $0.id == before.activeFrameID }), "Handle required more than one Undo")
+            vm.redo(); try require(try render(vm, transparent: true).bytes == previewPixels.bytes, "Handle Redo pixels")
+            try require(vm.originalImageSource(asset)?.originalData == image.originalData && vm.rasterData(asset) == image.normalizedPNG,
+                        "Handle rotation rewrote source bytes")
+            let saved = await vm.save(); try require(saved, "Handle save")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && render(cold, transparent: true).bytes == previewPixels.bytes, "Handle angle cold reopen")
+            let output = try await StudioExportService().export(document: cold.document, format: .pngSequence,
+                outputParent: root, background: .transparent, rasterData: { cold.rasterData($0) })
+            try require(try decoded(output.imageURLs[0]).bytes == previewPixels.bytes, "Handle angle PNG mismatch")
+        }
+        try await test("image rotation handle rejects every cancellation checkpoint stale selection locks and degenerate input") {
+            let (vm, _) = try await project(root); _ = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40)), "Cancellation fixture")
+            try require(vm.setImageCanvasMove(true), "Select cancellation fixture")
+            let start = CGPoint(x: 80, y: 20), end = CGPoint(x: 140, y: 80)
+            var calls = 0
+            try require(vm.finishImageRotation(vm.currentImageMoveCapture()!, start: start, current: end,
+                checkCancellation: { calls += 1 }), "Count actual handle checkpoints")
+            vm.undo()
+            try require(vm.setImageCanvasMove(true), "Restore selection after Undo")
+            let unchanged = vm.document, capture = vm.currentImageMoveCapture()!, history = vm.canUndo, redo = vm.canRedo
+            try require(calls > 1, "No final cancellation checkpoint")
+            for stop in 1...calls {
+                var count = 0
+                try require(!vm.finishImageRotation(capture, start: start, current: end, checkCancellation: {
+                    count += 1; if count == stop { throw CancellationError() }
+                }) && vm.document == unchanged && vm.canUndo == history && vm.canRedo == redo,
+                    "A cancellation checkpoint committed image rotation")
+            }
+            for invalid in [CGPoint(x: 80, y: 80), CGPoint(x: CGFloat.nan, y: 0), CGPoint(x: 200_000, y: 0)] {
+                try require(!vm.finishImageRotation(capture, start: start, current: invalid) && vm.document == unchanged,
+                            "Degenerate or nonfinite handle changed artwork")
+            }
+            try require(vm.setImageCanvasMove(false) && vm.setImageCanvasMove(true), "Reselect same image")
+            try require(!vm.finishImageRotation(capture, start: start, current: end) && vm.document == unchanged,
+                        "Old selection identity revived after deselect/reselect")
+            let fresh = vm.currentImageMoveCapture()!
+            vm.setLayerLockMode(fresh.placement.layerID, mode: .position)
+            let locked = vm.document
+            try require(!vm.finishImageRotation(fresh, start: start, current: end) && vm.document == locked,
+                        "Position lock allowed old handle rotation")
+        }
+        try await test("active-layer image lasso uses rotated polygon enclosure and New Add Subtract without document edits") {
+            let (vm, _) = try await project(root); _ = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Area fixture angle")
+            vm.selectLayer(vm.currentFrame.rasterLayerID!)
+            vm.selectDrawingTool(.lasso)
+            try require(vm.areaSelectionTarget == .drawings, "Default selection target changed")
+            vm.areaSelectionTarget = .image; vm.areaSelectionKind = .polygon; vm.areaSelectionSmoothing = 0; vm.selectionMode = .new
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            for degrees in [-135.0, -45.0, 0.0, 45.0, 135.0, 179.0] {
+                let outline = StudioImageRotationGeometry(placement: .init(x: 39, y: 59, width: 82, height: 42), degrees: degrees).corners
+                let exactRegion = try StudioSelectionRegion(points: outline, kind: .polygon, smoothing: 0)
+                try require(exactRegion.containsImage(placement: .init(x: 40, y: 60, width: 80, height: 40), angle: degrees),
+                            "Enclosed rotated image corner misclassified at \(degrees) degrees")
+                let tooSmall = StudioImageRotationGeometry(placement: .init(x: 41, y: 61, width: 78, height: 38), degrees: degrees).corners
+                let excludingRegion = try StudioSelectionRegion(points: tooSmall, kind: .polygon, smoothing: 0)
+                try require(!excludingRegion.containsImage(placement: .init(x: 40, y: 60, width: 80, height: 40), angle: degrees),
+                            "Non-enclosing rotated outline accepted at \(degrees) degrees")
+            }
+            let polygon = StudioImageRotationGeometry(placement: .init(x: 39, y: 59, width: 82, height: 42), degrees: 45).corners
+            let areaCapture = vm.beginAreaSelection()!
+            try require(areaCapture.image?.placement == .init(x: 40, y: 60, width: 80, height: 40) && areaCapture.image?.angle == 45,
+                        "Area selection fixture captured unexpected placement or angle: \(String(describing: areaCapture.image))")
+            let region = try StudioSelectionRegion(points: polygon, kind: areaCapture.kind, smoothing: areaCapture.smoothing)
+            try require(region.containsImage(placement: areaCapture.image!.placement, angle: areaCapture.image!.angle),
+                        "Real region failed to enclose the rotated image polygon")
+            try require(vm.finishAreaSelection(areaCapture, points: polygon), "Rotated polygon selection failed")
+            try require(vm.selectedAreaImageCorners != nil,
+                        "Successful image enclosure did not retain selected image; capture=\(String(describing: vm.beginAreaSelection()))")
+            try require(vm.selectedElementIDs.isEmpty, "Image selection also selected drawings")
+            try require(vm.document == before, "Image selection changed canonical document")
+            try require(vm.canUndo == undo && vm.canRedo == redo, "Image selection changed Undo/Redo availability")
+            // The narrow oriented outline excludes the image's AABB corners, yet encloses its real polygon.
+            let empty = [CGPoint(x: 0, y: 0), CGPoint(x: 8, y: 0), CGPoint(x: 8, y: 8), CGPoint(x: 0, y: 8)]
+            vm.selectionMode = .add
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.selectedAreaImageCorners != nil, "Add empty lost selection")
+            vm.selectionMode = .subtract
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.selectedAreaImageCorners != nil, "Subtract empty lost selection")
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: polygon) && vm.selectedAreaImageCorners == nil, "Subtract enclosed image failed")
+            vm.selectionMode = .new
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: polygon), "Reselect image")
+            // All four corners remain enclosed, but this notch enters the polygon interior.
+            let notched = [CGPoint(x: 20, y: 20), CGPoint(x: 76, y: 20), CGPoint(x: 76, y: 85), CGPoint(x: 84, y: 85),
+                CGPoint(x: 84, y: 20), CGPoint(x: 140, y: 20), CGPoint(x: 140, y: 140), CGPoint(x: 20, y: 140)]
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: notched) && vm.selectedAreaImageCorners == nil,
+                        "Concave lasso selected image through an interior notch")
+            vm.areaSelectionKind = .rectangle
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: [.init(x: 40, y: 60), .init(x: 120, y: 100)]) && vm.selectedAreaImageCorners == nil,
+                        "Unrotated rectangle falsely enclosed rotated image")
+        }
+        try await test("image area selection continues into real Move delete Undo and cold persistence with original bytes") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Area move fixture")
+            vm.selectLayer(vm.currentFrame.rasterLayerID!); vm.selectDrawingTool(.lasso)
+            vm.areaSelectionTarget = .image; vm.areaSelectionKind = .rectangle; vm.selectionMode = .new
+            let outline = [CGPoint.zero, CGPoint(x: 160, y: 160)]
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: outline), "Select area before Move")
+            let before = vm.currentFrame
+            vm.selectDrawingTool(.move)
+            guard let capture = vm.currentImageMoveCapture() else { throw Failure(message: "Lasso image did not continue to Move") }
+            try require(vm.finishImageMove(capture, delta: .init(width: 5, height: 5)), "Selected image move")
+            let moved = vm.currentFrame, pixels = try render(vm, transparent: true).bytes
+            vm.undo(); try require(vm.currentFrame == before, "Image area Move was not one Undo")
+            vm.redo(); try require(vm.currentFrame == moved, "Image area Move Redo")
+            try require(vm.setImageCanvasMove(true), "Restore exact image selection")
+            try require(vm.deleteBottomImage(vm.bottomImageSelection!) && vm.currentFrame.rasterAssetID == nil, "Selected image delete")
+            vm.undo(); try require(vm.currentFrame == moved, "Selected image delete Undo")
+            let saved = await vm.save(); try require(saved, "Area image save")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && render(cold, transparent: true).bytes == pixels && cold.originalImageSource(asset)?.originalData == original && cold.rasterData(asset) == image.normalizedPNG,
+                        "Area selection/move/delete lost saved image or original source")
+        }
+        try await test("image area selection rejects cancellation stale context hidden and locked active layers") {
+            let (vm, _) = try await project(root); _ = try attach(image, to: vm)
+            let imageLayer = vm.currentFrame.rasterLayerID!
+            vm.selectLayer(imageLayer); vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .image
+            vm.areaSelectionKind = .rectangle; vm.selectionMode = .new
+            let points = [CGPoint.zero, CGPoint(x: 160, y: 160)], before = vm.document
+            let capture = vm.beginAreaSelection()!
+            for stop in 1...2 {
+                var calls = 0
+                try require(!vm.finishAreaSelection(capture, points: points, checkCancellation: {
+                    calls += 1; if calls == stop { throw CancellationError() }
+                }) && vm.selectedAreaImageCorners == nil && vm.document == before, "Cancelled area selection escaped")
+            }
+            vm.areaSelectionTarget = .drawings; vm.areaSelectionTarget = .image
+            try require(!vm.finishAreaSelection(capture, points: points), "Old area gesture revived after target switch")
+            let current = vm.beginAreaSelection()!
+            try require(!vm.finishAreaSelection(current, points: points, checkCancellation: { vm.deselectAreaImage() }) && vm.selectedAreaImageCorners == nil,
+                        "Final selection cancellation was ignored")
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: points), "Select before revision change")
+            vm.setLayerOpacity(imageLayer, opacity: 0.75)
+            vm.selectDrawingTool(.move)
+            try require(vm.currentImageMoveCapture() == nil, "Stale Lasso revision continued into Move")
+            vm.selectDrawingTool(.lasso)
+            for lock in [LayerLockMode.full, .position, .alpha] {
+                vm.setLayerLockMode(imageLayer, mode: lock)
+                try require(vm.beginAreaSelection() == nil, "Locked image admitted area selection")
+                vm.setLayerLockMode(imageLayer, mode: .free)
+            }
+            vm.toggleLayerVisibility(imageLayer)
+            try require(vm.beginAreaSelection() == nil, "Hidden image admitted area selection")
+            vm.toggleLayerVisibility(imageLayer); vm.setLayerOpacity(imageLayer, opacity: 0)
+            try require(vm.beginAreaSelection() == nil, "Transparent image admitted area selection")
+        }
+        try await test("image-target Lasso reentry clears actionable drawing selection without changing artwork") {
+            let (vm, _) = try await project(root), asset = try attach(image, to: vm)
+            let imageLayer = vm.currentFrame.rasterLayerID!
+            vm.selectLayer(imageLayer)
+            let line = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 10, y: 10), .init(x: 60, y: 10)], color: "#00FF00", width: 4, opacity: 1, layerID: imageLayer)
+            try require(vm.commitElement(line), "Roundtrip real drawing fixture")
+            vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .image
+            vm.selectDrawingTool(.move); vm.selectionMode = .new
+            try require(vm.selectElement(at: .init(x: 30, y: 10)) == line.id && vm.canDeleteSelected,
+                        "Move did not explicitly select the real drawing")
+            let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            vm.selectDrawingTool(.lasso)
+            try require(vm.areaSelectionTarget == .image && vm.selectedElementIDs.isEmpty && !vm.canDeleteSelected && vm.bottomImageSelection == nil,
+                        "Image-target Lasso reentry retained drawing Delete authority")
+            vm.deleteSelected()
+            try require(vm.document == before && vm.canUndo == undo && vm.canRedo == redo && vm.currentFrame.elements.contains(where: { $0.id == line.id }) && vm.originalImageSource(asset)?.originalData == original,
+                        "Clearing transient selection changed artwork/history/source or allowed stale deletion")
+        }
+        try await test("selected image Cut atomically retains linked source transforms drawings Undo and cold pasted pixels") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            let primary = vm.currentFrame.rasterLayerID!
+            vm.selectLayer(primary); vm.duplicateLayer(primary); let alias = vm.activeLayerID
+            vm.selectDrawingTool(.move)
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0.1, y: 0.1, width: 0.7, height: 0.8)), "Cut crop fixture")
+            try require(vm.reflectImage(vm.prepareImagePlacement()!, axis: .horizontal), "Cut flip fixture")
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 30), "Cut angle fixture")
+            let line = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 10)],
+                color: "#00FF00", width: 4, opacity: 1, layerID: alias)
+            try require(vm.commitElement(line), "Cut unrelated drawing fixture")
+            vm.toggleLayerVisibility(primary)
+            try require(vm.setImageCanvasMove(true), "Explicit Cut image selection")
+            guard let capture = vm.selectedImageCutCapture else { throw Failure(message: "Selected image Cut capture") }
+            let before = vm.document, sourceBytes = vm.managedImageByteCount
+            var isolated = vm.currentFrame.projectedRasterFrame(on: alias)!
+            isolated.elements = []; isolated.holdTicks = nil
+            let expected = try render(vm, frameOverride: isolated).bytes
+            try require(vm.cutSelectedImage(capture), "Actual image Cut rejected")
+            try require(vm.currentFrame.rasterInstance(on: alias) == nil && vm.currentFrame.rasterInstance(on: primary) == before.frames[0].rasterInstance(on: primary) &&
+                        vm.currentFrame.elements == before.frames[0].elements && vm.layers == before.layers && vm.usesImageClipboard,
+                        "Cut removed sibling/drawings/layer or failed to replace clipboard scope")
+            try require(vm.managedImageByteCount == sourceBytes && vm.originalImageSource(asset)?.originalData == original,
+                        "Cut discarded or duplicated immutable image source")
+            vm.undo(); try require(vm.frames == before.frames, "Cut was not one Undo")
+            vm.redo(); try require(vm.currentFrame.rasterInstance(on: alias) == nil, "Cut Redo failed")
+            vm.addFrame(); try require(vm.pasteImage(), "Cut image could not paste into blank frame")
+            try require(vm.currentFrame.elements.isEmpty && vm.currentFrame.rasterAssetID == asset &&
+                        vm.currentFrame.rasterCrop == isolated.rasterCrop && vm.currentFrame.rasterReflection == isolated.rasterReflection &&
+                        vm.currentFrame.rasterRotationDegrees == isolated.rasterRotationDegrees && vm.currentFrame.rasterPlacement == isolated.rasterPlacement &&
+                        render(vm).bytes == expected && vm.managedImageByteCount == sourceBytes,
+                        "Cut/Paste changed selected appearance, included drawings or copied source bytes")
+            let saved = await vm.save(); try require(saved, "Cut/Paste save")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && render(cold).bytes == expected && cold.originalImageSource(asset)?.originalData == original && cold.rasterData(asset) == image.normalizedPNG,
+                        "Cut/Paste cold reopen lost pixels or originals")
+        }
+        try await test("image Cut cancels at every checkpoint and rejects stale selection locks without replacing prior clipboard") {
+            let (probe, _) = try await project(root); _ = try attach(image, to: probe)
+            probe.selectLayer(probe.currentFrame.rasterLayerID!); probe.selectDrawingTool(.move)
+            try require(probe.setImageCanvasMove(true), "Cut checkpoint probe selection")
+            var checkpoints = 0
+            try require(probe.cutSelectedImage(probe.selectedImageCutCapture!, checkCancellation: { checkpoints += 1 }) && checkpoints > 2,
+                        "Real Cut did not expose final transaction checkpoint")
+            let (vm, _) = try await project(root), asset = try attach(image, to: vm)
+            vm.selectDrawingTool(.move)
+            try require(vm.copyImage(), "Prior full-image clipboard")
+            try require(vm.setImageCanvasMove(true) && vm.selectedImageCutCapture == nil,
+                        "Singleton image fallback authorized Cut on a different active drawing layer")
+            _ = vm.setImageCanvasMove(false)
+            let priorPixels = try render(vm).bytes
+            vm.selectLayer(vm.currentFrame.rasterLayerID!)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Different Cut source appearance")
+            try require(vm.setImageCanvasMove(true), "Select Cut source")
+            let capture = vm.selectedImageCutCapture!, before = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            for stop in 1...checkpoints {
+                var count = 0
+                try require(!vm.cutSelectedImage(capture, checkCancellation: {
+                    count += 1; if count == stop { throw CancellationError() }
+                }) && vm.document == before && vm.canUndo == undo && vm.canRedo == redo && vm.selectedImageCutCapture == capture && vm.usesImageClipboard,
+                            "Cancelled Cut published document/history/selection or lost clipboard")
+            }
+            try require(vm.setImageCanvasMove(false) && vm.setImageCanvasMove(true), "Deselect/reselect Cut source")
+            try require(!vm.cutSelectedImage(capture) && vm.document == before, "Old selection Cut revived")
+            let current = vm.selectedImageCutCapture!
+            for lock in [LayerLockMode.full, .position, .alpha] {
+                vm.setLayerLockMode(vm.activeLayerID, mode: lock)
+                let locked = vm.document
+                try require(vm.selectedImageCutCapture == nil && !vm.cutSelectedImage(current) && vm.document == locked,
+                            "Locked image Cut escaped")
+                vm.setLayerLockMode(vm.activeLayerID, mode: .free)
+            }
+            vm.toggleLayerVisibility(vm.activeLayerID)
+            let hidden = vm.document
+            try require(vm.selectedImageCutCapture == nil && !vm.cutSelectedImage(current) && vm.document == hidden,
+                        "Hidden image Cut escaped")
+            vm.toggleLayerVisibility(vm.activeLayerID)
+            try require(vm.setImageCanvasMove(true), "Restore Cut selection")
+            let final = vm.selectedImageCutCapture!
+            var calls = 0, newer: StudioDocument?
+            try require(!vm.cutSelectedImage(final, checkCancellation: {
+                calls += 1; if calls == checkpoints { vm.addFrame(); newer = vm.document }
+            }) && newer != nil && vm.document == newer, "Late Cut overwrote newer edit")
+            try require(vm.pasteImage() && vm.currentFrame.rasterRotationDegrees == nil && render(vm).bytes == priorPixels &&
+                        vm.originalImageSource(asset)?.originalData == original,
+                        "Failed or cancelled Cut replaced the prior full-image clipboard")
         }
         print("STUDIO_IMAGE_INTEGRATION_TESTS=PASS \(passed) actual production cases")
     }

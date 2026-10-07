@@ -1896,20 +1896,25 @@ jobs:
             StickDeathInfinity/Services/StudioImageCatalogue.swift \
             Tests/StudioImagePack/main.swift \
             -o "$RUNNER_TEMP/sdi-image-pack-tests"
+          python3 scripts/image-packs/prepare-fixtures.py \
+            StickDeathInfinity/Resources/StudioImages/additional-packs.json \
+            "$RUNNER_TEMP/sdi-image-pack-fixtures" \
+            --legacy-archive Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip
           "$RUNNER_TEMP/sdi-image-pack-tests" \
             StickDeathInfinity/Resources/StudioImages \
-            Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip
+            Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip \
+            "$RUNNER_TEMP/sdi-image-pack-fixtures/archive-paths.json"
   native-ios-build:
     needs: native-production-tests
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 87 cases x 180 seconds, three measured
+    # Match the bounded inventory: 95 cases x 180 seconds, three measured
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
     # The separate nine-case auth suite adds a bounded 17 minutes on the same runner.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
     # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 311
+    timeout-minutes: 335
     steps:
       - name: Require successful production verification
         shell: bash

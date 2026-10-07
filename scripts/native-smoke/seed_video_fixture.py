@@ -4,8 +4,11 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
+
+from seed_diagnostics import Evidence, collect_failure, result_projection, run_bounded
 
 
 def seed_video_fixture(udid: str, output: Path) -> None:
@@ -36,10 +39,47 @@ def seed_video_fixture(udid: str, output: Path) -> None:
             began = time.monotonic()
             entry = {'stage': name, 'timeoutSeconds': timeout}; records.append(entry)
             try:
-                with (folder / (name + '.log')).open('xb') as log:
-                    result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
-                entry['exitCode'] = result.returncode
-                if result.returncode: raise subprocess.CalledProcessError(result.returncode, command)
+                if name == 'addmedia':
+                    evidence = Evidence(udid, folder, namespace='video')
+                    try:
+                        # Exactly one mutation, unchanged120s work budget. The
+                        # extra second is only for reaping this owned child.
+                        result = run_bounded(command, began + timeout + 1,
+                                             work_deadline=began + timeout)
+                        entry['supervision'] = result_projection(result)
+                        entry['exitCode'] = result.returncode
+                        try:
+                            evidence.json('image-seed-command.json', {'stage': name, 'result': entry['supervision']})
+                        except Exception as write_error:
+                            entry['commandEvidenceWriteErrorClass'] = type(write_error).__name__
+                            print(json.dumps({'videoSeedCommandEvidence': 'unavailable',
+                                'errorClass': type(write_error).__name__,
+                                'actualCommandResultPreserved': True}), flush=True)
+                        if result.spawn_error:
+                            raise OSError('Video addmedia could not be started')
+                        if result.timed_out:
+                            raise subprocess.TimeoutExpired(command, timeout)
+                        if not result.reaped:
+                            raise OSError('Video addmedia child could not be reaped')
+                        if result.returncode != 0:
+                            raise subprocess.CalledProcessError(result.returncode, command)
+                    except Exception:
+                        # Read-only30sdiagnostics never retry the import and
+                        # cannot replace or downgrade its original failure.
+                        try:
+                            collect_failure(evidence, udid, 'video-addmedia')
+                        except Exception as diagnostic_error:
+                            print(json.dumps({'videoSeedDiagnostics': 'unavailable',
+                                'errorClass': type(diagnostic_error).__name__,
+                                'originalSeedingFailurePreserved': True}), flush=True)
+                        raise
+                    finally:
+                        evidence.close()
+                else:
+                    with (folder / (name + '.log')).open('xb') as log:
+                        result = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+                    entry['exitCode'] = result.returncode
+                    if result.returncode: raise subprocess.CalledProcessError(result.returncode, command)
                 if name == 'generate':
                     data = movie.read_bytes()
                     if not 0 < len(data) <= 16 * 1024 * 1024: raise ValueError('Generated video exceeds the importer limit')
@@ -52,4 +92,12 @@ def seed_video_fixture(udid: str, output: Path) -> None:
         raise
     finally:
         report['stages'] = records
-        (folder / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
+        original_failure = sys.exc_info()[1]
+        try:
+            (folder / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
+        except Exception as report_error:
+            if original_failure is None:
+                raise
+            print(json.dumps({'videoSeedResultEvidence': 'unavailable',
+                'errorClass': type(report_error).__name__,
+                'originalSeedingFailurePreserved': True}), flush=True)

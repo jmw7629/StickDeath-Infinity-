@@ -199,11 +199,12 @@ final class SpatterAIViewModel: ObservableObject {
 
     /// Current shipping behavior takes precedence over historical brain packs.
     /// These are instructions for the user, never execution receipts.
-    static let currentGuideVersion = "2026-10-07.3"
+    static let currentGuideVersion = "2026-10-07.4"
     private static let portableProjectGuide = "Save and return to the project library. In a saved project's menu, choose Save Project Backup to Files, choose a destination and complete the Files save; the system confirmation can be labelled Save or Move. The .sdiproject backup contains the saved editable project and its stored media; MP4 and GIF exports are not editable project backups. Wait for Project backup saved to Files before treating the save as complete. To bring it back, choose Import project backup in the library and select the .sdiproject file. Validation must finish before a separate project with a new identity is created; it does not overwrite the original or restore prior-process Undo history. Cancelling changes no projects. If a file is unsupported, damaged or too large, keep the original and report the displayed error; I cannot repair it or claim it was imported. This is an explicit Files transfer, not automatic cloud sync or a backup of every app setting."
     private static let deviceStorageGuide = "Open Storage in the project library, then Refresh to measure files. The report covers Documents and disk caches, including saved revisions. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded; the number is not total app or device usage. Clear releases cached frame encodings from memory, not disk space. It preserves projects, history, media, backups and exports, and leaves unclassified disk cache files untouched. I cannot inspect free device space or promise a storage reduction. Keep a verified project backup before managing files outside the app; Recently Deleted is recoverable storage, not a permanent-delete or automatic-purge feature."
 
     private static let imagePackGuide = "Open Image Library in Studio. The bundled catalogue has 207 pictures. Its optional 1-Bit Scenery pack adds 458 pictures after Download 643 KB finishes verification: 665 total with that pack, not thousands. Downloading needs a connection and sufficient space; wait for Pictures verified and available offline. Cancel or a download/verification error is not an installation. Remove download removes the downloaded library copy; pictures already added to projects are kept. If verification fails, remove the downloaded copy and try again. Select and preview a picture, then explicitly Add to current frame; downloading alone does not insert artwork. I cannot see whether your device has installed the pack."
+    private static let imageEditingGuide = "Select the imported image’s layer in Layers. In Lasso, choose Image on active layer and enclose the whole image with Rectangle, Polygon or Freehand; New replaces selection, Add keeps it and Subtract removes it. Choose Move to use the selected image’s controls. Position, size and angle are in the Move popup, and the red canvas handle rotates it; Apply or releasing the handle creates one Undo step. Cut image in Move transfers the selected active-layer image to the clipboard and removes only that instance in one Undo step. Copy selected image keeps that instance’s crop, flips and angle; Paste image needs a blank image destination and never replaces an existing image. Layers can duplicate an image layer as a linked instance sharing the original file, with separate placement. Hidden or locked layers reject changes. Mixed image-and-drawing group selection is unavailable. Chat guidance does not select or edit an image for you."
     private static let personalPreferencesGuide = "In Studio's Spatter panel, open Local memory preferences…. Local Memory is off by default. Use my local preferences saves only fixed choices: Guidance is Standard or Beginner; Animation focus is General, Timing, Drawing or Audio. Choose Save preferences to apply. Records stay on this device, separately scoped to each account and guest; signing out does not transfer them. Spatter does not learn from conversation history, infer emotions or store arbitrary secrets through this feature. Preferences add local hints and are not automatically sent to cloud advice. Turning off stops using choices; Reset saved preferences deletes this account's local record. Import preference JSON… loads a draft for review, then Save is required. Export saved preferences… includes supported choices only, with no account identity or conversation. Imports accept version 1, at most 2 KB, and no extra fields. App-managed preferences are excluded from device backup; explicitly exported files remain where you save them. I cannot inspect or change your saved choices through chat."
 
     private static func persistenceGuide(for query: String) -> String? {
@@ -237,6 +238,7 @@ final class SpatterAIViewModel: ObservableObject {
     Rename in Project Settings preserves identity and artwork and supports Undo. Recently Deleted has no automatic purge.
     Take Photo is an explicit still-camera permission flow with preview and a separate Add action; it does not record audio.
     The Color panel accepts six-digit RGB hex and remembers recent colors on this device.
+    \(imageEditingGuide)
     Layers have real thumbnails, drag/arrow reordering, visibility, opacity, blending and full locking.
     Move's Lock layers locks the selected elements' entire layers across every frame; it is not object or alpha locking.
     Voice Maker creates local speech from installed system voices; preview it and explicitly add it to the audio timeline.
@@ -277,13 +279,21 @@ final class SpatterAIViewModel: ObservableObject {
     private static func currentGuide(for query: String) -> String? {
         let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
         func mentions(_ values: String...) -> Bool { !words.isDisjoint(with: values) }
+        // A project can be context for an image action; do not turn that into
+        // Duplicate Project. An explicit whole-project target retains its route.
+        let normalized = query.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+        let wholeProjectTarget = normalized.range(of:
+            #"\b(?:duplicate|copy|rename) (?:of )?(?:(?:this|the|my|a|another|saved|entire|whole) )*projects?\b"#,
+            options: .regularExpression) != nil
+        let imageEditingRequest = mentions("image", "images", "picture", "pictures") &&
+            mentions("select", "selection", "lasso", "marquee", "rectangle", "polygon", "freehand", "move", "rotate", "rotation", "angle", "flip", "copy", "cut", "paste", "duplicate", "duplicating") && !wholeProjectTarget
         if mentions("camera", "photo", "photograph") && mentions("take", "capture", "permission", "denied") {
             return "Open Add Picture in Studio, then Take Photo. The app asks for camera permission only when you choose capture. Review the still image, then explicitly Add it to the project; cancelling changes nothing. There is no microphone recording. If access is denied, enable camera access in iOS Settings before retrying. Hardware availability varies; Photos and Files remain alternatives."
         }
         if mentions("project", "projects", "library") && mentions("delete", "deleted", "trash", "restore", "recover") {
             return "In the project library, open the selected project's context menu and choose Move to Recently Deleted, then confirm. The complete bundle stays on your device. Open Recently Deleted and choose Restore to return it. There is no automatic purge or permanent-delete button. If another project already uses its identity, restoration refuses to overwrite either copy. This does not recover files deleted outside the app."
         }
-        if mentions("project", "projects") && mentions("duplicate", "copy", "copies", "rename", "name") {
+        if mentions("project", "projects") && mentions("duplicate", "copy", "copies", "rename", "name") && !imageEditingRequest {
             return "Use Duplicate Project in a saved project's context menu to create a separate local copy with a new project identity. To rename the open animation, use Studio's Project Settings, edit its name and choose Rename project; Undo restores the previous name. A stale settings form must reload its name before applying. Neither action publishes or uploads your work."
         }
         if mentions("canvas") && mentions("size", "dimensions", "custom", "width", "height") {
@@ -300,6 +310,7 @@ final class SpatterAIViewModel: ObservableObject {
         if mentions("export", "mp4", "gif", "png", "spritesheet") {
             return "Open Studio's Export panel and choose MP4, GIF, PNG sequence or spritesheet. PNG sequence and spritesheet offer White or Transparent in Export background; that setting does not remove pixels from imported images or an added backdrop. MP4 and GIF use a white background. Check frame timing and visible layers first. MP4 can mix project audio; GIF and still-image outputs are silent. Wait for the real output file before sharing. Cancellation or an error is not export success, and export never authorizes publication."
         }
+        if imageEditingRequest { return imageEditingGuide }
         if mentions("background", "backgrounds", "backdrop", "backdrops") {
             return "Open Background Library from Studio's menu or Project Settings. Choose Gradients or Solid, then a preset: there are 16 locally generated backgrounds. It adds behind drawings on the current frame only; it does not change every frame. A frame that already has an original image refuses the addition: add a blank frame first, and no original is replaced. Finish playback, saving or an active drawing/text draft before adding. Cancel stops preparation; a successful addition supports Undo. This library adds artwork; Magic Cut is the separate control for removing an imported image's background."
         }
@@ -310,7 +321,7 @@ final class SpatterAIViewModel: ObservableObject {
             return "Alpha lock preserves existing layer transparency while painting with Pencil, Pen, Brush, Marker or Crayon. Select Alpha in the Layers lock options; painting an empty transparent layer will not reveal new pixels. Unlock before fill, erasing, effects, transforms, deleting or pasting. Full lock prevents layer edits; Move's Lock layers applies full locking across all frames."
         }
         if mentions("layers", "layer") {
-            return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha lock keeps existing transparency while brush painting; unlock before fill, erasing, transforms or pasting. Imported-image layer duplication remains unavailable."
+            return "Open Layers to select, show/hide, lock, rename, duplicate or reorder layers. Drag a row to the insertion marker or use its arrows. Thumbnails show the layer's real contents; hidden layers remain identifiable. Opacity and blend settings affect the canvas and export. Move's Lock layers applies to whole layers across all frames. Alpha lock keeps existing transparency while brush painting; unlock before fill, erasing, transforms or pasting. Duplicating an imported-image layer creates a linked instance sharing the original file, with separate placement."
         }
         if mentions("hex", "palette", "colors", "colour") {
             return "Open Color from the main toolbar. Enter a six-digit RGB hex color and Apply, or select a recent swatch. Recent colors are stored on this device. Gradient start and end colors are separate settings."

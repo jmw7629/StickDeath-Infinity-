@@ -54,7 +54,91 @@ private struct Failure: Error { let message: String }
     static func request(_ doc: StudioDocument, _ commands: [StudioCommand]) -> StudioCommandRequest {
         .init(requestID: UUID(), projectID: doc.id, expectedRevision: doc.revision, action: .apply(commands))
     }
+    static func shelfInsertion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-sticker-insertion-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: store)
+        let created = await vm.createProject(name: "Real shelf glyph", width: 128, height: 128, fps: 12)
+        try require(created, "Shelf project fixture")
+        vm.activePanel = .stickerEmoji
+        let before = vm.document
+        try require(vm.insertShelfGlyph("💥") && vm.activePanel == .none && vm.message == nil,
+                    "Successful shelf insert did not dismiss")
+        guard let element = vm.currentFrame.elements.first else { throw Failure(message: "Shelf did not insert real glyph") }
+        try require(vm.currentFrame.elements.count == 1 && element.tool == .text && element.fillColor == "💥" &&
+                    element.text == nil && element.width == 8 && element.color == "#000000" && element.opacity == 1 &&
+                    element.points == [.init(x: 64, y: 64)] && element.layerID == before.activeLayerID,
+                    "Shelf altered historical glyph representation or placement")
+        let inserted = vm.currentFrame, artwork = try render(vm.document)
+        try require(ink(artwork) > 10, "Inserted shelf glyph rendered no actual pixels")
+        vm.undo(); try require(vm.currentFrame == before.frames[0], "Shelf insert was not one Undo")
+        vm.redo(); try require(vm.currentFrame == inserted, "Shelf insert Redo")
+        let saved = await vm.save(); try require(saved, "Shelf save")
+        let cold = StudioViewModel(storage: store)
+        let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+        try require(opened && cold.currentFrame == inserted && render(cold.document) == artwork, "Shelf cold reopen changed glyph/pixels")
+        pass("real shelf glyph insert dismisses only after one-history commit and retains rendered pixels after cold reopen")
+
+        vm.activePanel = .stickerEmoji
+        for lock in [LayerLockMode.full, .alpha] {
+            vm.setLayerLockMode(vm.activeLayerID, mode: lock)
+            let snapshot = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            try require(!vm.insertShelfGlyph("💥") && vm.activePanel == .stickerEmoji && vm.message != nil &&
+                        vm.document == snapshot && vm.canUndo == undo && vm.canRedo == redo,
+                        "Rejected locked insertion dismissed chooser or mutated history")
+            vm.setLayerLockMode(vm.activeLayerID, mode: .free)
+        }
+        vm.toggleLayerVisibility(vm.activeLayerID)
+        let hidden = vm.document
+        try require(!vm.insertShelfGlyph("💥") && vm.activePanel == .stickerEmoji && vm.document == hidden,
+                    "Hidden layer insertion escaped")
+        vm.toggleLayerVisibility(vm.activeLayerID)
+        vm.setLayerLockMode(vm.activeLayerID, mode: .position)
+        try require(vm.insertShelfGlyph("⚔️"), "Position lock should preserve existing permission to add new ordinary content")
+        vm.setLayerLockMode(vm.activeLayerID, mode: .free); vm.addFrame(); vm.activePanel = .stickerEmoji
+        let guarded = vm.document
+        for invalid in ["", " ", "\n", String(repeating: "x", count: 17)] {
+            try require(!vm.insertShelfGlyph(invalid) && vm.activePanel == .stickerEmoji && vm.document == guarded,
+                        "Invalid shelf payload dismissed or mutated document")
+        }
+        try require(!vm.insertShelfGlyph("💥", isForeground: false) && vm.document == guarded, "Background insertion")
+        let inputID = UUID().uuidString
+        try require(vm.beginStrokeInput(id: inputID), "Active stroke fixture")
+        try require(!vm.insertShelfGlyph("💥") && vm.document == guarded && vm.activePanel == .stickerEmoji, "Active stroke insertion")
+        vm.finishStrokeInput(id: inputID)
+        try require(vm.beginTextEditing(), "Text draft fixture")
+        vm.activePanel = .stickerEmoji
+        try require(!vm.insertShelfGlyph("💥") && vm.document == guarded && vm.textDraft != nil && vm.activePanel == .stickerEmoji,
+                    "Shelf replaced text draft")
+        vm.cancelTextEditing(); vm.activePanel = .stickerEmoji
+        vm.togglePlayback()
+        try require(vm.isPlaying && !vm.insertShelfGlyph("💥") && vm.document == guarded, "Playback admitted shelf edit")
+        vm.stopPlayback()
+        for stop in 1...2 {
+            var count = 0
+            try require(!vm.insertShelfGlyph("💥", checkCancellation: {
+                count += 1; if count == stop { throw CancellationError() }
+            }) && vm.document == guarded && vm.activePanel == .stickerEmoji && vm.message == "Sticker insertion cancelled. Nothing was added.",
+                        "Cancelled shelf insertion committed or dismissed chooser")
+        }
+        var calls = 0
+        var newer: StudioDocument?
+        try require(!vm.insertShelfGlyph("💥", checkCancellation: {
+            calls += 1
+            if calls == 2 { vm.addFrame(); newer = vm.document }
+        }) && newer != nil && vm.document == newer && vm.activePanel == .stickerEmoji,
+                    "Late shelf commit overwrote newer frame edit")
+        var exits = 0
+        let latest = vm.document
+        try require(!vm.insertShelfGlyph("💥", checkCancellation: {
+            exits += 1; if exits == 2 { vm.activePanel = .none }
+        }) && vm.document == latest && vm.activePanel == .none, "Dismissed shelf was revived by late insertion")
+        await vm.flush()
+        pass("shelf rejection retains chooser across locks drafts invalid input cancellation and final stale-context fences")
+    }
     static func main() async throws {
+        try await shelfInsertion()
         setbuf(stdout, nil)
         let original = try document(), base = try render(original)
         try require(ink(base) > 100, "New text rendered no real glyphs")
@@ -274,6 +358,68 @@ private struct Failure: Error { let message: String }
         try require(commands.document.frames[0].elements[0].text?.content == "Updated", "Typed update did not edit real text")
         try rejects { _ = try StudioCommandExecutor.execute(request(prior,[change]),editor:&commands) }
         pass("strict Spatter text creation update cancellation and stale revision use production transactions")
+        let pickerStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("PickerDocuments"),
+            cachesDirectory: root.appendingPathComponent("PickerCache"))
+        let pickerVM = StudioViewModel(storage: pickerStorage, toolDefaults: nil)
+        let pickerCreated = await pickerVM.createProject(name: "Text picker alpha", width: 128, height: 128, fps: 12)
+        try require(pickerCreated, "Create picker-opacity fixture")
+        pickerVM.selectDrawingTool(.text)
+        let untouched = pickerVM.document, untouchedUndo = pickerVM.canUndo, untouchedDirty = pickerVM.isDirty
+        pickerVM.textPickerColor = Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 0.25)
+        try require(pickerVM.strokeColorHex == "#FF0000" && abs(pickerVM.strokeOpacity - 0.25) < 0.000001,
+                    "Native text picker alpha was discarded")
+        guard let opaqueRGB = NSColor(pickerVM.strokeColor).usingColorSpace(.sRGB) else { throw Failure(message: "Picker RGB conversion") }
+        try require(opaqueRGB.alphaComponent == 1, "Picker stored alpha twice")
+        for opacity in [0.0, 0.25, 1.0] {
+            pickerVM.textPickerColor = Color(.sRGB, red: 1, green: 0, blue: 0, opacity: opacity)
+            for _ in 0..<3 { pickerVM.textPickerColor = pickerVM.textPickerColor }
+            try require(abs(pickerVM.strokeOpacity - opacity) < 0.000001 &&
+                abs(pickerVM.capturedStrokeOpacity - opacity) < 0.000001,
+                "Text picker alpha compounded across repeated updates")
+            guard let current = NSColor(pickerVM.textPickerColor).usingColorSpace(.sRGB) else { throw Failure(message: "Picker roundtrip") }
+            pickerVM.textPickerColor = Color(.sRGB, red: 0, green: 0, blue: 1, opacity: current.alphaComponent)
+            try require(pickerVM.strokeColorHex == "#0000FF" && abs(pickerVM.strokeOpacity - opacity) < 0.000001,
+                        "RGB-only picker edit changed existing opacity")
+        }
+        pickerVM.toolOpacity = 0.6
+        guard let synchronized = NSColor(pickerVM.textPickerColor).usingColorSpace(.sRGB) else { throw Failure(message: "Picker opacity conversion") }
+        try require(abs(synchronized.alphaComponent - 0.6) < 0.000001,
+                    "Text opacity slider did not update picker alpha")
+        try require(pickerVM.document == untouched && pickerVM.canUndo == untouchedUndo && pickerVM.isDirty == untouchedDirty,
+                    "Picker settings changed document/history")
+        pickerVM.textStyle = .init(size: 32, boxWidth: 104, boxHeight: 80)
+        try require(pickerVM.beginTextEditing(), "Begin alpha text")
+        pickerVM.textInput = "SDI"
+        pickerVM.textPickerColor = Color(.sRGB, red: 1, green: 0, blue: 0, opacity: 0.25)
+        try require(pickerVM.applyTextEditing(), "Commit picker alpha text")
+        let alphaDocument = pickerVM.document, alphaPixels = try render(alphaDocument)
+        try require(alphaDocument.frames[0].elements[0].opacity == 0.25, "Apply ignored picker opacity")
+        let maximumAlpha = stride(from: 3, to: alphaPixels.count, by: 4).map { Int(alphaPixels[$0]) }.max() ?? 0
+        try require((63...65).contains(maximumAlpha), "Text renderer did not use picker alpha once")
+        pickerVM.undo(); try require(pickerVM.currentFrame.elements.isEmpty, "Picker settings added an extra Undo entry")
+        pickerVM.redo(); try require(try render(pickerVM.document) == alphaPixels, "Redo changed picker alpha")
+        let pickerSaved = await pickerVM.save(); try require(pickerSaved, "Save picker alpha")
+        let pickerListing = try pickerStorage.listAnimationsReportingFailures()
+        try require(pickerListing.failures.isEmpty && pickerListing.animations.count == 1, "Picker project listing")
+        let pickerReopened = StudioViewModel(storage: pickerStorage, toolDefaults: nil)
+        let pickerOpened = await pickerReopened.openProject(pickerListing.animations[0])
+        try require(pickerOpened && render(pickerReopened.document) == alphaPixels, "Cold reopen changed picker alpha")
+        pickerReopened.selectDrawingTool(.move)
+        _ = pickerReopened.selectElement(at: CGPoint(x: 64, y: 64))
+        try require(pickerReopened.beginTextEditing(selected: true), "Reopen selected alpha text")
+        guard let existingAlpha = NSColor(pickerReopened.textPickerColor).usingColorSpace(.sRGB) else { throw Failure(message: "Existing text picker alpha") }
+        try require(abs(existingAlpha.alphaComponent - 0.25) < 0.000001, "Editing text reset picker alpha to opaque")
+        let beforeCancel = pickerReopened.document
+        pickerReopened.textPickerColor = Color(.sRGB, red: 0, green: 0, blue: 1, opacity: 0.75)
+        pickerReopened.cancelTextEditing()
+        try require(pickerReopened.document == beforeCancel && render(pickerReopened.document) == alphaPixels,
+                    "Cancelling picker changes altered committed text")
+        let alphaOutput = try await StudioExportService().export(document: pickerReopened.document,
+            format: .pngSequence, outputParent: root, background: .transparent)
+        guard let alphaSource = CGImageSourceCreateWithURL(alphaOutput.imageURLs[0] as CFURL, nil),
+              let alphaImage = CGImageSourceCreateImageAtIndex(alphaSource, 0, nil) else { throw Failure(message: "Alpha PNG reopen") }
+        try require(try pixels(alphaImage) == alphaPixels, "PNG changed text picker opacity")
+        pass("native text picker alpha and opacity slider share committed editable pixels through Undo cold reopen cancel and PNG")
         print("TEXT_PRODUCTION_GROUPS=\(passed)")
     }
 }

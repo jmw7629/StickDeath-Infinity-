@@ -45,7 +45,7 @@ struct StudioFrameRenderer {
             preview.elements = frame.elements.filter { $0.layerID == id }
         } else {
             preview.rasterAssetID = nil; preview.rasterLayerID = nil; preview.rasterPlacement = nil
-            preview.rasterCrop = nil; preview.rasterQuarterTurns = nil; preview.rasterReflection = nil
+            preview.rasterCrop = nil; preview.rasterQuarterTurns = nil; preview.rasterRotationDegrees = nil; preview.rasterReflection = nil
             preview.rasterAliases = nil
         }
         let isolated = layers.filter { $0.id == id }.map { source -> CanvasLayer in
@@ -186,11 +186,13 @@ struct StudioFrameRenderer {
             // Reflect in viewport coordinates about the placed center;
             // canvas, thumbnails and every export share these pixels.
             var picture = context
-            if let turns = raster.quarterTurns, let placement = raster.placement {
+            if let placement = raster.placement, raster.quarterTurns != nil || raster.rotationDegrees != nil {
+                let turns = raster.quarterTurns ?? 0
                 // Rotate in document coordinates. Conjugating viewport
                 // scale keeps thumbnails/non-square views geometrically correct.
                 picture.translateBy(x: rect.midX, y: rect.midY)
                 picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
+                if let degrees = raster.rotationDegrees { picture.rotate(by: .degrees(degrees)) }
                 if let reflection = raster.reflection {
                     picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                 }

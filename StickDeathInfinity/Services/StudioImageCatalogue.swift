@@ -281,10 +281,25 @@ struct StudioImageLibraryPreferences {
 /// media is a disposable library copy; Studio imports retain their own originals.
 actor StudioImagePackCache {
     struct Tile: Codable, Sendable { let x: Int; let y: Int; let pixelSHA256: String }
+    struct Entry: Codable, Sendable {
+        let id: String; let title: String; let category: StudioImageCatalogue.Category
+        let tags: [String]; let contentAdvisory: StudioImageCatalogue.ContentAdvisory
+        let path: String; let sourceSHA256: String; let crop: [Int]?
+        let pixelSHA256: String; let width: Int; let height: Int
+    }
+    struct Additional: Codable, Sendable {
+        let sourceURL: String; let licensePath: String; let entries: [Entry]
+    }
     struct Descriptor: Codable, Sendable {
         let id: String; let title: String; let archiveURL: String
         let archiveBytes: Int; let archiveSHA256: String; let sheetSHA256: String
         let licenseSHA256: String; let licenseBytes: Int; let tiles: [Tile]
+        var additional: Additional? = nil
+        var imageIDs: [String] {
+            additional?.entries.map(\.id) ?? tiles.map { "kenney.1-bit-scenery.x\($0.x).y\($0.y)" }
+        }
+        var imageCount: Int { imageIDs.count }
+        var mayContainWeapons: Bool { additional?.entries.contains { $0.contentAdvisory == .cartoonWeapons } ?? false }
     }
     enum PackError: LocalizedError {
         case invalid, busy, quota, network
@@ -317,10 +332,55 @@ actor StudioImagePackCache {
               digest(bytes) == "6978b7eb815f122b9d1afd9c37de457d523177ae35a3adcd86e7d8a619156c3b" else { throw PackError.invalid }
         return try JSONDecoder().decode(Descriptor.self, from: bytes)
     }
+    /// Descriptors ship with the app; downloaded archives cannot add entries or URLs.
+    static func descriptors(in bundle: Bundle = .main) throws -> [Descriptor] {
+        guard let directory = bundle.url(forResource: "StudioImages", withExtension: nil) else { throw PackError.invalid }
+        return try descriptors(directory: directory)
+    }
+    static func descriptors(directory: URL) throws -> [Descriptor] {
+        let legacy = try descriptor(directory: directory)
+        let url = directory.appendingPathComponent("additional-packs.json")
+        let bytes = try Data(contentsOf: url)
+        guard bytes.count <= 2 * 1024 * 1024, digest(bytes) == "1dd09bdc3deedc749a0a82900238f353b1c7febadc9a4112feba138ae40ef967" else { throw PackError.invalid }
+        let additional = try JSONDecoder().decode([Descriptor].self, from: bytes)
+        guard additional.count == 5 else { throw PackError.invalid }
+        let all = [legacy] + additional
+        for item in all { try validateDescriptor(item) }
+        let ids = all.flatMap(\.imageIDs)
+        guard Set(all.map(\.id)).count == all.count, Set(ids).count == ids.count,
+              ids.count == 1818 else { throw PackError.invalid }
+        return all
+    }
+    private static let additionalPins: [String: String] = [
+        "kenney.1-bit-expansion.v1": "854ddf1ce62093add3f5d8d29129d03269acff9d197e64d4cc807fe5c2111731",
+        "kenney.1-bit-platformer.v1": "443ced81e47baa84b669eb76a160e55e27e7b26fb4c90867f56948aad29714a8",
+        "kenney.monochrome-rpg.v1": "0f9bc8d5ee3cbf4202017055812ba3d31e6ffa74b0744045d69904f4bda74a5d",
+        "kenney.micro-roguelike.v1": "d83b113b261a44e5e652f9cf5f076ff8b6a40493c7e9827be048ec3e5932cb55",
+        "kenney.smoke-particles.v1": "2721f1036c63f17b89046cfd5a05ae7b3504cd1f0672cbd2f4f57db29dd2c70f"
+    ]
+    private static func additionalFingerprint(_ descriptor: Descriptor) -> String {
+        guard let additional = descriptor.additional else { return "" }
+        var values = [descriptor.id, descriptor.title, descriptor.archiveURL, String(descriptor.archiveBytes),
+                      descriptor.archiveSHA256, descriptor.sheetSHA256, descriptor.licenseSHA256,
+                      String(descriptor.licenseBytes), additional.sourceURL, additional.licensePath]
+        for entry in additional.entries {
+            values += [entry.id, entry.title, entry.category.rawValue, String(entry.tags.count)]
+            values += entry.tags
+            values += [entry.contentAdvisory.rawValue, entry.path, entry.sourceSHA256,
+                       entry.crop?.map(String.init).joined(separator: ",") ?? "", entry.pixelSHA256,
+                       String(entry.width), String(entry.height)]
+        }
+        return digest(Data(values.map { "\($0.utf8.count):\($0)" }.joined().utf8))
+    }
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     private static func validateDescriptor(_ descriptor: Descriptor) throws {
+        if let additional = descriptor.additional {
+            guard descriptor.tiles.isEmpty, !additional.entries.isEmpty, additional.entries.count <= 2000,
+                  additionalPins[descriptor.id] == additionalFingerprint(descriptor) else { throw PackError.invalid }
+            return
+        }
         guard descriptor.tiles.count == 458 else { throw PackError.invalid }
         let coordinates = descriptor.tiles.map { "\($0.x),\($0.y),\($0.pixelSHA256)\n" }.joined()
         guard descriptor.id == "kenney.1-bit-scenery.v1", descriptor.title == "1-Bit Scenery",
@@ -373,6 +433,26 @@ actor StudioImagePackCache {
     private func location(_ descriptor: Descriptor) -> URL { root.appendingPathComponent(descriptor.id, isDirectory: true) }
     private func verify(_ descriptor: Descriptor, at directory: URL) throws -> StudioImageCatalogue {
         let catalogue = try StudioImageCatalogue(directory: directory, releasePolicy: releasePolicy)
+        if let additional = descriptor.additional {
+            guard catalogue.images.count == additional.entries.count, catalogue.licenses.count == 1,
+                  catalogue.licenses[0].id == descriptor.id + ".cc0",
+                  catalogue.licenses[0].sourceURL == additional.sourceURL,
+                  catalogue.licenses[0].author == "Kenney",
+                  catalogue.licenses[0].licenseByteCount == descriptor.licenseBytes,
+                  catalogue.licenses[0].licenseSHA256 == descriptor.licenseSHA256,
+                  catalogue.licenses[0].sourceArchiveSHA256 == descriptor.archiveSHA256 else { throw PackError.invalid }
+            for (item, entry) in zip(catalogue.images, additional.entries) {
+                try Task.checkCancellation()
+                guard item.id == entry.id, item.title == entry.title, item.category == entry.category,
+                      item.tags == entry.tags, item.contentAdvisory == entry.contentAdvisory,
+                      item.width == entry.width, item.height == entry.height,
+                      item.pixelSHA256 == entry.pixelSHA256, item.originalSHA256 == item.sha256,
+                      item.licenseID == descriptor.id + ".cc0",
+                      entry.crop != nil || item.sha256 == entry.sourceSHA256 else { throw PackError.invalid }
+                _ = try catalogue.integrityCheckedPNG(item)
+            }
+            return catalogue
+        }
         guard catalogue.images.count == descriptor.tiles.count, catalogue.licenses.count == 1,
               catalogue.licenses[0].id == "kenney.1-bit-pack.cc0",
               catalogue.licenses[0].author == "Kenney",
@@ -521,6 +601,10 @@ actor StudioImagePackCache {
                                 checkpoint: () throws -> Void) throws {
         // Only this exact hash-pinned publisher archive is parsed. Central/local
         // entries are never filesystem paths; exactly two known entries are used.
+        if descriptor.additional != nil {
+            try installAdditional(archive, descriptor: descriptor, directory: directory, checkpoint: checkpoint)
+            return
+        }
         let entries = try zipEntries(archive)
         guard let license = entries["License.txt"], let sheet = entries["Tilesheet/monochrome-transparent.png"],
               license.count == descriptor.licenseBytes, digest(license) == descriptor.licenseSHA256,
@@ -555,7 +639,60 @@ actor StudioImagePackCache {
         let manifest = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "licenses": [licenseRow], "images": images], options: [.sortedKeys])
         try manifest.write(to: directory.appendingPathComponent("catalogue.json"), options: .atomic)
     }
-    private static func zipEntries(_ bytes: Data) throws -> [String: Data] {
+    private static func installAdditional(_ archive: Data, descriptor: Descriptor, directory: URL,
+                                          checkpoint: () throws -> Void) throws {
+        guard let additional = descriptor.additional else { throw PackError.invalid }
+        let allowed = Set(additional.entries.map(\.path) + [additional.licensePath])
+        let files = try zipEntries(archive, allowed: allowed)
+        guard let license = files[additional.licensePath], license.count == descriptor.licenseBytes,
+              digest(license) == descriptor.licenseSHA256 else { throw PackError.invalid }
+        let licenseFilename = descriptor.licenseSHA256 + ".txt"
+        try license.write(to: directory.appendingPathComponent(licenseFilename), options: .atomic)
+        var images: [[String: Any]] = []
+        var outputBytes = license.count
+        for entry in additional.entries {
+            try checkpoint(); try Task.checkCancellation()
+            guard let sourceBytes = files[entry.path], digest(sourceBytes) == entry.sourceSHA256,
+                  let source = CGImageSourceCreateWithData(sourceBytes as CFData, nil),
+                  CGImageSourceGetCount(source) == 1,
+                  let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw PackError.invalid }
+            let png: Data
+            if let crop = entry.crop {
+                guard crop.count == 4, crop[0] >= 0, crop[1] >= 0, crop[2] == entry.width,
+                      crop[3] == entry.height, crop[0] + crop[2] <= image.width,
+                      crop[1] + crop[3] <= image.height,
+                      let cropped = image.cropping(to: CGRect(x: crop[0], y: crop[1], width: crop[2], height: crop[3])) else { throw PackError.invalid }
+                let encoded = NSMutableData()
+                guard let destination = CGImageDestinationCreateWithData(encoded, "public.png" as CFString, 1, nil) else { throw PackError.invalid }
+                CGImageDestinationAddImage(destination, cropped, nil)
+                guard CGImageDestinationFinalize(destination) else { throw PackError.invalid }
+                png = encoded as Data
+            } else {
+                guard image.width == entry.width, image.height == entry.height else { throw PackError.invalid }
+                png = sourceBytes
+            }
+            outputBytes += png.count
+            guard outputBytes <= 8 * 1024 * 1024 else { throw PackError.quota }
+            let hash = digest(png), filename = hash + ".png"
+            try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+            images.append(["id": entry.id, "title": entry.title, "category": entry.category.rawValue,
+                "tags": entry.tags, "contentAdvisory": entry.contentAdvisory.rawValue,
+                "licenseID": descriptor.id + ".cc0", "originalSHA256": hash, "sha256": hash,
+                "pixelSHA256": entry.pixelSHA256, "filename": filename, "byteCount": png.count,
+                "width": entry.width, "height": entry.height])
+        }
+        let licenseRow: [String: Any] = ["id": descriptor.id + ".cc0", "author": "Kenney",
+            "sourceURL": additional.sourceURL, "license": "CC0-1.0",
+            "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "attribution": "Art by Kenney (kenney.nl), CC0. Original source archive and selected file or tile identity are retained.",
+            "licenseFilename": licenseFilename, "licenseSHA256": descriptor.licenseSHA256,
+            "licenseByteCount": descriptor.licenseBytes, "sourceArchiveSHA256": descriptor.archiveSHA256]
+        let manifest = try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "licenses": [licenseRow], "images": images], options: [.sortedKeys])
+        guard outputBytes + manifest.count <= 8 * 1024 * 1024 else { throw PackError.quota }
+        try checkpoint(); try Task.checkCancellation()
+        try manifest.write(to: directory.appendingPathComponent("catalogue.json"), options: .atomic)
+    }
+    private static func zipEntries(_ bytes: Data, allowed: Set<String> = ["License.txt", "Tilesheet/monochrome-transparent.png"]) throws -> [String: Data] {
         func u16(_ p: Int) throws -> Int { guard p >= 0, p + 2 <= bytes.count else { throw PackError.invalid }; return Int(bytes[p]) | Int(bytes[p+1]) << 8 }
         func u32(_ p: Int) throws -> Int { try u16(p) | u16(p+2) << 16 }
         var offset = 0, result: [String: Data] = [:], count = 0
@@ -568,7 +705,7 @@ actor StudioImagePackCache {
             guard start <= bytes.count, end <= bytes.count, expanded <= 8*1024*1024,
                   let name = String(data: bytes.subdata(in: nameStart..<(nameStart+nameLength)), encoding: .utf8),
                   !name.hasPrefix("/"), !name.split(separator: "/").contains("..") else { throw PackError.invalid }
-            if name == "License.txt" || name == "Tilesheet/monochrome-transparent.png" {
+            if allowed.contains(name) {
                 guard result[name] == nil, expanded > 0 else { throw PackError.invalid }
                 let source = bytes.subdata(in: start..<end)
                 let decoded: Data
@@ -583,11 +720,11 @@ actor StudioImagePackCache {
                     }
                     guard decodedCount == expanded else { throw PackError.invalid }; decoded = output
                 } else { throw PackError.invalid }
-                guard decoded.count == expanded else { throw PackError.invalid }; result[name] = decoded
+                guard decoded.count == expanded, result.values.reduce(0, { $0 + $1.count }) + decoded.count <= 8 * 1024 * 1024 else { throw PackError.invalid }; result[name] = decoded
             }
             offset = end
         }
-        guard try u32(offset) == 0x02014b50, result.count == 2 else { throw PackError.invalid }
+        guard try u32(offset) == 0x02014b50, Set(result.keys) == allowed else { throw PackError.invalid }
         return result
     }
 }

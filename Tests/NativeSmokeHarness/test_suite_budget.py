@@ -50,32 +50,40 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertIn("testSpatterSelectedErasureUndoAndColdReopen", value["testNames"])
         self.assertIn("testBlurSettingsPersistAndReset", value["testNames"])
         self.assertIn("testBlurPixelsUndoAndColdReopen", value["testNames"])
-        self.assertEqual(value["testCount"], 87)
+        self.assertIn("testSelectedCoverageFillUndoAndColdReopen", value["testNames"])
+        self.assertIn("testImageAdditionalAngleUndoAndColdReopen", value["testNames"])
+        self.assertIn("testImageRotationHandleUndoAndColdReopen", value["testNames"])
+        self.assertIn("testActiveLayerImageMarqueeDeleteUndoAndColdReopen", value["testNames"])
+        self.assertIn("testStickerShelfLockedRejectionThenInsertUndo", value["testNames"])
+        self.assertIn("testExplicitImageCutUndoPasteAndColdReopen", value["testNames"])
+        self.assertIn("testOptionalMicroPackImportRemovalAndColdReopen", value["testNames"])
+        self.assertIn("testFillPreferencesSwitchDrawResetAndColdReopen", value["testNames"])
+        self.assertEqual(value["testCount"], 95)
         self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 300 + 180)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
-        self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 294 * 60)
+        self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 318 * 60)
         workflow = (ROOT / ".github/workflows/spatter-client-verify.yml").read_text()
         native_job = workflow.split("  native-ios-build:", 1)[1]
-        self.assertIn("    timeout-minutes: 311", native_job)
+        self.assertIn("    timeout-minutes: 335", native_job)
         # The UI allowance is unchanged; nine isolated native auth cases share
         # the existing runner in a separately bounded 17-minute step.
         self.assertIn("        timeout-minutes: 17", native_job)
         auth_source = (ROOT / "Tests/AuthState/AuthStateTests.swift").read_text()
         self.assertEqual(auth_source.count("    func test"), 9)
-        self.assertLessEqual(value["suiteSeconds"] + (25 + 17) * 60, 311 * 60)
+        self.assertLessEqual(value["suiteSeconds"] + (25 + 17) * 60, 335 * 60)
         for name in ("testDodgePixelsUndoAndColdReopen", "testBurnPixelsUndoAndColdReopen",
                      "testDodgeSettingsPersistAndReset", "testBurnSettingsPersistAndReset"):
             self.assertIn(name, value["testNames"])
 
     def test_per_case_capacity_is_available_and_global_bound_stays_finite(self):
-        for count in (1, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87):
+        for count in (1, 49, 50, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95):
             value = budget.build_test_budget(fixture(count), COMMAND)
             self.assertEqual(value["suiteSeconds"], count * 180 + 300)
-            self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 294 * 60)
+            self.assertLessEqual(value["suiteSeconds"] + 25 * 60, 318 * 60)
         self.assertEqual(budget.build_test_budget(fixture(50), COMMAND)["suiteSeconds"], 9300)
 
     def test_empty_excess_duplicate_or_additional_suites_reject(self):
-        for source in (fixture(0), fixture(88), fixture(2).replace("testCase1", "testCase0"),
+        for source in (fixture(0), fixture(96), fixture(2).replace("testCase1", "testCase0"),
                        fixture(1) + "\nclass AnotherSuite: XCTestCase {}"):
             with self.subTest(source=source[:60]), self.assertRaises(ValueError):
                 budget.build_test_budget(source, COMMAND)

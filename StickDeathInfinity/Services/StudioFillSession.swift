@@ -14,10 +14,8 @@ struct StudioFillContext: Equatable {
     let sampleAllLayers: Bool
     let selectedElementIDs: Set<String>
 
-    static let selectionUnavailable = "Object-clipped Fill is unavailable. Deselect drawings in Move or Lasso before filling a canvas region."
-
     @MainActor static func current(_ vm: StudioViewModel, ownedStroke: String? = nil) -> Self? {
-        guard vm.isEditing, !vm.isPlaying, vm.selectedTool == .fill, vm.selectedElementIDs.isEmpty,
+        guard vm.isEditing, !vm.isPlaying, vm.selectedTool == .fill,
               vm.activeStrokeID == ownedStroke, vm.pendingBrushStroke == nil,
               vm.fillTolerance.isFinite, (0...128).contains(vm.fillTolerance),
               vm.fillExpand.isFinite, (-5...5).contains(vm.fillExpand),
@@ -76,10 +74,6 @@ final class StudioFillSession: ObservableObject {
 
     @discardableResult
     func fill(_ vm: StudioViewModel, context: StudioFillContext, point: CGPoint) async -> Bool {
-        guard vm.selectedElementIDs.isEmpty else {
-            vm.message = StudioFillContext.selectionUnavailable
-            return false
-        }
         guard !isFilling, StudioFillContext.current(vm) == context else {
             vm.message = "Studio changed before fill started. Tap the current artwork again."
             return false
@@ -97,7 +91,8 @@ final class StudioFillSession: ObservableObject {
             let captured = try StudioFillService.capture(document: vm.document,
                 frameID: context.frameID, layerID: context.layerID, point: point,
                 color: context.color, opacity: context.opacity, settings: context.settings,
-                sampleAllLayers: context.sampleAllLayers, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID))
+                sampleAllLayers: context.sampleAllLayers, rasterData: vm.rasterData(vm.currentFrame.rasterAssetID),
+                selectedElementIDs: context.selectedElementIDs)
             let worker = Task.detached(priority: .userInitiated) {
                 try StudioFillService.element(from: captured, id: id)
             }
@@ -106,12 +101,14 @@ final class StudioFillSession: ObservableObject {
                 onCancel: { worker.cancel() })
             guard !Task.isCancelled, !worker.isCancelled, operationID == id,
                   StudioFillContext.current(vm, ownedStroke: id) == context else {
-                vm.message = vm.selectedElementIDs.isEmpty ? "Fill was cancelled or Studio changed. Nothing was added."
-                    : StudioFillContext.selectionUnavailable + " Nothing was added."
+                vm.message = "Fill was cancelled or Studio changed. Nothing was added."
                 return false
             }
             let committed = vm.commitElement(element, frameID: context.frameID)
-            if committed { vm.message = "Filled the tapped canvas region." }
+            if committed {
+                vm.message = context.selectedElementIDs.isEmpty ? "Filled the tapped canvas region."
+                    : "Added paint on the active layer within selected artwork coverage. Original drawings remain unchanged."
+            }
             return committed
         } catch is CancellationError {
             vm.message = "Fill cancelled. Nothing was added."

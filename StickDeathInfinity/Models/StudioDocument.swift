@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...29
+    static let supportedSchemaVersions = 1...30
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -143,15 +143,27 @@ struct StudioDocument: Codable, Equatable {
             // Validate orphan singular geometry too: legacy rejection is unchanged.
             let geometryInstances = instances.isEmpty ? [StudioRasterLayerInstance(layerID: frame.rasterLayerID ?? "",
                 placement: frame.rasterPlacement, reflection: frame.rasterReflection,
-                quarterTurns: frame.rasterQuarterTurns, crop: frame.rasterCrop)] : instances
+                quarterTurns: frame.rasterQuarterTurns, crop: frame.rasterCrop, rotationDegrees: frame.rasterRotationDegrees)] : instances
             for instance in geometryInstances {
             if let rect = instance.placement {
                 guard schemaVersion >= 3, let asset = frame.rasterAssetID, !asset.isEmpty, asset.utf8.count <= 120,
                       rect.x.isFinite, rect.y.isFinite, rect.width.isFinite, rect.height.isFinite,
-                      rect.x >= 0, rect.y >= 0, rect.width > 0, rect.height > 0,
-                      rect.x + rect.width <= Double(width) + 0.000001,
-                      rect.y + rect.height <= Double(height) + 0.000001 else {
+                      rect.width > 0, rect.height > 0,
+                      instance.rotationDegrees != nil || (rect.x >= 0 && rect.y >= 0) else {
                     throw StudioDocumentError.invalid("An imported still has invalid placement or document version.")
+                }
+            }
+            if let degrees = instance.rotationDegrees {
+                guard schemaVersion >= 30, degrees != 0, degrees.isFinite, (-180...180).contains(degrees), instance.placement != nil else {
+                    throw StudioDocumentError.invalid("Invalid image angle or project version.")
+                }
+            }
+            if let placement = instance.placement {
+                do {
+                    try StudioImageRotationGeometry(placement: placement, degrees: instance.rotationDegrees ?? 0)
+                        .validate(canvasWidth: width, canvasHeight: height)
+                } catch let error as StudioImageRotationGeometry.Failure {
+                    throw StudioDocumentError.invalid(error.localizedDescription)
                 }
             }
             if let crop = instance.crop {
@@ -884,7 +896,7 @@ struct StudioDocumentEditor {
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
                              brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
             }
-            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases)
+            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, rasterRotationDegrees: source.rasterRotationDegrees, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.selectionErasures != nil }) { value.schemaVersion = max(value.schemaVersion, 29) }
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
@@ -910,6 +922,7 @@ struct StudioDocumentEditor {
             if source.rasterPlacement != nil { value.schemaVersion = max(value.schemaVersion, 3) }
             if source.rasterReflection != nil { value.schemaVersion = max(value.schemaVersion, 15) }
             if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
+            if source.rasterLayerInstances.contains(where: { $0.rotationDegrees != nil }) { value.schemaVersion = max(value.schemaVersion, 30) }
             if source.holdTicks != nil { value.schemaVersion = max(value.schemaVersion, 21) }
             if source.rasterCrop != nil { value.schemaVersion = max(value.schemaVersion, 22) }
             if source.rasterAliases?.isEmpty == false { value.schemaVersion = max(value.schemaVersion, 27) }
@@ -976,6 +989,7 @@ struct StudioDocumentEditor {
             case .vertical: reflection.vertical.toggle()
             }
             selected.reflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            if let angle = selected.rotationDegrees { selected.rotationDegrees = -angle }
             try value.frames[index].updateRasterInstance(selected)
             value.schemaVersion = max(value.schemaVersion, 15)
             try checkCancellation()
@@ -999,7 +1013,7 @@ struct StudioDocumentEditor {
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
             }
-            guard placement.height <= Double(value.width), placement.width <= Double(value.height) else {
+            guard selected.rotationDegrees != nil || (placement.height <= Double(value.width) && placement.width <= Double(value.height)) else {
                 throw StudioDocumentError.invalid("This rotated image would be larger than the canvas. Make it smaller with Position image, then rotate again. Nothing changed.")
             }
             try checkCancellation()
@@ -1010,7 +1024,14 @@ struct StudioDocumentEditor {
             let centerY: Double = placement.y + placement.height / 2
             let x: Double = min(max(0, centerX - placement.height / 2), Double(value.width) - placement.height)
             let y: Double = min(max(0, centerY - placement.width / 2), Double(value.height) - placement.width)
-            selected.placement = StudioRasterPlacement(x: x, y: y, width: placement.height, height: placement.width)
+            selected.placement = StudioRasterPlacement(x: selected.rotationDegrees == nil ? x : centerX - placement.height / 2,
+                y: selected.rotationDegrees == nil ? y : centerY - placement.width / 2, width: placement.height, height: placement.width)
+            do {
+                selected.placement = try StudioImageRotationGeometry(placement: selected.placement!, degrees: selected.rotationDegrees ?? 0)
+                    .fitted(canvasWidth: value.width, canvasHeight: value.height, allowingShrink: false)
+            } catch let error as StudioImageRotationGeometry.Failure {
+                throw StudioDocumentError.invalid(error.localizedDescription)
+            }
             // H/V flips are relative to canvas axes. A quarter turn carries the
             // existing reflection with the picture instead of changing its look.
             if let reflection = selected.reflection {
@@ -1041,7 +1062,15 @@ struct StudioDocumentEditor {
             let width = min(Double(value.width), proposedWidth * fit), height = min(Double(value.height), proposedHeight * fit)
             let x = min(max(0, placement.x + placement.width / 2 - width / 2), Double(value.width) - width)
             let y = min(max(0, placement.y + placement.height / 2 - height / 2), Double(value.height) - height)
-            selected.placement = .init(x: x, y: y, width: width, height: height)
+            selected.placement = selected.rotationDegrees == nil ? .init(x: x, y: y, width: width, height: height)
+                : .init(x: placement.x + placement.width / 2 - proposedWidth / 2,
+                        y: placement.y + placement.height / 2 - proposedHeight / 2, width: proposedWidth, height: proposedHeight)
+            do {
+                selected.placement = try StudioImageRotationGeometry(placement: selected.placement!, degrees: selected.rotationDegrees ?? 0)
+                    .fitted(canvasWidth: value.width, canvasHeight: value.height, allowingShrink: true)
+            } catch let error as StudioImageRotationGeometry.Failure {
+                throw StudioDocumentError.invalid(error.localizedDescription)
+            }
             selected.crop = crop == .full ? nil : crop
             try value.frames[index].updateRasterInstance(selected)
             value.schemaVersion = max(22, value.schemaVersion)
@@ -1050,7 +1079,7 @@ struct StudioDocumentEditor {
     }
 
     mutating func updateImagePlacement(frameID: String, assetID: String,
-                                      placement: StudioRasterPlacement,
+                                      placement: StudioRasterPlacement, rotationDegrees: Double? = nil,
                                       layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         try change { value in
@@ -1066,6 +1095,11 @@ struct StudioDocumentEditor {
             }
             try checkCancellation()
             selected.placement = placement
+            if let rotationDegrees {
+                guard rotationDegrees.isFinite, (-180...180).contains(rotationDegrees) else { throw StudioRasterLayerInstance.Failure.invalid }
+                selected.rotationDegrees = rotationDegrees == 0 ? nil : rotationDegrees
+                if selected.rotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
+            }
             try value.frames[index].updateRasterInstance(selected)
             // change validates the full document before a single history commit.
         }

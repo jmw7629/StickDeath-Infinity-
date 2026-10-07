@@ -190,6 +190,106 @@ final class CropCheckpoint: @unchecked Sendable {
         catch is URLError { }
         try require(PackTransportStub.requests == [descriptor.archiveURL], "URLSession followed unapproved redirect")
         print("PASS actual session delegate refuses redirect before destination request")
-        print("STUDIO_IMAGE_PACK_TESTS=PASS groups=14")
+        if CommandLine.arguments.count > 3 {
+            try await expandedPacks(directory: descriptorDirectory, legacyZIP: zip,
+                                    mappingURL: URL(fileURLWithPath: CommandLine.arguments[3]))
+            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=19 expandedPictures=2025")
+        } else {
+            print("STUDIO_IMAGE_PACK_TESTS=PASS groups=14 expandedPacks=NOT_RUN")
+        }
     }
+    static func expandedPacks(directory: URL, legacyZIP: Data, mappingURL: URL) async throws {
+        let mapping = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: mappingURL))
+        let descriptors = try StudioImagePackCache.descriptors(directory: directory)
+        try require(descriptors.count == 6 && descriptors.map(\.imageCount) == [458, 615, 391, 135, 160, 59], "Expanded descriptor counts changed")
+        try require(Set(mapping.keys) == Set(descriptors.dropFirst().map(\.id)), "Expanded fixture mapping is incomplete or contains unexpected packs")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-expanded-packs-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = StudioImagePackCache(root: root)
+        let bundled = try StudioImageCatalogue(directory: directory)
+        var images = bundled.images
+        var retained: [(StudioImagePackCache.Descriptor, StudioImageCatalogue, Data)] = []
+        for descriptor in descriptors {
+            let archive: Data
+            if descriptor.additional == nil { archive = legacyZIP }
+            else { archive = try Data(contentsOf: URL(fileURLWithPath: mapping[descriptor.id]!)) }
+            let installed = try await cache.download(descriptor, fetch: { _ in archive })
+            try require(installed.images.count == descriptor.imageCount, "Actual pack count differs from descriptor")
+            for image in installed.images { _ = try installed.checkedPNG(image) }
+            let representative = try installed.checkedPNG(installed.images[0])
+            retained.append((descriptor, installed, representative)); images += installed.images
+        }
+        try require(images.count == 2025 && Set(images.map(\.id)).count == 2025, "False combined ID count")
+        try require(Set(images.map { "\($0.width):\($0.height):\($0.pixelSHA256)" }).count == 2025, "Duplicate decoded pictures inflated combined count")
+        print("PASS all six actual publisher packs and bundled originals yield2025 distinct ImageIO-verified pictures")
+        let reopened = StudioImagePackCache(root: root)
+        for (descriptor, installed, _) in retained {
+            let offline = try await reopened.installed(descriptor)
+            try require(offline?.images == installed.images, "Cold cache reopen changed artwork")
+            _ = try await reopened.download(descriptor, fetch: { _ in throw Failure(message: "Offline expansion used transport") })
+            if descriptor.mayContainWeapons {
+                try require(installed.search("", includeCartoonWeapons: false).isEmpty, "Uncurated mixed pack bypassed weapons filter")
+            }
+            if descriptor.id == "kenney.smoke-particles.v1" {
+                try require(installed.search("smoke", category: .effects, includeCartoonWeapons: false).count == 59, "Actual effect category/tag routing failed")
+            }
+        }
+        print("PASS all optional packs cold reopen offline with actual categories and conservative advisory filtering")
+        for (descriptor, installed, representative) in retained where descriptor.additional != nil {
+            let exportedOriginal = root.deletingLastPathComponent().appendingPathComponent("sdi-kept-original-" + UUID().uuidString + ".png")
+            try representative.write(to: exportedOriginal)
+            defer { try? FileManager.default.removeItem(at: exportedOriginal) }
+            let attribution = try installed.attribution(for: installed.images[0])
+            try require(attribution["sourceArchiveSHA256"] == descriptor.archiveSHA256 && attribution["license"] == "CC0-1.0", "Pack original lost provenance")
+            try await reopened.remove(descriptor)
+            let absent = try await reopened.installed(descriptor)
+            let kept = try Data(contentsOf: exportedOriginal)
+            try require(absent == nil && kept == representative, "Pack removal deleted separately retained original")
+            let legacy = try await reopened.installed(descriptors[0])
+            try require(legacy?.images.count == 458, "Removing new pack disturbed original scenery")
+        }
+        print("PASS independent pack removal preserves legacy pack and separately owned originals/attribution")
+        for descriptor in descriptors.dropFirst() {
+            let archive = try Data(contentsOf: URL(fileURLWithPath: mapping[descriptor.id]!))
+            var corrupted = archive; corrupted[100] ^= 1
+            let bad = corrupted
+            do { _ = try await reopened.download(descriptor, fetch: { _ in bad }); throw Failure(message: "Corrupt expanded ZIP accepted") }
+            catch StudioImagePackCache.PackError.invalid { }
+            let after = try await reopened.installed(descriptor)
+            try require(after == nil, "Corruption published expanded pack")
+            let checkpoint = CropCheckpoint(root: root)
+            let task = Task { try await reopened.download(descriptor, fetch: { _ in archive }, checkpoint: { try checkpoint.check() }) }
+            do { _ = try await task.value; throw Failure(message: "Expanded install ignored cancellation") }
+            catch is CancellationError { }
+            try require(checkpoint.observed > 0, "Expanded cancellation never reached real PNG writes")
+            let cancelled = try await reopened.installed(descriptor)
+            try require(cancelled == nil, "Cancelled expanded pack published")
+        }
+        print("PASS each expanded original ZIP rejects corruption and cancels during real staged PNG installation")
+        var object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(descriptors[1])) as! [String: Any]
+        var extra = object["additional"] as! [String: Any]
+        var rows = extra["entries"] as! [[String: Any]]
+        rows[0]["path"] = "../unapproved.png"; extra["entries"] = rows; object["additional"] = extra
+        let forged = try JSONDecoder().decode(StudioImagePackCache.Descriptor.self, from: JSONSerialization.data(withJSONObject: object))
+        do { _ = try await reopened.download(forged, fetch: { _ in throw Failure(message: "Forged entry reached transport") }); throw Failure(message: "Forged entry accepted") }
+        catch StudioImagePackCache.PackError.invalid { }
+        var tagObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(descriptors[1])) as! [String: Any]
+        var tagExtra = tagObject["additional"] as! [String: Any]
+        var tagRows = tagExtra["entries"] as! [[String: Any]]
+        let originalTags = tagRows[0]["tags"] as! [String]
+        try require(originalTags.count > 1, "Tag-boundary fixture requires multiple tags")
+        tagRows[0]["tags"] = [originalTags.joined(separator: "|")]
+        tagExtra["entries"] = tagRows; tagObject["additional"] = tagExtra
+        let forgedTags = try JSONDecoder().decode(StudioImagePackCache.Descriptor.self, from: JSONSerialization.data(withJSONObject: tagObject))
+        do { _ = try await reopened.download(forgedTags, fetch: { _ in throw Failure(message: "Forged tag boundaries reached transport") }); throw Failure(message: "Tag boundary collision accepted") }
+        catch StudioImagePackCache.PackError.invalid { }
+        let modifiedDirectory = root.appendingPathComponent("modified-descriptors")
+        try FileManager.default.createDirectory(at: modifiedDirectory, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: directory.appendingPathComponent("remote-pack.json"), to: modifiedDirectory.appendingPathComponent("remote-pack.json"))
+        try Data("[]".utf8).write(to: modifiedDirectory.appendingPathComponent("additional-packs.json"))
+        do { _ = try StudioImagePackCache.descriptors(directory: modifiedDirectory); throw Failure(message: "Unpinned descriptor resource accepted") }
+        catch StudioImagePackCache.PackError.invalid { }
+        print("PASS expanded resource and entry metadata cannot redirect or widen trusted archive paths")
+    }
+
 }

@@ -26,11 +26,14 @@ _SERVICES = {'com.apple.assetsd', 'com.apple.photolibraryd', 'com.apple.photoana
 
 class Evidence:
     """Only new fixed-name files in the captured existing CI output directory."""
-    def __init__(self, udid, output):
+    def __init__(self, udid, output, namespace="image"):
         if os.environ.get('GITHUB_ACTIONS') != 'true':
             raise ValueError('Ephemeral CI runner required')
         if str(uuid.UUID(udid)).lower() != udid.lower():
             raise ValueError('Complete explicit simulator UUID required')
+        if namespace not in {"image", "video"}:
+            raise ValueError("Fixed media evidence namespace required")
+        self.namespace = namespace
         self.udid = udid
         output = pathlib.Path(output)
         initial = output.lstat()
@@ -56,12 +59,20 @@ class Evidence:
         if not stat.S_ISDIR(current.st_mode) or (current.st_dev, current.st_ino) != (self.identity.st_dev, self.identity.st_ino):
             raise ValueError('Evidence directory changed; foreign paths preserved')
 
+    def filename(self, name):
+        if self.namespace == "video":
+            if name not in {"image-seed-command.json", "image-seed-diagnostics.json", "image-seed-setup.png"}:
+                raise ValueError("Unsupported video diagnostic evidence name")
+            return name.replace("image-seed-", "video-seed-", 1)
+        return name
+
     def write(self, name, data):
         allowed = {'SDI-generated-image-fixture.png', 'image-seed-start.json',
                    'image-seed-command.json', 'image-seed-diagnostics.json', 'image-seed-readiness.json',
                    'image-seed-setup.png', 'image-fixture.json'}
         if name not in allowed or len(data) > EVIDENCE_BYTES - self.written:
             raise ValueError('Evidence name or total byte budget exceeded')
+        name = self.filename(name)
         self.check()
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=self.fd)
         try:
@@ -265,7 +276,7 @@ def collect_failure(evidence, udid, original_stage):
             dims = valid_png(result.stdout) if result.returncode == 0 and not result.timed_out and result.stdout_seen == len(result.stdout) else None
             if dims:
                 evidence.write('image-seed-setup.png', result.stdout)
-                entry['screenshot'] = {'file': 'image-seed-setup.png', 'dimensions': dims,
+                entry['screenshot'] = {'file': evidence.filename('image-seed-setup.png'), 'dimensions': dims,
                                        'bytes': len(result.stdout), 'sha256': hashlib.sha256(result.stdout).hexdigest(),
                                        'validation': 'Bounded PNG chunk CRC/structure; not a decoded pixel or UI assertion'}
             else:

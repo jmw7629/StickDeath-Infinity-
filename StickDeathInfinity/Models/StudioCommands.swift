@@ -138,6 +138,7 @@ enum StudioCommand: Codable {
         let frame: StudioCommandReference
         let assetID: String
         let placement: StudioRasterPlacement
+        var rotationDegrees: Double? = nil
         var layer: StudioCommandReference? = nil
     }
     struct SplitAudioClip: Codable { let clipID: String; let seconds: Double; let newClipID: String }
@@ -317,6 +318,7 @@ struct StudioCommandContext {
         let imageReflection: StudioRasterReflection?
         let imageQuarterTurns: Int?
         let imageCrop: StudioImageCrop?
+        var imageRotationDegrees: Double? = nil
     }
     let projectID: UUID
     let revision: Int
@@ -347,7 +349,7 @@ struct StudioCommandContext {
                 imageAssetID: image?.placement == nil ? nil : frame.rasterAssetID,
                 imageLayerID: image?.placement == nil ? nil : image?.layerID,
                 imagePlacement: image?.placement, imageReflection: image?.reflection,
-                imageQuarterTurns: image?.quarterTurns, imageCrop: image?.crop)
+                imageQuarterTurns: image?.quarterTurns, imageCrop: image?.crop, imageRotationDegrees: image?.rotationDegrees)
         }
         layers = document.layers; editableAudioClips = document.audioClips
         supportedTools = StudioCommandExecutor.supportedTools
@@ -416,7 +418,7 @@ enum StudioCommandExecutor {
             "rotateImage": ["layer", "frame", "assetID", "direction"],
             "reflectImage": ["layer", "frame", "assetID", "axis"],
             "deleteImage": ["layer", "frame", "assetID"],
-            "updateImagePlacement": ["layer", "frame", "assetID", "placement"],
+            "updateImagePlacement": ["layer", "frame", "assetID", "placement", "rotationDegrees"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
@@ -887,7 +889,7 @@ enum StudioCommandExecutor {
             try editor.deleteImage(frameID: frame(value.frame), assetID: value.assetID,
                 layerID: imageLayer(value.layer, frame: value.frame, assetID: value.assetID), checkCancellation: checkCancellation)
         case .updateImagePlacement(let value):
-            try editor.updateImagePlacement(frameID: frame(value.frame), assetID: value.assetID, placement: value.placement,
+            try editor.updateImagePlacement(frameID: frame(value.frame), assetID: value.assetID, placement: value.placement, rotationDegrees: value.rotationDegrees,
                 layerID: imageLayer(value.layer, frame: value.frame, assetID: value.assetID), checkCancellation: checkCancellation)
         case .canvasOptions(let value):
             guard value.grid != nil || value.onion != nil || value.gridSettings != nil || value.onionSettings != nil else { throw StudioCommandError.invalidSettings }

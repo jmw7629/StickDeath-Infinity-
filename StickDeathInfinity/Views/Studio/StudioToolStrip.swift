@@ -12,7 +12,6 @@ struct ToolDef {
     let icon: String      // SF Symbol
     let emoji: String     // Fallback emoji (from React)
     let label: String
-    let shortcut: String
     let topColor: String
     let bottomColor: String
     let glowColor: String
@@ -25,27 +24,27 @@ struct StudioToolStrip: View {
     var onDock: (StudioToolbarLayout.Dock) -> Void = { _ in }
     
     static let tools: [ToolDef] = [
-        ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   shortcut: "V", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
-        ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  shortcut: "L", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
-        ToolDef(tool: .pencil,    icon: "pencil",           emoji: "✏️",  label: "Pencil", shortcut: "N", topColor: "DC2626", bottomColor: "991B1B", glowColor: "EF4444"),
-        ToolDef(tool: .pen,       icon: "pencil.tip",       emoji: "🖊️", label: "Pen",    shortcut: "P", topColor: "C53030", bottomColor: "7F1D1D", glowColor: "DC2626"),
-        ToolDef(tool: .brush,     icon: "paintbrush",       emoji: "🖌️", label: "Brush",  shortcut: "B", topColor: "E03030", bottomColor: "B91C1C", glowColor: "F43F5E"),
-        ToolDef(tool: .marker,    icon: "highlighter",      emoji: "🖍️", label: "Marker", shortcut: "K", topColor: "E83E8C", bottomColor: "A21CAF", glowColor: "D946EF"),
-        ToolDef(tool: .crayon,    icon: "pencil.and.outline",emoji: "🖍", label: "Crayon", shortcut: "Y", topColor: "F59E0B", bottomColor: "B45309", glowColor: "FBBF24"),
-        ToolDef(tool: .line,      icon: "line.diagonal",    emoji: "╱",  label: "Line",   shortcut: "U", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .rectangle, icon: "rectangle",        emoji: "▭",  label: "Rect",   shortcut: "U", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .circle,    icon: "circle",           emoji: "◯",  label: "Circle", shortcut: "U", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .fill,      icon: "drop.fill",        emoji: "🪣",  label: "Fill",   shortcut: "G", topColor: "22C55E", bottomColor: "15803D", glowColor: "4ADE80"),
-        ToolDef(tool: .eyedropper,icon: "eyedropper",       emoji: "💧",  label: "Picker", shortcut: "I", topColor: "06B6D4", bottomColor: "0E7490", glowColor: "22D3EE"),
-        ToolDef(tool: .eraser,    icon: "eraser",           emoji: "◻️",  label: "Eraser", shortcut: "E", topColor: "F97316", bottomColor: "C2410C", glowColor: "FB923C"),
-        ToolDef(tool: .smudge,    icon: "hand.point.up.left",emoji: "👆", label: "Smudge", shortcut: "R", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .blur,      icon: "drop.halffull", emoji: "◌", label: "Blur", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .sharpen,      icon: "triangle", emoji: "◌", label: "Sharpen", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .dodge,      icon: "sun.max", emoji: "◌", label: "Dodge", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .burn,      icon: "sun.min", emoji: "◌", label: "Burn", shortcut: "", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .text,      icon: "textformat",       emoji: "T",  label: "Text",   shortcut: "T", topColor: "E879F9", bottomColor: "A21CAF", glowColor: "D946EF"),
-        ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   shortcut: "H", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
-        ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   shortcut: "Z", topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
+        ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+        ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+        ToolDef(tool: .pencil,    icon: "pencil",           emoji: "✏️",  label: "Pencil", topColor: "DC2626", bottomColor: "991B1B", glowColor: "EF4444"),
+        ToolDef(tool: .pen,       icon: "pencil.tip",       emoji: "🖊️", label: "Pen",    topColor: "C53030", bottomColor: "7F1D1D", glowColor: "DC2626"),
+        ToolDef(tool: .brush,     icon: "paintbrush",       emoji: "🖌️", label: "Brush",  topColor: "E03030", bottomColor: "B91C1C", glowColor: "F43F5E"),
+        ToolDef(tool: .marker,    icon: "highlighter",      emoji: "🖍️", label: "Marker", topColor: "E83E8C", bottomColor: "A21CAF", glowColor: "D946EF"),
+        ToolDef(tool: .crayon,    icon: "pencil.and.outline",emoji: "🖍", label: "Crayon", topColor: "F59E0B", bottomColor: "B45309", glowColor: "FBBF24"),
+        ToolDef(tool: .line,      icon: "line.diagonal",    emoji: "╱",  label: "Line",   topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+        ToolDef(tool: .rectangle, icon: "rectangle",        emoji: "▭",  label: "Rect",   topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+        ToolDef(tool: .circle,    icon: "circle",           emoji: "◯",  label: "Circle", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+        ToolDef(tool: .fill,      icon: "drop.fill",        emoji: "🪣",  label: "Fill",   topColor: "22C55E", bottomColor: "15803D", glowColor: "4ADE80"),
+        ToolDef(tool: .eyedropper,icon: "eyedropper",       emoji: "💧",  label: "Picker", topColor: "06B6D4", bottomColor: "0E7490", glowColor: "22D3EE"),
+        ToolDef(tool: .eraser,    icon: "eraser",           emoji: "◻️",  label: "Eraser", topColor: "F97316", bottomColor: "C2410C", glowColor: "FB923C"),
+        ToolDef(tool: .smudge,    icon: "hand.point.up.left",emoji: "👆", label: "Smudge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .blur,      icon: "drop.halffull", emoji: "◌", label: "Blur", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .sharpen,      icon: "triangle", emoji: "◌", label: "Sharpen", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .dodge,      icon: "sun.max", emoji: "◌", label: "Dodge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .burn,      icon: "sun.min", emoji: "◌", label: "Burn", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ToolDef(tool: .text,      icon: "textformat",       emoji: "T",  label: "Text",   topColor: "E879F9", bottomColor: "A21CAF", glowColor: "D946EF"),
+        ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
+        ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
     ]
     
     var body: some View {

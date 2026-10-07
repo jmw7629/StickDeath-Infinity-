@@ -27,12 +27,13 @@ enum StudioFillRegion {
         let coveredPixels: Int
     }
     enum Failure: LocalizedError, Equatable {
-        case invalidImage, invalidSettings, outsideCanvas, emptyRegion, spanLimit
+        case invalidImage, invalidSettings, outsideCanvas, outsideSelection, emptyRegion, spanLimit
         var errorDescription: String? {
             switch self {
             case .invalidImage: return "Fill needs a complete image within the supported canvas pixel limit."
             case .invalidSettings: return "These fill settings are outside the supported range."
             case .outsideCanvas: return "Tap inside the canvas to fill a region."
+            case .outsideSelection: return "Tap within the selected artwork to fill its coverage."
             case .emptyRegion: return "These settings leave no fillable pixels at this point."
             case .spanLimit: return "This fill region is too complex. Nothing has been changed."
             }
@@ -43,7 +44,8 @@ enum StudioFillRegion {
     /// the maximum difference in any of the four supplied channels, 0...128.
     /// Matching does not chase a gradually changing color across the image.
     static func compute(rgba: Data, width: Int, height: Int, x: Int, y: Int,
-                        settings: Settings, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Mask {
+                        settings: Settings, selectionCoverage: Data? = nil,
+                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Mask {
         try checkCancellation()
         guard width > 0, height > 0, width <= 4096, height <= 4096,
               width <= maximumPixels / height, rgba.count == width * height * 4 else { throw Failure.invalidImage }
@@ -51,6 +53,9 @@ enum StudioFillRegion {
               (0...5).contains(settings.gapClose) else { throw Failure.invalidSettings }
         guard x >= 0, y >= 0, x < width, y < height else { throw Failure.outsideCanvas }
         let count = width * height, seed = y * width + x, bytes = [UInt8](rgba)
+        if let selectionCoverage, selectionCoverage.count != count { throw Failure.invalidImage }
+        let coverage = selectionCoverage.map { [UInt8]($0) }
+        if let coverage, coverage[seed] == 0 { throw Failure.outsideSelection }
         let seedOffset = seed * 4
         let red = Int(bytes[seedOffset]), green = Int(bytes[seedOffset + 1])
         let blue = Int(bytes[seedOffset + 2]), alpha = Int(bytes[seedOffset + 3])
@@ -60,6 +65,9 @@ enum StudioFillRegion {
             try checkCancellation()
             for column in 0..<width {
                 let index = row * width + column
+                // The selection is a traversal boundary, not just a final
+                // crop: contiguous fill must not cross unselected pixels.
+                if let coverage, coverage[index] == 0 { continue }
                 let offset = index * 4
                 if abs(Int(bytes[offset]) - red) <= tolerance &&
                    abs(Int(bytes[offset + 1]) - green) <= tolerance &&
@@ -128,6 +136,15 @@ enum StudioFillRegion {
                     if leaving >= 0 { columns[column] -= Int(hard[leaving * width + column]) }
                     if entering < height { columns[column] += Int(hard[entering * width + column]) }
                 }
+            }
+        }
+        if let coverage {
+            // Expansion and edge smoothing can reach beyond the original
+            // region. Restore the captured boundary, retaining fractional
+            // artwork alpha rather than substituting a bounding rectangle.
+            for index in selected.indices {
+                if index % 4096 == 0 { try checkCancellation() }
+                selected[index] = UInt8((Int(selected[index]) * Int(coverage[index]) + 127) / 255)
             }
         }
         var spans: [Span] = [], covered = 0

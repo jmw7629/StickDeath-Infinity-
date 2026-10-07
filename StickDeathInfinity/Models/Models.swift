@@ -705,6 +705,8 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     /// Version 16: clockwise quarter turns, 1...3. Placement is the visible
     /// axis-aligned bounding box; nil keeps the original orientation.
     var rasterQuarterTurns: Int? = nil
+    /// Schema 30: additional canvas-space rotation after historical quarter turns/flips.
+    var rasterRotationDegrees: Double? = nil
     /// Version 21: exposure in project-FPS ticks. Nil preserves legacy one-tick frames.
     var holdTicks: Int? = nil
     /// Version 22: normalized crop in the original upright image, before flips/rotation.
@@ -716,7 +718,7 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     var rasterLayerInstances: [StudioRasterLayerInstance] {
         guard rasterAssetID != nil, let rasterLayerID else { return [] }
         return [.init(layerID: rasterLayerID, placement: rasterPlacement, reflection: rasterReflection,
-                      quarterTurns: rasterQuarterTurns, crop: rasterCrop)] + (rasterAliases ?? [])
+                      quarterTurns: rasterQuarterTurns, crop: rasterCrop, rotationDegrees: rasterRotationDegrees)] + (rasterAliases ?? [])
     }
     func rasterInstance(on layerID: String) -> StudioRasterLayerInstance? {
         let matches = rasterLayerInstances.filter { $0.layerID == layerID }
@@ -753,7 +755,7 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
                 rasterAliases = aliases.isEmpty ? nil : aliases
             } else {
                 rasterAssetID = nil; rasterLayerID = nil; rasterPlacement = nil
-                rasterReflection = nil; rasterQuarterTurns = nil; rasterCrop = nil; rasterAliases = nil
+                rasterReflection = nil; rasterQuarterTurns = nil; rasterRotationDegrees = nil; rasterCrop = nil; rasterAliases = nil
             }
         } else {
             rasterAliases?.removeAll { $0.layerID == layerID }
@@ -763,6 +765,7 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     private mutating func assignPrimaryRasterInstance(_ instance: StudioRasterLayerInstance) {
         rasterLayerID = instance.layerID; rasterPlacement = instance.placement
         rasterReflection = instance.reflection; rasterQuarterTurns = instance.quarterTurns; rasterCrop = instance.crop
+        rasterRotationDegrees = instance.rotationDegrees
     }
 }
 
@@ -772,6 +775,7 @@ struct StudioRasterLayerInstance: Codable, Equatable {
     var reflection: StudioRasterReflection? = nil
     var quarterTurns: Int? = nil
     var crop: StudioImageCrop? = nil
+    var rotationDegrees: Double? = nil
     enum Failure: LocalizedError {
         case invalid
         var errorDescription: String? { "The selected linked image is unavailable or ambiguous. Nothing changed." }
@@ -1296,4 +1300,70 @@ struct R3CallState {
     var spendLimit: Double = 50.0
     var isIdle = false
     var personalityLine: String? = nil
+}
+
+/// Geometry shared by image editing, viewport input and validation. Placement
+/// dimensions remain editable source axes; only the displayed bounds rotate.
+struct StudioImageRotationGeometry {
+    enum Failure: LocalizedError {
+        case outsideCanvas, largerThanCanvas
+        var errorDescription: String? {
+            switch self {
+            case .outsideCanvas:
+                return "The rotated image extends outside the canvas. Reduce its size or use Fit canvas. Nothing changed."
+            case .largerThanCanvas:
+                return "This rotated image is larger than the canvas. Reduce its size or use Fit canvas. Nothing changed."
+            }
+        }
+    }
+    let placement: StudioRasterPlacement
+    let degrees: Double
+    var center: CGPoint { .init(x: placement.x + placement.width / 2, y: placement.y + placement.height / 2) }
+    var corners: [CGPoint] {
+        let angle = degrees * .pi / 180, c = cos(angle), s = sin(angle)
+        return [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)].map { x, y in
+            let dx = x * placement.width, dy = y * placement.height
+            return CGPoint(x: center.x + dx*c - dy*s, y: center.y + dx*s + dy*c)
+        }
+    }
+    var bounds: CGRect {
+        let points = corners
+        let x = points.map(\.x), y = points.map(\.y)
+        return CGRect(x: x.min()!, y: y.min()!, width: x.max()! - x.min()!, height: y.max()! - y.min()!)
+    }
+    func contains(_ point: CGPoint) -> Bool {
+        let angle = degrees * .pi / 180, c = cos(angle), s = sin(angle)
+        let dx = point.x - center.x, dy = point.y - center.y
+        return abs(dx*c + dy*s) <= placement.width / 2 && abs(-dx*s + dy*c) <= placement.height / 2
+    }
+    func validate(canvasWidth: Int, canvasHeight: Int) throws {
+        guard degrees.isFinite, (-180...180).contains(degrees),
+              [placement.x, placement.y, placement.width, placement.height].allSatisfy({ $0.isFinite }),
+              placement.width > 0, placement.height > 0 else { throw StudioRasterLayerInstance.Failure.invalid }
+        let b = bounds
+        guard b.minX >= -0.000001, b.minY >= -0.000001,
+              b.maxX <= Double(canvasWidth) + 0.000001, b.maxY <= Double(canvasHeight) + 0.000001 else {
+            throw Failure.outsideCanvas
+        }
+    }
+    func fitted(canvasWidth: Int, canvasHeight: Int, allowingShrink: Bool, fillCanvas: Bool = false) throws -> StudioRasterPlacement {
+        guard degrees.isFinite, (-180...180).contains(degrees),
+              [placement.x, placement.y, placement.width, placement.height].allSatisfy({ $0.isFinite }),
+              placement.width > 0, placement.height > 0 else { throw StudioRasterLayerInstance.Failure.invalid }
+        let b = bounds
+        let canvasFit = min(Double(canvasWidth) / b.width, Double(canvasHeight) / b.height)
+        let fit = fillCanvas ? canvasFit : min(1, canvasFit)
+        guard allowingShrink || fit >= 1 - 0.000000001 else {
+            throw Failure.largerThanCanvas
+        }
+        let scale = allowingShrink ? fit : 1
+        let width = placement.width * scale, height = placement.height * scale
+        let candidate = StudioRasterPlacement(x: center.x - width / 2, y: center.y - height / 2, width: width, height: height)
+        let rotated = Self(placement: candidate, degrees: degrees).bounds
+        let dx = max(0, -rotated.minX) - max(0, rotated.maxX - Double(canvasWidth))
+        let dy = max(0, -rotated.minY) - max(0, rotated.maxY - Double(canvasHeight))
+        let result = StudioRasterPlacement(x: candidate.x + dx, y: candidate.y + dy, width: width, height: height)
+        try Self(placement: result, degrees: degrees).validate(canvasWidth: canvasWidth, canvasHeight: canvasHeight)
+        return result
+    }
 }

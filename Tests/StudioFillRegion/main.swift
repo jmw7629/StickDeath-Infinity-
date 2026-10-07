@@ -48,6 +48,46 @@ private struct TestFailure: Error { let message: String }
             let diagonal=image(2,2) { x,y in x==y ? white:black }
             try require(try fill(diagonal,2,2,0,0).coveredPixels==1,"Diagonal regions disconnected")
         }
+        try test("selected coverage constrains traversal and all-similar preserves separate islands") {
+            let source = image(11,7) { _,_ in white }
+            var selected = [UInt8](repeating:0,count:77)
+            for y in 1...5 { for x in [1,2,3,7,8,9] { selected[y*11+x] = 255 } }
+            let captured = Data(selected)
+            let contiguous = try StudioFillRegion.compute(rgba:source,width:11,height:7,x:2,y:3,
+                settings:hard,selectionCoverage:captured)
+            try require(contiguous.coveredPixels==15 && coverage(contiguous)[3*11+8]==0,
+                "Contiguous traversal crossed the unselected bridge")
+            var similar=hard;similar.contiguous=false
+            let every = try StudioFillRegion.compute(rgba:source,width:11,height:7,x:2,y:3,
+                settings:similar,selectionCoverage:captured)
+            try require(every.coveredPixels==30 && coverage(every)==selected,
+                "All-similar selection broadened or omitted an island")
+            try require(captured==Data(selected),"Captured selection changed")
+        }
+        try test("selection fractional alpha survives expansion and antialias without escaped paint") {
+            let source=image(9,9) { _,_ in white }
+            var selected=[UInt8](repeating:0,count:81)
+            for y in 2...6 { for x in 2...6 { selected[y*9+x] = x==2 ? 96 : 255 } }
+            let exact=try StudioFillRegion.compute(rgba:source,width:9,height:9,x:4,y:4,
+                settings:hard,selectionCoverage:Data(selected))
+            try require(try coverage(exact)==selected,"Fractional selection alpha was rounded to a hard boundary")
+            var expanded=hard;expanded.expand=5;expanded.antiAlias=true
+            let result=try coverage(StudioFillRegion.compute(rgba:source,width:9,height:9,x:4,y:4,
+                settings:expanded,selectionCoverage:Data(selected)))
+            try require(zip(result,selected).allSatisfy { $0 <= $1 } && result[4*9+4]==255,
+                "Expanded/smoothed paint escaped captured coverage")
+        }
+        try test("invalid selection buffers and outside seeds reject without broadening authority") {
+            let source=image(3,3) { _,_ in white }
+            try reject(.invalidImage) {
+                _=try StudioFillRegion.compute(rgba:source,width:3,height:3,x:1,y:1,
+                    settings:hard,selectionCoverage:Data([255]))
+            }
+            try reject(.outsideSelection) {
+                _=try StudioFillRegion.compute(rgba:source,width:3,height:3,x:1,y:1,
+                    settings:hard,selectionCoverage:Data(repeating:0,count:9))
+            }
+        }
         try test("tolerance is inclusive and anchored to seed instead of color drift") {
             let ramp=image(5,1) { x,_ in [UInt8(x*10),0,0,255] }
             var settings=hard;settings.tolerance=20

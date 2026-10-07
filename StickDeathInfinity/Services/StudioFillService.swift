@@ -13,16 +13,19 @@ enum StudioFillService {
         let height: Int
         let x: Int
         let y: Int
+        let selectedElementIDs: Set<String>
+        let selectionCoverage: Data?
         let rgba: Data
         let color: String
         let opacity: Double
         let settings: StudioFillRegion.Settings
     }
     enum Failure: LocalizedError {
-        case unavailable, limit, missingRaster, render
+        case unavailable, selection, limit, missingRaster, render
         var errorDescription: String? {
             switch self {
             case .unavailable: return "Fill needs an available frame and visible unlocked layer. Nothing has changed."
+            case .selection: return "Selected coverage needs visible independent drawings. Layers containing erasers, alpha-preserving paint or pixel effects cannot be used yet. Nothing has changed."
             case .limit: return "Fill supports canvases up to 4,194,304 pixels. Nothing has changed."
             case .missingRaster: return "The original image needed for fill is unavailable. Nothing has changed."
             case .render: return "Studio could not read the artwork for fill. Nothing has changed."
@@ -34,7 +37,7 @@ enum StudioFillService {
     static func capture(document: StudioDocument, frameID: String, layerID: String,
                         point: CGPoint, color: String, opacity: Double,
                         settings: StudioFillRegion.Settings, sampleAllLayers: Bool,
-                        rasterData: Data? = nil) throws -> Capture {
+                        rasterData: Data? = nil, selectedElementIDs: Set<String> = []) throws -> Capture {
         try Task.checkCancellation()
         guard (16...4096).contains(document.width), (16...4096).contains(document.height),
               document.width <= StudioFillRegion.maximumPixels / document.height else { throw Failure.limit }
@@ -50,6 +53,7 @@ enum StudioFillService {
         guard let frame = document.frames.first(where: { $0.id == frameID }),
               let target = document.layers.first(where: { $0.id == layerID }), target.visible,
               !target.isFullyLocked, ["free", "position"].contains(target.lockMode) else { throw Failure.unavailable }
+        let coverage = try selectionCoverage(document: document, frame: frame, selectedIDs: selectedElementIDs)
         let layers = sampleAllLayers ? document.layers : [target]
         let needsRaster = !frame.visibleRasterInstances(in: layers).isEmpty
         if needsRaster && rasterData == nil { throw Failure.missingRaster }
@@ -99,15 +103,70 @@ enum StudioFillService {
         try Task.checkCancellation()
         return Capture(projectID: document.id, revision: document.revision, frameID: frame.id,
             layerID: layerID, width: document.width, height: document.height,
-            x: Int(point.x), y: Int(point.y), rgba: Data(bytes), color: color,
+            x: Int(point.x), y: Int(point.y), selectedElementIDs: selectedElementIDs,
+            selectionCoverage: coverage, rgba: Data(bytes), color: color,
             opacity: opacity, settings: settings)
+    }
+
+    /// Source-body alpha only: layer opacity/glow/blending belong to the final
+    /// paint layer, not to selection clipping. No raster or bounding-box proxy.
+    @MainActor
+    private static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
+                                          selectedIDs: Set<String>) throws -> Data? {
+        guard !selectedIDs.isEmpty else { return nil }
+        guard selectedIDs.count <= 1024 else { throw Failure.selection }
+        let elements = frame.elements.filter { selectedIDs.contains($0.id) }
+        guard elements.count == selectedIDs.count else { throw Failure.selection }
+        let owners = Set(elements.compactMap(\.layerID))
+        var layers = document.layers.filter { owners.contains($0.id) }
+        guard layers.count == owners.count, elements.allSatisfy({ element in
+            [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle, .text, .fill].contains(element.tool)
+                && element.layerID != nil
+        }), layers.allSatisfy({ $0.visible && $0.opacity > 0 }) else { throw Failure.selection }
+        // Replaying an isolated selection without these ordered operations would
+        // fabricate source coverage that the user cannot currently see.
+        guard !frame.elements.contains(where: { element in
+            owners.contains(element.layerID ?? "") && (element.tool == .eraser || element.eraser != nil
+                || element.hasPixelEffect || element.preservesLayerAlpha == true)
+        }) else { throw Failure.selection }
+        for index in layers.indices {
+            layers[index].opacity = 1; layers[index].blendMode = "normal"; layers[index].glowEnabled = false
+        }
+        try Task.checkCancellation()
+        let isolated = AnimationFrame(id: frame.id, elements: elements)
+        let prepared = try StudioFrameRenderer.prepare(frame: isolated)
+        let size = CGSize(width: document.width, height: document.height)
+        var failure: Error?
+        let renderer = ImageRenderer(content: Canvas { context, actual in
+            failure = StudioFrameRenderer.draw(context: &context, frame: isolated, layers: layers,
+                canvasSize: size, size: actual, preparedBrushes: prepared)
+        }.frame(width: size.width, height: size.height))
+        renderer.scale = 1; renderer.isOpaque = false
+        guard let image = renderer.cgImage, image.width == document.width, image.height == document.height,
+              let space = CGColorSpace(name: CGColorSpace.sRGB) else { throw Failure.render }
+        if let failure { throw failure }
+        var rgba = [UInt8](repeating: 0, count: document.width * document.height * 4)
+        let decoded = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(data: buffer.baseAddress, width: document.width, height: document.height,
+                bitsPerComponent: 8, bytesPerRow: document.width * 4, space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+            context.setBlendMode(.copy); context.draw(image, in: CGRect(origin: .zero, size: size)); return true
+        }
+        guard decoded else { throw Failure.render }
+        var alpha = Data(count: document.width * document.height)
+        for index in 0..<alpha.count {
+            if index % 4096 == 0 { try Task.checkCancellation() }
+            alpha[index] = rgba[index * 4 + 3]
+        }
+        try Task.checkCancellation()
+        return alpha
     }
 
     /// Does not commit. The caller must recheck captured editor ownership after
     /// background computation, then use the same canonical editor transaction.
     static func element(from capture: Capture, id: String = UUID().uuidString) throws -> DrawnElement {
         let region = try StudioFillRegion.compute(rgba: capture.rgba, width: capture.width,
-            height: capture.height, x: capture.x, y: capture.y, settings: capture.settings)
+            height: capture.height, x: capture.x, y: capture.y, settings: capture.settings, selectionCoverage: capture.selectionCoverage)
         guard region.spans.count <= StudioFillMask.maximumSpans else { throw StudioFillMask.Failure.invalid }
         let mask = StudioFillMask(width: region.width, height: region.height,
             spans: region.spans.map { .init(row: $0.row, start: $0.start, end: $0.end, alpha: $0.alpha) })

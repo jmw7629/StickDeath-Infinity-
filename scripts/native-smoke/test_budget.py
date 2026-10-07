@@ -11,7 +11,7 @@ EXTENDED_CASE_SECONDS = {
 }
 # Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 87
+MAXIMUM_CASES = 95
 SUITE_OVERHEAD_SECONDS = 300
 
 

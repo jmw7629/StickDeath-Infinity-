@@ -14,6 +14,7 @@ struct StudioCanvasView: View {
     @State private var startedAsImageMove = false
     @State private var imageMoveCancelled = false
     @State private var imageResizeCorner: StudioSelectionHandleGeometry.Kind?
+    @State private var imageRotationStart: CGPoint?
     @State private var moveCapture: StudioViewModel.MoveCapture?
     @State private var moveLayout: StudioColorSampleGesture.Layout?
     @State private var moveFrame: AnimationFrame?
@@ -174,19 +175,37 @@ struct StudioCanvasView: View {
                                 height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
+                        if let corners = vm.selectedAreaImageCorners {
+                            let points = corners.map { CGPoint(x: $0.x / Double(vm.canvasWidth) * actual.width,
+                                y: $0.y / Double(vm.canvasHeight) * actual.height) }
+                            var outline = Path(); outline.move(to: points[0])
+                            points.dropFirst().forEach { outline.addLine(to: $0) }; outline.closeSubpath()
+                            context.stroke(outline, with: .color(.red),
+                                style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
+                        }
                         if let capture = vm.currentImageMoveCapture(), let placement = displayedFrame.rasterInstance(on: capture.placement.layerID)?.placement {
                             let rect = CGRect(x: placement.x / Double(vm.canvasWidth) * actual.width,
                                 y: placement.y / Double(vm.canvasHeight) * actual.height,
                                 width: placement.width / Double(vm.canvasWidth) * actual.width,
                                 height: placement.height / Double(vm.canvasHeight) * actual.height)
-                            context.stroke(Path(rect.insetBy(dx: 1, dy: 1)), with: .color(.red),
+                            let angle = displayedFrame.rasterInstance(on: capture.placement.layerID)?.rotationDegrees ?? 0
+                            var outline = Path()
+                            if angle == 0 { outline = Path(rect.insetBy(dx: 1, dy: 1)) }
+                            else {
+                                let points = StudioImageRotationGeometry(placement: placement, degrees: angle).corners.map {
+                                    CGPoint(x: $0.x / Double(vm.canvasWidth) * actual.width,
+                                            y: $0.y / Double(vm.canvasHeight) * actual.height)
+                                }
+                                outline.move(to: points[0]); points.dropFirst().forEach { outline.addLine(to: $0) }; outline.closeSubpath()
+                            }
+                            context.stroke(outline, with: .color(.red),
                                 style: StrokeStyle(lineWidth: 1 / max(0.01, vm.canvasScale), dash: [4, 3]))
                             if let geometry = imageHandles(frame: displayedFrame, size: actual) {
-                                for handle in geometry.handles where handle.kind != .rotate {
+                                for handle in geometry.handles {
                                     let radius = geometry.visualRadius
                                     let circle = Path(ellipseIn: CGRect(x: handle.point.x-radius, y: handle.point.y-radius,
                                         width: 2*radius, height: 2*radius))
-                                    context.fill(circle, with: .color(.white))
+                                    context.fill(circle, with: .color(handle.kind == .rotate ? .red : .white))
                                     context.stroke(circle, with: .color(.red), lineWidth: 2 / geometry.zoom)
                                 }
                             }
@@ -286,7 +305,7 @@ struct StudioCanvasView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
-                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize while keeping its proportions. Position image offers numeric dimensions." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
+                    .accessibilityValue(vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize or the red handle to rotate. Position image offers numeric dimensions and angle." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
                     if vm.gridEnabled { GridOverlay(settings: vm.document.gridSettings ?? .init()).allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -361,13 +380,14 @@ struct StudioCanvasView: View {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
                         imageResizeCorner = nil
                         if let geometry = imageHandles(frame: vm.currentFrame, size: size) {
-                            imageResizeCorner = geometry.handles.filter { $0.kind != .rotate &&
+                            imageResizeCorner = geometry.handles.filter {
                                 hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <= geometry.hitRadius }
                                 .min { hypot($0.point.x-value.startLocation.x, $0.point.y-value.startLocation.y) <
                                     hypot($1.point.x-value.startLocation.x, $1.point.y-value.startLocation.y) }?.kind
                         }
                         imageMoveCapture = imageResizeCorner == nil
                             ? vm.beginImageMove(at: documentPoint(value.startLocation, size: size)) : vm.currentImageMoveCapture()
+                        imageRotationStart = imageResizeCorner == .rotate ? documentPoint(value.startLocation, size: size) : nil
                     }
                     startedAsArea = vm.selectedTool == .lasso; areaCancelled = false
                     if let geometry = selectionHandles(frame: vm.currentFrame, size: size),
@@ -539,7 +559,11 @@ struct StudioCanvasView: View {
                 }
                 if startedAsImageMove {
                     guard updateImageMove(delta: value.translation, size: size), let capture = imageMoveCapture else { return }
-                    if let corner = imageResizeCorner {
+                    if imageResizeCorner == .rotate, let start = imageRotationStart {
+                        let delta = documentDelta(value.translation, size: size)
+                        _ = vm.finishImageRotation(capture, start: start,
+                            current: CGPoint(x: start.x + delta.width, y: start.y + delta.height))
+                    } else if let corner = imageResizeCorner {
                         _ = vm.finishImageResize(capture, corner: corner, delta: documentDelta(value.translation, size: size))
                     } else { _ = vm.finishImageMove(capture, delta: documentDelta(value.translation, size: size)) }
                     return
@@ -809,7 +833,7 @@ struct StudioCanvasView: View {
     }
     private func imageHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
         guard let capture = vm.currentImageMoveCapture(), let p = frame.rasterInstance(on: capture.placement.layerID)?.placement else { return nil }
-        return .init(bounds: CGRect(x: p.x, y: p.y, width: p.width, height: p.height),
+        return .init(bounds: StudioImageRotationGeometry(placement: p, degrees: frame.rasterInstance(on: capture.placement.layerID)?.rotationDegrees ?? 0).bounds,
             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewport: size, zoom: vm.canvasScale)
     }
     private func cancelImageMovePreview() {
@@ -823,7 +847,11 @@ struct StudioCanvasView: View {
             cancelImageMovePreview(); return false
         }
         do {
-            if let corner = imageResizeCorner {
+            if imageResizeCorner == .rotate, let start = imageRotationStart {
+                let movement = documentDelta(delta, size: size)
+                imageMoveFrame = try vm.imageRotationPreview(capture, start: start,
+                    current: CGPoint(x: start.x + movement.width, y: start.y + movement.height))
+            } else if let corner = imageResizeCorner {
                 imageMoveFrame = try vm.imageResizePreview(capture, corner: corner, delta: documentDelta(delta, size: size))
             } else { imageMoveFrame = try vm.imageMovePreview(capture, delta: documentDelta(delta, size: size)) }
             return true
@@ -872,7 +900,7 @@ struct StudioCanvasView: View {
             blurInput = nil; startedAsBlur = false
             sharpenInput = nil; startedAsSharpen = false
             dodgeBurnInput = nil; startedAsDodgeBurn = false
-            imageResizeCorner = nil; imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
+            imageResizeCorner = nil; imageRotationStart = nil; imageMoveCapture = nil; imageMoveFrame = nil; startedAsImageMove = false; imageMoveCancelled = false
             moveCapture = nil; moveLayout = nil; moveFrame = nil; startedAsMove = false; moveCancelled = false
             handleCapture = nil; handleGeometry = nil; handleKind = nil; handleFrame = nil
             handleValues = .init(); startedAsHandle = false; handleCancelled = false

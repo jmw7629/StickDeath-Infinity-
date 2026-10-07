@@ -114,7 +114,20 @@ final class StudioViewModel: ObservableObject {
     private var restoringToolPreferences = false
     @Published private(set) var toolPreferencesWarning: String?
     @Published var selectedTool: DrawingTool = .brush {
-        didSet { if selectedTool != oldValue { imageMoveTarget = nil; restoreDrawingToolPreferences() } }
+        didSet {
+            if selectedTool != oldValue {
+                areaSelectionGeneration = UUID()
+                // Only an explicitly selected, unchanged Lasso image may continue into Move.
+                if oldValue == .lasso, selectedTool == .move, areaSelectionTarget == .image,
+                   validAreaImageSelection != nil {
+                    imageMoveTarget?.areaRevision = nil
+                } else { imageMoveTarget = nil }
+                if selectedTool == .lasso, areaSelectionTarget == .image {
+                    editor.selectedElementIDs.removeAll()
+                }
+                restoreDrawingToolPreferences()
+            }
+        }
     }
     @Published var strokeColor: Color = .red { didSet { rememberRecentColor(Self.hex(strokeColor)) } }
     @Published var strokeWidth: Double = 3 { didSet { rememberDrawingToolPreferences() } }
@@ -239,6 +252,30 @@ final class StudioViewModel: ObservableObject {
     var audioDuration: Double { max(document.durationSeconds, document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
     var brushGradientEndColorHex: String { Self.hex(brushGradientEndColor) }
+    // Text stores RGB and opacity separately. Keep the native color picker's
+    // alpha control synchronized with the same opacity used by Apply/Undo/export.
+    var textPickerColor: Color {
+        get {
+            let rgb = UInt32(strokeColorHex.dropFirst(), radix: 16) ?? 0
+            return Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
+                         green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255,
+                         opacity: strokeOpacity.isFinite ? min(1, max(0, strokeOpacity)) : 1)
+        }
+        set {
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            #if canImport(UIKit)
+            guard UIColor(newValue).getRed(&r, green: &g, blue: &b, alpha: &a) else { return }
+            #elseif canImport(AppKit)
+            guard let value = NSColor(newValue).usingColorSpace(.sRGB) else { return }
+            r = value.redComponent; g = value.greenComponent; b = value.blueComponent; a = value.alphaComponent
+            #endif
+            guard [r, g, b, a].allSatisfy({ $0.isFinite }) else { return }
+            // Do not retain color alpha as a second multiplier of text opacity.
+            strokeColor = Color(.sRGB, red: Double(min(1, max(0, r))),
+                                green: Double(min(1, max(0, g))), blue: Double(min(1, max(0, b))))
+            toolOpacity = Double(a)
+        }
+    }
     @discardableResult
     func beginTextEditing(selected: Bool = false) -> Bool {
         guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
@@ -1176,7 +1213,9 @@ final class StudioViewModel: ObservableObject {
                 })
     }
 
-    func copyFrame() { if allowDocumentEditDuringInput() { editor.copyFrame(); pruneManagedImages() } }
+    /// Capture the displayed frame, including a playback frame, without changing
+    /// the editing selection. The explicit-ID path owns validation and retention.
+    func copyFrame() { copyFrame(currentFrame.id) }
     func copyFrame(_ id: String) {
         guard allowDocumentEditDuringInput() else { return }
         do {
@@ -1203,6 +1242,44 @@ final class StudioViewModel: ObservableObject {
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
     func nextFrame() { if currentFrameIndex + 1 < frames.count { currentFrameIndex += 1 } }
     func prevFrame() { if currentFrameIndex > 0 { currentFrameIndex -= 1 } }
+    /// Existing local sticker/emoji shelf insertion. Rejection retains the chooser.
+    @discardableResult
+    func insertShelfGlyph(_ glyph: String, isForeground: Bool = true,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        guard isForeground, isEditing, activePanel == .stickerEmoji, !isPlaying, !isSaving,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
+            message = "Finish the current edit or save and pause playback before adding a sticker. Nothing was added."
+            return false
+        }
+        let captured = document, selection = selectedElementIDs, clipboard = editor.clipboardVersion
+        let tool = selectedTool, imageSelection = imageMoveTarget
+        do {
+            guard !glyph.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  glyph.count <= 16, glyph.utf8.count <= 128,
+                  !glyph.unicodeScalars.contains(where: { $0.value < 32 || (127...159).contains($0.value) }) else {
+                throw StudioDocumentError.invalid("This sticker glyph is invalid. Nothing was added.")
+            }
+            try checkCancellation()
+            let element = DrawnElement(id: UUID().uuidString, tool: .text,
+                points: [.init(x: CGFloat(captured.width) / 2, y: CGFloat(captured.height) / 2)],
+                color: "#000000", width: 8, opacity: 1, fillColor: glyph, layerID: captured.activeLayerID)
+            var candidate = editor
+            guard candidate.document == captured else { throw StudioCommandError.staleRevision }
+            try candidate.commit(element, frameID: captured.activeFrameID)
+            try preflightRasterDocument(candidate.document)
+            try checkCancellation()
+            guard isEditing, activePanel == .stickerEmoji, !isPlaying, !isSaving,
+                  activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+                  document == captured, selectedElementIDs == selection, editor.clipboardVersion == clipboard,
+                  selectedTool == tool, imageMoveTarget == imageSelection else { throw StudioCommandError.staleRevision }
+            editor = candidate
+            pruneManagedAudio(); scheduleSave()
+            message = nil; activePanel = .none
+            return true
+        } catch is CancellationError {
+            message = "Sticker insertion cancelled. Nothing was added."; return false
+        } catch { message = error.localizedDescription; return false }
+    }
     @discardableResult
     func commitElement(_ element: DrawnElement, frameID: String? = nil, mirror: StudioMirrorCapture? = nil) -> Bool {
         guard textDraft == nil else { message = "Apply or cancel the text draft before drawing."; return false }
@@ -1419,6 +1496,48 @@ final class StudioViewModel: ObservableObject {
     }
     @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand { didSet { rememberDrawingToolPreferences() } }
     @Published var areaSelectionSmoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
+    enum AreaSelectionTarget: String, CaseIterable { case drawings, image
+        var label: String { self == .drawings ? "Drawings" : "Image on active layer" }
+    }
+    private var areaSelectionGeneration = UUID()
+    @Published var areaSelectionTarget: AreaSelectionTarget = .drawings {
+        didSet {
+            if areaSelectionTarget != oldValue {
+                areaSelectionGeneration = UUID()
+                cancelPolygonSelection(); imageMoveTarget = nil; editor.selectedElementIDs.removeAll()
+            }
+        }
+    }
+    struct AreaImageIdentity: Equatable {
+        let projectID: UUID
+        let frameID: String
+        let layerID: String
+        let assetID: String
+        let placement: StudioRasterPlacement
+        let angle: Double
+    }
+    private var availableAreaImage: AreaImageIdentity? {
+        guard let assetID = currentFrame.rasterAssetID,
+              let instance = currentFrame.rasterInstance(on: activeLayerID), let placement = instance.placement,
+              originalImageSource(assetID) != nil,
+              let layer = layers.first(where: { $0.id == activeLayerID }), layer.visible,
+              layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
+        return .init(projectID: document.id, frameID: currentFrame.id, layerID: activeLayerID,
+                     assetID: assetID, placement: placement, angle: instance.rotationDegrees ?? 0)
+    }
+    private var validAreaImageSelection: AreaImageIdentity? {
+        guard let target = imageMoveTarget, target.areaRevision == document.revision,
+              let image = availableAreaImage, target.projectID == image.projectID,
+              target.frameID == image.frameID, target.layerID == image.layerID,
+              target.assetID == image.assetID else { return nil }
+        return image
+    }
+    var selectedAreaImageCorners: [CGPoint]? {
+        guard selectedTool == .lasso, areaSelectionTarget == .image,
+              let image = validAreaImageSelection else { return nil }
+        return StudioImageRotationGeometry(placement: image.placement, degrees: image.angle).corners
+    }
+    func deselectAreaImage() { areaSelectionGeneration = UUID(); imageMoveTarget = nil; cancelPolygonSelection() }
     struct AreaSelectionCapture: Equatable {
         let projectID: UUID
         let revision: Int
@@ -1427,6 +1546,10 @@ final class StudioViewModel: ObservableObject {
         let mode: SelectionMode
         let kind: StudioAreaSelectionKind
         let smoothing: Double
+        let target: AreaSelectionTarget
+        let image: AreaImageIdentity?
+        let imageSelectionID: UUID?
+        let generation: UUID
     }
     @Published private(set) var polygonSelectionVertices: [CGPoint] = []
     private var polygonSelectionCapture: AreaSelectionCapture?
@@ -1477,10 +1600,14 @@ final class StudioViewModel: ObservableObject {
     func beginAreaSelection() -> AreaSelectionCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .lasso,
               activeStrokeID == nil, pendingBrushStroke == nil,
-              areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing) else { return nil }
+              areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing),
+              areaSelectionTarget == .drawings || availableAreaImage != nil else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             selectedIDs: selectedElementIDs, mode: selectionMode, kind: areaSelectionKind,
-            smoothing: areaSelectionSmoothing)
+            smoothing: areaSelectionSmoothing, target: areaSelectionTarget,
+            image: areaSelectionTarget == .image ? availableAreaImage : nil,
+            imageSelectionID: validAreaImageSelection == nil ? nil : imageMoveTarget?.selectionID,
+            generation: areaSelectionGeneration)
     }
     @discardableResult
     func finishAreaSelection(_ capture: AreaSelectionCapture, points: [CGPoint],
@@ -1489,6 +1616,26 @@ final class StudioViewModel: ObservableObject {
             guard beginAreaSelection() == capture else { throw StudioCommandError.staleRevision }
             try checkCancellation()
             let region = try StudioSelectionRegion(points: points, kind: capture.kind, smoothing: capture.smoothing)
+            if capture.target == .image {
+                guard let image = capture.image else { throw StudioCommandError.staleRevision }
+                let found = region.containsImage(placement: image.placement, angle: image.angle)
+                let selected: Bool
+                switch capture.mode {
+                case .new: selected = found
+                case .add: selected = found || capture.imageSelectionID != nil
+                case .subtract: selected = capture.imageSelectionID != nil && !found
+                }
+                try checkCancellation()
+                guard beginAreaSelection() == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
+                if selected {
+                    if capture.imageSelectionID == nil {
+                        imageMoveTarget = .init(projectID: image.projectID, frameID: image.frameID,
+                            assetID: image.assetID, layerID: image.layerID, areaRevision: document.revision)
+                    }
+                } else { imageMoveTarget = nil }
+                editor.selectedElementIDs.removeAll()
+                return true
+            }
             guard currentFrame.elements.count <= 2_000_000 / region.points.count else {
                 throw StudioDocumentError.unavailable("This lasso is too complex for the current frame. Use Rectangle or a simpler outline.")
             }
@@ -1522,7 +1669,7 @@ final class StudioViewModel: ObservableObject {
     func selectVisibleArtwork(inverting: Bool = false,
                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
-            guard let capture = beginAreaSelection(), textDraft == nil else { return false }
+            guard areaSelectionTarget == .drawings, let capture = beginAreaSelection(), textDraft == nil else { return false }
             let eligible = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
             let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
             var ids = Set<String>()
@@ -1547,6 +1694,7 @@ final class StudioViewModel: ObservableObject {
         let frameID: String
         let assetID: String
         let layerID: String
+        var areaRevision: Int? = nil
     }
     @Published private var imageMoveTarget: ImageMoveTarget?
     var isMovingImageOnCanvas: Bool {
@@ -1583,7 +1731,7 @@ final class StudioViewModel: ObservableObject {
     func beginImageMove(at point: CGPoint) -> ImageMoveCapture? {
         guard point.x.isFinite, point.y.isFinite, let capture = currentImageMoveCapture() else { return nil }
         let p = capture.placement.original
-        return CGRect(x: p.x, y: p.y, width: p.width, height: p.height).contains(point) ? capture : nil
+        return StudioImageRotationGeometry(placement: p, degrees: capture.placement.rotationDegrees).contains(point) ? capture : nil
     }
     /// A transient frame preview; only finishImageMove commits through the shared command.
     func imageMovePreview(_ capture: ImageMoveCapture, delta: CGSize) throws -> AnimationFrame {
@@ -1596,10 +1744,10 @@ final class StudioViewModel: ObservableObject {
         let original = capture.placement.original
         // Keep the whole managed image inside the canvas, matching numeric placement.
         guard var instance = frame.rasterInstance(on: capture.placement.layerID) else { throw StudioCommandError.invalidReference }
-        instance.placement = .init(
-            x: min(max(0, original.x + delta.width), max(0, Double(capture.placement.canvasWidth) - original.width)),
-            y: min(max(0, original.y + delta.height), max(0, Double(capture.placement.canvasHeight) - original.height)),
+        let proposed = StudioRasterPlacement(x: original.x + delta.width, y: original.y + delta.height,
             width: original.width, height: original.height)
+        instance.placement = try StudioImageRotationGeometry(placement: proposed, degrees: capture.placement.rotationDegrees)
+            .fitted(canvasWidth: capture.placement.canvasWidth, canvasHeight: capture.placement.canvasHeight, allowingShrink: false)
         try frame.updateRasterInstance(instance)
         return frame
     }
@@ -1616,6 +1764,49 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription; return false }
     }
 
+    /// Rotation is measured in canvas coordinates from the captured touch start.
+    /// Preview changes only a value frame; finger-up uses the same typed angle edit.
+    func imageRotationPreview(_ capture: ImageMoveCapture, start: CGPoint, current: CGPoint) throws -> AnimationFrame {
+        guard currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+        guard [start.x, start.y, current.x, current.y].allSatisfy({ $0.isFinite && abs($0) <= 131_072 }) else {
+            throw StudioCommandError.invalidGeometry
+        }
+        let original = capture.placement.original
+        let center = CGPoint(x: original.x + original.width / 2, y: original.y + original.height / 2)
+        let a = CGPoint(x: start.x - center.x, y: start.y - center.y)
+        let b = CGPoint(x: current.x - center.x, y: current.y - center.y)
+        guard a.x*a.x + a.y*a.y > 0.000001, b.x*b.x + b.y*b.y > 0.000001 else {
+            throw StudioCommandError.invalidGeometry
+        }
+        if start == current { return currentFrame }
+        let delta = atan2(a.x*b.y - a.y*b.x, a.x*b.x + a.y*b.y) * 180 / .pi
+        var degrees = capture.placement.rotationDegrees + delta
+        if degrees > 180 { degrees -= 360 }; if degrees < -180 { degrees += 360 }
+        var frame = currentFrame
+        guard var instance = frame.rasterInstance(on: capture.placement.layerID) else { throw StudioCommandError.invalidReference }
+        instance.rotationDegrees = degrees == 0 ? nil : degrees
+        instance.placement = try StudioImageRotationGeometry(placement: original, degrees: degrees)
+            .fitted(canvasWidth: capture.placement.canvasWidth, canvasHeight: capture.placement.canvasHeight, allowingShrink: false)
+        try frame.updateRasterInstance(instance)
+        return frame
+    }
+    @discardableResult
+    func finishImageRotation(_ capture: ImageMoveCapture, start: CGPoint, current: CGPoint,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            try checkCancellation()
+            let preview = try imageRotationPreview(capture, start: start, current: current)
+            guard let instance = preview.rasterInstance(on: capture.placement.layerID), let placement = instance.placement else {
+                throw StudioCommandError.invalidReference
+            }
+            return placeImage(capture.placement, at: placement, rotationDegrees: instance.rotationDegrees ?? 0,
+                checkCancellation: {
+                    try checkCancellation()
+                    guard self.currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
+                })
+        } catch { message = error.localizedDescription; return false }
+    }
+
     /// Corner drags keep the opposite corner fixed and preserve the displayed
     /// aspect ratio. Preview retains the original asset and creates no history.
     func imageResizePreview(_ capture: ImageMoveCapture, corner: StudioSelectionHandleGeometry.Kind,
@@ -1627,6 +1818,29 @@ final class StudioViewModel: ObservableObject {
         }
         if delta == .zero { return currentFrame }
         let p = capture.placement.original
+        if capture.placement.rotationDegrees != 0 {
+            let bounds = StudioImageRotationGeometry(placement: p, degrees: capture.placement.rotationDegrees).bounds
+            let left = corner == .topLeft || corner == .bottomLeft
+            let top = corner == .topLeft || corner == .topRight
+            let anchor = CGPoint(x: left ? bounds.maxX : bounds.minX, y: top ? bounds.maxY : bounds.minY)
+            let dx = (left ? -1.0 : 1.0) * Double(delta.width)
+            let dy = (top ? -1.0 : 1.0) * Double(delta.height)
+            let requested = 1 + (dx * bounds.width + dy * bounds.height) / (bounds.width * bounds.width + bounds.height * bounds.height)
+            let maximum = min((left ? anchor.x : Double(capture.placement.canvasWidth) - anchor.x) / bounds.width,
+                              (top ? anchor.y : Double(capture.placement.canvasHeight) - anchor.y) / bounds.height)
+            let scale = min(maximum, max(min(1, max(1 / p.width, 1 / p.height)), requested))
+            guard scale.isFinite, scale > 0 else { throw StudioCommandError.invalidGeometry }
+            let centerX = anchor.x + (p.x + p.width / 2 - anchor.x) * scale
+            let centerY = anchor.y + (p.y + p.height / 2 - anchor.y) * scale
+            let placement = StudioRasterPlacement(x: centerX - p.width * scale / 2,
+                y: centerY - p.height * scale / 2, width: p.width * scale, height: p.height * scale)
+            try StudioImageRotationGeometry(placement: placement, degrees: capture.placement.rotationDegrees)
+                .validate(canvasWidth: capture.placement.canvasWidth, canvasHeight: capture.placement.canvasHeight)
+            var frame = currentFrame
+            guard var instance = frame.rasterInstance(on: capture.placement.layerID) else { throw StudioCommandError.invalidReference }
+            instance.placement = placement; try frame.updateRasterInstance(instance)
+            return frame
+        }
         let left = corner == .topLeft || corner == .bottomLeft
         let top = corner == .topLeft || corner == .topRight
         let anchorX = left ? p.x + p.width : p.x
@@ -1670,6 +1884,7 @@ final class StudioViewModel: ObservableObject {
         let fitted: StudioRasterPlacement
         let canvasWidth: Int
         let canvasHeight: Int
+        var rotationDegrees: Double = 0
     }
     func prepareImagePlacement() -> ImagePlacementCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
@@ -1684,24 +1899,24 @@ final class StudioViewModel: ObservableObject {
         let sourceWidth = Double(source.normalizedWidth) * crop.width
         let sourceHeight = Double(source.normalizedHeight) * crop.height
         let width = odd ? sourceHeight : sourceWidth, height = odd ? sourceWidth : sourceHeight
-        let fit = min(Double(document.width) / width, Double(document.height) / height)
-        let fittedWidth = min(Double(document.width), width * fit)
-        let fittedHeight = min(Double(document.height), height * fit)
+        let angle = instance.rotationDegrees ?? 0
+        let initialFit = StudioRasterPlacement(x: (Double(document.width) - width) / 2,
+            y: (Double(document.height) - height) / 2, width: width, height: height)
+        guard let rotatedFit = try? StudioImageRotationGeometry(placement: initialFit, degrees: angle)
+            .fitted(canvasWidth: document.width, canvasHeight: document.height, allowingShrink: true, fillCanvas: true) else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             assetID: assetID, layerID: layer.id, original: original,
-            fitted: .init(x: (Double(document.width) - fittedWidth) / 2,
-                y: (Double(document.height) - fittedHeight) / 2, width: fittedWidth, height: fittedHeight),
-            canvasWidth: document.width, canvasHeight: document.height)
+            fitted: rotatedFit, canvasWidth: document.width, canvasHeight: document.height, rotationDegrees: angle)
     }
     @discardableResult
-    func placeImage(_ capture: ImagePlacementCapture, at placement: StudioRasterPlacement,
+    func placeImage(_ capture: ImagePlacementCapture, at placement: StudioRasterPlacement, rotationDegrees: Double? = nil,
                     checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
             try checkCancellation()
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
-                    frame: .id(capture.frameID), assetID: capture.assetID, placement: placement, layer: .id(capture.layerID)))])),
+                    frame: .id(capture.frameID), assetID: capture.assetID, placement: placement, rotationDegrees: rotationDegrees, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -2662,6 +2877,7 @@ final class StudioViewModel: ObservableObject {
         selectedElementIDs.isEmpty ? currentImageMoveCapture() : nil
     }
     var bottomCopyLabel: String {
+        if selectedTool == .lasso && areaSelectionTarget == .image { return "Choose Move to copy the selected image" }
         if isMovingImageOnCanvas { return "Copy selected image" }
         return selectedElementIDs.isEmpty ? "Copy frame" : selectedElementIDs.count == 1 ? "Copy selected drawing" : "Copy \(selectedElementIDs.count) selected drawings"
     }
@@ -2670,7 +2886,8 @@ final class StudioViewModel: ObservableObject {
         return copiedDrawingCount == 1 ? "Paste drawing" : copiedDrawingCount > 0 ? "Paste \(copiedDrawingCount) drawings" : "Paste frame"
     }
     var canCopyBottomSelection: Bool {
-        !isMovingImageOnCanvas || bottomImageSelection != nil
+        if selectedTool == .lasso && areaSelectionTarget == .image { return false }
+        return !isMovingImageOnCanvas || bottomImageSelection != nil
     }
     @discardableResult
     func deleteBottomImage(_ capture: ImageMoveCapture) -> Bool {
@@ -2681,6 +2898,7 @@ final class StudioViewModel: ObservableObject {
         return deleteImage(capture.placement)
     }
     func copyBottomSelection() {
+        guard canCopyBottomSelection else { return }
         if !selectedElementIDs.isEmpty { _ = copySelected() }
         else if isMovingImageOnCanvas { _ = copyImage() }
         else { copyFrame() }
@@ -2698,6 +2916,51 @@ final class StudioViewModel: ObservableObject {
         imageClipboardEditorVersion = editor.clipboardVersion
         pruneManagedImages()
         return true
+    }
+    var selectedImageCutCapture: ImageMoveCapture? {
+        guard selectedElementIDs.isEmpty, let capture = currentImageMoveCapture(),
+              capture.placement.layerID == activeLayerID else { return nil }
+        return capture
+    }
+    /// Stage the selected instance's clipboard and deletion together. A failed
+    /// or cancelled Cut never replaces an earlier successful copy.
+    @discardableResult
+    func cutSelectedImage(_ capture: ImageMoveCapture,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard selectedImageCutCapture == capture,
+                  let layer = layers.first(where: { $0.id == capture.placement.layerID }),
+                  var copied = currentFrame.projectedRasterFrame(on: capture.placement.layerID),
+                  let record = retainedRasterFrames[capture.placement.assetID] else {
+                throw StudioDocumentError.unavailable("Select the image on its active, visible, unlocked layer with Move before cutting. Nothing changed.")
+            }
+            copied.elements = []; copied.holdTicks = nil
+            let before = document, previousClipboard = imageClipboard, previousLayer = copiedImageLayer
+            let previousScope = imageClipboardEditorVersion, version = editor.clipboardVersion
+            try checkCancellation()
+            guard selectedImageCutCapture == capture, editor.clipboardVersion == version,
+                  imageClipboard == previousClipboard, copiedImageLayer == previousLayer,
+                  imageClipboardEditorVersion == previousScope else { throw StudioCommandError.staleRevision }
+            try validateManagedRaster(frame: copied, record: record)
+            var candidate = editor
+            try candidate.deleteImage(frameID: capture.placement.frameID, assetID: capture.placement.assetID,
+                layerID: capture.placement.layerID, checkCancellation: checkCancellation)
+            try preflightRasterDocument(candidate.document)
+            try checkCancellation()
+            guard document == before, selectedImageCutCapture == capture, editor.clipboardVersion == version,
+                  imageClipboard == previousClipboard, copiedImageLayer == previousLayer,
+                  imageClipboardEditorVersion == previousScope else { throw StudioCommandError.staleRevision }
+            // No throwing or suspension after publication begins. The clipboard
+            // and editor history both retain the same immutable original bytes.
+            imageClipboard = copied; copiedImageLayer = layer
+            imageClipboardEditorVersion = candidate.clipboardVersion
+            editor = candidate; imageMoveTarget = nil
+            pruneManagedImages(); pruneManagedAudio(); scheduleSave()
+            message = nil
+            return true
+        } catch is CancellationError {
+            message = "Image Cut cancelled. No image was cut."; return false
+        } catch { message = error.localizedDescription; return false }
     }
     var canPasteImage: Bool {
         isEditing && !isPlaying && !isSaving && selectedTool == .move &&
@@ -2722,12 +2985,14 @@ final class StudioViewModel: ObservableObject {
                 glowEnabled: appearance.glowEnabled, glowColor: appearance.glowColor, colorLabel: appearance.colorLabel, glowRadius: appearance.glowRadius, glowStrength: appearance.glowStrength)
             try candidate.change { value in
                 value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
+                if copied.rasterRotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
                 value.layers.append(layer)
                 value.frames[index].rasterAssetID = assetID
                 value.frames[index].rasterLayerID = layer.id
                 value.frames[index].rasterPlacement = copied.rasterPlacement
                 value.frames[index].rasterReflection = copied.rasterReflection
                 value.frames[index].rasterQuarterTurns = copied.rasterQuarterTurns
+                value.frames[index].rasterRotationDegrees = copied.rasterRotationDegrees
                 value.frames[index].rasterCrop = copied.rasterCrop
             }
             try validateManagedRaster(frame: candidate.document.frames[index], record: record)
@@ -2909,11 +3174,33 @@ struct StudioSelectionRegion {
         if let rectangle { return rectangle.minX <= rect.minX && rectangle.maxX >= rect.maxX && rectangle.minY <= rect.minY && rectangle.maxY >= rect.maxY }
         let corners = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
                        CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
-        guard corners.allSatisfy({ path.contains($0, eoFill: true) || onBoundary($0) }) else { return false }
+        guard corners.allSatisfy({ path.cgPath.contains($0, using: .evenOdd) || onBoundary($0) }) else { return false }
         // Corner-only tests incorrectly select a drawing cut through by a
         // concave lasso. Reject any outline edge entering its open bounds.
         let inner = rect.insetBy(dx: min(0.0001, rect.width / 4), dy: min(0.0001, rect.height / 4))
         for i in points.indices where segmentIntersects(points[i], points[(i + 1) % points.count], inner) { return false }
+        return true
+    }
+    /// Whole rotated-image enclosure, not enclosure of its axis-aligned bounds.
+    /// The image polygon is convex. A concave lasso must not enter its open interior.
+    func containsImage(placement: StudioRasterPlacement, angle: Double) -> Bool {
+        let geometry = StudioImageRotationGeometry(placement: placement, degrees: angle)
+        let corners = geometry.corners
+        // SwiftUI Path's even-odd hit test can misclassify an interior point
+        // aligned with a rotated polygon vertex. Use the canonical CGPath
+        // even-odd operation; retain exact edge inclusion and concavity checks.
+        guard corners.allSatisfy({ path.cgPath.contains($0, using: .evenOdd) || onBoundary($0) }) else { return false }
+        let radians = -angle * .pi / 180, cosine = cos(radians), sine = sin(radians)
+        let center = geometry.center
+        func local(_ point: CGPoint) -> CGPoint {
+            let x = point.x - center.x, y = point.y - center.y
+            return .init(x: center.x + x * cosine - y * sine, y: center.y + x * sine + y * cosine)
+        }
+        let inner = CGRect(x: placement.x, y: placement.y, width: placement.width, height: placement.height)
+            .insetBy(dx: min(0.0001, placement.width / 4), dy: min(0.0001, placement.height / 4))
+        for i in points.indices {
+            if segmentIntersects(local(points[i]), local(points[(i + 1) % points.count]), inner) { return false }
+        }
         return true
     }
     private func onBoundary(_ p: CGPoint) -> Bool {

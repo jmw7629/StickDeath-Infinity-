@@ -3,7 +3,6 @@ import SwiftUI
 // ═══════════════════════════════════════════════════════════════════
 // Floating Tool Settings Panel — positioned over canvas
 // Tool icon + name, X close, per-tool settings,
-// Shortcut key at bottom
 // Colors: Red for Pencil/Pen/Brush, Green for Fill, Purple for Smudge,
 //         Amber for Crayon, Cyan for Picker, Orange for Eraser,
 //         Pink for Marker/Text, Gray for shapes/move/lasso
@@ -75,22 +74,6 @@ struct FloatingToolSettingsPanel: View {
                         toolSettingsContent(def, compactHeight: compact)
                     }
                     
-                    // The short landscape popup keeps the actual operation controls reachable.
-                    if available.size.height >= 180 && !def.shortcut.isEmpty {
-                    HStack(spacing: 4) {
-                        Text("Shortcut:")
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundColor(.sdStudioSecondaryText)
-                        Text(def.shortcut)
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundColor(.sdStudioSecondaryText)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.white.opacity(0.08))
-                            .cornerRadius(4)
-                    }
-                    .padding(.top, 4)
-                    }
                 }
                 .padding(compact ? 6 : 12)
             }
@@ -254,9 +237,9 @@ struct FloatingToolSettingsPanel: View {
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
                 if !vm.selectedElementIDs.isEmpty {
-                    Text(StudioFillContext.selectionUnavailable)
+                    Text("Fill paints on the active layer within the selected drawings’ shapes, excluding layer glow and blending. Original objects stay editable. Deselect in Move or Lasso to fill the whole canvas region.")
                         .font(.system(size: 10)).foregroundColor(.sdStudioSecondaryText)
-                        .accessibilityIdentifier("studio.fill.selection-unavailable")
+                        .accessibilityIdentifier("studio.fill.selection-coverage")
                 }
                 SettingsSlider(label: "Tolerance", value: $vm.fillTolerance, range: 0...128, unit: "", accent: .green)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
@@ -413,7 +396,7 @@ struct FloatingToolSettingsPanel: View {
                     Toggle("Bold", isOn: $vm.textStyle.bold).accessibilityIdentifier("studio.text.bold")
                     Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
                 }.font(.specialElite(10))
-                ColorPicker("Text color", selection: $vm.strokeColor, supportsOpacity: true)
+                ColorPicker("Text color", selection: $vm.textPickerColor, supportsOpacity: true)
                     .accessibilityIdentifier("studio.text.color")
                 SettingsSlider(label: "Box Width", value: $vm.textStyle.boxWidth, range: 16...4096, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Box Height", value: $vm.textStyle.boxHeight, range: 16...4096, unit: "px", accent: accentColor)
@@ -513,10 +496,19 @@ struct FloatingToolSettingsPanel: View {
                     Button("Copy image") { _ = vm.copyImage() }
                         .disabled(vm.prepareImagePlacement() == nil)
                         .accessibilityIdentifier("studio.image.copy")
+                    Button("Cut image") {
+                        if let capture = vm.selectedImageCutCapture { _ = vm.cutSelectedImage(capture) }
+                    }
+                    .disabled(vm.selectedImageCutCapture == nil)
+                    .accessibilityIdentifier("studio.image.cut")
+                    .accessibilityLabel("Cut selected image")
+                    .accessibilityHint("Cuts only the selected active-layer image. Undo restores it; Paste adds the image to a blank frame.")
                     Button("Paste image") { _ = vm.pasteImage() }
                         .disabled(!vm.canPasteImage)
                         .accessibilityIdentifier("studio.image.paste")
                 }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                Text("Cut requires an explicit image selection on its active, unlocked layer. It keeps drawings and linked images; Undo restores the cut image.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 if vm.hasCopiedImage {
                     Text("Image copied within this project. Paste into a blank frame preserves its crop, flips and position.")
                         .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
@@ -670,9 +662,16 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Text("Enclose whole drawings, then choose Move to drag them. To position an imported image, choose Move image on canvas or Position image. Lasso includes editable and historical text. Image lasso selection is unfinished.")
+                Picker("Selection target", selection: $vm.areaSelectionTarget) {
+                    ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
+                        Text(target.label).tag(target)
+                    }
+                }.accessibilityIdentifier("studio.selection.target")
+                Text(vm.areaSelectionTarget == .drawings
+                     ? "Enclose whole drawings, then choose Move to drag them. Lasso includes editable and historical text."
+                     : "Enclose the whole image on the active visible, unlocked layer, then choose Move. Only this one image is selected; mixed drawings and images or image groups are unavailable.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                Text("\(vm.selectedElementIDs.count) drawings selected")
+                Text(vm.areaSelectionTarget == .drawings ? "\(vm.selectedElementIDs.count) drawings selected" : "\(vm.selectedAreaImageCorners == nil ? 0 : 1) image selected")
                     .font(.specialElite(11)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.selection.count")
                 HStack(spacing: 4) {
@@ -695,15 +694,18 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityAddTraits(vm.selectionMode == mode ? .isSelected : [])
                     }
                 }
+                if vm.areaSelectionTarget == .drawings {
                 HStack(spacing: 8) {
                     Button("Select all") { _ = vm.selectVisibleArtwork() }
                         .accessibilityIdentifier("studio.selection.all")
                     Button("Invert") { _ = vm.selectVisibleArtwork(inverting: true) }
                         .accessibilityIdentifier("studio.selection.invert")
                 }.font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                }
                 if vm.areaSelectionKind == .freehand {
                     SettingsSlider(label: "Smoothness", value: $vm.areaSelectionSmoothing, range: 0...10, unit: "px", accent: .red)
                 }
+                if vm.areaSelectionTarget == .drawings {
                 HStack(spacing: 4) {
                     Button("Copy") { _ = vm.copySelected() }
                         .frame(maxWidth: .infinity, minHeight: 44)
@@ -720,6 +722,13 @@ struct FloatingToolSettingsPanel: View {
                         .accessibilityIdentifier("studio.lasso.deselect")
                 }.font(.specialElite(11)).frame(minHeight: 44)
                     .disabled(vm.selectedElementIDs.isEmpty)
+                } else {
+                    Button("Deselect image") { vm.deselectAreaImage() }
+                        .disabled(vm.selectedAreaImageCorners == nil)
+                        .accessibilityIdentifier("studio.lasso.image-deselect")
+                    Text("Use Move for image copy, Cut, paste, delete and transforms. Cut requires this image’s active, unlocked layer.")
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                }
                 if vm.areaSelectionKind == .polygon {
                     Text("Tap canvas corners, then Finish to close the outline. \(vm.currentPolygonSelectionVertices.count) points.")
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
@@ -931,19 +940,22 @@ private struct StudioImagePlacementControls: View {
     @Binding private var y: String
     @Binding private var width: String
     @Binding private var height: String
+    @State private var rotationDegrees: Double
 
     init(vm: StudioViewModel, capture: StudioViewModel.ImagePlacementCapture, focused: FocusState<StudioImagePlacementField?>.Binding,
          x: Binding<String>, y: Binding<String>, width: Binding<String>, height: Binding<String>, dismiss: @escaping () -> Void) {
         self.vm = vm; self.capture = capture; self.dismiss = dismiss; self._fieldFocused = focused
         _x = x; _y = y; _width = width; _height = height
+        _rotationDegrees = State(initialValue: capture.rotationDegrees)
     }
     private var proposed: StudioRasterPlacement? {
         guard let x = Double(x), let y = Double(y), let width = Double(width), let height = Double(height),
               x.isFinite, y.isFinite, width.isFinite, height.isFinite,
-              x >= 0, y >= 0, width > 0, height > 0,
-              x + width <= Double(capture.canvasWidth) + 0.000001,
-              y + height <= Double(capture.canvasHeight) + 0.000001 else { return nil }
-        return .init(x: x, y: y, width: width, height: height)
+              width > 0, height > 0 else { return nil }
+        let value = StudioRasterPlacement(x: x, y: y, width: width, height: height)
+        guard (try? StudioImageRotationGeometry(placement: value, degrees: rotationDegrees)
+            .validate(canvasWidth: capture.canvasWidth, canvasHeight: capture.canvasHeight)) != nil else { return nil }
+        return value
     }
     private func set(_ value: StudioRasterPlacement) {
         x = String(value.x); y = String(value.y); width = String(value.width); height = String(value.height)
@@ -962,24 +974,30 @@ private struct StudioImagePlacementControls: View {
             Text("IMAGE POSITION").font(.specialElite(12)).foregroundColor(.white)
             field("X", $x, focus: .x); field("Y", $y, focus: .y)
             field("Width", $width, focus: .width); field("Height", $height, focus: .height)
+            SettingsSlider(label: "Additional angle", value: $rotationDegrees, range: -180...180, unit: "°", accent: .red)
+                .accessibilityIdentifier("studio.image-placement.angle")
             HStack {
                 Button("Half size") {
                     guard let p = proposed else { return }
                     set(.init(x: p.x + p.width / 4, y: p.y + p.height / 4, width: p.width / 2, height: p.height / 2))
                 }.accessibilityIdentifier("studio.image-placement.half").disabled(proposed == nil)
                 Spacer()
-                Button("Fit canvas") { set(capture.fitted) }.accessibilityIdentifier("studio.image-placement.fit")
+                Button("Fit canvas") {
+                    let p = capture.fitted
+                    if let fit = try? StudioImageRotationGeometry(placement: p, degrees: rotationDegrees)
+                        .fitted(canvasWidth: capture.canvasWidth, canvasHeight: capture.canvasHeight, allowingShrink: true, fillCanvas: true) { set(fit) }
+                }.accessibilityIdentifier("studio.image-placement.fit")
             }.frame(minHeight: 44)
             if proposed == nil {
                 Text("Use positive dimensions and keep the image inside the canvas.")
                     .foregroundColor(.orange).font(.specialElite(10))
             }
-            Text("Apply changes position and size in one Undo step. Originals stay intact. Drag white corner handles in Move image mode to resize with fixed proportions. Use Move options to rotate by 90°. Arbitrary-angle rotation is unfinished.")
+            Text("Apply changes position, size and angle in one Undo step. Width and Height describe the image before this additional angle; existing 90° turns stay intact. All rotated corners must fit. Move image handles resize the displayed bounds with fixed proportions. Originals stay editable.")
                 .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             HStack {
                 Button("Apply image") {
                     guard let value = proposed else { return }
-                    if vm.placeImage(capture, at: value) { dismiss() }
+                    if vm.placeImage(capture, at: value, rotationDegrees: rotationDegrees) { dismiss() }
                 }.accessibilityIdentifier("studio.image-placement.apply")
                     .disabled(proposed == nil || vm.prepareImagePlacement() != capture)
                 Spacer()

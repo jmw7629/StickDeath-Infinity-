@@ -129,6 +129,35 @@ private final class NetworkTrap: URLProtocol {
                 }
                 try require(calls == 0 && studio.document == before, "Routing help performed an edit or cloud request")
             }
+            try await test("image editing help reflects actual selection transforms and linked duplication without execution") {
+                var calls = 0
+                let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                let before = studio.document
+                for (question, facts) in [
+                    ("How do I select an image with Lasso?", ["Image on active layer", "enclose the whole image", "Choose Move"]),
+                    ("How do I rotate a picture?", ["red canvas handle", "angle", "one Undo step"]),
+                    ("How do I cut an image?", ["Cut image in Move", "selected active-layer image", "one Undo step"]),
+                    ("How do I copy and paste an image?", ["Copy selected image", "crop, flips and angle", "never replaces an existing image"]),
+                    ("Can I duplicate imported image layers?", ["linked instance", "sharing the original file", "separate placement"]),
+                    ("How do layers work?", ["linked instance", "separate placement"]),
+                    ("How do I copy an image in my project?", ["Copy selected image", "crop, flips and angle"]),
+                    ("Duplicate a picture in this project", ["linked instance", "sharing the original file"]),
+                    ("How do I duplicate my project with images?", ["Duplicate Project", "new project identity"]),
+                    ("Copy the entire project including pictures", ["Duplicate Project", "new project identity"])
+                ] {
+                    try require(chat.submit(question, context: .general), "Image guidance rejected")
+                    try await idle(chat)
+                    let answer = chat.messages.last!.content
+                    try require(facts.allSatisfy(answer.contains) && !answer.contains("duplication remains unavailable"),
+                                "Stale or incomplete image guidance: \(question)")
+                    try require(answer.contains("Guidance only") && chat.status == .localGuide && chat.messages.last?.origin == .local,
+                                "Image guidance claimed execution")
+                }
+                try require(calls == 0 && studio.document == before, "Image guidance used a provider or edited the document")
+                try require(SpatterAIViewModel.currentStudioCapabilities.contains("Image on active layer") &&
+                            SpatterAIViewModel.currentStudioCapabilities.contains("linked instance"),
+                            "Configured advice omitted current image capabilities")
+            }
             try await test("versioned backup and storage help overrides legacy promises without side effects") {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })

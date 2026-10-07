@@ -7,6 +7,74 @@ final class StudioSmokeUITests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
     @MainActor
+    func testSelectedCoverageFillUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.85)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        // The shared ink oracle measures red coverage; use an explicit red
+        // source so this assertion verifies the stroke before exercising Fill.
+        try choosePickerTestColor("#FF0000", app: app)
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.8)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        capture(app, name: "fill-selected-original-red-source")
+        XCTAssertGreaterThan(exportInkMask(original).count, 60)
+        try pickerRailControl("studio.tool.lasso", app: app, forward: true).tap()
+        let selectAll = app.buttons["studio.selection.all"]
+        XCTAssertTrue(selectAll.waitForExistence(timeout: 5)); selectAll.tap()
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
+        app.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
+        XCTAssertTrue(app.staticTexts["studio.fill.selection-coverage"].waitForExistence(timeout: 5))
+        try fillPreferenceControl("studio.tool-settings.reset", app: app).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try choosePickerTestColor("#0000FF", app: app)
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        // Remove only the editor's red selection outline before pixel checks.
+        try pickerRailControl("studio.tool.eraser", app: app, forward: false).tap()
+        let deselect = app.buttons["studio.eraser.deselect"]
+        XCTAssertTrue(deselect.waitForExistence(timeout: 5)); deselect.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        let painted = try pixels(canvas.screenshot().image)
+        let blue = imageFixtureColors(painted)[1]
+        XCTAssertGreaterThan(blue, 20, "Selected Fill painted no real artwork")
+        XCTAssertLessThan(blue, painted.width * painted.height / 3, "Fill escaped onto the surrounding canvas")
+        XCTAssertEqual(original.width, painted.width); XCTAssertEqual(original.height, painted.height)
+        var escaped = 0
+        for i in stride(from: 0, to: min(original.bytes.count, painted.bytes.count), by: 4) {
+            if original.bytes[i] >= 250 && original.bytes[i + 1] >= 250 && original.bytes[i + 2] >= 250,
+               painted.bytes[i + 2] > 180 && painted.bytes[i] < 90 && painted.bytes[i + 1] < 90 { escaped += 1 }
+        }
+        XCTAssertEqual(escaped, 0, "Paint reached pixels outside the actual selected stroke")
+        capture(app, name: "fill-selected-coverage-real-pixels")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(painted, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(painted, pixels(restored.screenshot().image)), 4,
+            "Cold reopen lost selected Fill coverage")
+        capture(reopened, name: "fill-selected-coverage-cold-reopened")
+    }
+
+    @MainActor
     func testSpatterSelectedErasureUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -108,10 +176,17 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Device Storage"].waitForExistence(timeout: 8))
         let list = app.descendants(matching: .any)["studio.storage.list"].firstMatch
         XCTAssertTrue(list.waitForExistence(timeout: 5))
-        func reveal(_ element: XCUIElement) throws {
+        @MainActor func reveal(_ element: XCUIElement) throws {
             for _ in 0..<5 {
-                if element.exists && element.isHittable { return }
-                list.swipeUp(velocity: .slow)
+                var viewport = list.frame.intersection(app.frame).insetBy(dx: 4, dy: 8)
+                let top = max(viewport.minY, app.navigationBars["Device Storage"].frame.maxY + 4)
+                viewport = CGRect(x: viewport.minX, y: top, width: viewport.width, height: max(0, viewport.maxY - top))
+                if element.exists && element.isHittable && viewport.contains(element.frame) { return }
+                if element.exists && element.frame.minY < viewport.minY {
+                    list.swipeDown(velocity: .slow)
+                } else {
+                    list.swipeUp(velocity: .slow)
+                }
             }
             captureHierarchy(app, name: "storage-cleanup-unreachable-control")
             XCTFail("Storage control is not reachable: " + element.identifier)
@@ -288,25 +363,26 @@ final class StudioSmokeUITests: XCTestCase {
         try providerCancel(importer: false)
         XCTAssertEqual(libraryIDs(), beforeIDs, "Cancelled backup changed the library")
 
-        func chooseLocalFilesLocation() throws {
-            // Never select iCloud, a network provider, or a remembered account
-            // destination. Fail with hierarchy evidence if local Files is absent.
+        @MainActor func chooseLocalFilesLocation() throws {
+            // A retained local browsingRoot can wrap the frontmost Browse
+            // sidebar. Require the real local title/content, not root.exists.
+            let navigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
             for _ in 0..<5 {
                 let localRoot = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"]
-                if localRoot.exists {
-                    // This accessibility root also exists inside its child folders.
-                    // Return to the actual local root before saving or looking up
-                    // the backup, independent of the previous export's directory.
-                    let localBack = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"].buttons["On My iPhone"]
-                    if localBack.exists && localBack.isHittable { localBack.tap(); continue }
-                    return
-                }
+                let localTitle = navigation.staticTexts["On My iPhone"]
+                let fileView = app.collectionViews["File View"].firstMatch
+                if localRoot.exists && localTitle.exists && localTitle.isHittable
+                    && fileView.exists && fileView.isHittable { return }
+                let localBack = navigation.buttons["On My iPhone"]
+                if localBack.exists && localBack.isHittable { localBack.tap(); continue }
+                let sidebar = app.cells["DOC.sidebar.item.On My iPhone"]
+                if sidebar.exists && sidebar.isHittable { sidebar.tap(); continue }
                 let local = app.staticTexts.matching(NSPredicate(format: "label == %@", "On My iPhone"))
                     .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let local { local.tap(); return }
+                if let local { local.tap(); continue }
                 let localButton = app.buttons.matching(NSPredicate(format: "label == %@", "On My iPhone"))
                     .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
-                if let localButton { localButton.tap(); return }
+                if let localButton { localButton.tap(); continue }
                 let browse = app.buttons.matching(NSPredicate(format: "label == %@ OR label == %@", "Browse", "Locations"))
                     .allElementsBoundByIndex.first { $0.exists && $0.isHittable }
                 if let browse { browse.tap() } else { break }
@@ -1353,6 +1429,64 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testStickerShelfLockedRejectionThenInsertUndo() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        _ = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        let blank = try pixels(canvas.screenshot().image)
+        @MainActor func lock(_ name: String) throws {
+            app.buttons["studio.layers.open"].tap()
+            let row = app.staticTexts["Layer 1"].firstMatch
+            XCTAssertTrue(row.waitForExistence(timeout: 5) && row.isHittable); row.tap()
+            try waitForButton(name, in: app).tap()
+            app.buttons["studio.layers.close"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
+        @MainActor func openShelf() throws {
+            app.buttons["studio.menu.open"].tap()
+            let settings = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Project Settings")).firstMatch
+            XCTAssertTrue(settings.waitForExistence(timeout: 5) && settings.isHittable); settings.tap()
+            let field = app.textFields["studio.settings.name"]
+            XCTAssertTrue(field.waitForExistence(timeout: 5))
+            let scroll = app.scrollViews.containing(.textField, identifier: "studio.settings.name").firstMatch
+            let shelf = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Stickers & Emoji")).firstMatch
+            XCTAssertTrue(shelf.waitForExistence(timeout: 5) && scroll.exists)
+            for _ in 0..<4 where !shelf.isHittable { scroll.swipeUp(velocity: .slow) }
+            XCTAssertTrue(shelf.isHittable); shelf.tap()
+            XCTAssertTrue(app.buttons["studio.sticker.item.f1"].waitForExistence(timeout: 5))
+        }
+        try lock("Full"); try openShelf()
+        let search = app.textFields["studio.sticker.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5)); search.tap(); search.typeText("Swordsman\n")
+        let sword = app.buttons["studio.sticker.item.f1"]
+        XCTAssertTrue(sword.isHittable); sword.tap()
+        let result = app.staticTexts["studio.sticker.result"]
+        XCTAssertTrue(result.waitForExistence(timeout: 5))
+        XCTAssertEqual(result.label, "Choose a visible, unlocked layer before editing.")
+        XCTAssertTrue(sword.exists && sword.isHittable, "Rejected insertion dismissed the chooser")
+        XCTAssertEqual(search.value as? String, "Swordsman", "Rejection discarded the user's shelf search")
+        capture(app, name: "sticker-locked-chooser-retained")
+        app.buttons["studio.panel.close.Stickers & Emoji"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
+                                "Rejected shelf action changed canvas pixels")
+        try lock("Free"); try openShelf()
+        let available = app.buttons["studio.sticker.item.f1"]
+        XCTAssertTrue(available.isHittable); available.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: available).waitUntilFulfilled(timeout: 5),
+                      "Successful insertion did not dismiss chooser")
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertGreaterThan(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 20,
+                             "Successful shelf action added no actual glyph pixels")
+        capture(app, name: "sticker-inserted-real-glyph")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
+                                "One Undo did not remove the newly inserted glyph")
+    }
+
+    @MainActor
     func testLayerFullLockAndHiddenPaintingRejectWithoutHistory() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -2094,7 +2228,59 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "independent-pencil-settings-restored")
         app.buttons["studio.tool-settings.close"].tap()
 
-        // Reuse this journey's real cold launch; no extra project or launch cycle.
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.2, dy: 0.55)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.8, dy: 0.55)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let artwork = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(exportInkMask(artwork).count, 30, "Restored settings did not draw real artwork")
+        app.buttons["studio.back"].tap(); app.terminate()
+
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
+                                "Preference cold reopen changed actual artwork")
+        try pickerRailControl("studio.tool.pencil", app: reopened, forward: false).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, pencilSize,
+                       "Pencil preferences did not survive actual app termination")
+        XCTAssertEqual(reopened.sliders["studio.setting.opacity"].value as? String, pencilOpacity)
+        capture(reopened, name: "independent-tool-settings-cold-reopened")
+        try resetToolPreferencesInPopup(reopened)
+        XCTAssertNotEqual(try XCTUnwrap(reopened.sliders["studio.setting.size"].value as? String), pencilSize)
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try pickerRailControl("studio.tool.pen", app: reopened, forward: true).tap()
+        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, penSize,
+                       "Resetting pencil also reset pen")
+        try resetToolPreferencesInPopup(reopened)
+        reopened.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
+                                "Resetting tool preferences rewrote existing artwork")
+        XCTAssertFalse(reopened.buttons["studio.undo"].isEnabled, "Preference reset inserted document history")
+
+    }
+
+    @MainActor
+    func testFillPreferencesSwitchDrawResetAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
+        let name = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try pickerRailControl("studio.tool.pencil", app: app, forward: false).tap()
+        let size = app.sliders["studio.setting.size"]
+        let opacity = app.sliders["studio.setting.opacity"]
+        XCTAssertTrue(size.waitForExistence(timeout: 5) && size.isHittable && opacity.isHittable)
+        size.adjust(toNormalizedSliderPosition: 0.28)
+        opacity.adjust(toNormalizedSliderPosition: 0.8)
+        let pencilSize = try XCTUnwrap(app.sliders["studio.setting.size"].value as? String)
+        let pencilOpacity = try XCTUnwrap(app.sliders["studio.setting.opacity"].value as? String)
+        app.buttons["studio.tool-settings.close"].tap()
+        // Configure real Fill controls independently from remembered Pencil settings.
         try pickerRailControl("studio.tool.fill", app: app, forward: true).tap()
         try resetToolPreferencesInPopup(app)
         let fillSliderIDs = ["studio.setting.tolerance", "studio.setting.expand", "studio.setting.gap-close"]
@@ -2140,24 +2326,13 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(restored, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
                                 "Preference cold reopen changed actual artwork")
+        // Reset another tool before reading remembered Fill values: a
+        // mistakenly global Reset must not pass the separated journeys.
         try pickerRailControl("studio.tool.pencil", app: reopened, forward: false).tap()
-        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, pencilSize,
-                       "Pencil preferences did not survive actual app termination")
-        XCTAssertEqual(reopened.sliders["studio.setting.opacity"].value as? String, pencilOpacity)
-        capture(reopened, name: "independent-tool-settings-cold-reopened")
         try resetToolPreferencesInPopup(reopened)
-        XCTAssertNotEqual(try XCTUnwrap(reopened.sliders["studio.setting.size"].value as? String), pencilSize)
+        XCTAssertNotEqual(reopened.sliders["studio.setting.size"].value as? String, pencilSize,
+                          "The independent Pencil Reset did not actually run")
         reopened.buttons["studio.tool-settings.close"].tap()
-        try pickerRailControl("studio.tool.pen", app: reopened, forward: true).tap()
-        XCTAssertEqual(reopened.sliders["studio.setting.size"].value as? String, penSize,
-                       "Resetting pencil also reset pen")
-        try resetToolPreferencesInPopup(reopened)
-        reopened.buttons["studio.tool-settings.close"].tap()
-        try waitForStableCanvas(restored, expected: frame)
-        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(restored.screenshot().image)), 4,
-                                "Resetting tool preferences rewrote existing artwork")
-        XCTAssertFalse(reopened.buttons["studio.undo"].isEnabled, "Preference reset inserted document history")
-
         try pickerRailControl("studio.tool.fill", app: reopened, forward: false).tap()
         for (index, id) in fillSliderIDs.enumerated() {
             let slider = reopened.sliders[id]
@@ -2684,7 +2859,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    private func createEditableTextFixture(_ content: String, app: XCUIApplication, chooseRed: Bool = true, keepTextSelected: Bool = false) throws -> (name: String, canvas: XCUIElement, frame: CGRect, pixels: Raster) {
+    private func createEditableTextFixture(_ content: String, app: XCUIApplication, chooseRed: Bool = true, keepTextSelected: Bool = false, exerciseNativeTextAlpha: Bool = false) throws -> (name: String, canvas: XCUIElement, frame: CGRect, pixels: Raster) {
         let name = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         try waitForStableCanvas(canvas)
@@ -2696,7 +2871,58 @@ final class StudioSmokeUITests: XCTestCase {
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
         XCTAssertTrue(input.waitForExistence(timeout: 5)); input.tap(); input.typeText(content)
         app.buttons["studio.text.keyboard-dismiss"].tap()
-        let fontSize = app.sliders["studio.setting.font-size"]
+        if exerciseNativeTextAlpha {
+            let picker = app.descendants(matching: .any)["studio.text.color"].firstMatch
+            let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
+            let scroll = popup.scrollViews.firstMatch
+            XCTAssertTrue(picker.waitForExistence(timeout: 5) && scroll.exists)
+            for _ in 0..<5 {
+                let viewport = scroll.frame.intersection(app.frame)
+                if viewport.contains(picker.frame) && picker.isHittable { break }
+                if picker.frame.minY < viewport.minY { scroll.swipeDown(velocity: .slow) }
+                else { scroll.swipeUp(velocity: .slow) }
+            }
+            XCTAssertTrue(scroll.frame.intersection(app.frame).contains(picker.frame) && picker.isHittable)
+            // Observed ColorWell includes its label; only the right circular
+            // swatch opens UIKit's picker. Derive its center from actual bounds.
+            let well = picker.frame
+            XCTAssertGreaterThan(well.width, well.height)
+            picker.coordinate(withNormalizedOffset: .zero)
+                .withOffset(CGVector(dx: well.width - well.height / 2, dy: well.height / 2)).tap()
+            // iOS exposes this native picker track as Other, with a separate
+            // percentage TextField; the Studio opacity Slider is underneath.
+            let systemPicker = app.otherElements["UIColorPickerView"].firstMatch
+            XCTAssertTrue(systemPicker.waitForExistence(timeout: 8))
+            let alpha = systemPicker.otherElements.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
+            let alphaValue = systemPicker.textFields.matching(NSPredicate(format: "label == %@", "Opacity")).firstMatch
+            XCTAssertTrue(alpha.waitForExistence(timeout: 5) && alpha.isHittable && alpha.isEnabled)
+            XCTAssertTrue(alphaValue.exists && alphaValue.isEnabled)
+            let priorAlpha = try XCTUnwrap(alphaValue.value as? String)
+            // Actual captured UIKit hierarchy identifies the track and its
+            // bounds. Tap its midpoint, then verify the native percentage.
+            alpha.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            let halfOpacity = expectation(for: NSPredicate { _, _ in
+                guard let value = alphaValue.value as? String,
+                      let percent = Double(value.replacingOccurrences(of: "%", with: "")) else { return false }
+                return (45...55).contains(percent)
+            }, evaluatedWith: alphaValue).waitUntilFulfilled(timeout: 5)
+            if !halfOpacity { captureHierarchy(app, name: "native-text-picker-percentage-unexpected") }
+            XCTAssertTrue(halfOpacity, "Native Text color picker did not set approximately half opacity")
+            XCTAssertNotEqual(alphaValue.value as? String, priorAlpha, "System opacity did not change")
+            capture(app, name: "native-text-picker-half-opacity")
+            let close = app.buttons.matching(NSPredicate(format: "label ==[c] %@", "Close"))
+                .allElementsBoundByIndex.first { $0.exists && $0.isEnabled && $0.isHittable }
+            if close == nil {
+                capture(app, name: "native-text-picker-close-unavailable")
+                print("SDI_TEXT_PICKER_AX_BEGIN\n" + String(app.debugDescription.prefix(60000)) + "\nSDI_TEXT_PICKER_AX_END")
+            }
+            try XCTUnwrap(close, "Actual UIKit picker Close control is unavailable").tap()
+            XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: systemPicker)
+                .waitUntilFulfilled(timeout: 5), "System picker remained open")
+        }
+        let fontSize: XCUIElement
+        if exerciseNativeTextAlpha { fontSize = try sharpenSetting("font-size", in: app) }
+        else { fontSize = app.sliders["studio.setting.font-size"] }
         // All four glyphs must fit the 240 px box. At 100 px the final !
         // correctly wraps below its 120 px height, hiding the expected edit.
         XCTAssertTrue(fontSize.isHittable); fontSize.adjust(toNormalizedSliderPosition: 0.18)
@@ -2734,7 +2960,7 @@ final class StudioSmokeUITests: XCTestCase {
     private func verifyEditableText(historyOnly: Bool) throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
-        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: false, keepTextSelected: !historyOnly)
+        let fixture = try createEditableTextFixture("SDI", app: app, chooseRed: historyOnly, keepTextSelected: !historyOnly, exerciseNativeTextAlpha: historyOnly)
         let canvas = fixture.canvas, frame = fixture.frame, original = fixture.pixels
         let input = app.descendants(matching: .any)["studio.text.content"].firstMatch
         capture(app, name: "editable-text-original-glyphs")
@@ -2742,6 +2968,13 @@ final class StudioSmokeUITests: XCTestCase {
         // The former combined case completed its pixel checks at 179.75 s
         // but timed out during termination. Preserve both sets of assertions.
         if historyOnly {
+            let ink = exportInkMask(original)
+            let greens = ink.map { Int(original.bytes[$0 * 4 + 1]) }.sorted()
+            XCTAssertGreaterThan(greens.count, 25)
+            let interiorGreen = try XCTUnwrap(greens.dropFirst(greens.count / 4).first, "No rendered text pixels")
+            XCTAssertGreaterThan(interiorGreen, 80, "Picker opacity left glyphs opaque or compounded alpha")
+            XCTAssertLessThan(interiorGreen, 180, "Picker opacity made glyphs too faint or compounded alpha")
+            capture(app, name: "native-text-picker-translucent-glyphs")
             app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
             let blank = try pixels(canvas.screenshot().image)
             XCTAssertLessThan(exportInkMask(blank).count, exportInkMask(original).count, "Undo left text pixels behind")
@@ -4646,6 +4879,158 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testOptionalMicroPackImportRemovalAndColdReopen() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame, blank = try pixels(canvas.screenshot().image)
+        let packID = "kenney.micro-roguelike.v1"
+        @MainActor func packButton(_ label: String) throws -> XCUIElement {
+            let action = label == "Remove download" ? "remove" : "download"
+            let button = app.buttons["studio.image-library.pack." + action + "." + packID]
+            let scroll = app.scrollViews["studio.image-library.pack-list"]
+            guard scroll.waitForExistence(timeout: 5) else {
+                captureHierarchy(app, name: "micro-pack-list-missing")
+                XCTFail("Optional pack list must expose its real scroll view")
+                throw NSError(domain: "NativeOptionalPack", code: 2)
+            }
+            // Offscreen pack actions need not exist in the accessibility tree
+            // until scrolling brings their real row into the viewport.
+            for _ in 0..<5 {
+                if button.exists && button.isHittable && scroll.frame.contains(button.frame) { break }
+                scroll.swipeUp(velocity: .slow)
+            }
+            guard button.exists && button.isEnabled && button.isHittable &&
+                    scroll.frame.contains(button.frame) else {
+                captureHierarchy(app, name: "micro-pack-action-unreachable")
+                capture(app, name: "micro-pack-action-unreachable")
+                XCTFail("Micro Roguelike action is not fully reachable: " + label)
+                throw NSError(domain: "NativeOptionalPack", code: 1)
+            }
+            captureHierarchy(app, name: "micro-pack-action-reachable")
+            XCTAssertEqual(button.label, label)
+            return button
+        }
+        @MainActor func pictureCount() throws -> Int {
+            let label = app.staticTexts["studio.image-library.count"]
+            XCTAssertTrue(label.waitForExistence(timeout: 8))
+            return try XCTUnwrap(Int(label.label.split(separator: " ").first.map(String.init) ?? ""))
+        }
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let more = app.buttons["More optional picture packs"]
+        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
+        // Start with this optional pack absent; other installed packs are retained.
+        let existing = app.buttons["studio.image-library.pack.remove." + packID]
+        let available = app.buttons["studio.image-library.pack.download." + packID]
+        let packList = app.scrollViews["studio.image-library.pack-list"]
+        XCTAssertTrue(packList.waitForExistence(timeout: 5))
+        for _ in 0..<5 {
+            if existing.exists || available.exists { break }
+            packList.swipeUp(velocity: .slow)
+        }
+        if existing.exists {
+            try packButton("Remove download").tap()
+            XCTAssertTrue(app.staticTexts["Downloaded library copy removed. Pictures already added to your projects are kept."].waitForExistence(timeout: 8))
+        }
+        let initialCount = try pictureCount()
+        try packButton("Download 178 KB").tap()
+        XCTAssertTrue(app.staticTexts["Pictures verified and available offline."].waitForExistence(timeout: 30),
+                      "Real official download and verification did not complete")
+        XCTAssertEqual(try pictureCount(), initialCount + 160)
+        capture(app, name: "optional-micro-pack-downloaded-library")
+        more.tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.isHittable); search.tap(); search.typeText("Micro Roguelike tile 0000\n")
+        let tile = app.buttons["studio.image-library.item.kenney.micro-roguelike.tile_0000"]
+        XCTAssertTrue(tile.waitForExistence(timeout: 5) && tile.isHittable); tile.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Micro Roguelike tile 0000"))
+        try closeImagePanel(app); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let imported = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blank, imported), 4, "Downloaded tile must produce actual visible pixels")
+        // Remove only the downloaded catalogue. The saved project owns its source.
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        XCTAssertTrue(more.waitForExistence(timeout: 8)); more.tap()
+        try packButton("Remove download").tap()
+        XCTAssertTrue(app.staticTexts["Downloaded library copy removed. Pictures already added to your projects are kept."].waitForExistence(timeout: 8))
+        XCTAssertEqual(try pictureCount(), initialCount)
+        XCTAssertTrue(try packButton("Download 178 KB").isEnabled)
+        app.buttons["studio.panel.close.Image Library"].tap()
+        try closeImagePanel(app)
+        XCTAssertLessThanOrEqual(try changedPixelCount(imported, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(imported, pixels(restored.screenshot().image)), 4,
+                                "Removing the optional pack broke the saved project's owned image")
+        capture(reopened, name: "optional-micro-pack-removed-project-cold-reopened")
+    }
+
+    @MainActor
+    func testExplicitImageCutUndoPasteAndColdReopen() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame, blank = try pixels(canvas.screenshot().image)
+        try importLicensedImageForExport(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blank, original), 100, "Imported image fixture has no real pixels")
+        // Import retains the drawing layer. Choose the actual image owner before
+        // explicitly targeting its instance; this must not use singleton fallback.
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5))
+        let layers = app.scrollViews["studio.layers.list"]
+        for _ in 0..<4 where !imageLayer.isHittable { layers.swipeUp(velocity: .slow) }
+        XCTAssertTrue(imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        try selectToolbarTool("move", app: app)
+        let target = try fillPreferenceControl("studio.image-move.target", app: app)
+        XCTAssertEqual(target.value as? String, "Drawings")
+        target.tap(); XCTAssertEqual(target.value as? String, "Image")
+        let cut = try fillPreferenceControl("studio.image.cut", app: app)
+        XCTAssertEqual(cut.label, "Cut selected image")
+        XCTAssertTrue(cut.isEnabled && cut.isHittable); cut.tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
+                                "Cut left the selected image pixels on the frame")
+        let paste = app.buttons["studio.paste"]
+        XCTAssertEqual(paste.label, "Paste image")
+        XCTAssertTrue(paste.isEnabled, "Cut did not retain its image clipboard")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
+                                "One Undo did not restore the cut image")
+        XCTAssertFalse(paste.isEnabled, "Image Paste must not overwrite the restored occupied frame")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
+                                "One Redo did not remove the image again")
+        XCTAssertEqual(paste.label, "Paste image")
+        XCTAssertTrue(paste.isEnabled && paste.isHittable); paste.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
+                                "Cut image Paste did not restore the original rendered pixels")
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 frames")).firstMatch.exists,
+                      "Image Cut/Paste unexpectedly created another timeline frame")
+        capture(app, name: "explicit-image-cut-undo-redo-paste")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(restored.screenshot().image)), 4,
+                                "Cut/Paste image pixels did not survive saved cold reopen")
+        XCTAssertTrue(reopened.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "1 frames")).firstMatch.exists)
+        capture(reopened, name: "explicit-image-cut-paste-cold-reopened")
+    }
+
+    @MainActor
     func testImageDeleteCancelUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -4793,6 +5178,284 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(transformed, pixels(restored.screenshot().image)), 4, "Cold reopen lost linked image composition")
         XCTAssertGreaterThan(try changedPixelCount(original, pixels(restored.screenshot().image)), 100, "Cold reopen kept only original image")
         capture(reopened, name: "linked-image-duplicate-cold-reopened")
+    }
+
+    @MainActor
+    func testActiveLayerImageMarqueeDeleteUndoAndColdReopen() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        let blank = try pixels(canvas.screenshot().image)
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app)
+        // Aspect-fit Half size centers the real image inside the middle half
+        // of the canvas, so an inset 10–90% rectangle encloses its whole geometry.
+        try selectToolbarTool("move", app: app)
+        try fillPreferenceControl("studio.image-placement.open", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.half", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.apply", app: app).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(blank, original), 100)
+        // Import deliberately retains the prior drawing layer. Select the actual
+        // image row; this journey never relies on singleton image fallback.
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5) && imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        try selectToolbarTool("lasso", app: app)
+        // This native menu sits at the real scroll viewport's top edge. The
+        // slider helper adds a 12-point thumb margin that does not apply here.
+        let targetPicker = app.buttons["studio.selection.target"]
+        let selectionScroll = app.descendants(matching: .any)["studio.tool-settings"].firstMatch.scrollViews.firstMatch
+        XCTAssertTrue(targetPicker.waitForExistence(timeout: 5) && targetPicker.isEnabled && targetPicker.isHittable)
+        XCTAssertTrue(selectionScroll.frame.intersection(app.frame).contains(targetPicker.frame),
+                      "Selection target menu is outside the actual popup viewport")
+        targetPicker.tap()
+        let imageTarget = app.buttons["Image on active layer"]
+        XCTAssertTrue(imageTarget.waitForExistence(timeout: 5) && imageTarget.isHittable); imageTarget.tap()
+        try fillPreferenceControl("studio.selection.kind.rectangle", app: app).tap()
+        try fillPreferenceControl("studio.selection.mode.new", app: app).tap()
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "0 image selected")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: .init(dx: 0.10, dy: 0.10)).press(forDuration: 0.1,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: .init(dx: 0.90, dy: 0.90)),
+            withVelocity: .slow, thenHoldForDuration: 0.1)
+        try selectToolbarTool("lasso", app: app)
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 image selected")
+        app.buttons["studio.tool-settings.close"].tap()
+        XCTAssertFalse(app.buttons["studio.copy"].isEnabled, "Image Lasso must not silently copy a frame")
+        // Move must inherit the exact image selection. Do not tap Move's image
+        // toggle: doing so would conceal a broken Lasso handoff.
+        try selectToolbarTool("move", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        let deletion = app.buttons["studio.delete-selection"]
+        XCTAssertEqual(deletion.label, "Delete selected image")
+        XCTAssertTrue(deletion.isEnabled && deletion.isHittable); deletion.tap()
+        let confirm = app.buttons["Delete image"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
+                                "Image-area selection deleted no image or left pixels behind")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
+                                "One Undo failed to restore the actual selected image")
+        capture(app, name: "image-area-selected-delete-undone")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(restored.screenshot().image)), 4,
+                                "Restored image pixels changed after a cold reopen")
+        capture(reopened, name: "image-area-selection-cold-reopened")
+    }
+
+    @MainActor
+    func testImageRotationHandleUndoAndColdReopen() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        @MainActor func control(_ id: String) throws -> XCUIElement {
+            // Reuse the existing fully-contained popup control helper; a partly
+            // clipped but AX-hittable control is not an actionable target.
+            try fillPreferenceControl(id, app: app)
+        }
+        try selectToolbarTool("move", app: app)
+        try control("studio.image-placement.open").tap()
+        try control("studio.image-placement.half").tap()
+        @MainActor func number(_ name: String) throws -> Double {
+            let field = app.textFields["studio.image-placement." + name]
+            XCTAssertTrue(field.exists)
+            return try XCTUnwrap(Double(field.value as? String ?? ""))
+        }
+        let x = try number("x"), y = try number("y"), width = try number("width"), height = try number("height")
+        // This real library import is centered, and Half size preserves that
+        // center. Read its actual numeric placement, not guessed image ink bounds.
+        let documentWidth = 2*x + width, documentHeight = 2*y + height
+        XCTAssertGreaterThan(documentWidth, width); XCTAssertGreaterThan(documentHeight, height)
+        try control("studio.image-placement.apply").tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        try selectToolbarTool("move", app: app)
+        try control("studio.image-move.target").tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        // Project opening establishes Fit (scale1). These are the production
+        // StudioSelectionHandleGeometry rules: min22pt hit radius,8pt margin,
+        // rotation knob30pt beyond the displayed top or bottom resize handles.
+        let center = CGPoint(x: (x + width/2) / documentWidth * frame.width,
+                             y: (y + height/2) / documentHeight * frame.height)
+        let halfHeight = max(height / documentHeight * frame.height / 2, 22)
+        let top = min(frame.height - 8, max(8, center.y - halfHeight))
+        let bottom = min(frame.height - 8, max(8, center.y + halfHeight))
+        let knob = CGPoint(x: min(frame.width - 8, max(8, center.x)),
+                           y: top - 30 >= 8 ? top - 30 : min(frame.height - 8, bottom + 30))
+        let dx = knob.x - center.x, dy = knob.y - center.y, factor = sqrt(0.5)
+        let end = CGPoint(x: center.x + (dx - dy) * factor, y: center.y + (dx + dy) * factor)
+        XCTAssertTrue(CGRect(origin: .zero, size: frame.size).contains(end))
+        let origin = canvas.coordinate(withNormalizedOffset: .zero)
+        origin.withOffset(CGVector(dx: knob.x, dy: knob.y)).press(forDuration: 0.05,
+            thenDragTo: origin.withOffset(CGVector(dx: end.x, dy: end.y)), withVelocity: .slow, thenHoldForDuration: 0.1)
+        // Remove only editor selection chrome before comparing real artwork.
+        try selectToolbarTool("brush", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let rotated = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, rotated), 100, "Red image handle changed no artwork")
+        XCTAssertEqual(original.width, rotated.width); XCTAssertEqual(original.height, rotated.height)
+        let cx = Double(original.width)/2, cy = Double(original.height)/2
+        var checked = 0, matched = 0
+        for yy in stride(from: 0, to: original.height, by: 2) {
+            for xx in stride(from: 0, to: original.width, by: 2) {
+                let i = (yy * original.width + xx) * 4
+                guard Int(original.bytes[i]) + Int(original.bytes[i+1]) + Int(original.bytes[i+2]) < 450 else { continue }
+                let a = Double(xx) + 0.5 - cx, b = Double(yy) + 0.5 - cy
+                let tx = Int((cx + (a-b)*factor).rounded(.down)), ty = Int((cy + (a+b)*factor).rounded(.down))
+                checked += 1
+                guard tx >= -3, ty >= -3, tx < rotated.width + 3, ty < rotated.height + 3 else { continue }
+                var found = false
+                for py in max(0,ty-3)...min(rotated.height-1,ty+3) {
+                    for px in max(0,tx-3)...min(rotated.width-1,tx+3) {
+                        let j = (py * rotated.width + px) * 4
+                        if Int(rotated.bytes[j]) + Int(rotated.bytes[j+1]) + Int(rotated.bytes[j+2]) < 600 { found = true }
+                    }
+                }
+                if found { matched += 1 }
+            }
+        }
+        XCTAssertGreaterThan(checked, 30)
+        XCTAssertGreaterThan(Double(matched)/Double(max(checked,1)), 0.85, "Gesture pixels do not match a clockwise45° rotation")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "Handle gesture was not one Undo step")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(canvas.screenshot().image)), 4, "Handle Redo changed pixels")
+        capture(app, name: "image-rotation-handle-applied")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(restored.screenshot().image)), 4, "Handle angle lost on cold reopen")
+        capture(reopened, name: "image-rotation-handle-cold-reopened")
+    }
+
+    @MainActor
+    func testImageAdditionalAngleUndoAndColdReopen() throws {
+        // Separate from the measured 240-second quarter-turn case; this case
+        // retains the default 180 seconds and imports through the real library.
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let canvasFrame = canvas.frame
+        try openImagePanel(app); try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let dragon = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(dragon.waitForExistence(timeout: 5)); dragon.tap()
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
+        try closeImagePanel(app); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        @MainActor func reveal(_ control: XCUIElement) throws -> XCUIElement {
+            XCTAssertTrue(control.waitForExistence(timeout: 5))
+            let scroll = app.descendants(matching: .any)["studio.tool-settings"].firstMatch.scrollViews.firstMatch
+            XCTAssertTrue(scroll.exists)
+            for _ in 0..<6 {
+                let bounds = scroll.frame.intersection(app.frame)
+                let viewport = bounds.insetBy(dx: 0, dy: min(12, bounds.height * 0.05))
+                let target = control.frame
+                if target.width > 0, target.height > 0, viewport.contains(target), control.isHittable, control.isEnabled { return control }
+                guard target.height > 0, target.height <= viewport.height, !viewport.contains(target) else { break }
+                let inset = bounds.height * 0.15, travel = bounds.height - 2 * inset
+                let movement = min(travel, max(-travel, viewport.midY - target.midY))
+                let startY = movement < 0 ? bounds.maxY - inset : bounds.minY + inset
+                let origin = scroll.coordinate(withNormalizedOffset: .zero)
+                let start = origin.withOffset(CGVector(dx: bounds.midX - scroll.frame.minX, dy: startY - scroll.frame.minY))
+                let end = origin.withOffset(CGVector(dx: bounds.midX - scroll.frame.minX, dy: startY + movement - scroll.frame.minY))
+                start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.25)
+            }
+            captureHierarchy(app, name: "additional-angle-control-unreachable")
+            XCTFail("Image angle control is not fully visible and actionable")
+            throw NSError(domain: "NativeImageAngle", code: 1)
+        }
+        let original = try pixels(canvas.screenshot().image)
+        try selectToolbarTool("move", app: app)
+        try reveal(app.buttons["studio.image-placement.open"]).tap()
+        try reveal(app.buttons["studio.image-placement.half"]).tap()
+        let angle = app.sliders.matching(NSPredicate(format: "label == %@", "Additional angle")).firstMatch
+        try reveal(angle).adjust(toNormalizedSliderPosition: 0.625)
+        let degrees = try XCTUnwrap(Double((angle.value as? String ?? "").replacingOccurrences(of: "°", with: "")))
+        XCTAssertGreaterThan(degrees, 40); XCTAssertLessThan(degrees, 50)
+        capture(app, name: "image-additional-angle-draft")
+        try reveal(app.buttons["studio.image-placement.apply"]).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let rotated = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, rotated), 100, "Additional angle changed no artwork")
+        // Match actual dark artwork against the combined half-size and clockwise
+        // rotation about canvas center, not merely a changed screenshot.
+        // The 3px neighborhood accommodates
+        // native resampling and the displayed slider's integer rounding.
+        XCTAssertEqual(original.width, rotated.width); XCTAssertEqual(original.height, rotated.height)
+        let radians = degrees * .pi / 180, cosine = cos(radians), sine = sin(radians)
+        let centerX = Double(original.width) / 2, centerY = Double(original.height) / 2
+        var checked = 0, matched = 0
+        for y in stride(from: 0, to: original.height, by: 2) {
+            for x in stride(from: 0, to: original.width, by: 2) {
+                let source = (y * original.width + x) * 4
+                guard Int(original.bytes[source]) + Int(original.bytes[source + 1]) + Int(original.bytes[source + 2]) < 450 else { continue }
+                let dx = (Double(x) + 0.5 - centerX) * 0.5
+                let dy = (Double(y) + 0.5 - centerY) * 0.5
+                let tx = Int((centerX + dx * cosine - dy * sine).rounded(.down))
+                let ty = Int((centerY + dx * sine + dy * cosine).rounded(.down))
+                checked += 1
+                guard tx >= -3, ty >= -3, tx < rotated.width + 3, ty < rotated.height + 3 else { continue }
+                var found = false
+                for yy in max(0, ty - 3)...min(rotated.height - 1, ty + 3) {
+                    for xx in max(0, tx - 3)...min(rotated.width - 1, tx + 3) {
+                        let target = (yy * rotated.width + xx) * 4
+                        if Int(rotated.bytes[target]) + Int(rotated.bytes[target + 1]) + Int(rotated.bytes[target + 2]) < 600 { found = true }
+                    }
+                }
+                if found { matched += 1 }
+            }
+        }
+        XCTAssertGreaterThan(checked, 30, "Licensed image fixture contains insufficient real artwork")
+        XCTAssertGreaterThan(Double(matched) / Double(max(1, checked)), 0.85, "Image pixels do not follow the selected clockwise angle")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4, "One Undo failed to restore full-size artwork before combined size/angle edit")
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(canvas.screenshot().image)), 4, "Redo changed angle pixels")
+        capture(app, name: "image-additional-angle-applied")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: canvasFrame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(rotated, pixels(restored.screenshot().image)), 4, "Cold reopen lost additional-angle pixels")
+        capture(reopened, name: "image-additional-angle-cold-reopened")
     }
 
     @MainActor

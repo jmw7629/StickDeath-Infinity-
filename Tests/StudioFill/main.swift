@@ -549,10 +549,10 @@ private struct Failure: Error { let message: String }
         guard let context = StudioFillContext.current(vm) else { throw Failure(message: "Plain Fill context missing") }
         let original = vm.document, originalUndo = vm.canUndo
         _ = vm.selectElement(at: CGPoint(x: 64, y: 64))
-        try require(vm.selectedElementIDs == [source.id] && StudioFillContext.current(vm) == nil,
-            "Nonempty drawn selection silently allowed whole-region Fill")
+        try require(vm.selectedElementIDs == [source.id] && StudioFillContext.current(vm)?.selectedElementIDs == [source.id],
+            "Selected Fill context lost exact captured IDs")
         let rejected = await session.fill(vm, context: context, point: CGPoint(x: 500, y: 500))
-        try require(!rejected && vm.message == StudioFillContext.selectionUnavailable
+        try require(!rejected && vm.message == "Studio changed before fill started. Tap the current artwork again."
             && vm.document == original && vm.selectedElementIDs == [source.id]
             && vm.activeStrokeID == nil && !session.isFilling && vm.canUndo == originalUndo && !vm.canRedo,
             "Selected-start Fill changed source/history or hid why it was denied")
@@ -572,7 +572,7 @@ private struct Failure: Error { let message: String }
         try require(!changed && vm.document == original && vm.selectedElementIDs == [source.id]
             && vm.activeStrokeID == nil && !session.isFilling && vm.canUndo == originalUndo && !vm.canRedo,
             "Late selection broadened Fill authority or changed history")
-        try require(vm.message == StudioFillContext.selectionUnavailable + " Nothing was added.",
+        try require(vm.message == "Fill was cancelled or Studio changed. Nothing was added.",
             "Late selection rejection lacked factual guidance")
         vm.clearElementSelection()
         guard let resumed = StudioFillContext.current(vm) else { throw Failure(message: "Plain Fill did not recover after rejection") }
@@ -584,7 +584,83 @@ private struct Failure: Error { let message: String }
         vm.undo()
         try require(vm.document.frames == original.frames, "Normal Fill after rejection lost one-step Undo")
         await vm.flush()
-        pass("selected-start and late-selection real Fill reject atomically while Deselect restores normal Fill and Undo")
+        pass("stale selected-start and late-selection real Fill reject atomically while Deselect restores normal Fill and Undo")
+    }
+    static func transformedSelectionCoverage() throws {
+        var d = try document()
+        var first = shape(d.activeLayerID), second = shape(d.activeLayerID)
+        first.points = [.init(x: 8, y: 8), .init(x: 24, y: 24)]; first.width = 2
+        first.transform = .init(a: 0, b: 1, c: -1, d: 0, tx: 50, ty: 10)
+        second.points = first.points; second.width = 2; second.translation = .init(x: 64, y: 64)
+        d.schemaVersion = 11; d.frames[0].elements = [first, second]
+        let ids: Set<String> = [first.id, second.id]
+        let settings = StudioFillRegion.Settings(tolerance: 128, contiguous: false, expand: 3, gapClose: 0, antiAlias: true)
+        let c = try StudioFillService.capture(document: d, frameID: d.activeFrameID, layerID: d.activeLayerID,
+            point: CGPoint(x: 34, y: 26), color: "#0000FF", opacity: 0.75, settings: settings,
+            sampleAllLayers: false, selectedElementIDs: ids)
+        guard let coverage = c.selectionCoverage else { throw Failure(message: "Selected alpha missing") }
+        try require(coverage.count == 128 * 128 && coverage[26*128+34] == 255 && coverage[80*128+80] == 255
+            && coverage[50*128+50] == 0, "Transformed separated coverage became a bounding box")
+        let paint = try StudioFillService.element(from: c)
+        try require(paint.opacity == 0.75 && c.settings == settings, "Selected Fill ignored settings")
+        for span in paint.fillMask!.spans {
+            for x in span.start..<span.end {
+                try require(coverage[span.row*128+x] > 0 && span.alpha <= coverage[span.row*128+x], "Expansion or AA leaked beyond selected alpha")
+            }
+        }
+        var editor = try StudioDocumentEditor(document: d)
+        try editor.commit(paint, frameID: d.activeFrameID)
+        try require(Array(editor.document.frames[0].elements.prefix(2)) == [first, second], "Selected Fill recolored source objects")
+        let pixels = try render(editor.document)
+        try require(channel(pixels,34,26,2) > 150 && channel(pixels,80,80,2) > 150 && channel(pixels,50,50) == 0,
+            "All-similar fill did not paint both selected islands only")
+        let outside = try StudioFillService.capture(document: d, frameID: d.activeFrameID, layerID: d.activeLayerID,
+            point: CGPoint(x: 50, y: 50), color: "#0000FF", opacity: 1, settings: settings,
+            sampleAllLayers: false, selectedElementIDs: ids)
+        try rejects { _ = try StudioFillService.element(from: outside) }
+        var erased = d
+        erased.schemaVersion = 11
+        erased.frames[0].elements.append(.init(id: "unselected-layer-eraser", tool: .eraser,
+            points: [.init(x: 34, y: 26)], color: "#000000", width: 12, opacity: 1,
+            fillColor: nil, layerID: d.activeLayerID, eraser: .init()))
+        try rejects { _ = try StudioFillService.capture(document: erased, frameID: d.activeFrameID, layerID: d.activeLayerID,
+            point: CGPoint(x: 34, y: 26), color: "#0000FF", opacity: 1, settings: settings,
+            sampleAllLayers: false, selectedElementIDs: ids) }
+        try rejects { _ = try StudioFillService.capture(document: d, frameID: d.activeFrameID, layerID: d.activeLayerID,
+            point: CGPoint(x: 34, y: 26), color: "#0000FF", opacity: 1, settings: settings,
+            sampleAllLayers: false, selectedElementIDs: ["missing"]) }
+        pass("selected transformed source alpha clips two islands expansion and AA and rejects outside or backdrop-dependent selection")
+    }
+    static func selectedCoverageSessionPersistence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-selected-fill-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = DeviceStorageManager(documentsDirectory: root)
+        let vm = StudioViewModel(storage: store), session = StudioFillSession()
+        let created = await vm.createProject(name: "Selected source coverage", width: 128, height: 128, fps: 12)
+        try require(created, "Selected Fill create failed")
+        let source = shape(vm.activeLayerID)
+        try require(vm.commitElement(source), "Selected source commit failed")
+        _ = vm.selectElement(at: CGPoint(x: 64, y: 64))
+        vm.selectDrawingTool(.fill); vm.strokeColor = Color(.sRGB, red: 0, green: 0, blue: 1)
+        await vm.flush()
+        guard let context = StudioFillContext.current(vm) else { throw Failure(message: "Selected Fill context missing") }
+        try require(context.selectedElementIDs == [source.id], "Tool switch lost selection")
+        let original = vm.document
+        let filled = await session.fill(vm, context: context, point: CGPoint(x: 64, y: 64))
+        try require(filled && vm.currentFrame.elements.count == 2 && vm.currentFrame.elements[0] == source
+            && vm.message == "Added paint on the active layer within selected artwork coverage. Original drawings remain unchanged.",
+            "Selected Fill did not add factual separate active-layer paint")
+        let expected = vm.document, pixels = try render(expected)
+        try require(channel(pixels,64,64,2) > 0 && channel(pixels,4,4) == 0, "Selected paint not clipped")
+        vm.undo(); try require(vm.document.frames == original.frames, "Selected Fill Undo changed source")
+        vm.redo(); try require(render(vm.document) == pixels, "Selected Fill Redo changed pixels")
+        let saved = await vm.save(); try require(saved, "Selected Fill save failed")
+        let cold = StudioViewModel(storage: store); await cold.loadProjects()
+        guard let metadata = cold.savedProjects.first else { throw Failure(message: "Selected Fill missing saved metadata") }
+        let opened = await cold.openProject(metadata); try require(opened && cold.document == vm.document && render(cold.document) == pixels,
+            "Selected Fill cold reopen changed source or coverage")
+        await cold.flush()
+        pass("real selected Fill session adds separate paint with one Undo Redo and cold saved pixels")
     }
     static func main() async throws {
         setbuf(stdout, nil)
@@ -597,6 +673,8 @@ private struct Failure: Error { let message: String }
         try historyCoverageBudget()
         try await restoredFillPreferencesChangeRealCoverage()
         try await selectionAuthorization()
+        try transformedSelectionCoverage()
+        try await selectedCoverageSessionPersistence()
         print("STUDIO_FILL_INTEGRATION=PASS groups=\(passed)")
     }
 }
