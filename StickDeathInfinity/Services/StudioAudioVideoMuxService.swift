@@ -31,6 +31,7 @@ import Darwin
         let sourceVideoSHA256: String
         let sourceAudioSHA256: String
         let maximumDecodedAudioSample: Float
+        var imageCredits: [StudioExportService.ImageCredit]? = nil
     }
     @MainActor final class AudioComponent {
         let capture: StudioMuxCapture
@@ -94,6 +95,9 @@ import Darwin
         let started = ProcessInfo.processInfo.systemUptime, proof = video.capture.proof
         let duration = CMTime(value: Int64(proof.durationNumerator), timescale: CMTimeScale(proof.durationDenominator))
         let (videoURL, vm) = try video.checkedSource(); let (audioURL, am) = try audio.checkedSource()
+        let expectedCredits = try StudioExportService.renderedImageCredits(document: video.capture.snapshot.document,
+            creditsByRasterID: video.capture.snapshot.imageCredits)
+        guard (vm.imageCredits ?? []) == expectedCredits else { throw MuxError.mismatchedCapture }
         guard vm.visualComponentProof == proof, vm.projectID == proof.projectID, vm.documentRevision == proof.revision,
               vm.frameIDs == proof.frameIDs, vm.width == proof.width, vm.height == proof.height, !vm.audioIncluded,
               vm.durationNumerator == proof.durationNumerator, vm.durationDenominator == proof.durationDenominator,
@@ -211,14 +215,17 @@ import Darwin
             _ = try video.checkedSource(); _ = try audio.checkedSource()
             guard try fingerprint(videoURL, maximum: 64 * 1024 * 1024, started: started) == sourceVideoHash else { throw MuxError.outputUnavailable }
             let bytes = try checkSize(movie, nonempty: true)
-            let receipt = Receipt(version: 1, captureProof: proof, videoCodec: "H.264 passthrough", audioCodec: "AAC",
+            var receipt = Receipt(version: expectedCredits.isEmpty ? 1 : 2, captureProof: proof, videoCodec: "H.264 passthrough", audioCodec: "AAC",
                 audioSampleRate: 48_000, audioChannels: 2, width: proof.width, height: proof.height,
                 videoFrames: frames, decodedAudioFrames: decoded.frames,
                 durationNumerator: proof.durationNumerator, durationDenominator: proof.durationDenominator,
                 encodedBytes: bytes, sha256: hex(beforeHash), sourceVideoSHA256: hex(sourceVideoHash),
                 sourceAudioSHA256: am.sha256, maximumDecodedAudioSample: decoded.peak)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
-            let data = try encoder.encode(receipt); try encoding!.writeManifest(data)
+            receipt.imageCredits = vm.imageCredits
+            let data = try encoder.encode(receipt)
+            guard data.count <= 128 * 1024, data.count <= limits.maximumOutputBytes - bytes else { throw MuxError.limitExceeded }
+            try encoding!.writeManifest(data)
             try progress(.init(phase: .publishing, videoFrames: frames, audioSamples: audioFrames)); try checkpoint(started)
             try encoding!.validateKnownFiles()
             _ = try video.checkedSource(); _ = try audio.checkedSource()

@@ -718,6 +718,7 @@ jobs:
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
             Tests/StudioExport/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-export-tests"
@@ -987,7 +988,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          swiftc -swift-version 5 -parse-as-library \
+          swiftc -swift-version 5 -parse-as-library -D SDI_MOVIE_AUDIO_DIAGNOSTICS \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1419,6 +1420,7 @@ jobs:
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -1530,6 +1532,7 @@ jobs:
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
             StickDeathInfinity/Services/StudioExportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioMovieExportService.swift \

@@ -101,6 +101,12 @@ struct StudioMovieExportControls: View {
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.movie.receipt")
+                    if let credits = output.manifest.imageCredits, !credits.isEmpty {
+                        Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.export.movie.image-credits")
+                    }
                     Text("\(output.manifest.encodedBytes) encoded bytes · \(output.manifest.codec) · white · \(output.manifest.audioIncluded ? "stereo audio" : "no audio")")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.movie.media")

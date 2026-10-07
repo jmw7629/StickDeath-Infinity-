@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import ImageIO
 import UniformTypeIdentifiers
+import CryptoKit
 
 typealias UIImage = NSImage
 extension Image { init(uiImage: NSImage) { self.init(nsImage: uiImage) } }
@@ -175,6 +176,107 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let parent = folder.appendingPathComponent(name)
             try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
             return try await StudioGIFExportService().export(.init(document: document(), rasterDataByID: [:]), outputParent: parent)
+        }
+        // Generated red PNG is an isolated rendering fixture; this metadata
+        // tests receipt transport, not a claim that the generated pixels are Kenney art.
+        let png = NSMutableData()
+        let fixtureSRGB = CGColorSpace(name: CGColorSpace.sRGB)!
+        let pngContext = CGContext(data: nil, width: 8, height: 8, bitsPerComponent: 8, bytesPerRow: 32,
+            space: fixtureSRGB, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        pngContext.setFillColor(CGColor(colorSpace: fixtureSRGB, components: [1, 0, 0, 1])!); pngContext.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let pngDestination = CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil)!
+        CGImageDestinationAddImage(pngDestination, pngContext.makeImage()!, nil)
+        try require(CGImageDestinationFinalize(pngDestination), "PNG fixture failed")
+        let pngData = png as Data
+        // Prove the input before attributing any color difference to GIF.
+        let inputSource = CGImageSourceCreateWithData(pngData as CFData, nil)!
+        let inputImage = CGImageSourceCreateImageAtIndex(inputSource, 0, nil)!
+        var inputRGBA = [UInt8](repeating: 0, count: 8 * 8 * 4)
+        inputRGBA.withUnsafeMutableBytes { bytes in
+            let context = CGContext(data: bytes.baseAddress, width: 8, height: 8, bitsPerComponent: 8,
+                bytesPerRow: 32, space: fixtureSRGB,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+            context.draw(inputImage, in: CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
+        try same(Array(inputRGBA[144..<148]), [255, 0, 0, 255])
+        let rights = ["assetID": "gif-credit-fixture", "author": "Kenney", "sourceURL": "https://kenney.nl/assets/1-bit-pack",
+            "license": "CC0-1.0", "licenseURL": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "attribution": "Isolated test metadata", "originalSHA256": SHA256.hash(data: pngData).map { String(format: "%02x", $0) }.joined(),
+            "sourceArchiveSHA256": String(repeating: "a", count: 64)]
+        let credit = try StudioExportService.ImageCredit(attribution: rights)
+        func rasterDocument() throws -> StudioDocument {
+            var doc = try document(["#FF0000", "#FF0000"], fps: 12)
+            doc.schemaVersion = max(doc.schemaVersion, 3)
+            for index in doc.frames.indices {
+                doc.frames[index].elements = []
+                doc.frames[index].rasterAssetID = "raster"
+                doc.frames[index].rasterLayerID = doc.activeLayerID
+                doc.frames[index].rasterPlacement = .aspectFit(imageWidth: 8, imageHeight: 8, canvasWidth: doc.width, canvasHeight: doc.height)
+            }
+            return doc
+        }
+        await test("actual GIF file carries one deduplicated credit and reopens with rendered raster pixels") {
+            let doc = try rasterDocument(), parent = folder.appendingPathComponent("credited-gif")
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            let output = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: ["raster": pngData], imageCredits: ["raster": credit]), outputParent: parent)
+            let urls = try output.checkedURLs(), bytes = try Data(contentsOf: urls[0])
+            let encodedReceipt = try Data(contentsOf: urls[1])
+            let receipt = try JSONDecoder().decode(Encoder.Receipt.self, from: encodedReceipt)
+            try require(receipt.version == 2 && receipt.imageCredits == [credit] && receipt.frameIDs.count == 2, "GIF credits missing, duplicated or misversioned")
+            try same(pixel(bytes, index: 0), [255,0,0,255]); try same(pixel(bytes, index: 1), [255,0,0,255])
+            try require(!String(decoding: encodedReceipt, as: UTF8.self).contains(pngData.base64EncodedString()), "Manifest leaked source bytes")
+            try output.cleanup()
+            try require(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty, "Credit export cleanup failed")
+        }
+        await test("GIF credits omit hidden zero-opacity and personal assets and old receipts decode") {
+            var doc = try rasterDocument()
+            let personal = try await Encoder().encode(.init(document: doc, rasterDataByID: ["raster": pngData]))
+            try require(personal.receipt.version == 1 && personal.receipt.imageCredits == nil, "Personal pixels acquired invented rights")
+            let legacy = try JSONEncoder().encode(personal.receipt)
+            try require(!String(decoding: legacy, as: UTF8.self).contains("imageCredits"), "Old nil field was emitted")
+            try require(try JSONDecoder().decode(Encoder.Receipt.self, from: legacy).imageCredits == nil, "Legacy GIF receipt no longer decodes")
+            for mode in 0..<2 {
+                doc.layers[0].visible = mode != 0; doc.layers[0].opacity = mode == 1 ? 0 : 1
+                let hidden = try await Encoder().encode(.init(document: doc, rasterDataByID: [:], imageCredits: ["raster": credit]))
+                try require(hidden.receipt.imageCredits == nil && hidden.receipt.version == 1, "Hidden image was credited")
+            }
+        }
+        await test("GIF rejects visible forged conflicting and excessive credit snapshots") {
+            var doc = try rasterDocument()
+            var fields = rights; fields["license"] = "unknown"
+            let forged = try JSONDecoder().decode(StudioExportService.ImageCredit.self, from: JSONSerialization.data(withJSONObject: fields))
+            try await rejects { _ = try await Encoder().encode(.init(document: doc, rasterDataByID: ["raster": pngData], imageCredits: ["raster": forged])) }
+            fields = rights; fields["author"] = "Conflicting author"
+            let conflict = try StudioExportService.ImageCredit(attribution: fields)
+            doc.frames[1].rasterAssetID = "copy"
+            try await rejects { _ = try await Encoder().encode(.init(document: doc, rasterDataByID: ["raster": pngData, "copy": pngData], imageCredits: ["raster": credit, "copy": conflict])) }
+            let excessive = Dictionary(uniqueKeysWithValues: (0...240).map { ("unused-\($0)", credit) })
+            try await rejects { _ = try await Encoder().encode(.init(document: doc, rasterDataByID: [:], imageCredits: excessive)) }
+        }
+        await test("GIF preserves the 128 KiB manifest cap without publishing partial credited files") {
+            var doc = try rasterDocument()
+            let template = doc.frames[0]
+            var rasters: [String: Data] = [:], credits: [String: StudioExportService.ImageCredit] = [:]
+            doc.frames = (0..<60).map { index in
+                var frame = AnimationFrame(id: "large-frame-" + String(index), elements: [], rasterLayerID: template.rasterLayerID, rasterPlacement: template.rasterPlacement)
+                frame.rasterAssetID = "large-raster-" + String(index)
+                return frame
+            }
+            doc.activeFrameID = doc.frames[0].id
+            for frame in doc.frames {
+                let id = frame.rasterAssetID!
+                var values = rights; values["assetID"] = id
+                values["author"] = String(repeating: "é", count: 600)
+                values["attribution"] = String(repeating: "é", count: 600)
+                rasters[id] = pngData; credits[id] = try StudioExportService.ImageCredit(attribution: values)
+            }
+            let parent = folder.appendingPathComponent("oversize-credits")
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            do {
+                _ = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: rasters, imageCredits: credits), outputParent: parent)
+                throw Failure(message: "Oversized credit manifest published")
+            } catch StudioGIFExportService.Failure.write { }
+            try require(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty, "Oversized credits retained partial output")
         }
         await test("actual GIF and manifest publish atomically and clean idempotently") {
             let output = try await actualOutput("files")

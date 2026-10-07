@@ -884,6 +884,86 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let decoded = try await decode(output.movieURL); try require(decoded.frames.count == 1, "Unchanged encoded picture lost"); try pixel(decoded.frames[0].pixel(32,16), [255,0,0,255])
             _ = try output.checkedURLs(); try output.cleanup(); try require(contents(folder).isEmpty, "Unchanged bytes failed owned cleanup")
         }
+        await test("licensed image credits survive actual silent MP4 encode decode and manifest checks") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            guard let item = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }) else { throw Failure(message: "Licensed Pencil missing") }
+            let data = try catalogue.checkedPNG(item), rights = try catalogue.attribution(for: item)
+            let credit = try StudioExportService.ImageCredit(attribution: rights)
+            let folder = try parent(root, "credited-silent")
+            var doc = try document(colors: ["#FF0000", "#FF0000"])
+            for index in doc.frames.indices {
+                doc.frames[index].elements = []; doc.frames[index].rasterAssetID = "licensed"; doc.frames[index].rasterLayerID = doc.activeLayerID
+            }
+            let captured = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: ["licensed": data], imageCredits: ["licensed": credit])
+            let output = try await Service().export(snapshot: captured, outputParent: folder, background: .white)
+            _ = try output.checkedURLs()
+            let manifest = try JSONDecoder().decode(Service.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(manifest.version == 2 && manifest.imageCredits == [credit], "Silent checked manifest lost or duplicated actual credit")
+            let decoded = try await decode(output.movieURL)
+            let png = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder,
+                imageCredits: ["licensed": credit], rasterData: { _ in data })
+            try require(decoded.frames.count == 2, "Credited MP4 lost actual frames")
+            try matchesPNG(decoded.frames[0], readPNG(png.imageURLs[0]))
+            try require(manifest.encodedBytes + Data(contentsOf: output.manifestURL).count <= Service.Limits().maximumOutputBytes,
+                "Movie plus manifest exceeds aggregate bound")
+            var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: output.manifestURL)) as! [String: Any]
+            legacy["version"] = 1; legacy.removeValue(forKey: "imageCredits")
+            let old = try JSONDecoder().decode(Service.Manifest.self, from: JSONSerialization.data(withJSONObject: legacy))
+            try require(old.imageCredits == nil && old.version == 1, "Legacy silent manifest cannot decode")
+            try output.cleanup(); try require(png.directory.checkResourceIsReachable(), "Separate reference output was removed")
+        }
+        await test("movie credits omit hidden zero-opacity and personal originals without weakening raster validation") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            let item = catalogue.images[0], data = try catalogue.checkedPNG(item)
+            let credit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: item))
+            let folder = try parent(root, "credit-visibility")
+            for mode in ["hidden", "zero", "personal"] {
+                var doc = try document(colors: ["#FF0000"])
+                doc.frames[0].rasterAssetID = "image"; doc.frames[0].rasterLayerID = doc.activeLayerID
+                if mode == "hidden" { doc.layers[0].visible = false }
+                if mode == "zero" { doc.layers[0].opacity = 0 }
+                let captured = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: ["image": data], imageCredits: mode == "personal" ? [:] : ["image": credit])
+                let output = try await Service().export(snapshot: captured, outputParent: folder, background: .white)
+                let decoded = try await decode(output.movieURL)
+                try require(output.manifest.imageCredits == nil && output.manifest.version == 1 && decoded.frames.count == 1, "Invisible/personal image acquired invented credit")
+                try output.cleanup()
+                if mode != "personal" {
+                    let missing = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: [:], imageCredits: ["image": credit])
+                    try await rejected { _ = try await Service().export(snapshot: missing, outputParent: folder, background: .white) }
+                }
+            }
+            try require(contents(folder).isEmpty, "Rejected hidden missing raster left output")
+        }
+        await test("credited movie metadata ceiling and conflicting source claims fail before publication") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            let item = catalogue.images[0], data = try catalogue.checkedPNG(item), rights = try catalogue.attribution(for: item)
+            let credit = try StudioExportService.ImageCredit(attribution: rights)
+            let folder = try parent(root, "credit-bounds")
+            var doc = try document(colors: ["#FF0000", "#0000FF"])
+            doc.frames[0].rasterAssetID = "first"; doc.frames[1].rasterAssetID = "second"
+            for index in doc.frames.indices { doc.frames[index].rasterLayerID = doc.activeLayerID }
+            var changed = rights; changed["author"] = "Conflicting attribution fixture"
+            let other = try StudioExportService.ImageCredit(attribution: changed)
+            try await rejected {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: ["first": data, "second": data],
+                    imageCredits: ["first": credit, "second": other]), outputParent: folder, background: .white)
+            }
+            doc = try document(colors: Array(repeating: "#FF0000", count: 120))
+            var credits: [String: StudioExportService.ImageCredit] = [:], rasters: [String: Data] = [:]
+            for index in doc.frames.indices {
+                let id = "image-\(index)"; var large = rights
+                large["assetID"] = id + String(repeating: "x", count: 580)
+                large["author"] = String(repeating: "a", count: 600); large["attribution"] = String(repeating: "b", count: 600)
+                credits[id] = try StudioExportService.ImageCredit(attribution: large); rasters[id] = data
+                doc.frames[index].rasterAssetID = id; doc.frames[index].rasterLayerID = doc.activeLayerID
+            }
+            try require(JSONEncoder().encode(Array(credits.values)).count > 128 * 1024, "Actual metadata fixture must exceed explicit byte bound")
+            try await rejected {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits),
+                    outputParent: folder, background: .white)
+            }
+            try require(contents(folder).isEmpty, "Rejected movie credits published or left staging files")
+        }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed != 0 { exit(1) }
     }

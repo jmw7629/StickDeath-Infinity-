@@ -66,7 +66,22 @@ final class StudioGIFExportSession: ObservableObject {
         for id in Set(document.frames.compactMap(\.rasterAssetID)) {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }
         }
-        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters)
+        var imageCredits: [String: StudioExportService.ImageCredit] = [:]
+        let visibleIDs = Set(document.frames.compactMap { frame -> String? in
+            document.layers.contains { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 } ? frame.rasterAssetID : nil
+        })
+        do {
+            for id in visibleIDs {
+                if let original = vm.originalImageSource(id), let attribution = original.catalogueAttribution {
+                    try original.validate()
+                    imageCredits[id] = try StudioExportService.ImageCredit(attribution: attribution)
+                }
+            }
+        } catch {
+            errorMessage = error.localizedDescription; notice = nil
+            return false
+        }
+        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, imageCredits: imageCredits)
         editor = vm; accountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision, name: document.name)
         errorMessage = nil; notice = nil; completedFrames = 0

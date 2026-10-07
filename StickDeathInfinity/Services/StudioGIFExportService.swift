@@ -75,7 +75,8 @@ final class StudioGIFExportService {
                 let manifest = try encoder.encode(receipt)
                 guard manifest.count <= 128 * 1024, !encoded.data.isEmpty,
                       encoded.data.count == receipt.encodedBytes,
-                      encoded.data.count <= StudioGIFEncoder.maximumBytes else { throw Failure.write }
+                      encoded.data.count <= StudioGIFEncoder.maximumBytes,
+                      manifest.count <= StudioGIFEncoder.maximumBytes + 128 * 1024 - encoded.data.count else { throw Failure.write }
                 try create("animation.gif", data: encoded.data)
                 try create("manifest.json", data: manifest)
                 try validate(allowMissing: false)

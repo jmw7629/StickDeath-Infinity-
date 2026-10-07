@@ -63,36 +63,51 @@ private actor ChunkReceipt {
         await exporter.export()
         try require(exporter.status == .completed, "fixture export failed")
         let original = try Data(contentsOf: movie)
+        print("MOVIE_AUDIO fixture movieBytes=\(original.count) generatedPCMFrames=88200 generatedPCMRate=44100 videoDuration=\(try await videoAsset.load(.duration).seconds) audioDuration=\(try await audioAsset.load(.duration).seconds)")
         let service = StudioVideoAudioImportService()
-        let full = try await service.extract(from: movie, scratchParent: scratch)
+        print("MOVIE_AUDIO stage: full")
+        let full = try await service.extract(from: movie, scratchParent: scratch) { progress in
+            guard case .decoding = progress.phase else { return }
+            print("MOVIE_AUDIO full decoded=\(progress.completed)/\(progress.total)")
+        }
+        print("MOVIE_AUDIO full result duration=\(full.audio.duration) channels=\(full.audio.channelCount)")
         try require(abs(full.audio.duration - 2) < 0.002 && full.audio.channelCount == 2, "wrong full output format/duration")
         try require(full.audio.waveformPeaks.max()! > 0.4, "actual waveform missing")
         try require(full.audio.track.audioData == full.audio.originalData && full.audio.track.startTime == 0, "not canonical managed audio")
         try clean()
+        print("MOVIE_AUDIO stage: fast trim")
         let fast = try await service.extract(from: movie,
             mapping: .init(sourceStartSeconds: 1, sourceEndSeconds: 2, projectStartSeconds: 3, speed: 2), scratchParent: scratch)
+        print("MOVIE_AUDIO fast result duration=\(fast.audio.duration) channels=\(fast.audio.channelCount)")
         try require(abs(fast.audio.duration - 0.5) < 0.002 && fast.projectStartSeconds == 3, "trim/speed/placement mapping failed")
         try require(fast.audio.waveformPeaks.max()! > 0.4, "trim selected wrong source samples")
         try clean()
+        print("MOVIE_AUDIO stage: slow trim")
         let slow = try await service.extract(from: movie,
             mapping: .init(sourceStartSeconds: 0, sourceEndSeconds: 1, speed: 0.5), scratchParent: scratch)
+        print("MOVIE_AUDIO slow result duration=\(slow.audio.duration) channels=\(slow.audio.channelCount)")
         try require(abs(slow.audio.duration - 2) < 0.002 && slow.audio.waveformPeaks.max()! < 0.3, "slow trim ignored")
         try clean()
+        print("MOVIE_AUDIO stage: no audio")
         do { _ = try await service.extract(from: silent, scratchParent: scratch); throw Failure(message: "no-audio returned success") }
         catch StudioVideoAudioImportService.Failure.noAudio { }
         try clean()
+        print("MOVIE_AUDIO stage: invalid trim")
         do { _ = try await service.extract(from: movie, mapping: .init(sourceEndSeconds: 3), scratchParent: scratch); throw Failure(message: "past-end trim succeeded") }
         catch StudioVideoAudioImportService.Failure.invalidTrim { }
         try clean()
+        print("MOVIE_AUDIO stage: unsafe source")
         let link = root.appendingPathComponent("link.mov")
         try fm.createSymbolicLink(at: link, withDestinationURL: movie)
         do { _ = try await service.extract(from: link, scratchParent: scratch); throw Failure(message: "link accepted") }
         catch is StudioImageProviderFile.Failure { }
         try clean()
+        print("MOVIE_AUDIO stage: pre-cancellation")
         let cancelled = Task { try await Task.sleep(nanoseconds: 1_000_000_000); return try await service.extract(from: movie, scratchParent: scratch) }
         cancelled.cancel()
         do { _ = try await cancelled.value; throw Failure(message: "cancel succeeded") } catch is CancellationError { }
         try clean()
+        print("MOVIE_AUDIO stage: chunk cancellation")
         let chunk = ChunkReceipt()
         do {
             _ = try await service.extract(from: movie, scratchParent: scratch) { progress in
@@ -120,12 +135,15 @@ private actor ChunkReceipt {
         gapExport.outputURL = gapMovie; gapExport.outputFileType = .mov
         await gapExport.export()
         try require(gapExport.status == .completed, "Gap fixture export failed")
+        print("MOVIE_AUDIO stage: timeline gaps")
         let gap = try await service.extract(from: gapMovie, scratchParent: scratch)
+        print("MOVIE_AUDIO gap result duration=\(gap.audio.duration) channels=\(gap.audio.channelCount)")
         try require(abs(gap.audio.duration - 2) < 0.002 && gap.audio.waveformPeaks.prefix(50).allSatisfy { $0 == 0 }
             && gap.audio.waveformPeaks.suffix(50).allSatisfy { $0 == 0 }
             && gap.audio.waveformPeaks[80..<176].max()! > 0.1,
             "Movie audio gaps were collapsed or replaced with a silent soundtrack")
         try clean()
+        print("MOVIE_AUDIO stage: prepared import")
         let docs = root.appendingPathComponent("documents")
         let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
         let vm = StudioViewModel(storage: storage)

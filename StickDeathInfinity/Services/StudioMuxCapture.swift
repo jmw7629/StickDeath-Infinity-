@@ -35,7 +35,11 @@ import CryptoKit
         let sha256: String
     }
     private struct Raster: Codable { let id: String; let byteCount: Int; let sha256: String }
-    private struct Identity: Codable { let document: StudioDocument; let audio: [Asset]; let rasters: [Raster] }
+    private struct CreditedRaster: Codable { let id: String; let credit: StudioExportService.ImageCredit }
+    private struct Identity: Codable {
+        let document: StudioDocument; let audio: [Asset]; let rasters: [Raster]
+        var imageCredits: [CreditedRaster]? = nil
+    }
 
     /// Deterministic content proof; only the private capture factory assigns an
     /// in-process origin. Equal IDs/revisions or even equal digests alone never
@@ -77,7 +81,18 @@ import CryptoKit
             totalBytes += data.count; rasters.append(Raster(id: id, byteCount: data.count, sha256: hash(data)))
         }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
-        let canonical = try encoder.encode(Identity(document: doc, audio: audio, rasters: rasters))
+        _ = try StudioExportService.renderedImageCredits(document: doc, creditsByRasterID: snapshot.imageCredits)
+        let visibleLayers = Set(doc.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
+        let visibleIDs = Set(doc.frames.compactMap { frame -> String? in
+            guard let layer = frame.rasterLayerID, visibleLayers.contains(layer) else { return nil }
+            return frame.rasterAssetID
+        })
+        let credits = visibleIDs.sorted().compactMap { id in
+            snapshot.imageCredits[id].map { CreditedRaster(id: id, credit: $0) }
+        }
+        guard try encoder.encode(credits).count <= 128 * 1024 else { throw CaptureError.unsupportedSnapshot }
+        let canonical = try encoder.encode(Identity(document: doc, audio: audio, rasters: rasters,
+            imageCredits: credits.isEmpty ? nil : credits))
         guard canonical.count <= 8 * 1024 * 1024 else { throw CaptureError.unsupportedSnapshot }
         return Proof(purpose: "video-only-component-for-same-capture-mux", projectID: doc.id, revision: doc.revision,
                      snapshotSHA256: hash(canonical), durationNumerator: doc.totalTimelineTicks, durationDenominator: doc.fps,

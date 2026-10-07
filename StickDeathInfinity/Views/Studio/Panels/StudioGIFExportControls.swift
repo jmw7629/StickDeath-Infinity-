@@ -79,6 +79,12 @@ struct StudioGIFExportControls: View {
                     Text("\(output.receipt.width) × \(output.receipt.height) · \(output.receipt.frameIDs.count) frames · \(output.receipt.sourceFPS) fps · revision \(output.receipt.revision)")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.gif.receipt")
+                    if let credits = output.receipt.imageCredits, !credits.isEmpty {
+                        Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.export.gif.image-credits")
+                    }
                     Text("\(output.receipt.encodedBytes) encoded bytes · \(output.receipt.delaysCentiseconds.reduce(0, +)) centiseconds · white · no audio")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
                         .accessibilityIdentifier("studio.export.gif.media")

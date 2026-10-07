@@ -21,7 +21,7 @@ final class StudioMovieExportSession: ObservableObject {
                 return Service.Manifest(version:r.version, projectID:p.projectID, documentRevision:p.revision,
                     frameIDs:p.frameIDs, fps:p.durationDenominator, width:r.width, height:r.height,
                     durationNumerator:r.durationNumerator, durationDenominator:r.durationDenominator,
-                    codec:"H.264 + AAC", background:.white, audioIncluded:true, editorGuidesIncluded:false, encodedBytes:r.encodedBytes)
+                    codec:"H.264 + AAC", background:.white, audioIncluded:true, editorGuidesIncluded:false, encodedBytes:r.encodedBytes, imageCredits:r.imageCredits)
             }
         }
         func checkedURLs() throws -> [URL] { switch self { case .animation(let v): return try v.checkedURLs(); case .mixed(let v): return try v.checkedURLs() } }
@@ -104,8 +104,22 @@ final class StudioMovieExportSession: ObservableObject {
         for id in Set(document.frames.compactMap(\.rasterAssetID)) {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }
         }
+        var credits: [String: StudioExportService.ImageCredit] = [:]
+        do {
+            let visible = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
+            for frame in document.frames {
+                guard let layer = frame.rasterLayerID, visible.contains(layer), let id = frame.rasterAssetID,
+                      credits[id] == nil, let original = vm.originalImageSource(id),
+                      let attribution = original.catalogueAttribution else { continue }
+                try original.validate()
+                credits[id] = try StudioExportService.ImageCredit(attribution: attribution)
+            }
+            _ = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: credits)
+        } catch {
+            errorMessage = error.localizedDescription; return false
+        }
         let snapshot = Service.Snapshot(document: document,
-            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters)
+            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits)
         editor = vm; capturedAccountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision,
                         name: document.name, frameCount: document.frames.count)

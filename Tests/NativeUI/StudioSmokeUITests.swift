@@ -4180,6 +4180,13 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertLessThanOrEqual(try changedPixelCount(edited, pixels(restored.screenshot().image)), 4,
                                 "Cold reopen changed actual library artwork")
         capture(reopened, name: "licensed-image-library-cold-reopened")
+        try openExportPanel(reopened)
+        try exportControl("studio.export.format.png", app: reopened, scrollUp: false).tap()
+        try exportControl("studio.export.start", app: reopened).tap()
+        _ = try waitForPNGPreview(reopened)
+        let credits = try exportControl("studio.export.image-credits", app: reopened)
+        XCTAssertEqual(credits.label, "1 image credit included in manifest")
+        capture(reopened, name: "licensed-image-export-credit")
     }
 
     @MainActor
@@ -4343,6 +4350,7 @@ final class StudioSmokeUITests: XCTestCase {
         _ = try createProjectIfLibraryIsShown(app)
         let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
         XCTAssertTrue(canvas.waitForExistence(timeout: 8)); XCTAssertTrue(canvas.isHittable)
+        try importLicensedImageForExport(app, canvas: canvas)
         let before = try pixels(canvas.screenshot().image)
         canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.25, dy: 0.4)).press(forDuration: 0.05,
             thenDragTo: canvas.coordinate(withNormalizedOffset: CGVector(dx: 0.7, dy: 0.6)))
@@ -4369,6 +4377,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "MP4 ready on this device from revision "),
             evaluatedWith: status).waitUntilFulfilled(timeout: 30))
         let receipt = try exportControl("studio.export.movie.receipt", app: app)
+        XCTAssertEqual(try exportControl("studio.export.movie.image-credits", app: app).label,
+                       "1 image credit included in manifest")
         XCTAssertTrue(receipt.label.contains("1,080 × 1,920"), "The generated portrait fixture was rescaled")
         XCTAssertTrue(receipt.label.contains("1 frames · 12 fps · revision "))
         XCTAssertEqual(app.staticTexts["studio.export.movie.filename"].label, "animation.mp4")
@@ -4410,7 +4420,8 @@ final class StudioSmokeUITests: XCTestCase {
             evaluatedWith: app.buttons["studio.undo"]).waitUntilFulfilled(timeout: 5))
         XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
         let add = app.buttons["studio.add-frame"]
-        XCTAssertTrue(add.isHittable); add.tap() // second actual frame is blank
+        XCTAssertTrue(add.isHittable); add.tap() // second frame receives licensed artwork
+        try importLicensedImageForExport(app, canvas: canvas)
         try openExportPanel(app)
         try exportControl("studio.export.format.gif", app: app, scrollUp: false).tap()
         try exportControl("studio.export.start", app: app).tap()
@@ -4418,6 +4429,8 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "GIF ready on this device from revision "),
             evaluatedWith: status).waitUntilFulfilled(timeout: 30))
         let receipt = try exportControl("studio.export.gif.receipt", app: app)
+        XCTAssertEqual(try exportControl("studio.export.gif.image-credits", app: app).label,
+                       "1 image credit included in manifest")
         XCTAssertTrue(receipt.label.contains("1,080 × 1,920"))
         XCTAssertTrue(receipt.label.contains("2 frames · 12 fps · revision "))
         XCTAssertEqual(app.staticTexts["studio.export.gif.filename"].label, "animation.gif")
@@ -5041,6 +5054,22 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(toggle.isHittable); toggle.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"),
                                   evaluatedWith: app.buttons["studio.export.start"]).waitUntilFulfilled(timeout: 5))
+    }
+
+    @MainActor
+    private func importLicensedImageForExport(_ app: XCUIApplication, canvas: XCUIElement) throws {
+        try openImagePanel(app)
+        try imageControl("studio.image.library", app: app).tap()
+        let search = app.textFields["studio.image-library.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 8)); search.tap(); search.typeText("dragon\n")
+        let picture = app.buttons["studio.image-library.item.kenney.scribble-dungeons.dragon"]
+        XCTAssertTrue(picture.waitForExistence(timeout: 8)); XCTAssertTrue(picture.isHittable); picture.tap()
+        _ = try imageControl("studio.image.preview", app: app)
+        XCTAssertTrue(app.staticTexts["studio.image.attribution"].label.contains("CC0-1.0"))
+        try imageControl("studio.image.apply", app: app).tap()
+        XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon on a new image layer"))
+        try closeImagePanel(app)
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
     }
 
     @MainActor

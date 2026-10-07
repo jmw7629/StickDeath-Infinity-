@@ -15,6 +15,7 @@ final class StudioMovieExportService {
         let document: StudioDocument
         let retainedAudioTracks: [AudioTrack]
         let rasterDataByID: [String: Data]
+        var imageCredits: [String: StudioExportService.ImageCredit] = [:]
     }
     enum Phase { case rendering, finalizing, verifying, publishing }
     struct Progress {
@@ -39,6 +40,7 @@ final class StudioMovieExportService {
         let encodedBytes: Int
         /// Present only for an internal video component, never a completed audio export.
         var visualComponentProof: StudioMuxCapture.Proof? = nil
+        var imageCredits: [StudioExportService.ImageCredit]? = nil
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -530,6 +532,8 @@ final class StudioMovieExportService {
         try validate(snapshot, background: background, componentProof: componentProof)
         try checkpoint(started)
         let document = snapshot.document
+        let imageCredits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
+        guard try JSONEncoder().encode(imageCredits).count <= 128 * 1024 else { throw ExportError.limitExceeded }
         let fm = FileManager.default
         guard outputParent.isFileURL else { throw ExportError.unsafeDestination }
         let parent = outputParent.standardizedFileURL
@@ -645,13 +649,17 @@ final class StudioMovieExportService {
             try await verify(movie, document: document, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
-            var manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
+            var manifest = Manifest(version: imageCredits.isEmpty ? 1 : 2, projectID: document.id, documentRevision: document.revision,
                 frameIDs: document.frames.map(\.id), fps: document.fps, width: document.width, height: document.height,
                 durationNumerator: document.totalTimelineTicks, durationDenominator: document.fps, codec: "H.264",
                 background: .white, audioIncluded: false, editorGuidesIncluded: false, encodedBytes: bytes)
             manifest.visualComponentProof = componentProof
+            manifest.imageCredits = imageCredits.isEmpty ? nil : imageCredits
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
+            guard manifestData.count <= 128 * 1024, manifestData.count <= limits.maximumOutputBytes - bytes else {
+                throw ExportError.limitExceeded
+            }
             try encodingOwnership!.writeManifest(manifestData)
             try progress(Progress(phase: .publishing, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()

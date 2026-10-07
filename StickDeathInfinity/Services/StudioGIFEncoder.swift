@@ -10,6 +10,7 @@ final class StudioGIFEncoder {
     struct Snapshot {
         let document: StudioDocument
         let rasterDataByID: [String: Data]
+        var imageCredits: [String: StudioExportService.ImageCredit] = [:]
     }
     struct Receipt: Codable {
         var version = 1
@@ -24,6 +25,7 @@ final class StudioGIFEncoder {
         let background: String
         let audioIncluded: Bool
         let editorGuidesIncluded: Bool
+        var imageCredits: [StudioExportService.ImageCredit]? = nil
     }
     struct Encoded {
         let data: Data
@@ -82,7 +84,7 @@ final class StudioGIFEncoder {
         try renderer.validate(document)
         let delays = try Self.timing(document: document)
         guard document.width * document.height * document.frames.count <= Self.maximumPixels,
-              snapshot.rasterDataByID.count <= 240 else { throw Failure.limit }
+              snapshot.rasterDataByID.count <= 240, snapshot.imageCredits.count <= 240 else { throw Failure.limit }
         var sourceBytes = 0
         for bytes in snapshot.rasterDataByID.values {
             guard bytes.count <= Self.maximumBytes - sourceBytes else { throw Failure.limit }
@@ -143,9 +145,10 @@ final class StudioGIFEncoder {
             await Task.yield()
         }
         try Task.checkCancellation()
-        return Encoded(data: encoded, receipt: Receipt(projectID: document.id, revision: document.revision,
+        let credits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
+        return Encoded(data: encoded, receipt: Receipt(version: credits.isEmpty ? 1 : 2, projectID: document.id, revision: document.revision,
             frameIDs: document.frames.map(\.id), width: document.width, height: document.height,
             sourceFPS: document.fps, delaysCentiseconds: delays, encodedBytes: encoded.count,
-            background: "white", audioIncluded: false, editorGuidesIncluded: false))
+            background: "white", audioIncluded: false, editorGuidesIncluded: false, imageCredits: credits.isEmpty ? nil : credits))
     }
 }

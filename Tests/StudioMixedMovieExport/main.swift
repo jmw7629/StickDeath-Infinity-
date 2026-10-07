@@ -205,6 +205,69 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(!out.isCleaned && Data(contentsOf:urls[0])==foreign,"false cleaned state")
             try fm.removeItem(at:urls[0]);try fm.moveItem(at:original,to:urls[0]);try out.cleanup();try empty(p)
         }
+        try await run("licensed raster rights survive real mixed MP4 video and decoded non-silent audio") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            guard let item = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }) else { throw TestError.failed("Actual licensed Pencil missing") }
+            let image = try catalogue.checkedPNG(item), rights = try catalogue.attribution(for: item)
+            let credit = try StudioExportService.ImageCredit(attribution: rights)
+            var credited = document
+            let imageLayer = CanvasLayer(id: "credited-layer", name: "Licensed image")
+            credited.layers.insert(imageLayer, at: 0)
+            for index in credited.frames.indices {
+                credited.frames[index].rasterAssetID = "licensed"; credited.frames[index].rasterLayerID = imageLayer.id
+                credited.frames[index].rasterPlacement = .init(x: 0, y: 0, width: 16, height: 16)
+            }
+            let captured = StudioMovieExportService.Snapshot(document: credited, retainedAudioTracks: [track],
+                rasterDataByID: ["licensed": image], imageCredits: ["licensed": credit])
+            let p = try parent("credited-final-mux")
+            let out = try await service.export(snapshot: captured, outputParent: p)
+            let urls = try out.checkedURLs(), asset = AVURLAsset(url: urls[0])
+            let videos = try await asset.loadTracks(withMediaType: .video), audios = try await asset.loadTracks(withMediaType: .audio)
+            try require(videos.count == 1 && audios.count == 1, "Credited final MP4 requires actual audio and video streams")
+            try await verifyPixels(asset, track: videos[0])
+            try await verifyCreditedPixels(asset, track: videos[0])
+            let samples = try await decodeAudio(asset, track: audios[0])
+            try require(samples.count == 96_000 && samples.contains { abs($0) > 0.02 }, "Credits preserved but actual mixed audio was missing/silent")
+            let manifestData = try Data(contentsOf: urls[1])
+            let final = try JSONDecoder().decode(StudioAudioVideoMuxService.Receipt.self, from: manifestData)
+            try require(final.version == 2 && final.imageCredits == [credit] && out.receipt.imageCredits == [credit],
+                "Final checked mux receipt dropped or duplicated image rights")
+            try require(final.captureProof == StudioMuxCapture.proofFor(captured), "Final receipt uses different credited capture")
+            try require(manifestData.count <= 128 * 1024 && manifestData.count + final.encodedBytes <= 64 * 1024 * 1024,
+                "Final manifest/movie aggregate exceeds limits")
+            var old = try JSONSerialization.jsonObject(with: manifestData) as! [String: Any]
+            old["version"] = 1; old.removeValue(forKey: "imageCredits")
+            let legacy = try JSONDecoder().decode(StudioAudioVideoMuxService.Receipt.self, from: JSONSerialization.data(withJSONObject: old))
+            try require(legacy.imageCredits == nil && legacy.version == 1, "Legacy mixed receipt cannot decode")
+            try require(try fm.contentsOfDirectory(atPath: p.path).count == 1, "Mixed intermediate files remained")
+            try out.cleanup(); try empty(p)
+        }
+        try await run("capture proof binds changed credit and raster association while omitting invisible credits") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            let first = catalogue.images[0], second = catalogue.images[1]
+            let a = try catalogue.checkedPNG(first), b = try catalogue.checkedPNG(second)
+            let ca = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: first))
+            let cb = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: second))
+            var doc = document
+            for index in doc.frames.indices {
+                doc.frames[index].rasterAssetID = index.isMultiple(of: 2) ? "a" : "b"
+                doc.frames[index].rasterLayerID = doc.activeLayerID
+            }
+            let normal = StudioMovieExportService.Snapshot(document: doc, retainedAudioTracks: [track], rasterDataByID: ["a": a, "b": b], imageCredits: ["a": ca, "b": cb])
+            let swapped = StudioMovieExportService.Snapshot(document: doc, retainedAudioTracks: [track], rasterDataByID: ["a": a, "b": b], imageCredits: ["a": cb, "b": ca])
+            try require(StudioMuxCapture.proofFor(normal).snapshotSHA256 != StudioMuxCapture.proofFor(swapped).snapshotSHA256,
+                "Swapped attribution associations shared a canonical capture identity")
+            var changed = try catalogue.attribution(for: first); changed["attribution"] = "Changed attribution fixture"
+            let altered = StudioMovieExportService.Snapshot(document: doc, retainedAudioTracks: [track], rasterDataByID: ["a": a, "b": b],
+                imageCredits: ["a": try StudioExportService.ImageCredit(attribution: changed), "b": cb])
+            try require(StudioMuxCapture.proofFor(normal).snapshotSHA256 != StudioMuxCapture.proofFor(altered).snapshotSHA256,
+                "Changed attribution shared a capture identity")
+            doc.layers[0].visible = false
+            let hidden = StudioMovieExportService.Snapshot(document: doc, retainedAudioTracks: [track], rasterDataByID: ["a": a, "b": b], imageCredits: ["a": ca, "b": cb])
+            let hiddenWithoutCredits = StudioMovieExportService.Snapshot(document: doc, retainedAudioTracks: [track], rasterDataByID: ["a": a, "b": b])
+            try require(StudioMuxCapture.proofFor(hidden) == StudioMuxCapture.proofFor(hiddenWithoutCredits),
+                "Invisible credit was included in rendered capture identity")
+        }
         print("STUDIO_MIXED_MOVIE_EXPORT_TESTS=PASS \(passed)/\(passed)")
     }
     static func verifyPixels(_ asset: AVAsset, track: AVAssetTrack) async throws {
@@ -222,6 +285,26 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             count += 1
         }
         try require(reader.status == .completed && count == 12, "actual full decoded video")
+    }
+    static func verifyCreditedPixels(_ asset: AVAsset, track: AVAssetTrack) async throws {
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA])
+        reader.add(output); try require(reader.startReading(), "Read credited video pixels")
+        var frames = 0, darkPixels = 0
+        while let sample = output.copyNextSampleBuffer() {
+            guard let buffer = CMSampleBufferGetImageBuffer(sample) else { throw TestError.failed("Missing decoded credited image") }
+            CVPixelBufferLockBaseAddress(buffer, .readOnly)
+            let bytes = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0..<CVPixelBufferGetHeight(buffer) {
+                for x in 0..<CVPixelBufferGetWidth(buffer) {
+                    let offset = y * stride + x * 4
+                    if bytes[offset] < 200 && bytes[offset + 1] < 200 && bytes[offset + 2] < 200 { darkPixels += 1 }
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(buffer, .readOnly); frames += 1
+        }
+        try require(reader.status == .completed && frames == 12 && darkPixels > 0, "Actual licensed image pixels missing from final mux")
     }
     static func decodeAudio(_ asset: AVAsset, track: AVAssetTrack) async throws -> [Float] {
         let reader = try AVAssetReader(asset: asset), output = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMIsFloatKey: true, AVLinearPCMBitDepthKey: 32, AVLinearPCMIsNonInterleaved: false, AVSampleRateKey: 48_000, AVNumberOfChannelsKey: 2])

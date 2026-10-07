@@ -105,6 +105,12 @@ struct ExportPanel: View {
                             Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.6))
+                            if let credits = output.manifest.imageCredits, !credits.isEmpty {
+                                Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(.white.opacity(0.6))
+                                    .accessibilityIdentifier("studio.export.image-credits")
+                            }
                             if let preview = session.previewImage {
                                 Image(decorative: preview, scale: 1)
                                     .resizable().scaledToFit().frame(maxWidth: .infinity).frame(height: 180)
@@ -199,10 +205,24 @@ struct ExportPanel: View {
         // Capture value-type document and immutable original bytes together on
         // MainActor before export yields. Later edits cannot change this export.
         var rasters: [String: Data] = [:]
-        for id in Set(document.frames.compactMap(\.rasterAssetID)) {
-            if let data = vm.rasterData(id) { rasters[id] = data }
+        var imageCredits: [String: StudioExportService.ImageCredit] = [:]
+        let visibleIDs = Set(document.frames.compactMap { frame -> String? in
+            document.layers.contains { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 }
+                ? frame.rasterAssetID : nil
+        })
+        do {
+            for id in visibleIDs {
+                if let data = vm.rasterData(id) { rasters[id] = data }
+                if let source = vm.originalImageSource(id), let origin = source.catalogueAttribution {
+                    try source.validate()
+                    imageCredits[id] = try StudioExportService.ImageCredit(attribution: origin)
+                }
+            }
+        } catch {
+            session.preparationFailed(error)
+            return
         }
-        session.start(document: document, format: format, background: background, rasters: rasters)
+        session.start(document: document, format: format, background: background, rasters: rasters, imageCredits: imageCredits)
     }
 
     private func shareExport() {
@@ -226,8 +246,14 @@ final class StudioExportSession: ObservableObject {
     private var task: Task<Void, Never>?
     private var isClosed = false
 
+    func preparationFailed(_ error: Error) {
+        guard !isRunning, !isSharing, !isClosed else { return }
+        errorMessage = error.localizedDescription; notice = nil
+    }
+
     func start(document: StudioDocument, format: StudioExportService.Format,
-               background: StudioExportService.Background, rasters: [String: Data]) {
+               background: StudioExportService.Background, rasters: [String: Data],
+               imageCredits: [String: StudioExportService.ImageCredit] = [:]) {
         guard !isRunning, !isSharing, !isClosed else { return }
         errorMessage = nil; notice = nil
         guard removeOutput() else { return }
@@ -235,7 +261,7 @@ final class StudioExportSession: ObservableObject {
         task = Task { [self] in
             do {
                 let result = try await StudioExportService().export(document: document, format: format,
-                    outputParent: FileManager.default.temporaryDirectory, background: background,
+                    outputParent: FileManager.default.temporaryDirectory, background: background, imageCredits: imageCredits,
                     rasterData: { rasters[$0] }, progress: { [self] completed, total in
                         completedFrames = completed; totalFrames = total
                     })

@@ -1,3 +1,23 @@
+## GIF and movie image credits — 2026-10-07
+
+Local implementation `b0552e21685cd9d3564581807cee2a6fcd84643d` extends immutable, validated image attribution to GIF, MP4 and audio-mixed MP4 manifests and native receipts. Credit association participates in mux identity; hidden and zero-opacity images are excluded; personal imports get no invented credit; manifest/output bounds and owned cleanup remain enforced.
+
+- Six production suites passed: PNG 20, GIF 25, GIF session 12 groups, movie 50, mux 25 and mixed movie 15 (147 total cases/groups). Independent review verified source inputs and original logs.
+- Native app/UI build passed in 52.140 seconds; MP4 export, real image-credit receipt, transparency rejection, actual share sheet and cancellation passed in 92.298 seconds at `b0552e21`. The original paired run also contained one GIF failure and remains preserved (log SHA256 `988f150729eb906c7ae1aeed2324e0cac9cf713b3137a3ad8c319cf8b4a47f16`).
+- The GIF test's new Dragon import invalidated its original mostly-white first-frame fixture. Test-only correction `c0265d0e594d9c341c8049a9907cecd0de8f045c` places the licensed artwork on frame 2, preserving all original first-frame pixel, timing and share-cancellation assertions. Corrected app/UI build passed in 22.089 seconds, then the real two-frame GIF journey passed in 89.249 seconds, zero failures/skips (log SHA256 `9dd6465358aa22434d4a32cf7dea23f17112a165c34c5c9f776d864f69a4576a`). MP4 production code is unchanged by this correction.
+- Separate public run `37573828368` at `c00f8d79` failed the production movie-audio import suite with `decodeFailed`; native app compilation did not run because prerequisites failed. Original logs/terminal metadata and zero-artifact response were preserved. Source-security and Spatter production passed. Local movie-audio reproduction passed 11 groups in 68.144 seconds, but does not resolve the ARM CI failure. Scoped numeric/stage diagnostics preserve existing guard conditions and will identify the failing path on the next public run.
+- Remaining #198 scope includes catalogue version/quarantine/removal and publication records. No merge, signing, physical-device or complete-app claim. Review V94 shows verified native PNG-credit evidence and the accurate failed-CI status; later captures are not yet deployed.
+
+
+## Image export attribution — 2026-10-07
+
+Local implementation commit `1ca8409163f8b109b80af2e9a112301157255b57` preserves validated catalogue image credits in PNG sequence and spritesheet manifests. Credits are captured with immutable project rasters, deduplicated, limited to rendered visible assets, and shown in the native export receipt. Personal imports receive no invented attribution. Invalid or conflicting metadata fails with partial-output cleanup; legacy manifests remain readable.
+
+- Production: **20/20 passed**, including real licensed import, save, cold reopen, decoded image output, both manifests, hidden/zero-opacity images, personal imports, invalid metadata and old manifests. Original log SHA-256: `c1abd6a3a4bd4644decea12752e1436cacdd8d753a93f09441814034f99bb380`.
+- Native: Xcode app/UI build passed (32.108 seconds); exact-source simulator journey passed **1 test, 0 failures, 0 skips** (119.116 seconds): actual catalogue search, import, undo/redo, cold reopen, real PNG export and one-credit receipt. Original runtime log SHA-256: `fa6985da8faa3dc9fade15b2a0f8b6e819faa6a9f5afa7e4a5b4781280ecb865`.
+- Independent review verified the five-file implementation and original production results. This is a narrow review, not whole-PR approval.
+- Remaining: GIF/MP4/publishing credit propagation, catalogue version/revocation handling and broader #198 acceptance. Current public-head mandatory CI is separate and still pending. No public-branch advance, merge, physical-device, signing, publication or complete-app claim.
+
 # Current verification status — October 7, 2026
 
 

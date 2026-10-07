@@ -295,6 +295,157 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             let output = try await service.export(document: doc, format: .pngSequence, outputParent: folder)
             try require(output.directory.deletingLastPathComponent() == folder && output.directory.lastPathComponent.hasPrefix("SDI-"), "Title escaped output directory")
         }
+        // Read actual licensed production artwork, verify catalogue hashes and
+        // rights, then use the real decoder, VM attachment and snapshot store.
+        let imageCatalogueURL = URL(fileURLWithPath: fm.currentDirectoryPath)
+            .appendingPathComponent("StickDeathInfinity/Resources/StudioImages")
+        let imageCatalogue = try StudioImageCatalogue(directory: imageCatalogueURL)
+        guard let creditedItem = imageCatalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }) else {
+            throw Failure(message: "Actual bundled licensed Pencil image missing")
+        }
+        let licensedOriginal = try imageCatalogue.checkedPNG(creditedItem)
+        let licensedRights = try imageCatalogue.attribution(for: creditedItem)
+        let licensedCredit = try StudioExportService.ImageCredit(attribution: licensedRights)
+        func creditedProject(_ name: String, includeRights: Bool = true) async throws -> (StudioViewModel, String, URL) {
+            let folder = try parent(root, name)
+            let file = folder.appendingPathComponent("verified-original.png")
+            try licensedOriginal.write(to: file, options: .withoutOverwriting)
+            var imported = try await StudioImageImportService().importImage(from: file, name: creditedItem.title, scratchParent: folder)
+            if includeRights { imported.catalogueAttribution = licensedRights }
+            let documents = folder.appendingPathComponent("Documents")
+            let store = DeviceStorageManager(documentsDirectory: documents)
+            let editor = StudioViewModel(storage: store)
+            let created = await editor.createProject(name: name, width: 160, height: 160, fps: 12)
+            try require(created, "Real credited project creation failed")
+            let asset = try editor.attachImportedImage(imported, expectedProjectID: editor.document.id,
+                expectedRevision: editor.document.revision, frameID: editor.document.activeFrameID, layerID: editor.document.activeLayerID)
+            editor.duplicateFrame()
+            try require(editor.document.frames.count == 2 && editor.document.frames.allSatisfy { $0.rasterAssetID == asset },
+                "Real duplicate did not preserve shared managed asset")
+            let saved = await editor.save()
+            try require(saved, "Actual credited project save failed")
+            let coldStore = DeviceStorageManager(documentsDirectory: documents)
+            guard let snapshot = try coldStore.loadAnimation(id: editor.document.id) else { throw Failure(message: "Saved credited project missing") }
+            let reopened = StudioViewModel(storage: coldStore)
+            let opened = await reopened.openProject(snapshot.metadata)
+            try require(opened, "Actual cold reopen failed")
+            let source = reopened.originalImageSource(asset)
+            try require(source?.originalData == licensedOriginal && source?.catalogueAttribution == (includeRights ? licensedRights : nil),
+                "Real persistence lost original image bytes or rights")
+            try source?.validate()
+            return (reopened, asset, folder)
+        }
+        func sourceCredits(_ editor: StudioViewModel, asset: String) throws -> [String: StudioExportService.ImageCredit] {
+            guard let source = editor.originalImageSource(asset), let attribution = source.catalogueAttribution else { return [:] }
+            try source.validate()
+            return [asset: try StudioExportService.ImageCredit(attribution: attribution)]
+        }
+        await test("real licensed import save cold reopen exports exact deduplicated credits in both image formats") {
+            let (editor, asset, folder) = try await creditedProject("licensed-credit-roundtrip")
+            let credits = try sourceCredits(editor, asset: asset)
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                    background: .transparent, imageCredits: credits, rasterData: { editor.rasterData($0) })
+                let manifestBytes = try Data(contentsOf: output.manifestURL)
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: manifestBytes)
+                try require(decoded.version == 3 && decoded.imageCredits == [licensedCredit],
+                    "Manifest must preserve all eight actual rights fields once despite duplicate frames")
+                try require(decoded.frames.count == 2 && decoded.frames.map(\.id) == editor.document.frames.map(\.id),
+                    "Credits changed real frame identities")
+                let object = try JSONSerialization.jsonObject(with: manifestBytes) as! [String: Any]
+                let serializedCredits = object["imageCredits"] as? [[String: String]]
+                try require(serializedCredits == [licensedRights], "Serialized sidecar rights differ from verified source metadata")
+                let raster = try decode(output.imageURLs[0])
+                let alpha = stride(from: 3, to: raster.bytes.count, by: 4).map { raster.bytes[$0] }
+                try require(alpha.contains(0) && alpha.contains(where: { $0 > 0 }), "Actual licensed image pixels missing")
+                try require(!String(decoding: manifestBytes, as: UTF8.self).contains("originalData"), "Manifest exposed embedded original bytes")
+            }
+        }
+        await test("hidden and zero-opacity licensed images neither render nor appear in exported credits") {
+            let (editor, asset, folder) = try await creditedProject("licensed-credit-visibility")
+            guard let layer = editor.document.frames[0].rasterLayerID else { throw Failure(message: "Imported image layer missing") }
+            let credits = try sourceCredits(editor, asset: asset)
+            for mode in ["hidden", "transparent"] {
+                if mode == "hidden" { editor.toggleLayerVisibility(layer) }
+                else { editor.toggleLayerVisibility(layer); editor.setLayerOpacity(layer, opacity: 0) }
+                for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                    let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                        background: .transparent, imageCredits: credits,
+                        rasterData: { _ in throw Failure(message: "Invisible licensed raster was requested") })
+                    let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                    try require(manifest.imageCredits == nil && manifest.version != 3, "Invisible asset received a rendered credit")
+                    let raster = try decode(output.imageURLs[0])
+                    try require(stride(from: 3, to: raster.bytes.count, by: 4).allSatisfy { raster.bytes[$0] == 0 },
+                        "Invisible licensed image still rendered")
+                }
+            }
+        }
+        await test("personal Files import does not invent catalogue rights or claim manifest v3") {
+            let (editor, asset, folder) = try await creditedProject("personal-no-credit", includeRights: false)
+            try require(try sourceCredits(editor, asset: asset).isEmpty, "Personal source acquired invented rights")
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                    imageCredits: try sourceCredits(editor, asset: asset), rasterData: { editor.rasterData($0) })
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(decoded.imageCredits == nil && decoded.version != 3, "Personal import assigned fabricated catalogue credits")
+                _ = try decode(output.imageURLs[0])
+            }
+        }
+        await test("invalid and oversized image credit metadata fail without published or partial exports") {
+            let folder = try parent(root, "bad-image-credits")
+            var doc = try document(colors: ["#FF0000"])
+            doc.frames[0].elements.removeAll(); doc.frames[0].rasterAssetID = "licensed"; doc.frames[0].rasterLayerID = doc.activeLayerID
+            for (key, invalid) in [("author", String(repeating: "a", count: 601)), ("license", "unverified"),
+                                   ("sourceURL", "http://kenney.nl/assets/example"), ("originalSHA256", "wrong"),
+                                   ("attribution", "hidden\ncontrol"), ("author", "a" + String(repeating: "\u{0301}", count: 1200))] {
+                var bad = licensedRights; bad[key] = invalid
+                try await rejects { _ = try StudioExportService.ImageCredit(attribution: bad) }
+                // Decodable must not bypass export-time validation of an actual
+                // rendered credit, even when init(attribution:) was not called.
+                let forged = try JSONDecoder().decode(StudioExportService.ImageCredit.self, from: JSONSerialization.data(withJSONObject: bad))
+                try await rejects {
+                    _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                        imageCredits: ["licensed": forged], rasterData: { _ in licensedOriginal })
+                }
+                try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Invalid credit left partial/published output")
+            }
+            var extra = licensedRights; extra["privateUserEmail"] = "private@example.invalid"
+            try await rejects { _ = try StudioExportService.ImageCredit(attribution: extra) }
+            var missing = licensedRights; missing.removeValue(forKey: "author")
+            try await rejects { _ = try StudioExportService.ImageCredit(attribution: missing) }
+            var conflicting = licensedRights; conflicting["author"] = "Different claimed author"
+            let conflictingCredit = try StudioExportService.ImageCredit(attribution: conflicting)
+            let duplicate = AnimationFrame(id: "other-credit-frame", elements: [], rasterAssetID: "other-licensed", rasterLayerID: doc.activeLayerID)
+            doc.frames.append(duplicate)
+            try await rejects {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    imageCredits: ["licensed": licensedCredit, "other-licensed": conflictingCredit], rasterData: { _ in licensedOriginal })
+            }
+            try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Conflicting rights published or left partial output")
+            let oversized = Dictionary(uniqueKeysWithValues: (0...StudioExportService.maximumFrames).map { ("asset-\($0)", licensedCredit) })
+            try await rejects {
+                _ = try await service.export(document: doc, format: .spritesheet, outputParent: folder,
+                    imageCredits: oversized, rasterData: { _ in licensedOriginal })
+            }
+            try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Oversized credits created output")
+        }
+        await test("legacy manifest versions decode with absent image credits") {
+            let folder = try parent(root, "legacy-credit-decoding")
+            let output = try await service.export(document: document(), format: .pngSequence, outputParent: folder)
+            var object = try JSONSerialization.jsonObject(with: Data(contentsOf: output.manifestURL)) as! [String: Any]
+            object.removeValue(forKey: "imageCredits")
+            for version in [1, 2] {
+                object["version"] = version
+                if version == 1 {
+                    object["frames"] = (object["frames"] as! [[String: Any]]).map { frame in
+                        var older = frame; older.removeValue(forKey: "startTick"); older.removeValue(forKey: "durationTicks"); return older
+                    }
+                }
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: JSONSerialization.data(withJSONObject: object))
+                try require(decoded.version == version && decoded.imageCredits == nil && decoded.frames.count == 3,
+                    "Optional credits broke historical manifest decoding")
+            }
+        }
         print("STUDIO_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         print("GENERATED_EXPORT_FIXTURES=\(root.path)")
         if failed > 0 { exit(1) }

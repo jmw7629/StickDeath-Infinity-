@@ -22,6 +22,45 @@ final class StudioExportService {
         var startTick: Int? = nil
         var durationTicks: Int? = nil
     }
+    /// Metadata only. The panel validates the preserved original's digest
+    /// before constructing this value; no original bytes enter the manifest.
+    struct ImageCredit: Codable, Equatable {
+        let assetID: String
+        let author: String
+        let sourceURL: String
+        let license: String
+        let licenseURL: String
+        let attribution: String
+        let originalSHA256: String
+        let sourceArchiveSHA256: String
+
+        init(attribution values: [String: String]) throws {
+            try Self.check(values)
+            assetID = values["assetID"]!; author = values["author"]!; sourceURL = values["sourceURL"]!
+            license = values["license"]!; licenseURL = values["licenseURL"]!; attribution = values["attribution"]!
+            originalSHA256 = values["originalSHA256"]!; sourceArchiveSHA256 = values["sourceArchiveSHA256"]!
+        }
+        func validate() throws {
+            try Self.check(["assetID": assetID, "author": author, "sourceURL": sourceURL,
+                "license": license, "licenseURL": licenseURL, "attribution": attribution,
+                "originalSHA256": originalSHA256, "sourceArchiveSHA256": sourceArchiveSHA256])
+        }
+        private static func check(_ values: [String: String]) throws {
+            let keys: Set<String> = ["assetID", "author", "sourceURL", "license", "licenseURL",
+                "attribution", "originalSHA256", "sourceArchiveSHA256"]
+            func digest(_ text: String?) -> Bool {
+                guard let text else { return false }
+                return text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            }
+            guard Set(values.keys) == keys,
+                  values.values.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 2400 && $0.count <= 600 && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }),
+                  values["license"] == "CC0-1.0", values["licenseURL"] == "https://creativecommons.org/publicdomain/zero/1.0/",
+                  digest(values["originalSHA256"]), digest(values["sourceArchiveSHA256"]),
+                  let source = values["sourceURL"].flatMap(URL.init(string:)), source.scheme == "https", source.host == "kenney.nl",
+                  source.user == nil, source.password == nil, source.port == nil, source.query == nil, source.fragment == nil,
+                  source.path.hasPrefix("/assets/") else { throw ExportError.invalidImageCredit }
+        }
+    }
     struct Manifest: Codable {
         let version: Int
         let projectID: UUID
@@ -36,6 +75,7 @@ final class StudioExportService {
         let audioIncluded: Bool
         let editorGuidesIncluded: Bool
         let frames: [FrameRecord]
+        var imageCredits: [ImageCredit]? = nil
     }
     struct Output {
         let directory: URL
@@ -53,11 +93,39 @@ final class StudioExportService {
     static let maximumOutputBytes = 256 * 1024 * 1024
     private static var exportInProgress = false
 
+    /// One credit policy for every rendered format. Callers return this metadata
+    /// only after every referenced visible raster has successfully rendered.
+    static func renderedImageCredits(document: StudioDocument,
+                                     creditsByRasterID: [String: ImageCredit]) throws -> [ImageCredit] {
+        guard creditsByRasterID.count <= maximumFrames else { throw ExportError.limitExceeded }
+        let visibleLayers = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
+        let used = Set(document.frames.compactMap { frame -> String? in
+            guard let layerID = frame.rasterLayerID, visibleLayers.contains(layerID) else { return nil }
+            return frame.rasterAssetID
+        })
+        var result: [ImageCredit] = []
+        for asset in used.sorted() {
+            try Task.checkCancellation()
+            guard let credit = creditsByRasterID[asset] else { continue }
+            try credit.validate()
+            if result.contains(where: { $0.assetID == credit.assetID && $0.originalSHA256 == credit.originalSHA256 && $0 != credit }) {
+                throw ExportError.invalidImageCredit
+            }
+            if !result.contains(credit) { result.append(credit) }
+        }
+        return result.sorted {
+            if $0.assetID != $1.assetID { return $0.assetID < $1.assetID }
+            if $0.originalSHA256 != $1.originalSHA256 { return $0.originalSHA256 < $1.originalSHA256 }
+            return $0.sourceArchiveSHA256 < $1.sourceArchiveSHA256
+        }
+    }
+
     /// outputParent must be an existing app-owned cache/temporary directory.
     /// Pass immutable project-managed raster bytes, never a URL from picker state.
     /// Progress counts rendered frames; only the returned Output means success.
     func export(document: StudioDocument, format: Format, outputParent: URL,
                 background: Background = .white,
+                imageCredits: [String: ImageCredit] = [:],
                 rasterData: (String) throws -> Data? = { _ in nil },
                 progress: (Int, Int) -> Void = { _, _ in }) async throws -> Output {
         try Task.checkCancellation()
@@ -65,6 +133,7 @@ final class StudioExportService {
         Self.exportInProgress = true
         defer { Self.exportInProgress = false }
         try validate(document)
+        guard imageCredits.count <= Self.maximumFrames else { throw ExportError.limitExceeded }
         let columns = format == .spritesheet ? Int(ceil(sqrt(Double(document.frames.count)))) : 1
         let rows = format == .spritesheet ? (document.frames.count + columns - 1) / columns : 1
         let width = document.width * columns, height = document.height * rows
@@ -136,13 +205,17 @@ final class StudioExportService {
                 }
                 filenames = ["spritesheet.png"]
             }
-            let manifest = Manifest(version: document.schemaVersion >= 21 ? 2 : 1, projectID: document.id, documentRevision: document.revision,
+            let renderedCredits = try Self.renderedImageCredits(document: document, creditsByRasterID: imageCredits)
+            let manifest = Manifest(version: renderedCredits.isEmpty ? (document.schemaVersion >= 21 ? 2 : 1) : 3, projectID: document.id, documentRevision: document.revision,
                 format: format, background: background, fps: document.fps,
                 canvasWidth: document.width, canvasHeight: document.height,
                 imageWidth: width, imageHeight: height, audioIncluded: false,
-                editorGuidesIncluded: false, frames: records)
+                editorGuidesIncluded: false, frames: records, imageCredits: renderedCredits.isEmpty ? nil : renderedCredits)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"), options: .withoutOverwriting)
+            let manifestBytes = try encoder.encode(manifest)
+            guard manifestBytes.count <= 8 * 1024 * 1024,
+                  manifestBytes.count <= Self.maximumOutputBytes - outputBytes else { throw ExportError.limitExceeded }
+            try manifestBytes.write(to: staging.appendingPathComponent("manifest.json"), options: .withoutOverwriting)
             try Task.checkCancellation()
             // Same-parent rename publishes all files together, without replacing
             // another export or touching the source project. No mutation follows.
@@ -254,6 +327,7 @@ final class StudioExportService {
 
     enum ExportError: LocalizedError {
         case limitExceeded, unsafeDestination, renderFailed, encodeFailed, missingRaster, invalidRaster, unsupportedContent, invalidColor, alreadyExporting
+        case invalidImageCredit
         case cleanupFailed(URL)
         var errorDescription: String? {
             switch self {
@@ -261,6 +335,7 @@ final class StudioExportService {
             case .unsafeDestination: return "Choose an existing app-owned export directory without symbolic links."
             case .renderFailed: return "Studio could not render the requested image. No export was published."
             case .encodeFailed: return "The PNG file could not be written. No export was published."
+            case .invalidImageCredit: return "An image attribution record is invalid. No export was published."
             case .missingRaster: return "An original project image is unavailable. No export was published."
             case .invalidRaster: return "An original project image cannot be decoded. No export was published."
             case .unsupportedContent: return "This document contains a tool or blend effect that PNG export cannot faithfully render yet."

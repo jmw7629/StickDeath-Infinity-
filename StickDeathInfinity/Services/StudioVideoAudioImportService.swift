@@ -51,7 +51,7 @@ actor StudioVideoAudioImportService {
                     throw Failure.timedOut
                 }
                 defer { group.cancelAll() }
-                guard let result = try await group.next() else { throw Failure.decodeFailed }
+                guard let result = try await group.next() else { throw Self.diagnosticDecodeFailure(line: #line) }
                 return result
             }
             try Task.checkCancellation()
@@ -63,13 +63,13 @@ actor StudioVideoAudioImportService {
                 do {
                     let file = FileHandle(fileDescriptor: fd, closeOnDealloc: false)
                     try file.write(contentsOf: decoded.wav)
-                    guard fsync(fd) == 0 else { throw Failure.decodeFailed }
+                    guard fsync(fd) == 0 else { throw Self.diagnosticDecodeFailure(line: #line) }
                     _ = Darwin.close(fd)
                 } catch { _ = Darwin.close(fd); throw error }
                 try scratch.verify()
                 imported = try await StudioAudioImportService.shared.importAudio(from: scratch.sourceURL,
                     name: String(owned.displayName.prefix(95)) + " soundtrack", scratchParent: scratchParent)
-                guard abs(imported.duration - decoded.outputDuration) <= 0.002 else { throw Failure.decodeFailed }
+                guard abs(imported.duration - decoded.outputDuration) <= 0.002 else { throw Self.diagnosticDecodeFailure(line: #line) }
                 try Task.checkCancellation()
                 try scratch.cleanup()
             } catch {
@@ -86,6 +86,14 @@ actor StudioVideoAudioImportService {
             catch { throw StudioImageProviderFile.Failure.operationAndCleanupFailed(operation: operation) }
             throw operation
         }
+    }
+
+    // Opt-in bounded diagnostics: numeric codec state only, never source paths/data.
+    private static func diagnosticDecodeFailure(line: Int) -> Failure {
+#if SDI_MOVIE_AUDIO_DIAGNOSTICS
+        print("MOVIE_AUDIO decodeFailed sourceLine=\(line)")
+#endif
+        return .decodeFailed
     }
 
     private struct Decoded: Sendable {
@@ -131,7 +139,7 @@ actor StudioVideoAudioImportService {
             let overlap = CMTimeRangeGetIntersection(sourceRange, otherRange: trackRange)
             guard overlap.duration.isNumeric, overlap.duration > .zero else { throw Failure.noAudio }
             let composition = AVMutableComposition()
-            guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw Failure.decodeFailed }
+            guard let track = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) else { throw Self.diagnosticDecodeFailure(line: #line) }
             // Empty portions are the movie's actual timeline gaps. Audio starts
             // at its original offset inside the selected interval, not at zero.
             let targetDuration = CMTime(seconds: outputDuration, preferredTimescale: 600_000)
@@ -148,10 +156,10 @@ actor StudioVideoAudioImportService {
                 AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false])
             output.audioTimePitchAlgorithm = .varispeed
             reader.timeRange = CMTimeRange(start: .zero, duration: targetDuration)
-            guard reader.canAdd(output) else { throw Failure.decodeFailed }
+            guard reader.canAdd(output) else { throw Self.diagnosticDecodeFailure(line: #line) }
             reader.add(output)
             return try await withTaskCancellationHandler {
-                guard reader.startReading() else { throw Failure.decodeFailed }
+                guard reader.startReading() else { throw Self.diagnosticDecodeFailure(line: #line) }
                 defer { if reader.status == .reading { reader.cancelReading() } }
                 var pcm = Data(count: outputFrames * bytesPerFrame)
                 var endFrame = 0, actualFrames = 0
@@ -161,15 +169,18 @@ actor StudioVideoAudioImportService {
                     let time = CMSampleBufferGetPresentationTimeStamp(sample)
                     guard frames > 0, frames <= 65_536, time.isNumeric, time.seconds >= 0,
                           let block = CMSampleBufferGetDataBuffer(sample),
-                          CMBlockBufferGetDataLength(block) == frames * bytesPerFrame else { throw Failure.decodeFailed }
+                          CMBlockBufferGetDataLength(block) == frames * bytesPerFrame else { throw Self.diagnosticDecodeFailure(line: #line) }
                     let startFrame = Int((time.seconds * Double(rate)).rounded())
+#if SDI_MOVIE_AUDIO_DIAGNOSTICS
+                    print("MOVIE_AUDIO buffer frames=\(frames) pts=\(time.value)/\(time.timescale) start=\(startFrame) end=\(endFrame) limit=\(outputFrames)")
+#endif
                     guard startFrame >= endFrame, startFrame <= outputFrames,
-                          frames <= outputFrames - startFrame + 1 else { throw Failure.decodeFailed }
+                          frames <= outputFrames - startFrame + 1 else { throw Self.diagnosticDecodeFailure(line: #line) }
                     let count = min(frames, outputFrames - startFrame)
                     guard pcm.withUnsafeMutableBytes({ bytes in
                         CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * bytesPerFrame,
                             destination: bytes.baseAddress!.advanced(by: startFrame * bytesPerFrame))
-                    }) == noErr else { throw Failure.decodeFailed }
+                    }) == noErr else { throw Self.diagnosticDecodeFailure(line: #line) }
                     actualFrames += count; endFrame = startFrame + count
                     // Only report frames actually supplied by AVFoundation.
                     // Genuine timeline gaps can leave completed below total;
@@ -179,7 +190,10 @@ actor StudioVideoAudioImportService {
                     await Task.yield()
                 }
                 try checkpoint()
-                guard reader.status == .completed, actualFrames > 0 else { throw Failure.decodeFailed }
+#if SDI_MOVIE_AUDIO_DIAGNOSTICS
+                print("MOVIE_AUDIO terminal status=\(reader.status.rawValue) frames=\(actualFrames) end=\(endFrame) expected=\(outputFrames) errorCode=\((reader.error as NSError?)?.code ?? 0)")
+#endif
+                guard reader.status == .completed, actualFrames > 0 else { throw Self.diagnosticDecodeFailure(line: #line) }
                 var wav = Data("RIFF".utf8)
                 func u32(_ value: UInt32) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
                 func u16(_ value: UInt16) { var v = value.littleEndian; withUnsafeBytes(of: &v) { wav.append(contentsOf: $0) } }
