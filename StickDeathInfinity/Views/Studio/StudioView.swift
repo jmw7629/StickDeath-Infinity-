@@ -14,6 +14,8 @@ struct StudioView: View {
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
+    @StateObject private var spatterPictureHandoff = SpatterPictureImportHandoff()
+    @State private var spatterPictureRequest: SpatterPictureImportHandoff.Request?
     @State private var spatterMovieRequest: StudioMoviePanelState.DirectRequest?
 
     var body: some View {
@@ -27,10 +29,14 @@ struct StudioView: View {
             }
             await vm.loadProjects()
         }
-        .onChange(of: scenePhase) { phase in
-            if phase != .active { vm.stopPlayback(); Task { await vm.flush() } }
+        .onChange(of: authVM.userId) { _ in
+            // Even switching away and back invalidates the original authority.
+            spatterPictureHandoff.cancel(); spatterPictureRequest = nil
         }
-        .onDisappear { vm.stopPlayback(); Task { await vm.flush() } }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { spatterPictureHandoff.cancel(); spatterPictureRequest = nil; vm.stopPlayback(); Task { await vm.flush() } }
+        }
+        .onDisappear { spatterPictureHandoff.cancel(); spatterPictureRequest = nil; vm.stopPlayback(); Task { await vm.flush() } }
     }
 
     private var editorBody: some View {
@@ -60,6 +66,15 @@ struct StudioView: View {
             AIVoiceMakerSheet(vm: vm)
         }
         .sheet(isPresented: showSpatterBinding, onDismiss: {
+            if let picture = spatterPictureRequest {
+                spatterPictureRequest = nil
+                guard spatterPictureHandoff.consume(picture, in: vm, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "The Studio context changed before picture import opened. Try Add Picture again."
+                    return
+                }
+                vm.activePanel = .addImage
+                return
+            }
             guard let request = spatterExportRequest else { return }
             spatterExportRequest = nil
             guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
@@ -72,7 +87,15 @@ struct StudioView: View {
             if spatterMovieRequest != nil { vm.exportFormat = .mp4 }
             vm.activePanel = .export
         }) {
-            SpatterAISheet(vm: vm, onExport: {
+            SpatterAISheet(vm: vm, onPictureImport: {
+                guard let request = spatterPictureHandoff.prepare(in: vm, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "Finish the active edit or save before opening Add Picture."
+                    return
+                }
+                spatterExportRequest = nil; spatterMovieRequest = nil
+                spatterPictureRequest = request
+                vm.activePanel = .none
+            }, onExport: {
                 spatterMovieRequest = nil
                 spatterExportRequest = (vm.document.id, vm.document.revision, authVM.userId)
                 vm.activePanel = .none
@@ -829,6 +852,7 @@ struct AIVoiceMakerSheet: View {
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    let onPictureImport: () -> Void
     let onExport: () -> Void
     let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
     @State private var showLocalRecipe = false
@@ -843,7 +867,7 @@ struct SpatterAISheet: View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             if showLocalRecipe {
-                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onExport: onExport, onMovieExport: onMovieExport)
+                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onPictureImport: onPictureImport, onExport: onExport, onMovieExport: onMovieExport)
             } else {
             VStack(spacing: 0) {
                 HStack {
@@ -1053,7 +1077,7 @@ struct MagicCutSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("Edge-connected color removal").font(.headline)
-                        Text("Removes the chosen background color from the original imported image's edges. Enclosed areas, drawing layers and original files are preserved. This is color-based removal, not AI subject recognition.")
+                        Text("Removes the chosen background color from the original imported image's edges. All linked image copies in the chosen frames are updated together. Enclosed areas, drawing layers and original files are preserved. This is color-based removal, not AI subject recognition.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                         Picker("Scope", selection: $allFrames) {
                             Text("Current frame").tag(false)

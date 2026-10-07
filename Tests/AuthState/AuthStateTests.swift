@@ -1,10 +1,123 @@
 import XCTest
+import Combine
 import Supabase
 @testable import StickDeathInfinity
 
 /// Native unit tests execute the actual AuthService and AuthViewModel against
 /// the pinned SDK's injected URLSession. No external provider or host is called.
 @MainActor final class AuthStateTests: XCTestCase {
+    func testStartupRetryUsesStoredSDKSessionAndSerializesRequests() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: config)
+        defer { AuthFixtureTransport.releaseStartupRefresh(); transport.invalidateAndCancel() }
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Startup-Probe": "true"], session: transport)))
+        _ = try await client.auth.signIn(email: "first@example.invalid", password: "fixture-password")
+        try storage.expireStoredSessions()
+        XCTAssertTrue(try XCTUnwrap(client.auth.currentSession).isExpired)
+        AuthFixtureTransport.setStartupMode("failure")
+        let service = AuthService(client: client)
+        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        await model.initialize()
+        XCTAssertEqual(model.restoration, .retryableFailure)
+        XCTAssertEqual(model.state, .unauthenticated)
+        XCTAssertNil(model.userId)
+        XCTAssertNotNil(client.auth.currentSession, "Recoverable failure erased the stored session")
+        service.reconcileAuthStateChange(.initialSession)
+        XCTAssertFalse(model.isAuthenticated, "Expired cached session was promoted after refresh failure")
+        let failedRequests = AuthFixtureTransport.startupRequestCount
+        await model.initialize()
+        XCTAssertEqual(AuthFixtureTransport.startupRequestCount, failedRequests, "Repeated appearance implicitly retried")
+        AuthFixtureTransport.setStartupMode("hold")
+        let retry = Task { await model.retryRestoration() }
+        try await waitFor { AuthFixtureTransport.hasStartupRefresh }
+        XCTAssertEqual(model.restoration, .restoring)
+        let inFlightRequests = AuthFixtureTransport.startupRequestCount
+        await model.retryRestoration()
+        XCTAssertEqual(AuthFixtureTransport.startupRequestCount, inFlightRequests, "Double Retry started another refresh")
+        do { try await service.signOut(); XCTFail("Identity mutation raced an active restoration") }
+        catch AuthService.AuthError.operationInProgress { }
+        AuthFixtureTransport.releaseStartupRefresh()
+        await retry.value
+        XCTAssertEqual(model.restoration, .ready)
+        XCTAssertTrue(model.isAuthenticated)
+        XCTAssertEqual(model.userId?.lowercased(), AuthFixtureTransport.first)
+        XCTAssertFalse(try XCTUnwrap(client.auth.currentSession).isExpired)
+    }
+
+    func testStartupRevokedSessionRequiresNewSignInWithoutRetryLoop() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: config)
+        defer { AuthFixtureTransport.releaseStartupRefresh(); transport.invalidateAndCancel() }
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Startup-Probe": "true"], session: transport)))
+        _ = try await client.auth.signIn(email: "first@example.invalid", password: "fixture-password")
+        try storage.expireStoredSessions()
+        AuthFixtureTransport.setStartupMode("revoked")
+        let service = AuthService(client: client)
+        await service.initialize()
+        XCTAssertEqual(service.restoration, .signInRequired)
+        XCTAssertFalse(service.isAuthenticated); XCTAssertNil(service.currentUser)
+        XCTAssertNil(client.auth.currentSession, "Pinned SDK must clear the rejected refresh session")
+        let count = AuthFixtureTransport.startupRequestCount
+        await service.retryRestoration()
+        XCTAssertEqual(AuthFixtureTransport.startupRequestCount, count)
+        AuthFixtureTransport.setStartupMode("success")
+        try await service.signIn(email: "second@example.invalid", password: "fixture-password")
+        XCTAssertEqual(service.restoration, .ready)
+        XCTAssertEqual(service.userId?.lowercased(), AuthFixtureTransport.second)
+    }
+
+    func testSessionExpiringDuringRestorationProfileNeverCommitsAuthenticated() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: config)
+        defer { AuthFixtureTransport.releaseProfiles(); transport.invalidateAndCancel() }
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Delay-Profile": "first"], session: transport)))
+        _ = try await client.auth.signIn(email: "first@example.invalid", password: "fixture-password")
+        let service = AuthService(client: client)
+        var observedStates: [AuthService.AuthState] = []
+        let observation = service.$state.sink { observedStates.append($0) }
+        defer { observation.cancel() }
+        let restoration = Task { await service.initialize() }
+        try await waitFor { AuthFixtureTransport.hasDelayedProfile }
+        XCTAssertEqual(service.restoration, .restoring)
+        try storage.expireStoredSessions()
+        XCTAssertTrue(try XCTUnwrap(client.auth.currentSession).isExpired)
+        AuthFixtureTransport.releaseProfiles()
+        await restoration.value
+        XCTAssertEqual(service.restoration, .retryableFailure)
+        XCTAssertEqual(service.state, .unauthenticated)
+        XCTAssertFalse(observedStates.contains(.authenticated), "Expired session briefly committed authenticated before observer correction")
+        XCTAssertNil(service.currentUser); XCTAssertNil(service.currentProfile)
+        XCTAssertNotNil(client.auth.currentSession, "Retryable failure must preserve SDK credentials")
+    }
+
+    func testStartupWithoutStoredSessionFinishesWithoutRefresh() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: config)
+        defer { transport.invalidateAndCancel() }
+        AuthFixtureTransport.setStartupMode("failure")
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: AuthFixtureStorage(), autoRefreshToken: false),
+                global: .init(headers: ["X-SDI-Startup-Probe": "true"], session: transport)))
+        let service = AuthService(client: client)
+        await service.initialize(); await service.retryRestoration()
+        XCTAssertEqual(service.restoration, .ready)
+        XCTAssertEqual(service.state, .unauthenticated)
+        XCTAssertEqual(AuthFixtureTransport.startupRequestCount, 0)
+    }
+
     func testServiceEventsProfileFailureAndLogoutFailureStayTruthful() async throws {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AuthFixtureTransport.self]
@@ -150,6 +263,17 @@ import Supabase
 private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [String: Data] = [:]
+    func expireStoredSessions() throws {
+        lock.lock(); defer { lock.unlock() }
+        var expired = 0
+        for (key, bytes) in values {
+            if var session = try? JSONDecoder().decode(Session.self, from: bytes) {
+                session.expiresAt = Date().timeIntervalSince1970 - 3600
+                values[key] = try JSONEncoder().encode(session); expired += 1
+            }
+        }
+        XCTAssertEqual(expired, 1, "Fixture must expire the actual SDK-owned stored session")
+    }
     func store(key: String, value: Data) throws { lock.lock(); defer { lock.unlock() }; values[key] = value }
     func retrieve(key: String) throws -> Data? { lock.lock(); defer { lock.unlock() }; return values[key] }
     func remove(key: String) throws { lock.lock(); defer { lock.unlock() }; values[key] = nil }
@@ -157,6 +281,16 @@ private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
 private final class AuthFixtureTransport: URLProtocol {
     private static let gate = NSLock()
     private static var delayed: [AuthFixtureTransport] = []
+    private static var startupMode = "success"
+    private static var startupRequests = 0
+    private static var startupPending: [AuthFixtureTransport] = []
+    static var startupRequestCount: Int { gate.lock(); defer { gate.unlock() }; return startupRequests }
+    static var hasStartupRefresh: Bool { gate.lock(); defer { gate.unlock() }; return !startupPending.isEmpty }
+    static func setStartupMode(_ mode: String) { gate.lock(); defer { gate.unlock() }; startupMode = mode; startupRequests = 0 }
+    static func releaseStartupRefresh() {
+        gate.lock(); let pending = startupPending; startupPending = []; startupMode = "success"; gate.unlock()
+        for request in pending { request.startLoading() }
+    }
     static var hasDelayedProfile: Bool { gate.lock(); defer { gate.unlock() }; return !delayed.isEmpty }
     static func releaseProfiles() {
         gate.lock(); let requests = delayed; delayed = []; gate.unlock()
@@ -175,6 +309,20 @@ private final class AuthFixtureTransport: URLProtocol {
         let url = request.url!
         if url.path.hasSuffix("/logout") {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
+        }
+        if url.path.hasSuffix("/token"), url.query?.contains("grant_type=refresh_token") == true,
+           request.value(forHTTPHeaderField: "X-SDI-Startup-Probe") == "true" {
+            Self.gate.lock(); Self.startupRequests += 1; let mode = Self.startupMode
+            if mode == "hold" { Self.startupPending.append(self) }
+            Self.gate.unlock()
+            if mode == "hold" { return }
+            if mode == "failure" {
+                // A real SDK API error, not an injected AuthService result.
+                respond(400, ["code": "unexpected_failure", "msg": "Fixture restoration unavailable"]); return
+            }
+            if mode == "revoked" {
+                respond(400, ["code": "refresh_token_not_found", "msg": "Fixture refresh token revoked"]); return
+            }
         }
         if url.path.hasSuffix("/token") {
             let body: Data
@@ -208,7 +356,7 @@ private final class AuthFixtureTransport: URLProtocol {
         guard !cancelled else { return }
         guard let data = try? JSONSerialization.data(withJSONObject: value),
               let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil,
-                headerFields: ["Content-Type": "application/json"]) else { return }
+                headerFields: ["Content-Type": "application/json", "X-Supabase-Api-Version": "2024-01-01"]) else { return }
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: data); client?.urlProtocolDidFinishLoading(self)
     }

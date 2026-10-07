@@ -98,7 +98,7 @@ final class StudioGIFEncoder {
         for (index, frame) in document.frames.enumerated() {
             try Task.checkCancellation()
             try autoreleasepool {
-                let visible = document.layers.contains { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 }
+                let visible = !frame.visibleRasterInstances(in: document.layers).isEmpty
                 let raster: Data?
                 if visible, let id = frame.rasterAssetID {
                     guard let bytes = snapshot.rasterDataByID[id] else { throw Failure.missingRaster }

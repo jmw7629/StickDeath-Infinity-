@@ -398,6 +398,26 @@ class FreshSimulator(unittest.TestCase):
         self.assertFalse(receipt['runtimeVerified'])
         self.assert_one_create()
 
+    def test_auth_runner_requires_all_nine_real_auth_results(self):
+        self.run_selector()
+        (self.root / 'sdi-native-build/SourcePackages/checkouts').mkdir(parents=True)
+        def subprocess_run(argv, **kwargs):
+            if argv[:2] != ['git', 'diff']:
+                select.copy_marker(pathlib.Path(argv[3]), self.new_id, SHA)
+        for passed, failed, skipped, expected in [(9, 0, 0, 0), (5, 0, 0, 3), (8, 0, 0, 3), (9, 1, 0, 3), (9, 0, 1, 3)]:
+            def bounded(command, log, timeout):
+                # Exercise the real runner's terminal receipt gate only. These
+                # fixture summaries do not claim any native test execution.
+                log.write_text(json.dumps({'passedTests': passed, 'failedTests': failed, 'skippedTests': skipped})
+                               if command[0] == 'xcrun' else 'native command fixture\n')
+                return 0
+            with self.subTest(passed=passed, failed=failed, skipped=skipped), \
+                 patch.dict(os.environ, {'SDI_SMOKE_SIMULATOR_UDID': self.new_id}), \
+                 patch.object(auth.subprocess, 'run', side_effect=subprocess_run), \
+                 patch.object(auth.subprocess, 'check_output', return_value=SHA + '\n'), \
+                 patch.object(auth, 'run', side_effect=bounded):
+                self.assertEqual(auth.main(), expected)
+
     def test_auth_runner_rejects_foreign_simulator_before_any_native_command(self):
         self.run_selector()
         def subprocess_run(argv, **kwargs):

@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...26
+    static let supportedSchemaVersions = 1...27
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -85,6 +85,15 @@ struct StudioDocument: Codable, Equatable {
     }
     var referencedRasterAssetIDs: Set<String> { Set(frames.compactMap(\.rasterAssetID)) }
 
+    static func validatedProjectName(_ proposed: String) throws -> String {
+        let title = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title.count <= 120, title.utf8.count <= 480,
+              title.rangeOfCharacter(from: .controlCharacters) == nil else {
+            throw StudioDocumentError.invalid("Use a project name of 1–120 characters without control characters.")
+        }
+        return title
+    }
+
     func validate() throws {
         guard gridSettings?.isValid ?? true else { throw StudioDocumentError.invalid("Grid spacing must be 8–160 canvas points and opacity 5–60%.") }
         guard onionSettings?.isValid ?? true else { throw StudioDocumentError.invalid("Onion skin needs 0–2 frames on each side and 5–80% opacity.") }
@@ -112,10 +121,27 @@ struct StudioDocument: Codable, Equatable {
                 guard schemaVersion >= 21, (2...600).contains(hold) else { throw StudioDocumentError.invalid("A frame exposure is invalid.") }
             }
             try StudioSmudgeDescriptor.validateFrame(frame, width: width, height: height)
+            if let aliases = frame.rasterAliases, !aliases.isEmpty {
+                guard schemaVersion >= 27, aliases.count <= 127, frame.rasterAssetID != nil else {
+                    throw StudioDocumentError.invalid("Linked images require version 27 and at most 128 image layers.")
+                }
+            }
             if frame.rasterAssetID != nil {
                 guard frame.rasterLayerID.map(layerIDs.contains) == true else { throw StudioDocumentError.invalid("An imported image has an invalid layer reference.") }
+            } else {
+                guard frame.rasterAliases?.isEmpty ?? true else { throw StudioDocumentError.invalid("Linked images have no source.") }
             }
-            if let rect = frame.rasterPlacement {
+            let instances = frame.rasterLayerInstances
+            guard instances.count <= 128, Set(instances.map(\.layerID)).count == instances.count,
+                  instances.allSatisfy({ layerIDs.contains($0.layerID) && ($0.placement == nil) == (frame.rasterPlacement == nil) }) else {
+                throw StudioDocumentError.invalid("Linked images have duplicate or invalid layer ownership.")
+            }
+            // Validate orphan singular geometry too: legacy rejection is unchanged.
+            let geometryInstances = instances.isEmpty ? [StudioRasterLayerInstance(layerID: frame.rasterLayerID ?? "",
+                placement: frame.rasterPlacement, reflection: frame.rasterReflection,
+                quarterTurns: frame.rasterQuarterTurns, crop: frame.rasterCrop)] : instances
+            for instance in geometryInstances {
+            if let rect = instance.placement {
                 guard schemaVersion >= 3, let asset = frame.rasterAssetID, !asset.isEmpty, asset.utf8.count <= 120,
                       rect.x.isFinite, rect.y.isFinite, rect.width.isFinite, rect.height.isFinite,
                       rect.x >= 0, rect.y >= 0, rect.width > 0, rect.height > 0,
@@ -124,22 +150,23 @@ struct StudioDocument: Codable, Equatable {
                     throw StudioDocumentError.invalid("An imported still has invalid placement or document version.")
                 }
             }
-            if let crop = frame.rasterCrop {
-                guard schemaVersion >= 22, frame.rasterPlacement != nil else {
+            if let crop = instance.crop {
+                guard schemaVersion >= 22, instance.placement != nil else {
                     throw StudioDocumentError.invalid("An image crop has invalid document metadata.")
                 }
                 try crop.validate()
             }
-            if let turns = frame.rasterQuarterTurns {
-                guard schemaVersion >= 16, frame.rasterPlacement != nil, (1...3).contains(turns) else {
+            if let turns = instance.quarterTurns {
+                guard schemaVersion >= 16, instance.placement != nil, (1...3).contains(turns) else {
                     throw StudioDocumentError.invalid("An imported image has invalid rotation metadata. The original has not changed.")
                 }
             }
-            if let reflection = frame.rasterReflection {
-                guard schemaVersion >= 15, frame.rasterPlacement != nil,
+            if let reflection = instance.reflection {
+                guard schemaVersion >= 15, instance.placement != nil,
                       reflection.horizontal || reflection.vertical else {
                     throw StudioDocumentError.invalid("An imported image has invalid reflection metadata. The original has not changed.")
                 }
+            }
             }
             guard frame.elements.count <= 20000 else { throw StudioDocumentError.invalid("This frame exceeds the editable element limit.") }
             guard frame.elements.filter({ $0.eraser != nil }).count <= 256 else {
@@ -310,15 +337,53 @@ enum StudioDocumentError: LocalizedError {
 
 // Settings remain a standalone Codable transport model. Editor validation
 // belongs here so native model/storage stages do not depend on the editor.
+extension AudioClip {
+    struct SplitTiming: Equatable { let boundary: Double; let rightSourceOffset: Double }
+    /// Preserve the manual split's exact 48 kHz timeline/source phase calculation.
+    func splitTiming(at seconds: Double) throws -> SplitTiming {
+        let rate = StudioAudioTimelineGeometry.sampleRate
+        guard assetID != nil, seconds.isFinite, startTime.isFinite, duration.isFinite, sourceOffset.isFinite,
+              startTime >= 0, startTime <= 1000, duration > 0, duration <= 300, (0...300).contains(sourceOffset) else {
+            throw StudioDocumentError.invalid("Choose a playable clip and a finite split time inside it.")
+        }
+        let startFrame = (startTime * rate).rounded(), endFrame = ((startTime + duration) * rate).rounded()
+        let cutFrame = (seconds * rate).rounded(), boundary = cutFrame / rate
+        let left = boundary - startTime, right = duration - left
+        let offset = ((sourceOffset * rate).rounded() + cutFrame - startFrame) / rate
+        guard boundary.isFinite, offset.isFinite, cutFrame > startFrame, cutFrame < endFrame,
+              left >= 1 / rate, right >= 1 / rate else {
+            throw StudioDocumentError.invalid("Split inside the clip with at least one audio sample on each side.")
+        }
+        return .init(boundary: boundary, rightSourceOffset: offset)
+    }
+}
+
 extension StudioAudioClipSettings {
     func applying(to clip: AudioClip) throws -> AudioClip {
         guard clip.assetID != nil else {
             throw StudioDocumentError.unavailable("This clip has no managed audio source. Import playable audio before editing its settings.")
         }
-        guard volume != nil || isMuted != nil || fades != nil else {
+        guard trim != nil || placement != nil || volume != nil || isMuted != nil || fades != nil else {
             throw StudioDocumentError.invalid("Specify an audio setting to change.")
         }
         var result = clip
+        if let trim {
+            guard trim.sourceOffset.isFinite, (0...300).contains(trim.sourceOffset),
+                  trim.duration.isFinite, (1 / 48_000.0...300).contains(trim.duration),
+                  (trim.sourceOffset + trim.duration).isFinite else {
+                throw StudioDocumentError.invalid("Use a finite source offset and at least one audio sample within the source file.")
+            }
+            // Preserve the envelope's original source coordinates; trimming never restarts its phase.
+            result.sourceOffset = trim.sourceOffset; result.duration = trim.duration
+        }
+        if let placement {
+            guard placement.startTime.isFinite, (0...1000).contains(placement.startTime),
+                  (1...4).contains(placement.track), result.duration.isFinite, result.duration > 0,
+                  result.duration <= 300, (placement.startTime + result.duration).isFinite else {
+                throw StudioDocumentError.invalid("Choose a finite clip start from 0–1,000 seconds and track 1–4.")
+            }
+            result.startTime = placement.startTime; result.track = placement.track
+        }
         if let volume {
             guard volume.isFinite, (0...1).contains(volume) else {
                 throw StudioDocumentError.invalid("Clip volume must be between 0% and 100%.")
@@ -329,14 +394,14 @@ extension StudioAudioClipSettings {
         if let fades {
             let incoming = fades.fadeIn, outgoing = fades.fadeOut
             guard incoming.isFinite, outgoing.isFinite, incoming >= 0, outgoing >= 0,
-                  clip.duration.isFinite, clip.duration > 0, clip.duration <= 300,
-                  clip.startTime.isFinite, (0...1000).contains(clip.startTime),
-                  clip.sourceOffset.isFinite, (0...300).contains(clip.sourceOffset),
-                  incoming <= clip.duration, outgoing <= clip.duration,
-                  incoming + outgoing <= clip.duration else { throw AudioFadeEnvelope.Failure.invalid }
+                  result.duration.isFinite, result.duration > 0, result.duration <= 300,
+                  result.startTime.isFinite, (0...1000).contains(result.startTime),
+                  result.sourceOffset.isFinite, (0...300).contains(result.sourceOffset),
+                  incoming <= result.duration, outgoing <= result.duration,
+                  incoming + outgoing <= result.duration else { throw AudioFadeEnvelope.Failure.invalid }
             let rate = StudioAudioTimelineGeometry.sampleRate
-            let start = Int((clip.sourceOffset * rate).rounded())
-            let count = Int(((clip.startTime + clip.duration) * rate).rounded() - (clip.startTime * rate).rounded())
+            let start = Int((result.sourceOffset * rate).rounded())
+            let count = Int(((result.startTime + result.duration) * rate).rounded() - (result.startTime * rate).rounded())
             let inFrames = Int((incoming * rate).rounded()), outFrames = Int((outgoing * rate).rounded())
             result.fadeEnvelope = inFrames == 0 && outFrames == 0 ? nil : .init(
                 sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames)
@@ -395,6 +460,57 @@ struct StudioDocumentEditor {
         undoDocuments.append(previous)
         trimHistory()
         redoDocuments.removeAll(); document = next
+    }
+
+    mutating func renameProject(_ proposed: String) throws {
+        let title = try StudioDocument.validatedProjectName(proposed)
+        guard title != document.name else { return }
+        try change { $0.name = title }
+    }
+
+    @discardableResult
+    mutating func splitAudioClip(_ id: String, at seconds: Double, newClipID: String) throws -> AudioClip {
+        guard let index = document.audioClips.firstIndex(where: { $0.id == id }),
+              !newClipID.isEmpty, newClipID.count <= 120,
+              !newClipID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !document.audioClips.contains(where: { $0.id == newClipID }) else {
+            throw StudioDocumentError.invalid("Choose an existing clip and a new unique right-half identity.")
+        }
+        let original = document.audioClips[index], timing = try original.splitTiming(at: seconds)
+        var left = original; left.duration = timing.boundary - original.startTime
+        let right = AudioClip(id: newClipID, soundName: original.soundName, track: original.track,
+            startTime: timing.boundary, duration: original.duration - left.duration, volume: original.volume,
+            assetID: original.assetID, sourceOffset: timing.rightSourceOffset,
+            isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
+        try change { value in
+            value.schemaVersion = max(value.schemaVersion, 4)
+            value.audioClips[index] = left; value.audioClips.insert(right, at: index + 1)
+        }
+        return right
+    }
+    mutating func deleteAudioClip(_ id: String) throws {
+        guard let index = document.audioClips.firstIndex(where: { $0.id == id }) else {
+            throw StudioDocumentError.invalid("Choose an existing audio clip to delete.")
+        }
+        try change { $0.audioClips.remove(at: index) }
+    }
+
+    /// Reuse the original managed source and envelope, placing the copy at its end.
+    /// The supplied destination ID is generated once when the request is prepared.
+    @discardableResult
+    mutating func duplicateAudioClip(_ id: String, newClipID: String) throws -> AudioClip {
+        guard let original = document.audioClips.first(where: { $0.id == id }), original.assetID != nil,
+              !newClipID.isEmpty, newClipID.count <= 120,
+              !newClipID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              !document.audioClips.contains(where: { $0.id == newClipID }) else {
+            throw StudioDocumentError.invalid("Choose a managed source clip and a new unique clip identity.")
+        }
+        let duplicate = AudioClip(id: newClipID, soundName: original.soundName,
+            track: original.track, startTime: original.startTime + original.duration,
+            duration: original.duration, volume: original.volume, assetID: original.assetID,
+            sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
+        try change { $0.audioClips.append(duplicate) }
+        return duplicate
     }
 
     /// Shared by manual controls and the bounded assistant command transport.
@@ -666,7 +782,7 @@ struct StudioDocumentEditor {
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
                              brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha)
             }
-            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop)
+            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases)
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
             if elements.contains(where: { $0.shape != nil }) { value.schemaVersion = max(value.schemaVersion, 5) }
@@ -693,6 +809,7 @@ struct StudioDocumentEditor {
             if source.rasterQuarterTurns != nil { value.schemaVersion = max(value.schemaVersion, 16) }
             if source.holdTicks != nil { value.schemaVersion = max(value.schemaVersion, 21) }
             if source.rasterCrop != nil { value.schemaVersion = max(value.schemaVersion, 22) }
+            if source.rasterAliases?.isEmpty == false { value.schemaVersion = max(value.schemaVersion, 27) }
         }
     }
     mutating func deleteFrame(_ id: String) throws {
@@ -712,27 +829,23 @@ struct StudioDocumentEditor {
     /// Placement edits retain the immutable image identity and original bytes.
     /// Historical full-canvas raster records are deliberately not converted here.
     mutating func deleteImage(frameID: String, assetID: String,
-                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+                              layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  value.frames[index].rasterPlacement != nil else {
+                  let selected = Self.imageInstance(in: value.frames[index], layerID: layerID),
+                  selected.placement != nil else {
                 throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
             }
-            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+            guard let layer = value.layers.first(where: { $0.id == selected.layerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
             }
             try checkCancellation()
             // Only this explicit managed picture reference is removed. Keep
             // frame/layer identity, drawings, other frames and immutable assets.
-            value.frames[index].rasterAssetID = nil
-            value.frames[index].rasterLayerID = nil
-            value.frames[index].rasterPlacement = nil
-            value.frames[index].rasterReflection = nil
-            value.frames[index].rasterQuarterTurns = nil
-            value.frames[index].rasterCrop = nil
+            try value.frames[index].removeRasterInstance(on: selected.layerID)
             try checkCancellation()
         }
     }
@@ -740,25 +853,27 @@ struct StudioDocumentEditor {
     /// Toggle one explicit managed image around its own center, preserving the
     /// placement, drawings, asset identity and immutable source data.
     mutating func reflectImage(frameID: String, assetID: String, axis: StudioReflectionAxis,
-                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+                              layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  value.frames[index].rasterPlacement != nil else {
+                  var selected = Self.imageInstance(in: value.frames[index], layerID: layerID),
+                  selected.placement != nil else {
                 throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
             }
-            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+            guard let layer = value.layers.first(where: { $0.id == selected.layerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
             }
             try checkCancellation()
-            var reflection = value.frames[index].rasterReflection ?? StudioRasterReflection()
+            var reflection = selected.reflection ?? StudioRasterReflection()
             switch axis {
             case .horizontal: reflection.horizontal.toggle()
             case .vertical: reflection.vertical.toggle()
             }
-            value.frames[index].rasterReflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            selected.reflection = reflection.horizontal || reflection.vertical ? reflection : nil
+            try value.frames[index].updateRasterInstance(selected)
             value.schemaVersion = max(value.schemaVersion, 15)
             try checkCancellation()
         }
@@ -768,15 +883,16 @@ struct StudioDocumentEditor {
     /// the placed center, then shift only as needed to keep the whole image in
     /// the canvas. Oversized results reject instead of silently shrinking/cropping.
     mutating func rotateImage(frameID: String, assetID: String, direction: StudioImageQuarterTurn,
-                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+                             layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  let placement = value.frames[index].rasterPlacement else {
+                  var selected = Self.imageInstance(in: value.frames[index], layerID: layerID),
+                  let placement = selected.placement else {
                 throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
             }
-            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+            guard let layer = value.layers.first(where: { $0.id == selected.layerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
             }
@@ -784,44 +900,47 @@ struct StudioDocumentEditor {
                 throw StudioDocumentError.invalid("This rotated image would be larger than the canvas. Make it smaller with Position image, then rotate again. Nothing changed.")
             }
             try checkCancellation()
-            let previousTurns: Int = value.frames[index].rasterQuarterTurns ?? 0
+            let previousTurns: Int = selected.quarterTurns ?? 0
             let turns: Int = (previousTurns + direction.offset + 4) % 4
-            value.frames[index].rasterQuarterTurns = turns == 0 ? nil : turns
+            selected.quarterTurns = turns == 0 ? nil : turns
             let centerX: Double = placement.x + placement.width / 2
             let centerY: Double = placement.y + placement.height / 2
             let x: Double = min(max(0, centerX - placement.height / 2), Double(value.width) - placement.height)
             let y: Double = min(max(0, centerY - placement.width / 2), Double(value.height) - placement.width)
-            value.frames[index].rasterPlacement = StudioRasterPlacement(x: x, y: y, width: placement.height, height: placement.width)
+            selected.placement = StudioRasterPlacement(x: x, y: y, width: placement.height, height: placement.width)
             // H/V flips are relative to canvas axes. A quarter turn carries the
             // existing reflection with the picture instead of changing its look.
-            if let reflection = value.frames[index].rasterReflection {
-                value.frames[index].rasterReflection = .init(horizontal: reflection.vertical, vertical: reflection.horizontal)
+            if let reflection = selected.reflection {
+                selected.reflection = .init(horizontal: reflection.vertical, vertical: reflection.horizontal)
             }
+            try value.frames[index].updateRasterInstance(selected)
             value.schemaVersion = max(value.schemaVersion, 16)
             try checkCancellation()
         }
     }
 
     mutating func cropImage(frameID: String, assetID: String, crop: StudioImageCrop,
-                            checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+                            layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation(); try crop.validate()
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  let placement = value.frames[index].rasterPlacement else { throw StudioDocumentError.invalid("Select an imported image before cropping.") }
-            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+                  var selected = Self.imageInstance(in: value.frames[index], layerID: layerID),
+                  let placement = selected.placement else { throw StudioDocumentError.invalid("Select an imported image before cropping.") }
+            guard let layer = value.layers.first(where: { $0.id == selected.layerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { throw StudioDocumentError.locked }
-            let old = value.frames[index].rasterCrop ?? .full
+            let old = selected.crop ?? .full
             guard old != crop else { return }
-            let odd = (value.frames[index].rasterQuarterTurns ?? 0) % 2 != 0
+            let odd = (selected.quarterTurns ?? 0) % 2 != 0
             let proposedWidth = placement.width * (odd ? crop.height / old.height : crop.width / old.width)
             let proposedHeight = placement.height * (odd ? crop.width / old.width : crop.height / old.height)
             let fit = min(1, min(Double(value.width) / proposedWidth, Double(value.height) / proposedHeight))
             let width = min(Double(value.width), proposedWidth * fit), height = min(Double(value.height), proposedHeight * fit)
             let x = min(max(0, placement.x + placement.width / 2 - width / 2), Double(value.width) - width)
             let y = min(max(0, placement.y + placement.height / 2 - height / 2), Double(value.height) - height)
-            value.frames[index].rasterPlacement = .init(x: x, y: y, width: width, height: height)
-            value.frames[index].rasterCrop = crop == .full ? nil : crop
+            selected.placement = .init(x: x, y: y, width: width, height: height)
+            selected.crop = crop == .full ? nil : crop
+            try value.frames[index].updateRasterInstance(selected)
             value.schemaVersion = max(22, value.schemaVersion)
             try checkCancellation()
         }
@@ -829,22 +948,30 @@ struct StudioDocumentEditor {
 
     mutating func updateImagePlacement(frameID: String, assetID: String,
                                       placement: StudioRasterPlacement,
-                                      checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+                                      layerID: String? = nil, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         try change { value in
             guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
                   value.frames[index].rasterAssetID == assetID,
-                  value.frames[index].rasterPlacement != nil else {
+                  var selected = Self.imageInstance(in: value.frames[index], layerID: layerID),
+                  selected.placement != nil else {
                 throw StudioDocumentError.invalid("The selected image is unavailable. Nothing changed.")
             }
-            guard let layer = value.layers.first(where: { $0.id == value.frames[index].rasterLayerID }),
+            guard let layer = value.layers.first(where: { $0.id == selected.layerID }),
                   layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
                 throw StudioDocumentError.locked
             }
             try checkCancellation()
-            value.frames[index].rasterPlacement = placement
+            selected.placement = placement
+            try value.frames[index].updateRasterInstance(selected)
             // change validates the full document before a single history commit.
         }
+    }
+
+    private static func imageInstance(in frame: AnimationFrame, layerID: String?) -> StudioRasterLayerInstance? {
+        if let layerID { return frame.rasterInstance(on: layerID) }
+        let instances = frame.rasterLayerInstances
+        return instances.count == 1 ? instances[0] : nil
     }
 
     mutating func translateElements(frameID: String, ids: Set<String>, dx: Double, dy: Double,
@@ -1039,13 +1166,8 @@ struct StudioDocumentEditor {
             for frame in value.frames.indices {
                 try checkCancellation()
                 value.frames[frame].elements.removeAll { $0.layerID == id }
-                if value.frames[frame].rasterLayerID == id {
-                    value.frames[frame].rasterAssetID = nil
-                    value.frames[frame].rasterLayerID = nil
-                    value.frames[frame].rasterPlacement = nil
-                    value.frames[frame].rasterReflection = nil
-                    value.frames[frame].rasterQuarterTurns = nil
-                    value.frames[frame].rasterCrop = nil
+                if value.frames[frame].rasterInstance(on: id) != nil {
+                    try value.frames[frame].removeRasterInstance(on: id)
                 }
             }
             value.layers.remove(at: index)
@@ -1072,9 +1194,7 @@ struct StudioDocumentEditor {
     mutating func duplicateLayer(_ id: String) throws {
         try change { value in
             guard let index = value.layers.firstIndex(where: { $0.id == id }) else { return }
-            guard !value.frames.contains(where: { $0.rasterLayerID == id }) else {
-                throw StudioDocumentError.unavailable("Duplicating a flattened imported image layer is unfinished. Its original has not changed.")
-            }
+            guard value.layers.count < 128 else { throw StudioDocumentError.invalid("This project already has 128 layers.") }
             let original = value.layers[index]
             let layer = CanvasLayer(id: UUID().uuidString, name: String((original.name + " Copy").prefix(120)), visible: original.visible,
                                     locked: original.locked, opacity: original.opacity, lockMode: original.lockMode,
@@ -1087,6 +1207,11 @@ struct StudioDocumentEditor {
                                  brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha)
                 }
                 value.frames[frameIndex].elements.append(contentsOf: copies)
+                if var instance = value.frames[frameIndex].rasterInstance(on: id) {
+                    instance.layerID = layer.id
+                    value.frames[frameIndex].rasterAliases = (value.frames[frameIndex].rasterAliases ?? []) + [instance]
+                    value.schemaVersion = max(value.schemaVersion, 27)
+                }
             }
         }
     }
@@ -1110,6 +1235,7 @@ struct StudioDocumentEditor {
         func cost(_ value: StudioDocument) -> Int {
             var bytes = value.layers.count * 512 + value.audioClips.count * 512
             for frame in value.frames {
+                bytes += (frame.rasterAliases?.count ?? 0) * 512
                 for element in frame.elements {
                     bytes += 256 + element.points.count * 40
                     if let mask = element.fillMask {

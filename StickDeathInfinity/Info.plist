@@ -57,8 +57,6 @@
     <key>UIAppFonts</key>
     <array>
         <string>SpecialElite-Regular.ttf</string>
-        <string>Anybody-Regular.ttf</string>
-        <string>Anybody-Bold.ttf</string>
     </array>
 	<key>SPATTER_BACKEND_URL</key>
 	<string>$(SPATTER_BACKEND_URL)</string>

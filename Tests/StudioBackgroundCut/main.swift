@@ -101,6 +101,83 @@ private func rejects(_ operation: () throws -> Void) throws {
             try rejects { _ = try reopened.prepareImageCut(allFrames: false) }
             await reopened.backToProjects()
             print("PASS atomic two-frame cut, immutable original, cancel/stale rejection, one Undo/Redo, actual persistence/cold reopen and locked-layer denial")
+            let linkedStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("linked-documents"))
+            let linked = StudioViewModel(storage: linkedStorage)
+            let linkedCreated = await linked.createProject(name: "Linked frame cut", width: 64, height: 64, fps: 12)
+            try require(linkedCreated, "Linked create")
+            let linkedAsset = try linked.attachImportedImage(imported, expectedProjectID: linked.document.id,
+                expectedRevision: linked.document.revision, frameID: linked.document.activeFrameID, layerID: linked.document.activeLayerID)
+            let primaryLayer = linked.currentFrame.rasterLayerID!
+            linked.duplicateLayer(primaryLayer)
+            let aliasLayer = linked.document.activeLayerID
+            try require(aliasLayer != primaryLayer && linked.currentFrame.rasterLayerInstances.count == 2, "Actual duplicate did not create linked image layer")
+            linked.selectedTool = .move
+            await linked.flush()
+            try require(linked.copyImage(), "Copy selected linked instance")
+            let firstFrameID = linked.document.activeFrameID
+            linked.duplicateFrame()
+            await linked.flush()
+            let targetFrameID = linked.document.activeFrameID
+            try require(targetFrameID != firstFrameID, "Actual frame duplicate failed")
+
+            // All affected copies must be editable, even when their sibling is selected.
+            for restriction in ["hidden", "full", "position", "alpha", "transparent"] {
+                switch restriction {
+                case "hidden": linked.toggleLayerVisibility(primaryLayer)
+                case "transparent": linked.setLayerOpacity(primaryLayer, opacity: 0)
+                case "full": linked.setLayerLockMode(primaryLayer, mode: .full)
+                case "position": linked.setLayerLockMode(primaryLayer, mode: .position)
+                default: linked.setLayerLockMode(primaryLayer, mode: .alpha)
+                }
+                await linked.flush()
+                let denied = linked.document, deniedUndo = linked.canUndo, deniedRedo = linked.canRedo
+                try rejects { _ = try linked.prepareImageCut(allFrames: false) }
+                try require(linked.document == denied && linked.canUndo == deniedUndo && linked.canRedo == deniedRedo &&
+                    linked.rasterData(linkedAsset) == imported.normalizedPNG, "Linked Cut denial changed source/history")
+                linked.undo(); await linked.flush()
+            }
+
+            // A reentrant layer change at the final checkpoint must survive the rejected cut.
+            let lateCapture = try linked.prepareImageCut(allFrames: false)
+            var checkpoints = 0, lateDocument: StudioDocument?
+            try rejects { _ = try linked.applyImageCut(lateCapture, replacements: [linkedAsset: wider.png], checkCancellation: {
+                checkpoints += 1
+                if checkpoints == 3 { linked.selectLayer(primaryLayer); lateDocument = linked.document }
+            }) }
+            try require(lateDocument != nil && linked.document == lateDocument &&
+                linked.frames.allSatisfy { $0.rasterAssetID == linkedAsset }, "Late layer switch was overwritten or cut partially committed")
+            linked.selectLayer(aliasLayer); await linked.flush()
+            let linkedCapture = try linked.prepareImageCut(allFrames: false), beforeLinkedCut = linked.document
+            let linkedAffected = try linked.applyImageCut(linkedCapture, replacements: [linkedAsset: wider.png])
+            let linkedCutID = linked.currentFrame.rasterAssetID!
+            try require(linkedAffected == 1 && linkedCutID != linkedAsset && linked.currentFrame.rasterLayerInstances.count == 2,
+                "Current-frame Cut did not update both linked copies as one frame")
+            try require(linked.currentFrame.rasterLayerInstances == beforeLinkedCut.frames.first(where: { $0.id == targetFrameID })!.rasterLayerInstances,
+                "Cut changed independent linked geometry")
+            try require(linked.frames.first(where: { $0.id == firstFrameID })?.rasterAssetID == linkedAsset &&
+                linked.rasterData(linkedCutID) == wider.png && linked.rasterData(linkedAsset) == imported.normalizedPNG &&
+                linked.originalImageSource(linkedCutID)?.originalData == original, "Cut altered another frame or original bytes")
+            linked.undo()
+            try require(linked.frames.allSatisfy { $0.rasterAssetID == linkedAsset && $0.rasterLayerInstances.count == 2 }, "Linked Cut requires more than one Undo")
+            linked.redo()
+            try require(linked.currentFrame.rasterAssetID == linkedCutID, "Linked Cut Redo lost rendition")
+            linked.addFrame(); await linked.flush()
+            try require(linked.pasteImage(), "Retained pre-Cut linked clipboard could not paste to blank frame")
+            try require(linked.currentFrame.rasterAssetID == linkedAsset && linked.currentFrame.rasterLayerInstances.count == 1 &&
+                linked.rasterData(linked.currentFrame.rasterAssetID) == imported.normalizedPNG, "Image clipboard copied siblings or switched to new Cut source")
+            let pastedFrameID = linked.document.activeFrameID, linkedProjectID = linked.document.id
+            await linked.backToProjects()
+            let linkedMetadata = try linkedStorage.loadAnimation(id: linkedProjectID)!.metadata
+            let coldLinked = StudioViewModel(storage: linkedStorage)
+            let linkedOpened = await coldLinked.openProject(linkedMetadata)
+            try require(linkedOpened && coldLinked.frames.first(where: { $0.id == targetFrameID })?.rasterLayerInstances.count == 2 &&
+                coldLinked.frames.first(where: { $0.id == targetFrameID })?.rasterAssetID == linkedCutID &&
+                coldLinked.frames.first(where: { $0.id == pastedFrameID })?.rasterLayerInstances.count == 1 &&
+                coldLinked.frames.first(where: { $0.id == pastedFrameID })?.rasterAssetID == linkedAsset &&
+                coldLinked.rasterData(linkedAsset) == imported.normalizedPNG && coldLinked.rasterData(linkedCutID) == wider.png &&
+                coldLinked.originalImageSource(linkedCutID)?.originalData == original, "Cold linked Cut reopen lost references/clipboard rendition/original")
+            await coldLinked.backToProjects()
+            print("PASS real linked frame Cut, sibling permission denial, late layer switch, old clipboard isolation, Undo/Redo and cold persisted renditions")
         } catch { print("FAIL \(error)"); exit(1) }
     }
 }

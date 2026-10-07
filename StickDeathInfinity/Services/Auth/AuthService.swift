@@ -14,6 +14,8 @@ import Supabase
 import AuthenticationServices
 import CryptoKit
 
+private typealias StartupSDKAuthError = AuthError
+
 // MARK: - AuthService
 
 @MainActor
@@ -34,12 +36,15 @@ final class AuthService: ObservableObject {
         get throws { if let injectedClient { return injectedClient }; return try SupabaseManager.shared.client }
     }
     private var identityRevision = UUID()
+    enum Restoration: Equatable { case restoring, ready, retryableFailure, signInRequired }
+    @Published private(set) var restoration: Restoration = .restoring
+    private var restorationInProgress = false
     private var initialized = false
     private var authenticationInProgress = false
     private var profileTask: Task<Void, Never>?
 
     private func beginAuthentication() throws {
-        guard !authenticationInProgress else { throw AuthError.operationInProgress }
+        guard !authenticationInProgress, !restorationInProgress else { throw AuthError.operationInProgress }
         authenticationInProgress = true
     }
     private func setIdentity(_ user: User?) {
@@ -61,9 +66,14 @@ final class AuthService: ObservableObject {
         guard revision == identityRevision, currentUser?.id == user.id,
               try supabase.auth.currentSession?.user.id == user.id else { throw CancellationError() }
         await fetchProfile(userId: user.id.uuidString)
+        // Profile I/O can outlive the validated session. Recheck the actual SDK
+        // session at the final identity commit, without trusting cached user ID.
         guard revision == identityRevision, currentUser?.id == user.id,
-              try supabase.auth.currentSession?.user.id == user.id else { throw CancellationError() }
+              let finalSession = try supabase.auth.currentSession,
+              finalSession.user.id == user.id, !finalSession.isExpired else { throw CancellationError() }
         state = .authenticated
+        restoration = .ready
+        observeAuthChanges()
     }
     private var appleSignInDelegate: AppleSignInDelegate?
     private var authStateTask: Task<Void, Never>?
@@ -86,33 +96,66 @@ final class AuthService: ObservableObject {
     func initialize() async {
         guard !initialized else { return }
         initialized = true
+        await restoreSession()
+    }
+
+    /// Only an explicit user retry can restart a failed restoration. Concurrent
+    /// calls and missing configuration never launch additional provider work.
+    func retryRestoration() async {
+        guard restoration == .retryableFailure else { return }
+        await restoreSession()
+    }
+
+    private func restoreSession() async {
+        guard !restorationInProgress, !authenticationInProgress else { return }
+        restorationInProgress = true
+        defer { restorationInProgress = false }
+        restoration = .restoring
         state = .loading
         configurationError = nil
-        authStateTask?.cancel()
-        authStateTask = nil
-        let supabase: SupabaseClient
-        do {
-            supabase = try self.supabase
-        } catch {
-            setIdentity(nil)
+        authStateTask?.cancel(); authStateTask = nil
+        let client: SupabaseClient
+        do { client = try supabase }
+        catch {
             configurationError = error.localizedDescription
-            state = .unauthenticated
+            setIdentity(nil)
+            restoration = .ready
             return
         }
+        // The pinned SDK removes revoked sessions and throws sessionMissing,
+        // the same error used when no credentials existed. This presence check
+        // classifies that outcome only; it never authenticates cached identity.
+        let hadStoredSession = client.auth.currentSession != nil
         do {
-            let session = try await supabase.auth.session
+            let session = try await client.auth.session
+            try Task.checkCancellation()
             try await finishAuthentication(session.user)
         } catch {
-            reconcileAuthStateChange(.initialSession)
+            // Never promote an expired cached session after a refresh failure.
+            // Keep SDK-owned credentials intact on transient errors for retry.
+            if let sdkError = error as? StartupSDKAuthError, sdkError == .sessionMissing {
+                setIdentity(nil)
+                restoration = hadStoredSession ? .signInRequired : .ready
+                if !hadStoredSession { observeAuthChanges() }
+            } else if let sdkError = error as? StartupSDKAuthError,
+                      [.refreshTokenNotFound, .refreshTokenAlreadyUsed, .sessionNotFound].contains(sdkError.errorCode) {
+                restoration = .signInRequired
+                setIdentity(nil)
+            } else {
+                restoration = .retryableFailure
+                setIdentity(nil)
+            }
         }
+    }
 
-        // The SDK event queue is only a notification. Its payload may be older
-        // than a completed direct sign-in/sign-out. Always reconcile current SDK
-        // state, and never hold this queue behind profile network requests.
-        authStateTask = Task {
-            for await (event, _) in supabase.auth.authStateChanges {
-                guard !Task.isCancelled else { return }
-                reconcileAuthStateChange(event)
+    private func observeAuthChanges() {
+        guard authStateTask == nil, let client = try? supabase else { return }
+        // Install only after restoration succeeds or no session is present.
+        // Subscribing after a failed refresh can itself trigger SDK refresh.
+        authStateTask = Task { [weak self] in
+            for await (event, _) in client.auth.authStateChanges {
+                guard !Task.isCancelled, let self else { return }
+                self.reconcileAuthStateChange(event)
             }
         }
     }
@@ -123,10 +166,11 @@ final class AuthService: ObservableObject {
         switch event {
         case .initialSession, .signedIn, .tokenRefreshed, .userUpdated, .signedOut, .userDeleted:
             guard let client = try? supabase else { setIdentity(nil); return }
-            guard let live = client.auth.currentSession?.user else {
+            guard let session = client.auth.currentSession, !session.isExpired else {
                 setIdentity(nil)
                 return
             }
+            let live = session.user
             let changed = currentUser?.id != live.id
             if changed { setIdentity(live) } else { currentUser = live }
             state = .authenticated

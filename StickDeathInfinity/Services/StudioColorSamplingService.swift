@@ -47,9 +47,7 @@ enum StudioColorSamplingService {
               document.width <= maximumPixels / document.height else { throw Failure.limitExceeded }
         try document.validate()
         guard let frame = document.frames.first(where: { $0.id == frameID }) else { throw Failure.unavailableFrame }
-        let visibleRaster = frame.rasterAssetID != nil && document.layers.contains {
-            $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0
-        }
+        let visibleRaster = !frame.visibleRasterInstances(in: document.layers).isEmpty
         if visibleRaster && rasterData == nil { throw Failure.missingRaster }
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         let raster = try StudioFrameRenderer.prepareRaster(frame: frame, layers: document.layers,

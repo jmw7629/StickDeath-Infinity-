@@ -9,9 +9,9 @@ EXTENDED_CASE_SECONDS = {
     "testImagePlacementCancelApplyUndoAndColdReopen": 240,
     "testImageQuarterTurnsUndoAndColdReopen": 240,
 }
-# Includes editable tween/easing/undo/cold-reopen coverage. Adding a
+# Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 74
+MAXIMUM_CASES = 79
 SUITE_OVERHEAD_SECONDS = 300
 
 

@@ -10,7 +10,7 @@ final class SpatterStudioEditSession: ObservableObject {
         /// Nil is the current local guest identity, not cloud authentication.
         let accountID: String?
     }
-    enum Status: Equatable { case idle, preparing, applied, cancelled, stale, rejected, closed }
+    enum Status: Equatable { case idle, preparing, applied, cancelled, timedOut, stale, rejected, closed }
     enum SaveState: Equatable {
         case unavailable, projectChanged, unsaved, saving, saved
         var text: String {
@@ -26,11 +26,22 @@ final class SpatterStudioEditSession: ObservableObject {
     struct AppliedEdit {
         let receipt: StudioCommandReceipt
         let isAudioEdit: Bool
+        let renamedProjectName: String?
+        let addedAudioClipCount: Int
+        let removedAudioClipCount: Int
+        let changedExistingAudioClipCount: Int
         let addedFrameCount: Int
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if let renamedProjectName {
+                return receipt.outcome == .unchanged ? "The project already has this name. Nothing changed."
+                    : "Renamed project to “\(renamedProjectName)” in one undoable local edit."
+            }
             if isAudioEdit {
+                if removedAudioClipCount > 0 { return "Deleted the selected audio clip in one undoable local edit. Its source remains available for Undo." }
+                if addedAudioClipCount > 0 && changedExistingAudioClipCount > 0 { return "Split the selected audio clip into two editable clips in one undoable local edit." }
+                if addedAudioClipCount > 0 { return "Duplicated the selected audio clip in one undoable local edit." }
                 return receipt.outcome == .unchanged
                     ? "The selected audio clip already matches this instruction. Nothing changed."
                     : "Updated the selected audio clip in one undoable local edit."
@@ -51,6 +62,8 @@ final class SpatterStudioEditSession: ObservableObject {
     static let maximumSubmissions = 64
     typealias Checkpoint = @MainActor () async throws -> Void
     typealias ScopeProvider = @MainActor () -> Scope
+    private let now: @MainActor () -> ContinuousClock.Instant
+    private let budget: Duration
     private let checkpoint: Checkpoint
     private var request: Task<Void, Never>?
     private var taskID: UUID?
@@ -61,7 +74,10 @@ final class SpatterStudioEditSession: ObservableObject {
 
     /// Injection is only a scheduling/cancellation boundary for deterministic
     /// tests. The parser, commands, editor and persistence are always production.
-    init(checkpoint: @escaping Checkpoint = { await Task.yield(); try Task.checkCancellation() }) {
+    init(budget: Duration = .seconds(15), now: @escaping @MainActor () -> ContinuousClock.Instant = { .now },
+         checkpoint: @escaping Checkpoint = { await Task.yield(); try Task.checkCancellation() }) {
+        // Injection can shorten but never disable or extend the production bound.
+        self.budget = min(.seconds(15), max(.nanoseconds(1), budget)); self.now = now
         self.checkpoint = checkpoint
     }
     deinit { request?.cancel() }
@@ -87,9 +103,10 @@ final class SpatterStudioEditSession: ObservableObject {
         }
     }
     private enum SessionError: LocalizedError {
-        case contextChanged, accountChanged, outsideStudio, unavailable(String)
+        case contextChanged, accountChanged, outsideStudio, timedOut, unavailable(String)
         var errorDescription: String? {
             switch self {
+            case .timedOut: return "This local edit exceeded its time limit before commit. Nothing was added. Your existing edits are preserved; try a smaller brief."
             case .contextChanged: return "The Studio project or selection changed. Submit again for the current editor."
             case .accountChanged: return "The active account changed. Submit again in the current account."
             case .outsideStudio: return "Open the current Studio editor before applying a local recipe."
@@ -126,6 +143,8 @@ final class SpatterStudioEditSession: ObservableObject {
         } catch { reject(error); return false }
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
         let captured = Capture(accountID: accountID, screen: screen, document: document)
+        let started = now()
+        let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
         generation = submissionID; taskID = submissionID
         appliedEdit = nil; appliedAccountID = nil; notice = nil; status = .preparing
@@ -135,36 +154,57 @@ final class SpatterStudioEditSession: ObservableObject {
                 if self.taskID == submissionID { self.request = nil; self.taskID = nil }
             }
             do {
+                var lastInstant = started
+                let check: () throws -> Void = {
+                    try Task.checkCancellation()
+                    guard self.generation == submissionID, !self.isClosed else { throw CancellationError() }
+                    let instant = self.now()
+                    guard instant >= lastInstant else { throw SessionError.unavailable("The local edit clock could not be verified. Nothing was added.") }
+                    lastInstant = instant
+                    guard instant < deadline else { throw SessionError.timedOut }
+                    guard self.generation == submissionID, !self.isClosed else { throw CancellationError() }
+                }
+                try check()
                 try await self.checkpoint()
+                try check()
                 guard let studio else { throw SessionError.outsideStudio }
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
                 let isAudio = SpatterAudioInstruction.isAudioInstruction(draft)
+                let isRename = SpatterProjectRenameInstruction.isInstruction(draft)
                 let preparedRequest: StudioCommandRequest
-                if isAudio {
+                if isRename {
+                    preparedRequest = try SpatterProjectRenameInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
+                } else if isAudio {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
-                        selectedClipID: captured.selectedAudioClipID, requestID: submissionID)
+                        selectedClipID: captured.selectedAudioClipID, requestID: submissionID, checkCancellation: check)
                 } else if SpatterTwoActorBrief.isBrief(draft) {
-                    preparedRequest = try SpatterTwoActorBrief.parse(draft).prepare(in: document, requestID: submissionID).request
+                    preparedRequest = try SpatterTwoActorBrief.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check).request
                 } else if SpatterSceneBrief.isBrief(draft) {
                     let brief = try SpatterSceneBrief.parse(draft)
-                    preparedRequest = try brief.prepare(in: document, requestID: submissionID).request
+                    preparedRequest = try brief.prepare(in: document, requestID: submissionID, checkCancellation: check).request
                 } else if SpatterStickFigureRecipe.isStickFigureInstruction(draft) {
                     let recipe = try SpatterStickFigureRecipe.parse(draft)
-                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request
+                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID, checkCancellation: check).request
                 } else {
                     let recipe = try SpatterMotionRecipe.parse(draft)
-                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID).request
+                    preparedRequest = try recipe.prepare(in: document, requestID: submissionID, checkCancellation: check).request
                 }
                 try await self.checkpoint()
+                try check()
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
                 // No suspension between the last fresh context check and this
                 // synchronous atomic VM transaction. Its own original revision,
                 // brush-input, work-budget and cancellation guards still apply.
-                let receipt = try studio.applyStudioCommands(preparedRequest)
+                let receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: check)
                 let newIDs = Set(receipt.createdFrameIDs)
                 let addedTicks = studio.frames.filter { newIDs.contains($0.id) }.reduce(0) { $0 + $1.durationTicks }
-                let result = AppliedEdit(receipt: receipt, isAudioEdit: isAudio, addedFrameCount: receipt.createdFrameIDs.count,
+                let oldAudioIDs = Set(document.editableAudioClips.map(\.id))
+                let addedAudioCount = studio.audioClips.filter { !oldAudioIDs.contains($0.id) }.count
+                let result = AppliedEdit(receipt: receipt, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                    removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
+                    changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
+                    addedFrameCount: receipt.createdFrameIDs.count,
                     fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps))
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
@@ -201,6 +241,7 @@ final class SpatterStudioEditSession: ObservableObject {
         if let sessionError = error as? SessionError {
             switch sessionError {
             case .contextChanged, .accountChanged, .outsideStudio: status = .stale
+            case .timedOut: status = .timedOut
             case .unavailable: status = .rejected
             }
         } else { status = .rejected }
@@ -244,5 +285,42 @@ final class SpatterStudioEditSession: ObservableObject {
         notice = wasWorking ? "Local edit session closed; its pending recipe was cancelled before editing." : "Local edit session closed."
     }
     /// Useful for deterministic completion observation; never drives persistence.
-    func waitForCompletion() async { let current = request; await current?.value }
+    func waitForCompletion(onCapture: () -> Void = {}) async { let current = request; onCapture(); await current?.value }
+}
+
+/// Explicit navigation authority only. No source path, URL, provider text or
+/// picture bytes may enter this handoff; the existing picker owns selection.
+@MainActor
+final class SpatterPictureImportHandoff: ObservableObject {
+    struct Request: Equatable {
+        let id: UUID
+        let projectID: UUID
+        let revision: Int
+        let frameID: String
+        let layerID: String
+        let accountID: String?
+    }
+    private var issued: Request?
+    func prepare(in studio: StudioViewModel, accountID: String?, isForeground: Bool) -> Request? {
+        guard issued == nil, isForeground, studio.activePanel == .spatterAI, eligible(studio) else { return nil }
+        let request = Request(id: UUID(), projectID: studio.document.id, revision: studio.document.revision,
+            frameID: studio.document.activeFrameID, layerID: studio.document.activeLayerID, accountID: accountID)
+        issued = request
+        return request
+    }
+    /// Consumes once, even if the captured context is no longer eligible.
+    /// Returning true means only that the native import panel may open.
+    func consume(_ request: Request, in studio: StudioViewModel, accountID: String?, isForeground: Bool) -> Bool {
+        guard issued == request else { return false }
+        issued = nil
+        return isForeground && studio.activePanel == .none && eligible(studio)
+            && accountID == request.accountID && studio.document.id == request.projectID
+            && studio.document.revision == request.revision && studio.document.activeFrameID == request.frameID
+            && studio.document.activeLayerID == request.layerID
+    }
+    func cancel() { issued = nil }
+    private func eligible(_ studio: StudioViewModel) -> Bool {
+        studio.isEditing && !studio.isSaving && !studio.isPlaying && studio.textDraft == nil
+            && studio.activeStrokeID == nil && studio.pendingBrushStroke == nil
+    }
 }

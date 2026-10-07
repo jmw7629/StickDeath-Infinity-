@@ -14,6 +14,7 @@ final class AuthViewModel: ObservableObject {
     @Published var user: UserProfile?
     @Published var isLoading = false
     @Published var error: String?
+    @Published private(set) var restoration: AuthService.Restoration = .restoring
 
     private let auth: AuthService
     private var subscriptions = Set<AnyCancellable>()
@@ -26,6 +27,7 @@ final class AuthViewModel: ObservableObject {
     init(auth: AuthService? = nil, initializeOnStart: Bool = true) {
         let auth = auth ?? .shared
         self.auth = auth
+        auth.$restoration.sink { [weak self] in self?.restoration = $0 }.store(in: &subscriptions)
         auth.$state.sink { [weak self] in self?.state = $0 }.store(in: &subscriptions)
         auth.$currentProfile.sink { [weak self] in self?.user = $0 }.store(in: &subscriptions)
         auth.$currentUser.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &subscriptions)
@@ -41,6 +43,8 @@ final class AuthViewModel: ObservableObject {
         user = auth.currentProfile
         error = auth.configurationError
     }
+
+    func retryRestoration() async { await auth.retryRestoration() }
 
     // MARK: - Email/Password
 

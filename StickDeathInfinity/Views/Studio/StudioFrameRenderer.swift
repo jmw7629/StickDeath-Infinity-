@@ -40,9 +40,13 @@ struct StudioFrameRenderer {
         guard let id = isolatedLayerID else { return (frame, layers) }
         var preview = frame
         preview.elements = frame.elements.filter { $0.layerID == id }
-        if preview.rasterLayerID != id {
+        if let isolatedRaster = frame.projectedRasterFrame(on: id) {
+            preview = isolatedRaster
+            preview.elements = frame.elements.filter { $0.layerID == id }
+        } else {
             preview.rasterAssetID = nil; preview.rasterLayerID = nil; preview.rasterPlacement = nil
             preview.rasterCrop = nil; preview.rasterQuarterTurns = nil; preview.rasterReflection = nil
+            preview.rasterAliases = nil
         }
         let isolated = layers.filter { $0.id == id }.map { source -> CanvasLayer in
             var layer = source; layer.visible = true; layer.opacity = 1; layer.blendMode = "normal"
@@ -87,8 +91,8 @@ struct StudioFrameRenderer {
     }
     static func prepareRaster(frame: AnimationFrame, layers: [CanvasLayer], data: Data?,
                               maximumDimension: Int = 8192) throws -> StudioRasterImage.Prepared? {
-        guard let asset = frame.rasterAssetID,
-              layers.contains(where: { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 }) else { return nil }
+        let visibleInstances = frame.visibleRasterInstances(in: layers)
+        guard let asset = frame.rasterAssetID, !visibleInstances.isEmpty else { return nil }
         guard let data else {
             // Historical opaque LayerData records have no pixel image, and stay
             // preserved. Version-3 managed stills must always have actual pixels.
@@ -96,9 +100,15 @@ struct StudioFrameRenderer {
             return nil
         }
         guard (1...8192).contains(maximumDimension) else { throw StudioRasterImage.Failure.limit }
-        let crop = frame.rasterCrop ?? .full
-        try crop.validate()
-        let detail = min(8192, Int(ceil(Double(maximumDimension) / min(crop.width, crop.height))))
+        // Decode the shared source once, retaining enough detail for every visible
+        // copy's independent crop. Cropping happens in the raw-layer compositor.
+        var smallestCrop = 1.0
+        for instance in visibleInstances {
+            let crop = instance.crop ?? .full
+            try crop.validate()
+            smallestCrop = min(smallestCrop, min(crop.width, crop.height))
+        }
+        let detail = min(8192, Int(ceil(Double(maximumDimension) / smallestCrop)))
         return try StudioRasterImage.prepare(assetID: asset, data: data, managed: frame.rasterPlacement != nil,
             maximumDimension: detail)
     }
@@ -155,12 +165,13 @@ struct StudioFrameRenderer {
                              canvasSize: CGSize, size: CGSize, preparedBrushes: PreparedBrushes,
                              preparedRaster: StudioRasterImage.Prepared?, baseImage: CGImage? = nil,
                              smudges: [String: CGImage] = [:], liveElement: DrawnElement? = nil) -> Error? {
-        do { try frame.rasterCrop?.validate() } catch { return error }
+        let raster = frame.rasterInstance(on: layer.id)
+        do { try raster?.crop?.validate() } catch { return error }
         if let baseImage {
             context.draw(Image(decorative: baseImage, scale: 1), in: CGRect(origin: .zero, size: size))
-        } else if frame.rasterLayerID == layer.id, let image = preparedRaster {
+        } else if let raster, let image = preparedRaster {
             let rect: CGRect
-            if let placement = frame.rasterPlacement {
+            if let placement = raster.placement {
                 rect = CGRect(x: placement.x / canvasSize.width * size.width,
                     y: placement.y / canvasSize.height * size.height,
                     width: placement.width / canvasSize.width * size.width,
@@ -170,25 +181,25 @@ struct StudioFrameRenderer {
             // Reflect in viewport coordinates about the placed center;
             // canvas, thumbnails and every export share these pixels.
             var picture = context
-            if let turns = frame.rasterQuarterTurns, let placement = frame.rasterPlacement {
+            if let turns = raster.quarterTurns, let placement = raster.placement {
                 // Rotate in document coordinates. Conjugating viewport
                 // scale keeps thumbnails/non-square views geometrically correct.
                 picture.translateBy(x: rect.midX, y: rect.midY)
                 picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
-                if let reflection = frame.rasterReflection {
+                if let reflection = raster.reflection {
                     picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                 }
                 picture.rotate(by: .degrees(Double(turns) * 90))
                 let width = turns % 2 == 0 ? placement.width : placement.height
                 let height = turns % 2 == 0 ? placement.height : placement.width
-                drawImage(image.image, crop: frame.rasterCrop, in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height), context: &picture)
+                drawImage(image.image, crop: raster.crop, in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height), context: &picture)
             } else {
-            if let reflection = frame.rasterReflection {
+            if let reflection = raster.reflection {
                 picture.translateBy(x: rect.midX, y: rect.midY)
                 picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                 picture.translateBy(x: -rect.midX, y: -rect.midY)
             }
-            drawImage(image.image, crop: frame.rasterCrop, in: rect, context: &picture)
+            drawImage(image.image, crop: raster.crop, in: rect, context: &picture)
             }
         }
         for element in frame.elements where element.layerID == layer.id {

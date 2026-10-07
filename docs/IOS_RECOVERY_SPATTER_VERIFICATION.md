@@ -1,3 +1,57 @@
+## Linked image layers and native interaction corrections — local, 2026-10-07
+
+Imported-image layers can now be duplicated using the existing layer control. Copies share immutable source bytes while retaining separate layer IDs, placement, crop, reflection, rotation, visibility and appearance. Deleting the original promotes a surviving copy; Undo, frame clipboard and selected-image clipboard preserve their respective identities. Background Cut remains explicitly frame-scoped and validates every linked layer before changing a shared rendition. Independent source images in one frame remain a separate limitation.
+
+Nine production suites passed **238 declared cases/groups**: document 20, commands 63, image integration 23, Background Cut 3, color sampling 18, fill 15, PNG/spritesheet export 20, GIF 26 and MP4 50. Independent review verified all original logs and 259 unchanged source/resource hashes. Actual imported pixels, crop/reorder, hidden-original rendering, immutable source retention, promotion, cold reopen and decoded media are covered. Native app compilation and the new linked-layer UI journey are pending; this is not full Studio acceptance.
+
+Public run 37582475315 at `a540ec9c1dc96a675bb6cb78de4a1e2eaef5a453` completed with native app compilation and all production/auth jobs passing, but Studio UI **71 passed / 3 failed / 0 skipped** out of 74. Original logs and all four artifact ZIPs are preserved with matching GitHub digests. The local correction targets the actual Files-provider Cancel accessibility hierarchy and waits for actual Blur completion before saving. Eraser preference persistence/reset becomes a separate complete journey while all existing drawing, pixel, history and cold-render assertions remain. Individual 180/240-second bounds and zero retries are unchanged; the 78-case inventory has a 284-minute job ceiling. Corrected runtime remains pending; no failed gate is relabelled green.
+
+The preceding project-rename source `bf3ed1a42802af69da6b0d9fbecba5aa6caf4151` passed 144 production checks and native app/UI-target compilation (156.745 seconds), independently verified. This does not establish a native Spatter rename interaction or cloud video generation.
+
+## Startup recovery and selected-audio integration — local, 2026-10-07
+
+Source `aa9b7c2d21223097dfce67a6dcb534823a457941` adds explicit single-flight session restoration, transient-error retry, revoked-session Sign In, and safe offline routing. Cached-session presence classifies the SDK failure only; authentication still requires a validated, unexpired SDK session after awaited profile work. The SDK removes revoked credentials before reporting session missing, which is distinguished from genuinely absent credentials.
+
+The actual pinned-SDK auth suite passed **9 tests, zero failures/skips**, in 30.098 seconds with isolated transport. Independent review matched all 2,707 source inputs and the original result bundle. The preceding 8-pass/1-fail run remains preserved and prompted the revoked-session correction. App/auth and UI-test builds passed on this same source (24.096 and 16.068 seconds); this does not establish all 76 native UI cases pass. No live backend or paid API requests were used.
+
+Two existing native journeys also passed at that source: manual audio split/Undo/cold-reopen (75.284 seconds) and welcome/guide/local routing (54.916 seconds), zero failures/skips. Independent review verified the original xcresult and unchanged source manifest. This is not native Spatter split/delete UI coverage, startup failure-screen capture, or full-suite completion. The selected-audio split/delete continuation retains its 186 passing production checks.
+
+A subsequent packaging-only correction removes two missing Anybody font registrations. Special Elite and the existing layout are unchanged.
+
+## Selected-audio split/delete continuation — local, 2026-10-07
+
+Explicit split and selected-only delete now use typed commands and the same canonical editor operations as manual controls. Splitting retains source sample phase, source range and fades across both halves; deleting never grants source-file deletion authority. History keeps the managed original for Undo, including when the only remaining clip is deleted. Examples state absolute timeline seconds and sample rounding; deletion requires the captured selected clip.
+
+Four fresh production suites passed 186 checks/groups (60 commands, 20 parser, 44 actual session, 62 timeline), with independent verification of 241 input hashes and original logs. Native compilation/runtime for this continuation remain pending.
+
+The preceding exact source `e4723a1e2ac51f5bf3e865561597377347f9120c` passed Xcode build in 152.681 seconds and two native journeys: manual duplication/Undo/cold reopen in 79.335 seconds and relocated picture handoff/library/Undo/cold reopen/PNG credits in 122.893 seconds. Independent original xcresult review verified 2 passes, zero failures/skips and all 2,707 source hashes. These are not a native Spatter-duplicate interaction or the full 76-case suite.
+
+## Selected-audio duplication continuation — local, 2026-10-07
+
+The next local batch adds the explicit “Duplicate selected audio clip.” instruction through a strict typed command and shared manual/editor transformation. It places one copy after the selected clip while preserving managed source, source range, fade phase, volume, mute and lane. Destination identity is prepared once; stale, cancelled, over-capacity and source-sample-overrun requests do not alter history or selection. The actual session reports the created clip rather than claiming generated frames.
+
+Four fresh production suites pass 180 checks/groups: 58 commands, 19 parser, 41 actual edit-session and 62 audio-timeline checks. Real PCM, manual equivalence, Undo/Redo and cold persistence pass, with the original source retained. Native compilation and runtime for this batch are pending. The alternate picture navigation now appears below the edit receipt under “Other Studio actions”, labelled “Open Add Picture…”, retaining the existing explicit picker action and lifecycle guards.
+
+## Local audio placement, trim and actual MP4 Files milestone — 2026-10-07
+
+Local source `4ca3326a64788f0ae0c13d906c6f979b1d2e5473` passed four production suites: 56 Studio Commands, 18 motion-parser, 38 actual Studio edit-session and 62 audio-timeline checks/groups (174 total). Source trimming and placement use the same canonical editor and playable-sample validation as manual edits. Coverage includes real PCM, source fade phase, last-sample bounds, stale/cancelled requests, rollback and cold persistence. No cloud provider requests were made by these local parser/session fixtures.
+
+Xcode build-for-testing passed in 245.259 seconds. Two native iPhone 16 Pro/iOS 18.6 simulator journeys passed: selected-audio placement to track 2 at 1.25 seconds with original source/80% gain, Undo/Redo and cold reopen (150.480 seconds); actual 1080 × 1920 MP4 saved through the native Files provider, a later changed export, and cold decoding of the first saved destination with only its original artwork (160.975 seconds). Only the first movie was saved; repeated-save collisions are not covered. UI networking was not measured; backend build settings were blank. Independent review verified original xcresult/log hashes and 2,707 source inputs.
+
+Earlier Files assertions and the combined audio volume/placement test failed; their originals remain preserved. The volume journey was restored and placement became a separate 76th native case, preserving the 180-second case cap. The full 76-case suite was not run at this local head. Native trim-menu interaction, physical devices, signing and release acceptance remain open.
+
+The owner-private [review gallery](https://stickdeath-infinity-review.joewillisny.chatgpt.site/?view=native) now carries original captures and provenance at companion source `0588de7eec2afb9dbbc5978a1e52e9d78fd6eb2a`. HTTPS metadata and both image hashes were verified. It is a web companion with native evidence, not an executable SwiftUI session. Public head `a540ec9c` remains under CI; these local results do not replace that gate.
+
+## Spatter deadline and direct-export failure recovery — 2026-10-07
+
+Local implementation `5fe156e98e280b36641bcf1d54f8037b2cb28a22` bounds actual edit preparation and atomic Studio transaction checkpoints to a monotonic15-second deadline. Timeout before commit preserves the real document and intervening user changes; no postcommit check relabels a successful edit. The bound is cooperative, not forced interruption inside a synchronous parser, validation or filesystem call. No timer worker or paid AI API is introduced.
+
+Production session27 cases passed, including preparation and middle/final precommit expiry, stale completion, regressing clock and reentrant user edits. Actual varied/two-actor editable scene/save/reopen/decoded-MP4 verification passed. Movie-panel12 groups passed, including parent `305d5d19e628dabf22493626cd24b29b1d19fa66`'s actual mid-render cancellation and encoder output-limit failure: no partial success receipt, owned-output cleanup, unchanged editable project, replay refusal and one-step Undo/Redo. The production input manifest remained unchanged. Independent static and production review passed.
+
+Xcode app/UI build passed in22.084 seconds with2,707 inputs matching manifest SHA256 `ad0cc03ab877d89427254a084f52b3eaa435a526883d190b093a3a5b714d5c77`. The actual native two-actor edit → save → MP4/decoded colors → Undo/Redo → cold-reopen journey passed **1 test,0 failures,0 skips in134.955 seconds**. Original log SHA256 `f1174619b6df86ce2d4fb5c80fa61538fcc45c04b9248a22c8c784926523828a`; original complete XCResult and source-labelled captures are retained. Independent terminal native review passed. This native journey verifies the ordinary deadline-enabled path; deterministic timeout failures are production-suite evidence, not a forced native UI timeout claim.
+
+Public PR115 remains draft at `a540ec9c1dc96a675bb6cb78de4a1e2eaef5a453`; run37582475315 remains active and must reach terminal with originals preserved before the next source publication. ReviewV97 already provides actual two-actor native captures from90850aeb, distinctly labelled. Issues204/205/215/185 and full release gates remain open. Next bounded work is explicit picture-import handoff and native rendered-MP4 Files success/reopen evidence; no complete-app, TestFlight or public-upload claim.
+
 ## Standalone effect-runner source membership — 2026-10-07
 
 Public run37578220309 at9f9c8033 completed with the movie-audio stage passing, then failed the Smudge standalone compile because its shared source list omitted `StudioAudioImportService`, now required by production portable-project audio validation. Native Xcode compilation did not run because that prerequisite failed. Complete original run/log/artifact response preserved; full CI log SHA256 `c1c7e10224947bcf7a1ea46c1ce5070f7cae1abad94a5eb468348319b4695462`; no uploaded artifacts were reported.

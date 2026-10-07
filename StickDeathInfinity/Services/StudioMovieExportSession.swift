@@ -108,7 +108,7 @@ final class StudioMovieExportSession: ObservableObject {
         do {
             let visible = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
             for frame in document.frames {
-                guard let layer = frame.rasterLayerID, visible.contains(layer), let id = frame.rasterAssetID,
+                guard frame.rasterLayerInstances.contains(where: { visible.contains($0.layerID) }), let id = frame.rasterAssetID,
                       credits[id] == nil, let original = vm.originalImageSource(id),
                       let attribution = original.catalogueAttribution else { continue }
                 try original.validate()

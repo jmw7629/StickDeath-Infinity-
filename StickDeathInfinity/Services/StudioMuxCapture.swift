@@ -84,7 +84,7 @@ import CryptoKit
         _ = try StudioExportService.renderedImageCredits(document: doc, creditsByRasterID: snapshot.imageCredits)
         let visibleLayers = Set(doc.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
         let visibleIDs = Set(doc.frames.compactMap { frame -> String? in
-            guard let layer = frame.rasterLayerID, visibleLayers.contains(layer) else { return nil }
+            guard frame.rasterLayerInstances.contains(where: { visibleLayers.contains($0.layerID) }) else { return nil }
             return frame.rasterAssetID
         })
         let credits = visibleIDs.sorted().compactMap { id in

@@ -37,7 +37,7 @@ enum StudioBlurCapture {
               let frame = document.frames.first(where: { $0.id == document.activeFrameID }) else {
             throw StudioBlur.Failure.invalidImage
         }
-        if frame.rasterLayerID == layer.id, frame.rasterAssetID != nil, raster == nil {
+        if frame.rasterInstance(on: layer.id) != nil, raster == nil {
             throw StudioRasterImage.Failure.missing
         }
         var isolated = document

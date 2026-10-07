@@ -14,7 +14,10 @@ struct AppFlowView: View {
         Group {
             switch screen {
             case .splash:
-                SplashScreenView(onContinueOffline: { navigate(to: .app) })
+                SplashScreenView(onContinueOffline: { navigate(to: .app) },
+                    restoration: authVM.restoration,
+                    onRetry: { Task { await authVM.retryRestoration() } },
+                    onSignIn: { navigate(to: .login) })
             case .welcome:
                 WelcomeView(
                     onSignIn: { navigate(to: .login) },
@@ -39,11 +42,12 @@ struct AppFlowView: View {
         }
         .onAppear(perform: finishRestorationIfReady)
         .onChange(of: authVM.state) { finishRestorationIfReady() }
+        .onChange(of: authVM.restoration) { finishRestorationIfReady() }
     }
 
     private func finishRestorationIfReady() {
         // A late restoration result must not interrupt an explicit offline choice.
-        guard screen == .splash, authVM.state != .loading else { return }
+        guard screen == .splash, authVM.state != .loading, authVM.restoration == .ready else { return }
         accountUnavailable = authVM.error != nil
         if authVM.isAuthenticated { routeSignedInUser() }
         else { navigate(to: .welcome) }

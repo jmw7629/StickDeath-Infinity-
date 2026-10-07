@@ -342,6 +342,9 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
         }
         await test("real licensed import save cold reopen exports exact deduplicated credits in both image formats") {
             let (editor, asset, folder) = try await creditedProject("licensed-credit-roundtrip")
+            let originalLayer = editor.currentFrame.rasterLayerID!
+            editor.duplicateLayer(originalLayer); editor.toggleLayerVisibility(originalLayer)
+            try require(editor.frames.allSatisfy { $0.rasterLayerInstances.count == 2 }, "Actual linked copies missing")
             let credits = try sourceCredits(editor, asset: asset)
             for format in [StudioExportService.Format.pngSequence, .spritesheet] {
                 let output = try await service.export(document: editor.document, format: format, outputParent: folder,

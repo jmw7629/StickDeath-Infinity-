@@ -437,12 +437,21 @@ final class StudioViewModel: ObservableObject {
         let clipboardVersion = editor.clipboardVersion
         let selection = editor.selectedElementIDs
         let containsTween: Bool
+        let containsRename: Bool
         if case .apply(let commands) = request.action {
             containsTween = commands.contains { if case .tweenFrames = $0 { return true }; return false }
-        } else { containsTween = false }
+            containsRename = commands.contains { if case .renameProject = $0 { return true }; return false }
+        } else { containsTween = false; containsRename = false }
+        if containsRename && isPlaying { throw StudioDocumentError.unavailable("Stop playback before renaming the project.") }
         if containsTween && isPlaying { throw StudioDocumentError.unavailable("Stop playback before tweening frames.") }
         var candidate = editor
         let receipt = try StudioCommandExecutor.execute(request, editor: &candidate, checkCancellation: checkCancellation)
+        for clip in candidate.document.audioClips where clip.assetID != nil && document.audioClips.first(where: { $0.id == clip.id }) != clip {
+            guard let assetID = clip.assetID, let asset = audioTrack(forAssetID: assetID), asset.audioData != nil else {
+                throw StudioDocumentError.invalid("The audio edit needs its original managed source. Nothing changed.")
+            }
+            try validateAudioTrim(clip, asset: asset)
+        }
         if candidate.document.audioClips != document.audioClips {
             guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before applying audio edits.") }
             _ = try audioTracksForSave(candidate.document)
@@ -457,6 +466,9 @@ final class StudioViewModel: ObservableObject {
         try requireOpenCommandEditor()
         guard request.projectID == document.id else { throw StudioCommandError.wrongProject }
         guard request.expectedRevision == document.revision else { throw StudioCommandError.staleRevision }
+        if containsRename && (isPlaying || editor.selectedElementIDs != selection) {
+            throw StudioDocumentError.unavailable("Playback or selection changed while renaming the project. Nothing changed.")
+        }
         guard editor.clipboardVersion == clipboardVersion else { throw StudioCommandError.staleClipboard }
         if containsTween && (isPlaying || editor.selectedElementIDs != selection) {
             throw StudioDocumentError.unavailable("Playback or selection changed while preparing the tween. Nothing changed.")
@@ -466,6 +478,17 @@ final class StudioViewModel: ObservableObject {
         }
         clearMissingImageMoveTarget(in: candidate.document)
         editor = candidate
+        if case .apply(let commands) = request.action {
+            for command in commands.reversed() {
+                switch command {
+                case .duplicateAudioClip(let edit): selectedAudioClip = document.audioClips.first { $0.id == edit.newClipID }
+                case .splitAudioClip(let edit): selectedAudioClip = document.audioClips.first { $0.id == edit.newClipID }
+                case .deleteAudioClip(let edit) where selectedAudioClip?.id == edit.clipID: selectedAudioClip = nil
+                default: continue
+                }
+                break
+            }
+        }
         if receipt.outcome != .unchanged {
             stopPlayback()
             pruneManagedAudio()
@@ -875,14 +898,9 @@ final class StudioViewModel: ObservableObject {
             guard document.id == expectedProjectID, document.revision == expectedRevision else {
                 throw StudioDocumentError.unavailable("The project changed. Reload its current name before renaming.")
             }
-            let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !title.isEmpty, title.count <= 120, title.utf8.count <= 480,
-                  title.rangeOfCharacter(from: .controlCharacters) == nil else {
-                throw StudioDocumentError.invalid("Use a project name of 1–120 characters without control characters.")
-            }
-            guard title != document.name else { message = nil; return true }
             var candidate = editor
-            try candidate.change { $0.name = title }
+            try candidate.renameProject(name)
+            guard candidate.document != document else { message = nil; return true }
             try preflightRasterDocument(candidate.document)
             editor = candidate; scheduleSave(); message = nil
             return true
@@ -1389,25 +1407,28 @@ final class StudioViewModel: ObservableObject {
         let projectID: UUID
         let frameID: String
         let assetID: String
+        let layerID: String
     }
     @Published private var imageMoveTarget: ImageMoveTarget?
     var isMovingImageOnCanvas: Bool {
         guard let target = imageMoveTarget else { return false }
         return selectedTool == .move && target.projectID == document.id &&
-            target.frameID == currentFrame.id && target.assetID == currentFrame.rasterAssetID
+            target.frameID == currentFrame.id && target.assetID == currentFrame.rasterAssetID &&
+            currentFrame.preferredRasterInstance(activeLayerID: activeLayerID)?.layerID == target.layerID
     }
     @discardableResult
     func setImageCanvasMove(_ enabled: Bool) -> Bool {
         if !enabled { imageMoveTarget = nil; return true }
         guard let capture = prepareImagePlacement() else { return false }
-        imageMoveTarget = .init(projectID: capture.projectID, frameID: capture.frameID, assetID: capture.assetID)
+        imageMoveTarget = .init(projectID: capture.projectID, frameID: capture.frameID, assetID: capture.assetID, layerID: capture.layerID)
         editor.selectedElementIDs.removeAll()
         return true
     }
     private func clearMissingImageMoveTarget(in next: StudioDocument) {
         guard let target = imageMoveTarget else { return }
         if target.projectID != next.id || target.frameID != next.activeFrameID ||
-            next.frames.first(where: { $0.id == target.frameID })?.rasterAssetID != target.assetID {
+            next.frames.first(where: { $0.id == target.frameID })?.rasterAssetID != target.assetID ||
+            next.frames.first(where: { $0.id == target.frameID })?.preferredRasterInstance(activeLayerID: next.activeLayerID)?.layerID != target.layerID {
             imageMoveTarget = nil
         }
     }
@@ -1417,7 +1438,7 @@ final class StudioViewModel: ObservableObject {
     }
     func currentImageMoveCapture() -> ImageMoveCapture? {
         guard isMovingImageOnCanvas, let target = imageMoveTarget,
-              let placement = prepareImagePlacement() else { return nil }
+              let placement = prepareImagePlacement(), placement.layerID == target.layerID else { return nil }
         return .init(placement: placement, selectionID: target.selectionID)
     }
     func beginImageMove(at point: CGPoint) -> ImageMoveCapture? {
@@ -1435,10 +1456,12 @@ final class StudioViewModel: ObservableObject {
         var frame = currentFrame
         let original = capture.placement.original
         // Keep the whole managed image inside the canvas, matching numeric placement.
-        frame.rasterPlacement = .init(
+        guard var instance = frame.rasterInstance(on: capture.placement.layerID) else { throw StudioCommandError.invalidReference }
+        instance.placement = .init(
             x: min(max(0, original.x + delta.width), max(0, Double(capture.placement.canvasWidth) - original.width)),
             y: min(max(0, original.y + delta.height), max(0, Double(capture.placement.canvasHeight) - original.height)),
             width: original.width, height: original.height)
+        try frame.updateRasterInstance(instance)
         return frame
     }
     @discardableResult
@@ -1446,7 +1469,7 @@ final class StudioViewModel: ObservableObject {
                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
             let preview = try imageMovePreview(capture, delta: delta)
-            guard let placement = preview.rasterPlacement else { throw StudioCommandError.invalidReference }
+            guard let placement = preview.rasterInstance(on: capture.placement.layerID)?.placement else { throw StudioCommandError.invalidReference }
             return placeImage(capture.placement, at: placement, checkCancellation: {
                 try checkCancellation()
                 guard self.currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
@@ -1479,8 +1502,10 @@ final class StudioViewModel: ObservableObject {
         guard bounded.isFinite, bounded > 0 else { throw StudioCommandError.invalidGeometry }
         let width = p.width * bounded, height = p.height * bounded
         var frame = currentFrame
-        frame.rasterPlacement = .init(x: left ? anchorX - width : anchorX,
+        guard var instance = frame.rasterInstance(on: capture.placement.layerID) else { throw StudioCommandError.invalidReference }
+        instance.placement = .init(x: left ? anchorX - width : anchorX,
             y: top ? anchorY - height : anchorY, width: width, height: height)
+        try frame.updateRasterInstance(instance)
         return frame
     }
     @discardableResult
@@ -1488,7 +1513,7 @@ final class StudioViewModel: ObservableObject {
                            delta: CGSize, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
             let preview = try imageResizePreview(capture, corner: corner, delta: delta)
-            guard let placement = preview.rasterPlacement else { throw StudioCommandError.invalidReference }
+            guard let placement = preview.rasterInstance(on: capture.placement.layerID)?.placement else { throw StudioCommandError.invalidReference }
             return placeImage(capture.placement, at: placement, checkCancellation: {
                 try checkCancellation()
                 guard self.currentImageMoveCapture() == capture else { throw StudioCommandError.staleRevision }
@@ -1510,12 +1535,13 @@ final class StudioViewModel: ObservableObject {
     func prepareImagePlacement() -> ImagePlacementCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .move,
               activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
-              let assetID = currentFrame.rasterAssetID, let original = currentFrame.rasterPlacement,
+              let assetID = currentFrame.rasterAssetID,
+              let instance = currentFrame.preferredRasterInstance(activeLayerID: activeLayerID), let original = instance.placement,
               let source = originalImageSource(assetID),
-              let layer = layers.first(where: { $0.id == currentFrame.rasterLayerID }),
+              let layer = layers.first(where: { $0.id == instance.layerID }),
               layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return nil }
-        let crop = currentFrame.rasterCrop ?? .full
-        let odd = (currentFrame.rasterQuarterTurns ?? 0) % 2 != 0
+        let crop = instance.crop ?? .full
+        let odd = (instance.quarterTurns ?? 0) % 2 != 0
         let sourceWidth = Double(source.normalizedWidth) * crop.width
         let sourceHeight = Double(source.normalizedHeight) * crop.height
         let width = odd ? sourceHeight : sourceWidth, height = odd ? sourceWidth : sourceHeight
@@ -1536,7 +1562,7 @@ final class StudioViewModel: ObservableObject {
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.updateImagePlacement(.init(
-                    frame: .id(capture.frameID), assetID: capture.assetID, placement: placement))])),
+                    frame: .id(capture.frameID), assetID: capture.assetID, placement: placement, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1552,7 +1578,7 @@ final class StudioViewModel: ObservableObject {
             try checkCancellation()
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
-                action: .apply([.cropImage(.init(frame: .id(capture.frameID), assetID: capture.assetID, crop: crop))])),
+                action: .apply([.cropImage(.init(frame: .id(capture.frameID), assetID: capture.assetID, crop: crop, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1569,7 +1595,7 @@ final class StudioViewModel: ObservableObject {
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.rotateImage(.init(
-                    frame: .id(capture.frameID), assetID: capture.assetID, direction: direction))])),
+                    frame: .id(capture.frameID), assetID: capture.assetID, direction: direction, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1586,7 +1612,7 @@ final class StudioViewModel: ObservableObject {
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.reflectImage(.init(
-                    frame: .id(capture.frameID), assetID: capture.assetID, axis: axis))])),
+                    frame: .id(capture.frameID), assetID: capture.assetID, axis: axis, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1603,7 +1629,7 @@ final class StudioViewModel: ObservableObject {
             guard prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.deleteImage(.init(
-                    frame: .id(capture.frameID), assetID: capture.assetID))])),
+                    frame: .id(capture.frameID), assetID: capture.assetID, layer: .id(capture.layerID)))])),
                 checkCancellation: {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
@@ -1802,7 +1828,7 @@ final class StudioViewModel: ObservableObject {
     func prepareLayerDeletion(_ id: String) -> LayerDeleteCapture? {
         guard canDeleteLayer(id), let layer = layers.first(where: { $0.id == id }) else { return nil }
         let affected = document.frames.filter { frame in
-            frame.rasterLayerID == id || frame.elements.contains(where: { $0.layerID == id })
+            frame.rasterInstance(on: id) != nil || frame.elements.contains(where: { $0.layerID == id })
         }.count
         return .init(projectID: document.id, revision: document.revision, layerID: id,
                      name: layer.name, frameCount: affected)
@@ -1948,6 +1974,39 @@ final class StudioViewModel: ObservableObject {
         isEditing && !isSaving && !isPlaying && activeStrokeID == nil &&
             pendingBrushStroke == nil && textDraft == nil
     }
+    /// Manual and assistant trims share the source bound used by the actual mixer.
+    private func validateAudioTrim(_ clip: AudioClip, asset: AudioTrack) throws {
+        guard clip.sourceOffset.isFinite, clip.duration.isFinite, clip.sourceOffset >= 0,
+              clip.duration >= 1 / 48_000.0, asset.duration.isFinite,
+              clip.sourceOffset + clip.duration <= asset.duration + 1 / 48_000.0 else {
+            throw StudioDocumentError.invalid("The trim must contain real audio within the source file.")
+        }
+        let rate = StudioAudioTimelineGeometry.sampleRate
+        guard clip.startTime.isFinite, (0...1000).contains(clip.startTime),
+              clip.duration <= 300, clip.sourceOffset <= 300,
+              asset.duration > 0, asset.duration <= 300 else {
+            throw StudioDocumentError.invalid("The trim has unsupported source timing. Nothing changed.")
+        }
+        let exact = asset.duration * rate
+        let fractional = abs(exact - exact.rounded()) >= 0.0000001
+        let available = Int(fractional ? exact.rounded(.down) : exact.rounded())
+        let sourceStart = Int((clip.sourceOffset * rate).rounded())
+        let count = Int(((clip.startTime + clip.duration) * rate).rounded() - (clip.startTime * rate).rounded())
+        let requestedEnd = sourceStart + count
+        guard count > 0, sourceStart < available else {
+            throw StudioDocumentError.invalid("The trim must contain real audio within the source file.")
+        }
+        if requestedEnd > available {
+            // Match the mixer's single fractional conversion EOF exception;
+            // integer EOF and a fragment with no real source sample never qualify.
+            guard fractional, requestedEnd == Int(exact.rounded(.up)), requestedEnd == available + 1,
+                  (clip.sourceOffset + clip.duration) * rate > Double(available),
+                  clip.sourceOffset + clip.duration <= exact / rate + 0.000000001,
+                  count > 1 else {
+                throw StudioDocumentError.invalid("The trim extends beyond the source's playable samples. Nothing changed.")
+            }
+        }
+    }
     /// The same command entry point is usable by Studio UI and validated assistants.
     /// Source bytes stay immutable; only a selected clip in the captured revision changes.
     func editSelectedAudioClip(_ id: String, expectedRevision: Int, edit: StudioAudioClipEdit) throws {
@@ -1965,21 +2024,15 @@ final class StudioViewModel: ObservableObject {
         case .volume(let value): clip.volume = value
         case .mute(let value): clip.isMuted = value
         }
-        guard clip.sourceOffset.isFinite, clip.duration.isFinite, clip.sourceOffset >= 0,
-              clip.duration >= 1 / 48_000.0, asset.duration.isFinite,
-              clip.sourceOffset + clip.duration <= asset.duration + 1 / 48_000.0 else {
-            throw StudioDocumentError.invalid("The trim must contain real audio within the source file.")
-        }
+        try validateAudioTrim(clip, asset: asset)
         guard clip != document.audioClips[index] else { return }
         var candidate = editor
         switch edit {
+        case .place(let start, let track): try candidate.updateAudioClip(id, settings: .init(placement: .init(startTime: start, track: track)))
         case .volume(let value): try candidate.updateAudioClip(id, settings: .init(volume: value))
         case .mute(let value): try candidate.updateAudioClip(id, settings: .init(isMuted: value))
-        default:
-            try candidate.change { value in
-                value.schemaVersion = max(value.schemaVersion, 4)
-                value.audioClips[index] = clip
-            }
+        case .trim(let offset, let duration):
+            try candidate.updateAudioClip(id, settings: .init(trim: .init(sourceOffset: offset, duration: duration)))
         }
         try preflightRasterDocument(candidate.document)
         _ = try audioTracksForSave(candidate.document)
@@ -2006,13 +2059,12 @@ final class StudioViewModel: ObservableObject {
         guard prepareAudioDuplication() == capture else {
             throw StudioDocumentError.unavailable("Select the current audio clip again before duplicating it.")
         }
-        let original = capture.clip
-        let duplicate = AudioClip(id: UUID().uuidString, soundName: original.soundName,
-            track: original.track, startTime: original.startTime + original.duration,
-            duration: original.duration, volume: original.volume, assetID: original.assetID,
-            sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
         var candidate = editor
-        try candidate.change { value in value.audioClips.append(duplicate) }
+        let duplicate = try candidate.duplicateAudioClip(capture.clip.id, newClipID: UUID().uuidString)
+        guard let assetID = duplicate.assetID, let asset = audioTrack(forAssetID: assetID) else {
+            throw StudioDocumentError.invalid("The original audio source is missing. Nothing was added.")
+        }
+        try validateAudioTrim(duplicate, asset: asset)
         try preflightRasterDocument(candidate.document)
         _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
@@ -2115,20 +2167,9 @@ final class StudioViewModel: ObservableObject {
     /// Snap the cut to the mixer's sample grid and preserve its source phase.
     func prepareAudioSplit() -> AudioSplitCapture? {
         guard let selection = prepareAudioDuplication(), audioPlayheadTime.isFinite else { return nil }
-        let original = selection.clip
-        let rate = StudioAudioTimelineGeometry.sampleRate
-        let startFrame = (original.startTime * rate).rounded()
-        let endFrame = ((original.startTime + original.duration) * rate).rounded()
-        let cutFrame = (audioPlayheadTime * rate).rounded()
-        let boundary = cutFrame / rate
-        let left = boundary - original.startTime
-        let right = original.duration - left
-        let sourceOffset = ((original.sourceOffset * rate).rounded() + cutFrame - startFrame) / rate
-        guard boundary.isFinite, sourceOffset.isFinite,
-              cutFrame > startFrame, cutFrame < endFrame,
-              left >= 1 / rate, right >= 1 / rate else { return nil }
+        guard let timing = try? selection.clip.splitTiming(at: audioPlayheadTime) else { return nil }
         return .init(selection: selection, playhead: audioPlayheadTime,
-                     boundary: boundary, rightSourceOffset: sourceOffset)
+                     boundary: timing.boundary, rightSourceOffset: timing.rightSourceOffset)
     }
     /// Split metadata, never the managed original. Both halves remain editable.
     @discardableResult
@@ -2138,24 +2179,13 @@ final class StudioViewModel: ObservableObject {
         guard prepareAudioSplit() == capture else {
             throw StudioDocumentError.unavailable("Select a current clip and place the playhead inside it before splitting.")
         }
-        let original = capture.selection.clip
-        let leftDuration = capture.boundary - original.startTime
-        var left = original
-        left.duration = leftDuration
-        let right = AudioClip(id: UUID().uuidString, soundName: original.soundName,
-            track: original.track, startTime: capture.boundary,
-            duration: original.duration - leftDuration, volume: original.volume,
-            assetID: original.assetID, sourceOffset: capture.rightSourceOffset,
-            isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
         var candidate = editor
-        try candidate.change { value in
-            guard let index = value.audioClips.firstIndex(where: { $0.id == original.id }) else {
-                throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
-            }
-            value.schemaVersion = max(value.schemaVersion, 4)
-            value.audioClips[index] = left
-            value.audioClips.insert(right, at: index + 1)
+        let right = try candidate.splitAudioClip(capture.selection.clip.id, at: capture.playhead, newClipID: UUID().uuidString)
+        guard let assetID = right.assetID, let asset = audioTrack(forAssetID: assetID),
+              let left = candidate.document.audioClips.first(where: { $0.id == capture.selection.clip.id }) else {
+            throw StudioDocumentError.invalid("The original audio source is missing. Nothing changed.")
         }
+        try validateAudioTrim(left, asset: asset); try validateAudioTrim(right, asset: asset)
         try preflightRasterDocument(candidate.document)
         _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
@@ -2254,7 +2284,8 @@ final class StudioViewModel: ObservableObject {
     }
     func deleteAudioClip(_ id: String) {
         guard selectedCurrentAudioClip?.id == id else { return }
-        change { $0.audioClips.removeAll { $0.id == id } }; selectedAudioClip = nil
+        command { try $0.deleteAudioClip(id) }
+        if !document.audioClips.contains(where: { $0.id == id }) { selectedAudioClip = nil }
     }
     /// The picker/decoder owner must retain its result until this atomic handoff
     /// succeeds. No image is attached on rejection, and no save success is implied.
@@ -2407,9 +2438,11 @@ final class StudioViewModel: ObservableObject {
                   let source = record.sourceImage, let png = record.imageData, frame.rasterPlacement != nil else {
                 throw StudioDocumentError.unavailable("Background Cut currently works on imported images. Historical raster originals and drawing-only frames are not converted.")
             }
-            guard let layer = layers.first(where: { $0.id == frame.rasterLayerID }),
-                  layer.visible, layer.opacity > 0, layer.lockMode == "free", !layer.isFullyLocked else {
-                throw StudioDocumentError.unavailable("Show and unlock each imported image layer before cutting its background.")
+            guard !frame.rasterLayerInstances.isEmpty,
+                  frame.rasterLayerInstances.allSatisfy({ instance in
+                      layers.contains { $0.id == instance.layerID && $0.visible && $0.opacity > 0 && $0.lockMode == "free" && !$0.isFullyLocked }
+                  }) else {
+                throw StudioDocumentError.unavailable("Show and unlock every linked image layer in the chosen frames before cutting its background.")
             }
             guard source.normalizedWidth * source.normalizedHeight <= 4_194_304, png.count <= 16 * 1024 * 1024 else {
                 throw StudioDocumentError.unavailable("Background Cut supports imported images up to 4 megapixels and 16 MB each.")
@@ -2476,10 +2509,10 @@ final class StudioViewModel: ObservableObject {
     var hasCopiedImage: Bool { imageClipboard != nil }
     @discardableResult
     func copyImage() -> Bool {
-        guard prepareImagePlacement() != nil,
-              let sourceLayer = layers.first(where: { $0.id == currentFrame.rasterLayerID }) else { return false }
-        // One project-scoped immutable asset reference; no duplicate encoded bytes.
-        var copied = currentFrame
+        guard let capture = prepareImagePlacement(),
+              let sourceLayer = layers.first(where: { $0.id == capture.layerID }),
+              var copied = currentFrame.projectedRasterFrame(on: capture.layerID) else { return false }
+        // Copy only the selected linked instance; immutable source bytes remain shared.
         copied.elements = []; copied.holdTicks = nil
         copiedImageLayer = sourceLayer
         imageClipboard = copied

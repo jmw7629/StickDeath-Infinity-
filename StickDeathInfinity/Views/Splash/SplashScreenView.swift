@@ -4,6 +4,9 @@ import SwiftUI
 /// decorative loading delay, and local projects remain reachable while offline.
 struct SplashScreenView: View {
     let onContinueOffline: () -> Void
+    var restoration: AuthService.Restoration = .restoring
+    var onRetry: () -> Void = {}
+    var onSignIn: () -> Void = {}
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var glowPulse = false
 
@@ -34,11 +37,29 @@ struct SplashScreenView: View {
                             .font(.specialElite(14))
                             .tracking(5)
                             .foregroundColor(.sdTextSecondary)
-                        ProgressView("Restoring your session…")
-                            .tint(.sdRed)
-                            .foregroundColor(.sdTextSecondary)
-                            .padding(.top, 20)
-                            .accessibilityIdentifier("startup.restoring")
+                        if restoration == .retryableFailure {
+                            Text("Your session could not be restored. Try again, or open your local Studio offline.")
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                                .accessibilityIdentifier("startup.restore-error")
+                            Button("Retry session restoration", action: onRetry)
+                                .frame(minHeight: 44).foregroundColor(.white)
+                                .accessibilityIdentifier("startup.retry")
+                        } else if restoration == .signInRequired {
+                            Text("Your saved session is no longer valid. Sign in again, or open your local Studio offline.")
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                                .accessibilityIdentifier("startup.sign-in-required")
+                            Button("Sign In", action: onSignIn)
+                                .frame(minHeight: 44).foregroundColor(.white)
+                                .accessibilityIdentifier("startup.sign-in")
+                        } else {
+                            ProgressView("Restoring your session…")
+                                .tint(.sdRed)
+                                .foregroundColor(.sdTextSecondary)
+                                .padding(.top, 20)
+                                .accessibilityIdentifier("startup.restoring")
+                        }
                         Button("Open Studio Offline", action: onContinueOffline)
                             .font(.specialElite(15))
                             .foregroundColor(.white)

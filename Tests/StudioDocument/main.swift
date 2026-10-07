@@ -10,6 +10,139 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
 }
 
 @main @MainActor struct StudioDocumentTests {
+    private static func linkedRasterJourneys() throws {
+        var original = try StudioDocument.new(name: "Linked pictures", width: 320, height: 240, fps: 12)
+        let primary = original.activeLayerID, frameID = original.activeFrameID
+        original.schemaVersion = 22
+        original.frames[0].rasterAssetID = "immutable-original"
+        original.frames[0].rasterLayerID = primary
+        original.frames[0].rasterPlacement = .init(x: 20, y: 30, width: 80, height: 60)
+        original.frames[0].elements = [stroke(layer: primary)]
+        try original.validate()
+        var editor = try StudioDocumentEditor(document: original)
+        try editor.duplicateLayer(primary)
+        let alias = editor.document.activeLayerID
+        let duplicated = editor.document
+        try require(duplicated.schemaVersion == 27 && duplicated.frames[0].rasterLayerInstances.count == 2,
+                    "Image layer duplication did not create versioned linked instances")
+        try require(duplicated.referencedRasterAssetIDs == ["immutable-original"] && duplicated.frames[0].elements.count == 2,
+                    "Duplicate changed source identity or omitted vector content")
+        editor.undo()
+        try require(editor.document.frames == original.frames && editor.document.layers == original.layers,
+                    "Linked duplicate was not one undo transaction")
+        editor.redo()
+        try require(editor.document.frames == duplicated.frames && editor.document.layers == duplicated.layers,
+                    "Linked duplicate redo lost descriptors")
+        print("PASS linked imported-layer duplication shares one source and one vector/image undo transaction")
+
+        let unchanged = editor.document
+        do { try editor.reflectImage(frameID: frameID, assetID: "immutable-original", axis: .horizontal)
+            throw Failure(text: "Ambiguous legacy image operation edited the primary") }
+        catch StudioDocumentError.invalid { }
+        try require(editor.document == unchanged, "Ambiguous operation changed history/document")
+        let originalDescriptor = editor.document.frames[0].rasterInstance(on: primary)
+        try editor.updateImagePlacement(frameID: frameID, assetID: "immutable-original",
+            placement: .init(x: 130, y: 60, width: 80, height: 60), layerID: alias)
+        try editor.reflectImage(frameID: frameID, assetID: "immutable-original", axis: .horizontal, layerID: alias)
+        try editor.rotateImage(frameID: frameID, assetID: "immutable-original", direction: .clockwise, layerID: alias)
+        try editor.cropImage(frameID: frameID, assetID: "immutable-original", crop: .init(x: 0, y: 0, width: 0.5, height: 1), layerID: alias)
+        try require(editor.document.frames[0].rasterInstance(on: primary) == originalDescriptor,
+                    "Alias transform mutated primary image")
+        let transformed = editor.document.frames[0].rasterInstance(on: alias)!
+        try require(transformed.quarterTurns == 1 && transformed.reflection?.vertical == true && transformed.crop?.width == 0.5,
+                    "Selected alias lost real crop/rotation/reflection")
+        try editor.updateLayer(primary) { $0.visible = false }
+        try require(editor.document.frames[0].visibleRasterInstances(in: editor.document.layers).map(\.layerID) == [alias],
+                    "Hidden primary suppressed visible linked image")
+        let projected = editor.document.frames[0].projectedRasterFrame(on: alias)!
+        try require(projected.rasterAliases == nil && projected.rasterPlacement == transformed.placement && projected.elements == editor.document.frames[0].elements,
+                    "Projection lost chosen image geometry or altered drawing content")
+        print("PASS explicit linked-image transforms preserve siblings and resolve visible alias with hidden primary")
+
+        try editor.updateLayer(alias) { $0.lockMode = "position" }
+        let locked = editor.document
+        do { try editor.deleteImage(frameID: frameID, assetID: "immutable-original", layerID: alias)
+            throw Failure(text: "Locked linked image accepted deletion") }
+        catch StudioDocumentError.locked { }
+        try require(editor.document == locked, "Rejected linked edit changed project")
+        try editor.updateLayer(alias) { $0.lockMode = "free" }
+        let beforeCancel = editor.document
+        var checks = 0
+        do { try editor.deleteImage(frameID: frameID, assetID: "immutable-original", layerID: alias, checkCancellation: {
+            checks += 1; if checks == 3 { throw CancellationError() }
+        }); throw Failure(text: "Cancelled deletion succeeded") } catch is CancellationError { }
+        try require(editor.document == beforeCancel, "Cancelled linked deletion partially committed")
+        try editor.deleteLayer(primary)
+        try require(editor.document.frames[0].rasterLayerID == alias && editor.document.frames[0].rasterAliases == nil &&
+                    editor.document.frames[0].rasterInstance(on: alias) == transformed && editor.document.frames[0].rasterAssetID == "immutable-original",
+                    "Deleting primary did not preserve and promote linked source/geometry")
+        editor.undo()
+        try require(editor.document.frames == beforeCancel.frames && editor.document.layers == beforeCancel.layers,
+                    "Undo did not recover deleted primary and alias")
+        editor.redo()
+        try editor.deleteImage(frameID: frameID, assetID: "immutable-original", layerID: alias)
+        try require(editor.document.frames[0].rasterLayerInstances.isEmpty && editor.document.frames[0].rasterAssetID == nil && editor.document.frames[0].rasterCrop == nil,
+                    "Removing last linked image did not clear source and geometry")
+        print("PASS linked deletion lock/cancellation rollback primary promotion last-image removal and undo")
+
+        var frameCopies = try StudioDocumentEditor(document: duplicated)
+        try frameCopies.duplicateFrame()
+        frameCopies.copyFrame(); try frameCopies.pasteFrame()
+        try require(frameCopies.document.frames.count == 3 && frameCopies.document.frames.allSatisfy { $0.rasterAliases == duplicated.frames[0].rasterAliases },
+                    "Timeline duplicate/paste lost linked instances")
+        try require(Set(frameCopies.document.frames.map(\.id)).count == 3 && frameCopies.document.referencedRasterAssetIDs.count == 1,
+                    "Frame copies reused frame identity or manufactured source assets")
+        let encoded = try JSONEncoder().encode(frameCopies.document)
+        let reopened = try JSONDecoder().decode(StudioDocument.self, from: encoded)
+        try reopened.validate()
+        try require(reopened == frameCopies.document, "Version27 document roundtrip lost linked images")
+        try frameCopies.deleteLayer(primary)
+        try require(frameCopies.document.frames.allSatisfy { $0.rasterLayerID == alias && $0.rasterAliases == nil },
+                    "Layer deletion did not promote copies across every frame")
+        print("PASS linked timeline duplication frame clipboard version27 roundtrip and all-frame promotion")
+
+        let mutations: [(inout StudioDocument) -> Void] = [
+            { $0.schemaVersion = 26 },
+            { $0.frames[0].rasterAliases![0].layerID = primary },
+            { $0.frames[0].rasterAliases![0].layerID = "missing" },
+            { $0.frames[0].rasterAliases![0].placement = nil },
+            { $0.frames[0].rasterAliases![0].placement = .init(x: -1, y: 0, width: 10, height: 10) },
+            { $0.frames[0].rasterAliases![0].quarterTurns = 4 },
+            { $0.frames[0].rasterAliases![0].reflection = .init() },
+            { $0.frames[0].rasterAliases![0].crop = .init(x: 0, y: 0, width: 0, height: 1) },
+            { $0.frames[0].rasterAliases = Array(repeating: $0.frames[0].rasterAliases![0], count: 128) },
+            { $0.frames[0].rasterAssetID = nil }
+        ]
+        for mutation in mutations {
+            var invalid = duplicated; mutation(&invalid)
+            var rejected = false
+            do { try invalid.validate() } catch { rejected = true }
+            try require(rejected, "Malformed linked descriptor/version/source/ownership accepted")
+        }
+        var limited = duplicated
+        while limited.layers.count < 128 { limited.layers.append(.init(id: UUID().uuidString, name: "Spare")) }
+        var cap = try StudioDocumentEditor(document: limited)
+        do { try cap.duplicateLayer(primary); throw Failure(text: "Layer cap bypassed") }
+        catch StudioDocumentError.invalid { }
+        try require(cap.document == limited, "Layer-cap rejection changed document")
+        print("PASS linked geometry ownership schema bounds and layer-cap rejection preserve document")
+
+        var legacy = original; legacy.schemaVersion = 1; legacy.frames[0].rasterPlacement = nil
+        let legacyBytes = try JSONEncoder().encode(legacy)
+        let oldDecoded = try JSONDecoder().decode(StudioDocument.self, from: legacyBytes)
+        try oldDecoded.validate()
+        try require(oldDecoded.frames[0].rasterAliases == nil, "Old singular project manufactured aliases")
+        var opaque = try StudioDocumentEditor(document: oldDecoded)
+        try opaque.duplicateLayer(primary)
+        let opaqueCopy = opaque.document.activeLayerID
+        try require(opaque.document.frames[0].rasterLayerInstances.allSatisfy { $0.placement == nil } && opaque.document.referencedRasterAssetIDs == ["immutable-original"],
+                    "Legacy opaque original was converted or lost")
+        try opaque.deleteLayer(primary)
+        try require(opaque.document.frames[0].rasterLayerID == opaqueCopy && opaque.document.frames[0].rasterPlacement == nil,
+                    "Legacy full-canvas copy did not survive primary deletion")
+        print("PASS historical singular opaque images duplicate and promote without fabricated managed geometry")
+    }
+
     static func main() async {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-studio-tests-\(UUID().uuidString)")
@@ -434,7 +567,8 @@ private func stroke(layer: String, id: String = UUID().uuidString) -> DrawnEleme
             let openedGrid = await gridReopened.openProject(try onionStore.loadAnimation(id: onion.document.id)!.metadata)
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 14 journeys")
+            try linkedRasterJourneys()
+            print("STUDIO_DOCUMENT_TESTS=PASS 20 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)

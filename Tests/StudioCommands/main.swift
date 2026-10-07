@@ -253,7 +253,13 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     ["volume": true], ["isMuted": "false"],
                     ["fades": ["fadeIn": 0.2]],
                     ["fades": ["fadeIn": 0.2, "fadeOut": 0.2, "curve": "execute"]],
-                    ["fades": NSNull()]
+                    ["trim": NSNull()], ["trim": ["sourceOffset": 0]],
+                    ["trim": ["sourceOffset": true, "duration": 1]], ["trim": ["sourceOffset": 0, "duration": "1"]],
+                    ["trim": ["sourceOffset": 0, "duration": 1, "sourceURL": "file:///private"]],
+                    ["fades": NSNull()], ["placement": NSNull()],
+                    ["placement": ["startTime": 1]], ["placement": ["startTime": 1, "track": 1.5]],
+                    ["placement": ["startTime": true, "track": 1]], ["placement": ["startTime": "1", "track": 1]],
+                    ["placement": ["startTime": 1, "track": 1, "sourceURL": "file:///private"]]
                 ]
                 for settings in invalid {
                     var object = base
@@ -279,7 +285,7 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                 try rejected(foreign, editor: &editor, expected: .wrongProject)
                 try StudioCommandExecutor.execute(change, editor: &editor)
                 try rejected(change, editor: &editor, expected: .staleRevision)
-                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades"], "capability context omitted implemented settings")
+                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete"], "capability context omitted implemented settings")
             }
             func imageEditor() throws -> StudioDocumentEditor {
                 var editor = try fresh()
@@ -300,6 +306,73 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
             func rotateImage(_ editor: StudioDocumentEditor, _ direction: StudioImageQuarterTurn = .clockwise,
                              assetID: String = "image-fixture") -> StudioCommand {
                 .rotateImage(.init(frame: .id(editor.document.activeFrameID), assetID: assetID, direction: direction))
+            }
+            try test("linked image commands bind explicit layers and preserve sibling geometry in one transaction") {
+                var editor = try imageEditor()
+                let originalLayer = editor.document.activeLayerID
+                try editor.duplicateLayer(originalLayer)
+                let linkedLayer = editor.document.activeLayerID, frameID = editor.document.activeFrameID
+                let before = editor.document
+                let original = before.frames[0].rasterInstance(on: originalLayer)
+                let commands: [StudioCommand] = [
+                    .cropImage(.init(frame: .id(frameID), assetID: "image-fixture",
+                        crop: .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8), layer: .id(linkedLayer))),
+                    .rotateImage(.init(frame: .id(frameID), assetID: "image-fixture", direction: .clockwise, layer: .id(linkedLayer))),
+                    .reflectImage(.init(frame: .id(frameID), assetID: "image-fixture", axis: .horizontal, layer: .id(linkedLayer))),
+                    .updateImagePlacement(.init(frame: .id(frameID), assetID: "image-fixture",
+                        placement: .init(x: 10, y: 20, width: 200, height: 100), layer: .id(linkedLayer)))
+                ]
+                let encoded = try JSONEncoder().encode(request(editor, .apply(commands)))
+                let decoded = try StudioCommandExecutor.decode(encoded)
+                try StudioCommandExecutor.execute(decoded, editor: &editor)
+                let result = editor.document
+                try require(result.frames[0].rasterInstance(on: originalLayer) == original, "Linked edit changed original geometry")
+                let changed = result.frames[0].rasterInstance(on: linkedLayer)
+                try require(changed?.placement?.x == 10 && changed?.quarterTurns == 1 && changed?.reflection?.horizontal == true && changed?.crop != nil,
+                    "Explicit layer commands did not reach duplicate")
+                try require(result.frames[0].rasterAssetID == "image-fixture", "Linked edit changed immutable source")
+                editor.undo(); try require(content(editor.document) == content(before), "Linked command batch was not one Undo")
+                editor.redo(); try require(content(editor.document) == content(result), "Linked command Redo lost geometry")
+                try rejected(decoded, editor: &editor, expected: .staleRevision)
+                let selected = StudioCommandContext(document: editor.document).frames[0]
+                try require(selected.imageLayerID == linkedLayer && selected.imagePlacement == changed?.placement, "Context described primary instead of selected copy")
+                try StudioCommandExecutor.execute(request(editor, .apply([
+                    .deleteImage(.init(frame: .id(frameID), assetID: "image-fixture", layer: .id(originalLayer)))
+                ])), editor: &editor)
+                try require(editor.document.frames[0].rasterLayerID == linkedLayer && editor.document.frames[0].rasterInstance(on: linkedLayer) == changed,
+                    "Deleting primary did not preserve/promote linked copy")
+            }
+            try test("linked image legacy ambiguity wrong layers strict wire locks and cancellation reject atomically") {
+                var editor = try imageEditor(); let primary = editor.document.activeLayerID
+                try editor.duplicateLayer(primary)
+                let linked = editor.document.activeLayerID, frameID = editor.document.activeFrameID
+                let noLayer: [StudioCommand] = [
+                    .deleteImage(.init(frame: .id(frameID), assetID: "image-fixture")),
+                    .rotateImage(.init(frame: .id(frameID), assetID: "image-fixture", direction: .clockwise)),
+                    .reflectImage(.init(frame: .id(frameID), assetID: "image-fixture", axis: .horizontal)),
+                    .cropImage(.init(frame: .id(frameID), assetID: "image-fixture", crop: .full)),
+                    .updateImagePlacement(.init(frame: .id(frameID), assetID: "image-fixture", placement: .init(x: 0, y: 0, width: 20, height: 20)))
+                ]
+                for command in noLayer { try rejected(request(editor, .apply([command])), editor: &editor, expected: .invalidReference) }
+                let remove = StudioCommand.deleteImage(.init(frame: .id(frameID), assetID: "image-fixture", layer: .id(linked)))
+                try rejected(request(editor, .apply([remove])), editor: &editor, cancellation: { throw CancellationError() })
+                try rejected(request(editor, .apply([.deleteImage(.init(frame: .id(frameID), assetID: "image-fixture", layer: .id("missing")))])), editor: &editor, expected: .invalidReference)
+                let valid = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request(editor, .apply([remove])))) as! [String: Any]
+                let invalidLayers: [Any] = [true, NSNull(), ["id": linked, "extra": "unsafe"], ["unknown": linked]]
+                for invalid in invalidLayers {
+                    var object = valid
+                    object["action"] = ["apply": [["deleteImage": ["frame": ["id": frameID], "assetID": "image-fixture", "layer": invalid]]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Malformed image layer accepted") }
+                    catch is StudioCommandError { }
+                }
+                for mode in ["full", "position", "alpha"] {
+                    var locked = editor
+                    try locked.updateLayer(linked) { $0.lockMode = mode; $0.locked = mode == "full" }
+                    try rejected(request(locked, .apply([remove])), editor: &locked)
+                }
+                var hidden = editor; try hidden.updateLayer(linked) { $0.visible = false }
+                try rejected(request(hidden, .apply([remove])), editor: &hidden)
+                try rejected(request(editor, .apply([remove, .selectFrame(.id("missing"))])), editor: &editor)
             }
             try test("image quarter turns use strict commands preserve source and reverse full placement history") {
                 var editor = try imageEditor(); let before = editor.document
@@ -970,6 +1043,189 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                 var tooMany = try fresh()
                 let excess = (0..<(StudioCommandExecutor.maximumStrokes + 1)).map { stroke(id: "excess-\($0)", tool: .line) }
                 try rejected(request(tooMany, .apply([draw(tooMany, excess)])), editor: &tooMany, expected: .limitExceeded)
+            }
+            try test("audio placement uses strict typed wire and preserves source and fades") {
+                var editor = try audioEditor()
+                try editor.updateAudioClip("first-audio", settings: .init(fades: .init(fadeIn: 0.1, fadeOut: 0.2)))
+                let before = editor.document
+                let change = request(editor, .apply([audioCommand(.init(placement: .init(startTime: 1.25, track: 4)))]))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(change))
+                let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                var expected = before.audioClips[0]; expected.startTime = 1.25; expected.track = 4
+                try require(editor.document.audioClips[0] == expected && editor.document.audioClips[1] == before.audioClips[1]
+                    && editor.document.audioTrackVolumes == before.audioTrackVolumes && editor.document.mutedAudioTracks == before.mutedAudioTracks
+                    && receipt.changedAudioClipIDs == ["first-audio"], "Placement changed source, fades, another clip or lane settings")
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                let after = editor.document
+                editor.undo(); try require(content(editor.document) == content(before), "Placement Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Placement Redo failed")
+                for placement in [StudioAudioClipSettings.Placement(startTime: .nan, track: 1), .init(startTime: .infinity, track: 1),
+                    .init(startTime: -1, track: 1), .init(startTime: 1001, track: 1), .init(startTime: 1, track: 0), .init(startTime: 1, track: 5)] {
+                    try rejected(request(editor, .apply([audioCommand(.init(placement: placement))])), editor: &editor)
+                }
+                try rejected(request(editor, .apply([audioCommand(.init(placement: .init(startTime: 2, track: 1))),
+                    .selectFrame(.id("missing"))])), editor: &editor)
+                try rejected(request(editor, .apply([audioCommand(.init(placement: .init(startTime: 2, track: 1)))])),
+                    editor: &editor, cancellation: { throw CancellationError() })
+            }
+            try test("typed audio trim preserves fade source phase and reverses one transaction") {
+                var editor = try audioEditor()
+                try editor.updateAudioClip("first-audio", settings: .init(fades: .init(fadeIn: 0.2, fadeOut: 0.3)))
+                let before = editor.document
+                let change = request(editor, .apply([audioCommand(.init(trim: .init(sourceOffset: 0.6, duration: 0.7)))]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(change)), editor: &editor)
+                var expected = before.audioClips[0]; expected.sourceOffset = 0.6; expected.duration = 0.7
+                try require(editor.document.audioClips[0] == expected && editor.document.audioClips[1] == before.audioClips[1]
+                    && receipt.changedAudioClipIDs == ["first-audio"], "Trim reset fade phase or unrelated settings")
+                let after = editor.document
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                editor.undo(); try require(content(editor.document) == content(before), "Trim Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Trim Redo failed")
+                for trim in [StudioAudioClipSettings.Trim(sourceOffset: .nan, duration: 1), .init(sourceOffset: -1, duration: 1),
+                    .init(sourceOffset: 301, duration: 1), .init(sourceOffset: 0, duration: .infinity),
+                    .init(sourceOffset: 0, duration: 0), .init(sourceOffset: 0, duration: 0.000001), .init(sourceOffset: 0, duration: 301)] {
+                    try rejected(request(editor, .apply([audioCommand(.init(trim: trim))])), editor: &editor)
+                }
+                let changed = audioCommand(.init(trim: .init(sourceOffset: 0.75, duration: 0.5)))
+                try rejected(request(editor, .apply([changed, .selectFrame(.id("missing"))])), editor: &editor)
+                try rejected(request(editor, .apply([changed])), editor: &editor, cancellation: { throw CancellationError() })
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([audioCommand(.init(trim: .init(sourceOffset: 0.75, duration: 0.5),
+                    fades: .init(fadeIn: 0.1, fadeOut: 0.1)))])), editor: &editor)
+                try require(editor.document.audioClips[0].fadeEnvelope == .init(sourceStartFrame: 36_000, frameCount: 24_000,
+                    fadeInFrames: 4_800, fadeOutFrames: 4_800), "Explicit trim plus new fades used old source coordinates")
+            }
+            try test("duplicate audio typed command preserves source metadata identity history and bounds") {
+                var editor = try audioEditor()
+                try editor.updateAudioClip("first-audio", settings: .init(isMuted: true, fades: .init(fadeIn: 0.1, fadeOut: 0.2)))
+                let before = editor.document
+                let command = StudioCommand.duplicateAudioClip(.init(clipID: "first-audio", newClipID: "stable-copy"))
+                let change = request(editor, .apply([command]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(change)), editor: &editor)
+                let original = before.audioClips[0], copy = editor.document.audioClips.last!
+                try require(copy.id == "stable-copy" && copy.assetID == original.assetID && copy.sourceOffset == original.sourceOffset
+                    && copy.duration == original.duration && copy.startTime == original.startTime + original.duration
+                    && copy.track == original.track && copy.volume == original.volume && copy.isMuted == original.isMuted
+                    && copy.fadeEnvelope == original.fadeEnvelope && receipt.changedAudioClipIDs == [copy.id]
+                    && receipt.createdFrameIDs.isEmpty, "Duplicate rewrote source settings or invented frames")
+                let after = editor.document
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                try rejected(request(editor, .apply([command])), editor: &editor)
+                editor.undo(); try require(content(editor.document) == content(before), "Duplicate Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Duplicate Redo regenerated identity")
+                let freshCopy = StudioCommand.duplicateAudioClip(.init(clipID: "first-audio", newClipID: "cancel-copy"))
+                try rejected(request(editor, .apply([freshCopy])), editor: &editor, cancellation: { throw CancellationError() })
+                try rejected(request(editor, .apply([freshCopy, .selectFrame(.id("missing"))])), editor: &editor)
+                for id in ["", "stable-copy", String(repeating: "x", count: 121), "bad\nID"] {
+                    try rejected(request(editor, .apply([.duplicateAudioClip(.init(clipID: "first-audio", newClipID: id))])), editor: &editor)
+                }
+                var full = before
+                full.audioClips = (0..<128).map { index in
+                    AudioClip(id: "full-\(index)", soundName: original.soundName, track: 1, startTime: 0,
+                        duration: 1, assetID: original.assetID)
+                }
+                var capped = try StudioDocumentEditor(document: full)
+                try rejected(request(capped, .apply([.duplicateAudioClip(.init(clipID: "full-0", newClipID: "overflow"))])), editor: &capped)
+            }
+            try test("duplicate audio wire rejects paths missing identities and unknown fields") {
+                let editor = try audioEditor()
+                let seed = request(editor, .apply([.duplicateAudioClip(.init(clipID: "first-audio", newClipID: "copy"))]))
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(seed)) as! [String: Any]
+                let invalid: [[String: Any]] = [["clipID": "first-audio"], ["clipID": true, "newClipID": "copy"],
+                    ["clipID": "first-audio", "newClipID": "copy", "sourceURL": "file:///private"]]
+                for fields in invalid {
+                    var object = base; object["action"] = ["apply": [["duplicateAudioClip": fields]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Malformed duplicate wire accepted") }
+                    catch is StudioCommandError { }
+                }
+            }
+            try test("typed audio split and delete preserve source phase stable IDs and one-step history") {
+                var editor = try audioEditor()
+                try editor.updateAudioClip("first-audio", settings: .init(fades: .init(fadeIn: 0.2, fadeOut: 0.3)))
+                let before = editor.document
+                let split = StudioCommand.splitAudioClip(.init(clipID: "first-audio", seconds: 0.750014, newClipID: "right"))
+                let change = request(editor, .apply([split]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(change)), editor: &editor)
+                let after = editor.document, left = after.audioClips[0], right = after.audioClips[1]
+                try require(left.id == "first-audio" && right.id == "right" && left.fadeEnvelope == before.audioClips[0].fadeEnvelope
+                    && right.fadeEnvelope == left.fadeEnvelope && right.assetID == left.assetID && right.startTime == 36_001 / 48_000.0
+                    && right.sourceOffset == 48_001 / 48_000.0 && after.audioClips[2] == before.audioClips[1]
+                    && Set(receipt.changedAudioClipIDs) == ["first-audio", "right"] && receipt.createdFrameIDs.isEmpty,
+                    "Split lost source phase or changed unrelated clip")
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                editor.undo(); try require(content(editor.document) == content(before), "Split Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Split Redo changed ID")
+                let remove = request(editor, .apply([.deleteAudioClip(.init(clipID: "right"))]))
+                let deleted = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(remove)), editor: &editor)
+                try require(editor.document.audioClips == [left, before.audioClips[1]] && deleted.changedAudioClipIDs == ["right"], "Delete affected other audio")
+                editor.undo(); try require(content(editor.document) == content(after), "Delete Undo failed")
+                for time in [Double.nan, .infinity, -1, left.startTime, left.startTime + left.duration] {
+                    try rejected(request(editor, .apply([.splitAudioClip(.init(clipID: left.id, seconds: time, newClipID: "invalid"))])), editor: &editor)
+                }
+                let deletion = StudioCommand.deleteAudioClip(.init(clipID: "right"))
+                try rejected(request(editor, .apply([deletion])), editor: &editor, cancellation: { throw CancellationError() })
+                try rejected(request(editor, .apply([deletion, .selectFrame(.id("missing"))])), editor: &editor)
+                try rejected(request(editor, .apply([.deleteAudioClip(.init(clipID: "missing"))])), editor: &editor)
+            }
+            try test("split delete wire and capacity reject without partial state") {
+                let editor = try audioEditor()
+                let seed = request(editor, .apply([.deleteAudioClip(.init(clipID: "first-audio"))]))
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(seed)) as! [String: Any]
+                let invalid: [[String: Any]] = [
+                    ["deleteAudioClip": ["clipID": "first-audio", "all": true]],
+                    ["deleteAudioClip": ["clipID": true]],
+                    ["splitAudioClip": ["clipID": "first-audio", "seconds": 0.5]],
+                    ["splitAudioClip": ["clipID": "first-audio", "seconds": "0.5", "newClipID": "copy"]],
+                    ["splitAudioClip": ["clipID": "first-audio", "seconds": 0.5, "newClipID": "copy", "sourceURL": "file:///private"]]
+                ]
+                for fields in invalid {
+                    var object = base; object["action"] = ["apply": [fields]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Malformed split/delete accepted") }
+                    catch is StudioCommandError { }
+                }
+                var full = editor.document
+                full.audioClips = (0..<128).map { AudioClip(id: "full-\($0)", soundName: "Managed", track: 1,
+                    startTime: 0, duration: 1, assetID: editor.document.audioClips[0].assetID) }
+                var capped = try StudioDocumentEditor(document: full)
+                try rejected(request(capped, .apply([.splitAudioClip(.init(clipID: "full-0", seconds: 0.5, newClipID: "overflow"))])), editor: &capped)
+                var current = try audioEditor()
+                try rejected(request(current, .apply([.splitAudioClip(.init(clipID: "first-audio", seconds: 0.5, newClipID: "second-audio"))])), editor: &current)
+                let sourceID = current.document.audioClips[0].assetID!
+                let remove = request(current, .apply([.deleteAudioClip(.init(clipID: "first-audio")), .deleteAudioClip(.init(clipID: "second-audio"))]))
+                _ = try StudioCommandExecutor.execute(remove, editor: &current)
+                try require(current.document.audioClips.isEmpty && current.referencedAudioAssetIDsIncludingHistory.contains(sourceID), "Delete discarded the only Undo source")
+                current.undo(); try require(current.document.audioClips.count == 2, "One Undo did not restore both deleted clips")
+            }
+            try test("typed project rename shares normalized bounds preserves identity and reverses atomically") {
+                var editor = try audioEditor()
+                _ = try StudioCommandExecutor.execute(request(editor, .apply([draw(editor, [stroke(id: "rename-selection")])])), editor: &editor)
+                editor.selectedElementIDs = ["rename-selection"]
+                let before = editor.document, selection = editor.selectedElementIDs
+                let change = request(editor, .apply([.renameProject(.init(name: "  Sunset  "))]))
+                let receipt = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(JSONEncoder().encode(change)), editor: &editor)
+                var expected = before; expected.name = "Sunset"
+                try require(content(editor.document) == content(expected) && receipt.outcome == .applied
+                    && receipt.changedAudioClipIDs.isEmpty && receipt.createdFrameIDs.isEmpty && editor.selectedElementIDs == selection, "Rename changed artwork/source or false receipt")
+                let after = editor.document
+                try rejected(change, editor: &editor, expected: .staleRevision)
+                editor.undo(); try require(content(editor.document) == content(before), "Rename Undo failed")
+                editor.redo(); try require(content(editor.document) == content(after), "Rename Redo failed")
+                let beforeNoOp = editor.document, undoBeforeNoOp = editor.canUndo, redoBeforeNoOp = editor.canRedo
+                let noOp = try StudioCommandExecutor.execute(request(editor, .apply([.renameProject(.init(name: " Sunset "))])), editor: &editor)
+                try require(editor.document == beforeNoOp && editor.canUndo == undoBeforeNoOp && editor.canRedo == redoBeforeNoOp
+                    && noOp.outcome == .unchanged, "Same normalized name created revision or changed history")
+                for name in ["", "   ", "bad\tname", String(repeating: "a", count: 121), "a" + String(repeating: "\u{0301}", count: 241)] {
+                    try rejected(request(editor, .apply([.renameProject(.init(name: name))])), editor: &editor)
+                }
+                let rename = StudioCommand.renameProject(.init(name: "Another"))
+                try rejected(request(editor, .apply([rename])), editor: &editor, cancellation: { throw CancellationError() })
+                try rejected(request(editor, .apply([rename, .selectFrame(.id("missing"))])), editor: &editor)
+                let base = try JSONSerialization.jsonObject(with: JSONEncoder().encode(change)) as! [String: Any]
+                let invalid: [[String: Any]] = [["name": true], [:], ["name": "Valid", "shell": "execute"]]
+                for fields in invalid {
+                    var object = base; object["action"] = ["apply": [["renameProject": fields]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: object)); throw Failure(message: "Malformed rename accepted") }
+                    catch is StudioCommandError { }
+                }
             }
             print("STUDIO_COMMAND_TESTS=PASS \(passed) production command cases")
         } catch {

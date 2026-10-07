@@ -653,7 +653,73 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     var holdTicks: Int? = nil
     /// Version 22: normalized crop in the original upright image, before flips/rotation.
     var rasterCrop: StudioImageCrop? = nil
+    /// Version 27 linked instances share this frame's immutable raster source.
+    var rasterAliases: [StudioRasterLayerInstance]? = nil
     var durationTicks: Int { min(600, max(1, holdTicks ?? 1)) }
+
+    var rasterLayerInstances: [StudioRasterLayerInstance] {
+        guard rasterAssetID != nil, let rasterLayerID else { return [] }
+        return [.init(layerID: rasterLayerID, placement: rasterPlacement, reflection: rasterReflection,
+                      quarterTurns: rasterQuarterTurns, crop: rasterCrop)] + (rasterAliases ?? [])
+    }
+    func rasterInstance(on layerID: String) -> StudioRasterLayerInstance? {
+        let matches = rasterLayerInstances.filter { $0.layerID == layerID }
+        return matches.count == 1 ? matches[0] : nil
+    }
+    func visibleRasterInstances(in layers: [CanvasLayer]) -> [StudioRasterLayerInstance] {
+        let visible = Set(layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
+        return rasterLayerInstances.filter { visible.contains($0.layerID) }
+    }
+    func preferredRasterInstance(activeLayerID: String) -> StudioRasterLayerInstance? {
+        if let selected = rasterInstance(on: activeLayerID) { return selected }
+        let instances = rasterLayerInstances
+        return instances.count == 1 ? instances[0] : nil
+    }
+    func projectedRasterFrame(on layerID: String) -> AnimationFrame? {
+        guard let instance = rasterInstance(on: layerID) else { return nil }
+        var frame = self
+        frame.assignPrimaryRasterInstance(instance); frame.rasterAliases = nil
+        return frame
+    }
+    mutating func updateRasterInstance(_ instance: StudioRasterLayerInstance) throws {
+        guard rasterInstance(on: instance.layerID) != nil else { throw StudioRasterLayerInstance.Failure.invalid }
+        if rasterLayerID == instance.layerID { assignPrimaryRasterInstance(instance) }
+        else if let index = rasterAliases?.firstIndex(where: { $0.layerID == instance.layerID }) {
+            rasterAliases?[index] = instance
+        } else { throw StudioRasterLayerInstance.Failure.invalid }
+    }
+    mutating func removeRasterInstance(on layerID: String) throws {
+        guard rasterInstance(on: layerID) != nil else { throw StudioRasterLayerInstance.Failure.invalid }
+        if rasterLayerID == layerID {
+            var aliases = rasterAliases ?? []
+            if !aliases.isEmpty {
+                assignPrimaryRasterInstance(aliases.removeFirst())
+                rasterAliases = aliases.isEmpty ? nil : aliases
+            } else {
+                rasterAssetID = nil; rasterLayerID = nil; rasterPlacement = nil
+                rasterReflection = nil; rasterQuarterTurns = nil; rasterCrop = nil; rasterAliases = nil
+            }
+        } else {
+            rasterAliases?.removeAll { $0.layerID == layerID }
+            if rasterAliases?.isEmpty == true { rasterAliases = nil }
+        }
+    }
+    private mutating func assignPrimaryRasterInstance(_ instance: StudioRasterLayerInstance) {
+        rasterLayerID = instance.layerID; rasterPlacement = instance.placement
+        rasterReflection = instance.reflection; rasterQuarterTurns = instance.quarterTurns; rasterCrop = instance.crop
+    }
+}
+
+struct StudioRasterLayerInstance: Codable, Equatable {
+    var layerID: String
+    var placement: StudioRasterPlacement? = nil
+    var reflection: StudioRasterReflection? = nil
+    var quarterTurns: Int? = nil
+    var crop: StudioImageCrop? = nil
+    enum Failure: LocalizedError {
+        case invalid
+        var errorDescription: String? { "The selected linked image is unavailable or ambiguous. Nothing changed." }
+    }
 }
 
 struct StudioImageCrop: Codable, Equatable {
@@ -824,6 +890,16 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
 /// Optional values preserve existing settings. A pair of zero fade durations
 /// explicitly clears the envelope; omission preserves its original source phase.
 struct StudioAudioClipSettings: Codable, Equatable {
+    struct Placement: Codable, Equatable {
+        let startTime: Double
+        let track: Int
+    }
+    struct Trim: Codable, Equatable {
+        let sourceOffset: Double
+        let duration: Double
+    }
+    var trim: Trim? = nil
+    var placement: Placement? = nil
     struct Fades: Codable, Equatable {
         let fadeIn: Double
         let fadeOut: Double

@@ -312,6 +312,16 @@ private struct Failure: Error { let message: String }
         let actual = try StudioFillService.element(from: capture(d,raster: png))
         let vector = try StudioFillService.element(from: capture(outlined))
         try require(actual.fillMask == vector.fillMask,"Actual decoded image boundary yields same region as original vector")
+        var linked = try StudioDocumentEditor(document: d)
+        let originalLayer = d.activeLayerID
+        try linked.duplicateLayer(originalLayer)
+        try linked.updateLayer(originalLayer) { $0.visible = false }
+        let linkedCapture = try capture(linked.document,raster:png)
+        let linkedFill = try StudioFillService.element(from: linkedCapture)
+        try require(linkedFill.layerID == linked.document.activeLayerID && linkedFill.fillMask == vector.fillMask,
+                    "Fill on linked layer did not sample its original PNG boundary")
+        try rejects { _ = try capture(linked.document) }
+
         let c = try capture(outlined)
         let cancelled = Task { @MainActor in try StudioFillService.element(from: c) }
         cancelled.cancel()

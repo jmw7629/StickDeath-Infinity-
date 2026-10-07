@@ -155,15 +155,54 @@ struct SpatterMotionRecipe: Equatable {
     }
 }
 
+/// A project title is data; quoted instruction-like text never becomes another action.
+struct SpatterProjectRenameInstruction: Equatable {
+    let name: String
+    static let example = "Rename project to \"Sunset\"."
+    static func isInstruction(_ text: String) -> Bool {
+        text.split(whereSeparator: { $0.isWhitespace }).first?.lowercased() == "rename"
+    }
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? { "Use Rename project to \"Sunset\". with one quoted name. Nothing changed." }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        let expression = try NSRegularExpression(pattern: #"\A\s*rename\s+project\s+to\s+"([^"\r\n]*)"\.?\s*\z"#, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { throw Failure.unsupported }
+        return .init(name: try StudioDocument.validatedProjectName(String(text[range])))
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        let title = try StudioDocument.validatedProjectName(name)
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.renameProject(.init(name: title))]))
+    }
+}
+
 /// Explicit local audio instructions only. No provider text, file path or
 /// imported metadata can enter this parser without a separate user submission.
 struct SpatterAudioInstruction: Equatable {
     let settings: StudioAudioClipSettings
+    let duplicates: Bool
+    let splitTime: Double?
+    let deletes: Bool
+    init(settings: StudioAudioClipSettings, duplicates: Bool = false, splitTime: Double? = nil, deletes: Bool = false) {
+        self.settings = settings; self.duplicates = duplicates; self.splitTime = splitTime; self.deletes = deletes
+    }
     enum Example: String, CaseIterable, Identifiable {
-        case volume, mute, unmute, fades, clear
+        case volume, mute, unmute, fades, clear, placement, trim, duplicate, split, delete
         var id: String { rawValue }
         var title: String {
             switch self {
+            case .split: return "Split clip"
+            case .delete: return "Delete selected clip"
+            case .duplicate: return "Duplicate clip"
+            case .trim: return "Trim clip"
+            case .placement: return "Move clip"
             case .volume: return "Set volume"
             case .mute: return "Mute clip"
             case .unmute: return "Unmute clip"
@@ -173,6 +212,11 @@ struct SpatterAudioInstruction: Equatable {
         }
         var instruction: String {
             switch self {
+            case .split: return "Split selected audio clip at 0.5 timeline seconds."
+            case .delete: return "Delete selected audio clip."
+            case .duplicate: return "Duplicate selected audio clip."
+            case .trim: return "Trim selected audio clip from source 0.10 seconds for 0.50 seconds."
+            case .placement: return "Move selected audio clip to 1.25 seconds on track 2."
             case .volume: return "Set selected audio clip volume to 40%."
             case .mute: return "Mute selected audio clip."
             case .unmute: return "Unmute selected audio clip."
@@ -186,16 +230,21 @@ struct SpatterAudioInstruction: Equatable {
         var errorDescription: String? {
             switch self {
             case .unsupported: return "Use one complete audio instruction from the examples. Additional actions are unavailable. Nothing changed."
-            case .invalidValue: return "Use a volume from 0–100% or finite nonnegative fade durations that fit the selected clip. Nothing changed."
+            case .invalidValue: return "Use volume 0–100%, fades within the clip, start 0–1,000 seconds on track 1–4, or a source trim containing playable audio. Nothing changed."
             case .missingClip: return "Select a playable clip in the Audio workspace, then reopen Spatter. Nothing changed."
             }
         }
     }
     static func isAudioInstruction(_ text: String) -> Bool {
         let first = text.split(whereSeparator: { $0.isWhitespace }).first?.lowercased()
-        return ["set", "mute", "unmute", "fade", "clear"].contains(first ?? "")
+        return ["set", "mute", "unmute", "fade", "clear", "move", "trim", "duplicate", "split", "delete"].contains(first ?? "")
     }
     private static let patterns: [(String, String)] = [
+        ("split", #"\A\s*split\s+selected\s+audio\s+clip\s+at\s+([^\s]+)\s+timeline\s+seconds?\.?\s*\z"#),
+        ("delete", #"\A\s*delete\s+selected\s+audio\s+clip\.?\s*\z"#),
+        ("duplicate", #"\A\s*duplicate\s+selected\s+audio\s+clip\.?\s*\z"#),
+        ("trim", #"\A\s*trim\s+selected\s+audio\s+clip\s+from\s+source\s+([^\s]+)\s+seconds?\s+for\s+([^\s]+)\s+seconds?\.?\s*\z"#),
+        ("placement", #"\A\s*move\s+selected\s+audio\s+clip\s+to\s+([^\s]+)\s+seconds?\s+on\s+track\s+([0-9]+)\.?\s*\z"#),
         ("volume", #"\A\s*set\s+selected\s+audio\s+clip\s+volume\s+to\s+([^\s%]+)\s*%\.?\s*\z"#),
         ("mute", #"\A\s*(mute|unmute)\s+selected\s+audio\s+clip\.?\s*\z"#),
         ("fades", #"\A\s*fade\s+selected\s+audio\s+clip\s+in\s+over\s+([^\s]+)\s+seconds\s+and\s+out\s+over\s+([^\s]+)\s+seconds\.?\s*\z"#),
@@ -223,6 +272,17 @@ struct SpatterAudioInstruction: Equatable {
                 return value
             }
             switch kind {
+            case "split": return .init(settings: .init(), splitTime: try number(1, maximum: 1300))
+            case "delete": return .init(settings: .init(), deletes: true)
+            case "duplicate": return .init(settings: .init(), duplicates: true)
+            case "trim":
+                let offset = try number(1, maximum: 300), duration = try number(2, maximum: 300)
+                guard duration >= 1 / 48_000.0 else { throw InstructionError.invalidValue }
+                return .init(settings: .init(trim: .init(sourceOffset: offset, duration: duration)))
+            case "placement":
+                let start = try number(1, maximum: 1000), rawTrack = try token(2)
+                guard rawTrack.utf8.count <= 2, let track = Int(rawTrack), (1...4).contains(track) else { throw InstructionError.invalidValue }
+                return .init(settings: .init(placement: .init(startTime: start, track: track)))
             case "volume": return .init(settings: .init(volume: try number(1, maximum: 100) / 100))
             case "mute": return .init(settings: .init(isMuted: try token(1).lowercased() == "mute"))
             case "fades": return .init(settings: .init(fades: .init(fadeIn: try number(1, maximum: 300), fadeOut: try number(2, maximum: 300))))
@@ -237,6 +297,22 @@ struct SpatterAudioInstruction: Equatable {
         try checkCancellation()
         guard let selectedClipID, let clip = context.editableAudioClips.first(where: { $0.id == selectedClipID }),
               clip.assetID != nil else { throw InstructionError.missingClip }
+        if let splitTime {
+            _ = try clip.splitTiming(at: splitTime)
+            try checkCancellation()
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                action: .apply([.splitAudioClip(.init(clipID: clip.id, seconds: splitTime, newClipID: UUID().uuidString))]))
+        }
+        if deletes {
+            try checkCancellation()
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                action: .apply([.deleteAudioClip(.init(clipID: clip.id))]))
+        }
+        if duplicates {
+            try checkCancellation()
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+                action: .apply([.duplicateAudioClip(.init(clipID: clip.id, newClipID: UUID().uuidString))]))
+        }
         _ = try settings.applying(to: clip)
         try checkCancellation()
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,

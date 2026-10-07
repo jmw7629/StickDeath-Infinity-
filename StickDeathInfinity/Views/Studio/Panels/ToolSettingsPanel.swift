@@ -156,7 +156,7 @@ struct FloatingToolSettingsPanel: View {
         .buttonStyle(.plain).foregroundColor(.white)
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityIdentifier("studio.image-rotate." + direction.rawValue)
-        .accessibilityValue("\((vm.currentFrame.rasterQuarterTurns ?? 0) * 90) degrees clockwise")
+        .accessibilityValue("\((vm.currentFrame.preferredRasterInstance(activeLayerID: vm.activeLayerID)?.quarterTurns ?? 0) * 90) degrees clockwise")
         .disabled(vm.prepareImagePlacement() == nil)
     }
 
@@ -171,8 +171,8 @@ struct FloatingToolSettingsPanel: View {
         .buttonStyle(.plain).foregroundColor(.white)
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
         .accessibilityIdentifier("studio.image-flip." + id)
-        .accessibilityValue((axis == .horizontal ? vm.currentFrame.rasterReflection?.horizontal
-                             : vm.currentFrame.rasterReflection?.vertical) == true ? "Flipped" : "Original")
+        .accessibilityValue((axis == .horizontal ? vm.currentFrame.preferredRasterInstance(activeLayerID: vm.activeLayerID)?.reflection?.horizontal
+                             : vm.currentFrame.preferredRasterInstance(activeLayerID: vm.activeLayerID)?.reflection?.vertical) == true ? "Flipped" : "Original")
         .disabled(vm.prepareImagePlacement() == nil)
     }
 
@@ -496,7 +496,7 @@ struct FloatingToolSettingsPanel: View {
                 Text(vm.isMovingImageOnCanvas ? "Drag inside the image to move it. It stays inside the canvas. Use Position image to make it smaller first if it fills the canvas." : vm.copiedDrawingCount > 0 ? "Copied \(vm.copiedDrawingCount) drawings. Paste adds them to the current layer; drag the new selection to move it."
                      : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
-                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture.")
+                     : "Drag drawn artwork, or choose Move image on canvas for the imported picture. For linked copies, select the image layer to edit.")
                     .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.guidance")
                 HStack(spacing: 8) {
@@ -536,7 +536,7 @@ struct FloatingToolSettingsPanel: View {
                     .disabled(vm.prepareImagePlacement() == nil)
                     Button("Crop image") {
                         guard let capture = vm.prepareImagePlacement() else { return }
-                        let crop = vm.currentFrame.rasterCrop ?? .full
+                        let crop = vm.currentFrame.rasterInstance(on: capture.layerID)?.crop ?? .full
                         imageX = String(crop.x * 100); imageY = String(crop.y * 100)
                         imageWidth = String(crop.width * 100); imageHeight = String(crop.height * 100)
                         imageCrop = capture

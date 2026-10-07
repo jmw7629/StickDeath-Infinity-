@@ -167,7 +167,7 @@ struct StudioCanvasView: View {
                                 height: bounds.height / CGFloat(vm.canvasHeight) * actual.height + 6)
                             context.stroke(Path(rect), with: .color(.red), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                         }
-                        if vm.currentImageMoveCapture() != nil, let placement = displayedFrame.rasterPlacement {
+                        if let capture = vm.currentImageMoveCapture(), let placement = displayedFrame.rasterInstance(on: capture.placement.layerID)?.placement {
                             let rect = CGRect(x: placement.x / Double(vm.canvasWidth) * actual.width,
                                 y: placement.y / Double(vm.canvasHeight) * actual.height,
                                 width: placement.width / Double(vm.canvasWidth) * actual.width,
@@ -785,7 +785,7 @@ struct StudioCanvasView: View {
         } catch { cancelHandlePreview(); vm.message = error.localizedDescription; return false }
     }
     private func imageHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
-        guard vm.currentImageMoveCapture() != nil, let p = frame.rasterPlacement else { return nil }
+        guard let capture = vm.currentImageMoveCapture(), let p = frame.rasterInstance(on: capture.placement.layerID)?.placement else { return nil }
         return .init(bounds: CGRect(x: p.x, y: p.y, width: p.width, height: p.height),
             documentSize: CGSize(width: vm.canvasWidth, height: vm.canvasHeight), viewport: size, zoom: vm.canvasScale)
     }

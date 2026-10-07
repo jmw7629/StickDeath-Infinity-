@@ -6,6 +6,7 @@ import SwiftUI
 struct SpatterMotionRecipePanel: View {
     @ObservedObject var vm: StudioViewModel
     let onBack: () -> Void
+    let onPictureImport: () -> Void
     let onExport: () -> Void
     let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
     @EnvironmentObject private var authVM: AuthViewModel
@@ -22,20 +23,21 @@ struct SpatterMotionRecipePanel: View {
     private var isTwoActorDraft: Bool { SpatterTwoActorBrief.isBrief(draft) }
     private var isBriefDraft: Bool { SpatterSceneBrief.isBrief(draft) }
     private var isStickDraft: Bool { SpatterStickFigureRecipe.isStickFigureInstruction(draft) }
+    private var isRenameDraft: Bool { SpatterProjectRenameInstruction.isInstruction(draft) }
     private var isAudioDraft: Bool { SpatterAudioInstruction.isAudioInstruction(draft) }
     private var exampleText: String {
-        isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
+        isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
-        isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
-            ? "Edit the selected clip's volume, mute state or fades. Its source, placement and track settings stay unchanged. One Undo reverses the edit."
+        isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
+            ? "Edit the selected clip's volume, mute, fades, placement or source range, or duplicate, split or delete the selected clip. Original audio stays unchanged. One Undo reverses the edit."
             : isBriefDraft ? "A supported two-action brief makes 16–20 editable stick-figure poses with frame holds, in one Undo step. Color, direction, action order and duration follow the brief. This bounded local planner is not open-ended AI video generation."
             : isStickDraft ? "Procedural walking, running, jumping and waving append 8–20 editable stick-figure frames on a new layer. This is a local motion recipe, not open-ended AI video generation. Current project FPS and existing frames are preserved; one Undo reverses the edit."
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
-        isTwoActorDraft ? "Give each actor its own color, action and direction. Use 12–60 project FPS; duration must fit 8–24 ticks. Longer durations reject without stretching poses. No soundtrack or publication is generated." : isAudioDraft
-            ? "Volume uses 0–100%. Fade durations use seconds and must fit the selected clip. Choose a complete audio example, edit its values, then Apply."
+        isRenameDraft ? "Use one name in double quotes, with 1–120 characters and no control characters. Stop playback before applying. The quoted name is text, never another instruction." : isTwoActorDraft ? "Give each actor its own color, action and direction. Use 12–60 project FPS; duration must fit 8–24 ticks. Longer durations reject without stretching poses. No soundtrack or publication is generated." : isAudioDraft
+            ? "Volume uses 0–100%. Fade durations use seconds and must fit the selected clip. Move uses an absolute start in seconds and track 1–4; it does not inherit drag snapping. Trim uses a source offset and duration in seconds; the original recording stays unchanged. Duplicate adds one clip immediately after the selected clip, retaining its source range, fades, gain and track. Split uses an absolute timeline time in seconds inside the selected clip and rounds to an audio sample. Delete removes only the selected clip; one Undo restores it. Choose a complete audio example, edit its values, then Apply."
             : isBriefDraft ? "Use walks, runs, jumps or waves; at least one action travels. Specify left to right or right to left and 0.5–10 seconds covering at least 16 project ticks. Timing rounds to a project tick; no sound or props are generated."
             : isStickDraft ? "Start/end positions are the figure's feet baseline in canvas percentages. Height uses the shorter canvas side; every pose must fit. Edit the example's action, frame count, color, positions and size."
             : "Positions use canvas percentages. Radius uses the shorter canvas side; line width is in pixels. The full outline must fit inside the canvas."
@@ -65,7 +67,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
@@ -75,7 +77,7 @@ struct SpatterMotionRecipePanel: View {
                     Text(exampleText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
-                    Button(isAudioDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
+                    Button(isAudioDraft || isRenameDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
                     Menu("Use an audio instruction") {
@@ -87,6 +89,10 @@ struct SpatterMotionRecipePanel: View {
                     .frame(minHeight: 44)
                     .disabled(session.isWorking || session.isClosed)
                     .accessibilityIdentifier("spatter.audio.examples")
+                    Button("Use project rename example") { draft = SpatterProjectRenameInstruction.example }
+                        .frame(minHeight: 44)
+                        .disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.project.rename-example")
                     Text(vm.selectedCurrentAudioClip.map { "Audio target: " + $0.soundName }
                          ?? "For audio edits, select a clip in Audio before opening Spatter.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
@@ -120,7 +126,7 @@ struct SpatterMotionRecipePanel: View {
                         .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
-                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
+                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                     Button("Apply local edit") {
                         draftFocused = false
@@ -168,6 +174,18 @@ struct SpatterMotionRecipePanel: View {
                         Text(message).font(.caption).foregroundColor(.white.opacity(0.8))
                             .accessibilityIdentifier("spatter.motion.project-status")
                     }
+                    Divider().overlay(Color.white.opacity(0.2)).padding(.top, 8)
+                    Text("Other Studio actions")
+                        .font(.headline)
+                    Button("Open Add Picture…") {
+                        draftFocused = false
+                        onPictureImport()
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed || !scope.isStudioVisible)
+                    .accessibilityIdentifier("spatter.picture.apply")
+                    Text("Opens the existing picture picker. Choose a source, review its preview, then Add; nothing imports automatically.")
+                        .font(.caption).foregroundColor(.white.opacity(0.7))
                 }
                 .foregroundColor(.white).padding(16)
             }

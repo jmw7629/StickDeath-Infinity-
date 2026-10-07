@@ -228,6 +228,35 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try output.cleanup()
             try require(try FileManager.default.contentsOfDirectory(atPath: parent.path).isEmpty, "Credit export cleanup failed")
         }
+        await test("linked image alias exports actual GIF pixels and one credit with hidden primary") {
+            var editor = try StudioDocumentEditor(document: rasterDocument())
+            let primary = editor.document.activeLayerID
+            try editor.duplicateLayer(primary)
+            let alias = editor.document.activeLayerID
+            let frameIDs = editor.document.frames.map(\.id)
+            for id in frameIDs {
+                try editor.cropImage(frameID: id, assetID: "raster", crop: .init(x: 0.25, y: 0, width: 0.5, height: 1), layerID: alias)
+                try editor.updateImagePlacement(frameID: id, assetID: "raster", placement: .init(x: 40, y: 8, width: 16, height: 16), layerID: alias)
+            }
+            try editor.updateLayer(primary) { $0.visible = false }
+            let doc = editor.document
+            try require(doc.frames[0].rasterPlacement?.width == 32 && doc.frames[0].rasterInstance(on: alias)?.crop?.width == 0.5,
+                        "Real duplicate changed original geometry or lost alias crop")
+            try await rejects { _ = try await Encoder().encode(.init(document: doc, rasterDataByID: [:], imageCredits: ["raster": credit])) }
+            let parent = folder.appendingPathComponent("linked-credited-gif")
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+            let output = try await StudioGIFExportService().export(.init(document: doc, rasterDataByID: ["raster": pngData], imageCredits: ["raster": credit]), outputParent: parent)
+            let urls = try output.checkedURLs(), data = try Data(contentsOf: urls[0])
+            let receipt = try JSONDecoder().decode(Encoder.Receipt.self, from: Data(contentsOf: urls[1]))
+            try require(receipt.imageCredits == [credit] && receipt.revision == doc.revision && receipt.frameIDs == frameIDs,
+                        "Linked GIF did not preserve one actual source credit and current revision")
+            for index in 0..<2 {
+                try same(pixel(data, index: index, x: 48, y: 16), [255, 0, 0, 255])
+                try same(pixel(data, index: index, x: 24, y: 16), [255, 255, 255, 255])
+            }
+            try require(editor.document == doc && doc.referencedRasterAssetIDs == ["raster"], "GIF export changed linked source document")
+            try output.cleanup()
+        }
         await test("GIF credits omit hidden zero-opacity and personal assets and old receipts decode") {
             var doc = try rasterDocument()
             let personal = try await Encoder().encode(.init(document: doc, rasterDataByID: ["raster": pngData]))

@@ -99,6 +99,68 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(reopened && cold.frames.map(\.id) == edited.frames.map(\.id), "Cold reopen lost exported editable source")
             await cold.backToProjects()
         }
+        for cancels in [true, false] {
+            await test(cancels
+                ? "direct Spatter export cancellation after real rendering has no artifact and preserves undo"
+                : "direct Spatter export actual output limit failure has no artifact and preserves undo") {
+                let (vm, ordinaryState, output) = try await create(root.appendingPathComponent(cancels ? "direct-cancel" : "direct-output-limit"))
+                let state = cancels ? ordinaryState : StudioMoviePanelState(outputParent: output,
+                    limits: .init(maximumOutputBytes: 1))
+                let before = vm.document
+                vm.activePanel = .spatterAI
+                let edit = SpatterStudioEditSession()
+                let editScope = SpatterStudioEditSession.Scope(isStudioVisible: true, accountID: nil)
+                let initialSave = await vm.save()
+                try require(initialSave, "Initial failure-path fixture save failed")
+                try require(edit.submit("Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px.",
+                    in: vm, accountID: nil, currentScope: { editScope }), "Actual failure-path recipe rejected")
+                await edit.waitForCompletion()
+                try require(edit.status == .applied, edit.notice ?? "Actual recipe did not apply")
+                let saved = await vm.save()
+                try require(saved, "Actual applied edit did not save")
+                let edited = vm.document
+                guard let request = edit.prepareMovieExport(in: vm, currentScope: editScope) else {
+                    throw Failure(message: "Actual saved edit could not prepare direct export")
+                }
+                edit.close(); vm.activePanel = .export
+                var rendered = false, prematureArtifact = false
+                let listener = state.session.$completedFrames.dropFirst().sink { completed in
+                    if state.directArtifactDescription != nil { prematureArtifact = true }
+                    if cancels && completed == 1 {
+                        rendered = true
+                        state.session.cancel()
+                    }
+                }
+                defer { listener.cancel(); state.session.close() }
+                try require(state.start(request, from: vm, scope: scope), "Actual direct failure-path export did not start")
+                try require(state.directSource == request && state.directArtifactDescription == nil,
+                            "Direct request was not captured or advertised output before completion")
+                try await idle(state)
+                try require(!prematureArtifact && state.directArtifactDescription == nil && state.session.output == nil,
+                            "Cancelled/failed direct export advertised an artifact")
+                try require(fm.contentsOfDirectory(atPath: output.path).isEmpty && !state.session.needsCleanup,
+                            "Cancelled/failed direct export leaked owned partial/completed files")
+                if cancels {
+                    try require(rendered && state.session.completedFrames == 1,
+                                "Cancellation did not occur after a real rendered frame")
+                    try require(state.session.errorMessage == nil && state.session.notice == "MP4 export cancelled.",
+                                "Cancellation claimed success or became an unrelated error")
+                } else {
+                    try require(state.session.errorMessage == StudioMovieExportService.ExportError.limitExceeded.localizedDescription,
+                                "Expected actual encoder output-size failure was not observed")
+                }
+                try require(vm.document == edited && vm.canUndo, "Export failure changed the editable scene or its history")
+                try require(!state.start(request, from: vm, scope: scope) && state.directArtifactDescription == nil,
+                            "Failed direct request replayed or advertised a file")
+                vm.undo()
+                try require(vm.frames == before.frames && vm.layers == before.layers,
+                            "Failure path prevented one-step Undo of the applied scene")
+                vm.redo()
+                try require(vm.frames == edited.frames && vm.layers == edited.layers,
+                            "Failure path changed editable scene on Redo")
+                await vm.backToProjects()
+            }
+        }
         await test("direct export rejects stale unsaved draft account and replay contexts without output") {
             for mode in 0..<5 {
                 let (vm, state, output) = try await create(root.appendingPathComponent("direct-reject-\(mode)"))

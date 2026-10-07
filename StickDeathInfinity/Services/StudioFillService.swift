@@ -51,9 +51,7 @@ enum StudioFillService {
               let target = document.layers.first(where: { $0.id == layerID }), target.visible,
               !target.isFullyLocked, ["free", "position"].contains(target.lockMode) else { throw Failure.unavailable }
         let layers = sampleAllLayers ? document.layers : [target]
-        let needsRaster = frame.rasterAssetID != nil && layers.contains {
-            $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0
-        }
+        let needsRaster = !frame.visibleRasterInstances(in: layers).isEmpty
         if needsRaster && rasterData == nil { throw Failure.missingRaster }
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         let image = try StudioFrameRenderer.prepareRaster(frame: frame, layers: layers,

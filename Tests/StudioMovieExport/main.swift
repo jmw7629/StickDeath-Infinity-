@@ -891,9 +891,28 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let credit = try StudioExportService.ImageCredit(attribution: rights)
             let folder = try parent(root, "credited-silent")
             var doc = try document(colors: ["#FF0000", "#FF0000"])
+            doc.schemaVersion = 3
             for index in doc.frames.indices {
                 doc.frames[index].elements = []; doc.frames[index].rasterAssetID = "licensed"; doc.frames[index].rasterLayerID = doc.activeLayerID
+                doc.frames[index].rasterPlacement = .init(x: 0, y: 0, width: 24, height: 32)
             }
+            var editor = try StudioDocumentEditor(document: doc)
+            let primary = doc.activeLayerID
+            try editor.duplicateLayer(primary)
+            let alias = editor.document.activeLayerID
+            for frameID in doc.frames.map(\.id) {
+                try editor.cropImage(frameID: frameID, assetID: "licensed", crop: .init(x: 0, y: 0, width: 0.75, height: 1), layerID: alias)
+                try editor.updateImagePlacement(frameID: frameID, assetID: "licensed", placement: .init(x: 32, y: 0, width: 32, height: 32), layerID: alias)
+            }
+            try editor.updateLayer(primary) { $0.visible = false }
+            doc = editor.document
+            try require(doc.frames[0].rasterPlacement?.width == 24 && doc.frames[0].rasterInstance(on: alias)?.crop?.width == 0.75,
+                        "Licensed layer duplication changed primary or lost selected crop")
+            var missingRejected = false
+            do {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: [:], imageCredits: ["licensed": credit]), outputParent: folder, background: .white)
+            } catch { missingRejected = true }
+            try require(missingRejected && contents(folder).isEmpty, "Missing linked source was accepted or left partial output")
             let captured = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: ["licensed": data], imageCredits: ["licensed": credit])
             let output = try await Service().export(snapshot: captured, outputParent: folder, background: .white)
             _ = try output.checkedURLs()
@@ -903,7 +922,12 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let png = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder,
                 imageCredits: ["licensed": credit], rasterData: { _ in data })
             try require(decoded.frames.count == 2, "Credited MP4 lost actual frames")
-            try matchesPNG(decoded.frames[0], readPNG(png.imageURLs[0]))
+            for index in 0..<2 {
+                try matchesPNG(decoded.frames[index], readPNG(png.imageURLs[index]))
+                try pixel(decoded.frames[index].pixel(8, 16), [255, 255, 255, 255])
+            }
+            try require(manifest.documentRevision == doc.revision && editor.document == doc && doc.referencedRasterAssetIDs == ["licensed"],
+                        "Linked movie lost latest revision or mutated shared source")
             try require(manifest.encodedBytes + Data(contentsOf: output.manifestURL).count <= Service.Limits().maximumOutputBytes,
                 "Movie plus manifest exceeds aggregate bound")
             var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: output.manifestURL)) as! [String: Any]

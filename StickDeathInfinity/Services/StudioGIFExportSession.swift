@@ -68,7 +68,7 @@ final class StudioGIFExportSession: ObservableObject {
         }
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
         let visibleIDs = Set(document.frames.compactMap { frame -> String? in
-            document.layers.contains { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 } ? frame.rasterAssetID : nil
+            !frame.visibleRasterInstances(in: document.layers).isEmpty ? frame.rasterAssetID : nil
         })
         do {
             for id in visibleIDs {

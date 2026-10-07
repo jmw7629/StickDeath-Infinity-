@@ -100,7 +100,7 @@ final class StudioExportService {
         guard creditsByRasterID.count <= maximumFrames else { throw ExportError.limitExceeded }
         let visibleLayers = Set(document.layers.filter { $0.visible && $0.opacity > 0 }.map(\.id))
         let used = Set(document.frames.compactMap { frame -> String? in
-            guard let layerID = frame.rasterLayerID, visibleLayers.contains(layerID) else { return nil }
+            guard frame.rasterLayerInstances.contains(where: { visibleLayers.contains($0.layerID) }) else { return nil }
             return frame.rasterAssetID
         })
         var result: [ImageCredit] = []
@@ -171,7 +171,7 @@ final class StudioExportService {
                 let y = format == .spritesheet ? (index / columns) * document.height : 0
                 try autoreleasepool {
                     let raster: Data?
-                    let rasterVisible = document.layers.contains { $0.id == frame.rasterLayerID && $0.visible && $0.opacity > 0 }
+                    let rasterVisible = !frame.visibleRasterInstances(in: document.layers).isEmpty
                     if rasterVisible, let asset = frame.rasterAssetID {
                         guard let bytes = try rasterData(asset) else { throw ExportError.missingRaster }
                         try validateRaster(bytes)

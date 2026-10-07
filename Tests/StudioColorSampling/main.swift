@@ -104,6 +104,17 @@ private struct TestFailure: Error { let message: String }
         }
         try require(try read(rasterDoc,2,2,raster:imageBytes).hex == "#FFFFFF", "Raster placement ignored")
         pass("real PNG quadrants and managed image placement")
+        var linked = try StudioDocumentEditor(document: rasterDoc)
+        let primary = linked.document.activeLayerID
+        try linked.duplicateLayer(primary)
+        let copy = linked.document.activeLayerID
+        try linked.updateLayer(primary) { $0.visible = false }
+        try linked.updateImagePlacement(frameID: linked.document.activeFrameID, assetID: "managed-image",
+            placement: .init(x: 32, y: 16, width: 16, height: 16), layerID: copy)
+        try require(try read(linked.document,34,18,raster:imageBytes).hex == "#FF0000", "Visible alias was not sampled")
+        try require(try read(linked.document,20,12,raster:imageBytes).hex == "#FFFFFF", "Hidden original remained sampled")
+        try rejects("missing visible alias pixels", .missingRaster) { _ = try read(linked.document,34,18) }
+        pass("hidden primary with independently placed visible linked image samples actual source pixels")
         try rejects("missing managed raster", .missingRaster) { _ = try read(rasterDoc,20,12) }
         do { _ = try read(rasterDoc,20,12,raster:Data("invalid".utf8)); throw TestFailure(message:"Corrupt raster accepted") }
         catch is StudioRasterImage.Failure { }

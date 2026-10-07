@@ -424,6 +424,86 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(opened && !reopened.hasCopiedImage && reopened.currentFrame.rasterCrop == source.rasterCrop, "Cold reopen lost crop or persisted transient clipboard")
             try require(try render(reopened).bytes == expected && reopened.originalImageSource(asset)?.originalData == image.originalData, "Cold reopen altered pixels or source bytes")
         }
+        try await test("linked image layers independently render reorder crop promote and cold reopen without copying source bytes") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            let primary = vm.currentFrame.rasterLayerID!, sourceBytes = vm.managedImageByteCount
+            vm.selectedTool = .move; vm.selectLayer(primary)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 0, y: 0, width: 80, height: 40)), "Original placement failed")
+            let beforeDuplicate = vm.document
+            vm.duplicateLayer(primary)
+            let copy = vm.activeLayerID
+            try require(copy != primary && vm.currentFrame.rasterLayerInstances.count == 2
+                && vm.document.revision == beforeDuplicate.revision + 1 && vm.document.schemaVersion == 27,
+                "Image layer duplicate was not one independently owned transaction")
+            let primaryGeometry = vm.currentFrame.rasterInstance(on: primary)
+            try require(vm.prepareImagePlacement()?.layerID == copy, "Active duplicate did not become image edit target")
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0, y: 0, width: 0.5, height: 1)), "Copy crop failed")
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 0, width: 40, height: 40)), "Copy placement failed")
+            try require(vm.currentFrame.rasterInstance(on: primary) == primaryGeometry, "Copy geometry changed original")
+            try pixel(render(vm).pixel(60, 10), [255, 0, 0, 255])
+            vm.moveLayerDown(copy)
+            let behind = try render(vm).pixel(60, 10)
+            try require(behind[0] < 200 && behind[2] > 100, "Layer order did not composite original above linked copy")
+            vm.undo()
+            try pixel(render(vm).pixel(60, 10), [255, 0, 0, 255])
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 80, y: 80, width: 40, height: 40)), "Separated copy placement failed")
+            vm.setLayerOpacity(copy, opacity: 0.5); vm.toggleLayerVisibility(primary)
+            let expected = try render(vm)
+            try pixel(expected.pixel(10, 10), [255, 255, 255, 255])
+            try pixel(expected.pixel(90, 90), [255, 128, 128, 255])
+            try require(vm.rasterData(asset) == image.normalizedPNG && vm.managedImageByteCount == sourceBytes
+                && vm.originalImageSource(asset)?.originalData == original, "Linked copy duplicated or changed original bytes")
+            let isolated = StudioFrameRenderer.thumbnailContent(frame: vm.currentFrame, layers: vm.layers, isolatedLayerID: copy)
+            try require(isolated.frame.rasterLayerID == copy && isolated.frame.rasterCrop == vm.currentFrame.rasterInstance(on: copy)?.crop
+                && isolated.frame.rasterAliases == nil && isolated.layers.first?.opacity == 1,
+                "Isolated layer thumbnail did not project selected copy")
+            let output = try await StudioExportService().export(document: vm.document, format: .pngSequence,
+                outputParent: root, rasterData: { vm.rasterData($0) })
+            try require(try decoded(output.imageURLs[0]).bytes == expected.bytes, "Hidden primary caused visible linked copy to disappear from PNG")
+            await vm.flush()
+            vm.selectLayer(primary)
+            guard let deletion = vm.prepareLayerDeletion(primary) else { throw Failure(message: "Primary deletion capture unavailable") }
+            try require(vm.deleteLayer(deletion) && vm.currentFrame.rasterLayerID == copy && vm.currentFrame.rasterAliases == nil,
+                "Deleting original did not promote surviving linked image")
+            try require(try render(vm).bytes == expected.bytes, "Promotion changed image pixels")
+            vm.undo(); try require(vm.currentFrame.rasterLayerInstances.count == 2, "Undo did not restore both instances")
+            vm.redo(); try require(try render(vm).bytes == expected.bytes, "Redo changed promoted pixels")
+            let saved = await vm.save(); try require(saved, "Promoted image could not save")
+            guard let stored = try store.loadAnimation(id: vm.document.id) else { throw Failure(message: "Promoted project missing") }
+            let cold = StudioViewModel(storage: store), opened = await cold.openProject(stored.metadata)
+            try require(opened && cold.document == vm.document && cold.originalImageSource(asset)?.originalData == original
+                && cold.rasterData(asset) == image.normalizedPNG, "Cold reopen lost source or instance metadata")
+            try require(try render(cold).bytes == expected.bytes, "Cold promoted image pixels changed")
+        }
+        try await test("linked image capture rejects layer switches and clipboard retains only selected copy") {
+            let (vm, store) = try await project(root), asset = try attach(image, to: vm)
+            let primary = vm.currentFrame.rasterLayerID!
+            vm.selectLayer(primary); vm.duplicateLayer(primary); let copy = vm.activeLayerID
+            vm.selectedTool = .move
+            let capture = vm.prepareImagePlacement()!
+            vm.selectLayer(primary); let beforeRejected = vm.document
+            try require(!vm.placeImage(capture, at: .init(x: 0, y: 0, width: 80, height: 40)) && vm.document == beforeRejected,
+                "Old copy capture edited newly selected primary")
+            vm.selectLayer(copy)
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0.5, y: 0, width: 0.5, height: 1)), "Clipboard copy crop failed")
+            try require(vm.reflectImage(vm.prepareImagePlacement()!, axis: .horizontal), "Clipboard copy reflection failed")
+            let selected = vm.currentFrame.rasterInstance(on: copy)!, byteCount = vm.managedImageByteCount
+            try require(vm.copyImage(), "Selected linked image copy failed")
+            vm.addFrame(); try require(vm.pasteImage(), "Linked clipboard paste to blank frame failed")
+            let pasted = vm.currentFrame
+            try require(pasted.rasterAssetID == asset && pasted.rasterLayerInstances.count == 1 && pasted.rasterAliases == nil
+                && pasted.rasterCrop == selected.crop && pasted.rasterReflection == selected.reflection
+                && pasted.rasterPlacement == selected.placement && vm.managedImageByteCount == byteCount,
+                "Clipboard pasted siblings or lost selected transforms/shared source")
+            vm.undo(); try require(vm.currentFrame.rasterAssetID == nil, "Undo did not remove singleton paste")
+            vm.redo(); let saved = await vm.save(); try require(saved, "Linked clipboard project save failed")
+            let cold = StudioViewModel(storage: store)
+            let metadata = try store.loadAnimation(id: vm.document.id)!.metadata
+            let opened = await cold.openProject(metadata)
+            try require(opened && cold.document == vm.document && cold.frames[0].rasterLayerInstances.count == 2
+                && cold.currentFrame.rasterLayerInstances.count == 1 && cold.originalImageSource(asset)?.originalData == original,
+                "Cold persistence conflated linked frame and singleton clipboard image")
+        }
         try await test("managed missing corrupt and mismatched prepared pixels return actual render/export errors") {
             let (vm, _) = try await project(root); _ = try attach(image, to: vm)
             try rejects { _ = try StudioFrameRenderer.prepareRaster(frame: vm.currentFrame, layers: vm.layers, data: nil) }
