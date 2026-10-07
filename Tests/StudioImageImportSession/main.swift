@@ -128,6 +128,83 @@ private final class Counter: @unchecked Sendable {
                 passed += 1; print("PASS \(name)")
             } catch { print("FAIL \(name): \(error)"); throw error }
         }
+        try await test("owned background presets generate distinct real full-canvas pixels and accurate category counts") {
+            let presets = StudioImageImportService.BackgroundPreset.all
+            try require(presets.count == 16 && Set(presets.map(\.id)).count == 16,
+                "Preset identities or actual count incorrect")
+            try require(presets.filter { $0.category == "Gradients" }.count == 8 &&
+                presets.filter { $0.category == "Solid" }.count == 8, "Displayed category counts disagree")
+            var outputs = Set<Data>()
+            for preset in presets {
+                let image = try await StudioImageImportService.shared.prepareBackground(presetID: preset.id, width: 160, height: 120)
+                try require(image.width == 160 && image.height == 120 && image.originalData == image.normalizedPNG &&
+                    image.originalOrientation == 1, "Generated source size or orientation incorrect")
+                guard let source = CGImageSourceCreateWithData(image.normalizedPNG as CFData, nil),
+                      let pixels = CGImageSourceCreateImageAtIndex(source, 0, nil) else { throw Failure(message: "Background PNG cannot decode") }
+                let first = try previewPixel(pixels, x: 0, y: 0), last = try previewPixel(pixels, x: 159, y: 119)
+                let rgb = UInt32(preset.startHex, radix: 16)!
+                let expected = [UInt8((rgb >> 16) & 255), UInt8((rgb >> 8) & 255), UInt8(rgb & 255)]
+                try require(zip(first.prefix(3), expected).allSatisfy { abs(Int($0.0) - Int($0.1)) <= 3 } &&
+                    first[3] == 255 && last[3] == 255, "Actual background start color/alpha differs for \(preset.id): first=\(first), last=\(last), expectedStart=\(expected)")
+                try require(preset.category == "Solid" ? first == last : first != last, "Solid/gradient category is label-only")
+                outputs.insert(image.normalizedPNG)
+            }
+            try require(outputs.count == 16, "Distinct presets reused a fake image")
+        }
+        try await test("background attachment preserves drawing layers, pixels, one Undo and real cold reopen") {
+            let (vm, store) = try await fixture("actual-background")
+            let drawing = DrawnElement(id: UUID().uuidString, tool: .line,
+                points: [.init(x: 10, y: 10), .init(x: 50, y: 50)], color: "#FF0000", width: 4,
+                opacity: 1, layerID: vm.activeLayerID)
+            try require(vm.commitElement(drawing), "Existing drawing fixture failed")
+            let before = vm.document
+            let image = try await StudioImageImportService.shared.prepareBackground(presetID: "gradient-sunset",
+                width: before.width, height: before.height)
+            let asset = try vm.attachImportedImage(image, expectedProjectID: before.id, expectedRevision: before.revision,
+                frameID: before.activeFrameID, layerID: before.activeLayerID)
+            let after = vm.document
+            try require(after.frames[0].elements == before.frames[0].elements && after.layers.dropLast() == before.layers[...] &&
+                after.frames[0].rasterLayerID == after.layers.last!.id && vm.rasterData(asset) == image.normalizedPNG &&
+                after.frames[0].rasterPlacement == .aspectFit(imageWidth: 160, imageHeight: 120, canvasWidth: 160, canvasHeight: 120),
+                "Background replaced drawings, missed canvas or was not behind artwork")
+            vm.undo(); try require(content(vm.document) == content(before), "Background Undo failed")
+            vm.redo(); try require(content(vm.document) == content(after), "Background Redo failed")
+            try require(await vm.save(), "Background persistence failed")
+            let reopened = StudioViewModel(storage: store)
+            try require(await reopened.openProject(store.loadAnimation(id: after.id)!.metadata), "Background cold reopen failed")
+            try require(content(reopened.document) == content(after) && reopened.rasterData(asset) == image.normalizedPNG &&
+                reopened.originalImageSource(asset)?.originalData == image.originalData, "Background original or editable document lost")
+            let unchanged = reopened.document
+            do {
+                _ = try reopened.attachImportedImage(image, expectedProjectID: unchanged.id, expectedRevision: unchanged.revision,
+                    frameID: unchanged.activeFrameID, layerID: unchanged.activeLayerID)
+                throw Failure(message: "Background replaced existing image")
+            } catch is StudioDocumentError { }
+            try require(reopened.document == unchanged, "Rejected replacement changed document")
+        }
+        try await test("background generation cancellation and invalid presets leave no lease or editor changes") {
+            for parameters in [("unknown", 160, 120), ("solid-sunset", 0, 120), ("solid-sunset", 4097, 120)] {
+                do {
+                    _ = try await StudioImageImportService.shared.prepareBackground(presetID: parameters.0, width: parameters.1, height: parameters.2)
+                    throw Failure(message: "Invalid background accepted")
+                } catch is StudioImageImportService.ImportError { }
+            }
+            let task = Task { try await StudioImageImportService.shared.prepareBackground(presetID: "solid-sunset", width: 160, height: 120) }
+            task.cancel()
+            do { _ = try await task.value; throw Failure(message: "Cancelled background returned bytes") }
+            catch is CancellationError { }
+            let next = try await StudioImageImportService.shared.prepareBackground(presetID: "solid-sunset", width: 160, height: 120)
+            try require(!next.normalizedPNG.isEmpty, "Cancellation leaked image lease")
+            let (vm, _) = try await fixture("stale-background")
+            let captured = vm.document
+            vm.addFrame(); let current = vm.document
+            do {
+                _ = try vm.attachImportedImage(next, expectedProjectID: captured.id, expectedRevision: captured.revision,
+                    frameID: captured.activeFrameID, layerID: captured.activeLayerID)
+                throw Failure(message: "Stale background overwrote frame")
+            } catch is StudioDocumentError { }
+            try require(vm.document == current && vm.managedImageByteCount == 0, "Stale background published pixels")
+        }
         try await test("single image attachment preserves a clipboard copied at its final checkpoint") {
             let (vm, _) = try await fixture("image-clipboard-fence")
             let imported = try await StudioImageImportService.shared.importImage(from: source, scratchParent: scratch)

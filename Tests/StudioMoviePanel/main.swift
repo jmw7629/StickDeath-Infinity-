@@ -57,6 +57,64 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             do { try await body(); passed += 1; print("PASS \(name)") }
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
+        await test("saved Spatter receipt directly exports once with checked artifact and editable source") {
+            let (vm, state, output) = try await create(root.appendingPathComponent("direct-spatter"))
+            let before = vm.document
+            vm.activePanel = .spatterAI
+            let edit = SpatterStudioEditSession()
+            let editScope = SpatterStudioEditSession.Scope(isStudioVisible: true, accountID: nil)
+            let initialSave = await vm.save()
+            try require(initialSave, "Initial production save failed")
+            try require(edit.submit("Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px.",
+                in: vm, accountID: nil, currentScope: { editScope }), "Actual recipe rejected")
+            await edit.waitForCompletion()
+            try require(edit.status == .applied, edit.notice ?? "Recipe did not apply")
+            let saved = await vm.save()
+            try require(saved, "Edited project save failed")
+            guard let request = edit.prepareMovieExport(in: vm, currentScope: editScope) else { throw Failure(message: "Saved receipt cannot prepare MP4") }
+            try require(edit.prepareMovieExport(in: vm, currentScope: editScope) == nil, "Edit minted a replay")
+            edit.close(); vm.activePanel = .export
+            try require(state.start(request, from: vm, scope: scope), "Direct export did not invoke real service")
+            try require(state.directArtifactDescription == nil, "Claimed artifact before service finished")
+            try await idle(state); try await actualRedMovie(state)
+            try require(state.directArtifactDescription?.contains(request.editRequestID.uuidString) == true,
+                        "Checked artifact missing exact edit provenance")
+            let completedURL = state.session.output!.movieURL
+            try require(!state.start(request, from: vm, scope: scope) && state.session.output?.movieURL == completedURL,
+                        "Repeated presentation re-exported or discarded output")
+            let edited = vm.document
+            vm.undo()
+            try require(vm.frames.map(\.id) == before.frames.map(\.id), "Export changed the recipe's one-step undo")
+            vm.redo()
+            try require(vm.frames.map(\.id) == edited.frames.map(\.id), "Export changed editable frame identities")
+            state.session.close()
+            try require(state.directArtifactDescription == nil && fm.contentsOfDirectory(atPath: output.path).isEmpty,
+                        "Closed export retained a stale artifact receipt or output")
+            let savedAgain = await vm.save(); try require(savedAgain, "Redo project save failed")
+            await vm.backToProjects()
+            let disk = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("direct-spatter/documents"))
+            guard let loaded = try disk.loadAnimation(id: edited.id) else { throw Failure(message: "Export source disappeared from device") }
+            let cold = StudioViewModel(storage: disk)
+            let reopened = await cold.openProject(loaded.metadata)
+            try require(reopened && cold.frames.map(\.id) == edited.frames.map(\.id), "Cold reopen lost exported editable source")
+            await cold.backToProjects()
+        }
+        await test("direct export rejects stale unsaved draft account and replay contexts without output") {
+            for mode in 0..<5 {
+                let (vm, state, output) = try await create(root.appendingPathComponent("direct-reject-\(mode)"))
+                let saved = await vm.save(); try require(saved, "Fixture save failed")
+                let request = StudioMoviePanelState.DirectRequest(editRequestID: UUID(), projectID: vm.document.id,
+                    revision: vm.document.revision + (mode == 0 ? 1 : 0), accountID: mode == 1 ? "different-account" : nil)
+                if mode == 2 { vm.addFrame() }
+                if mode == 3 { try require(vm.beginTextEditing(), "Could not open real text draft") }
+                let suppliedScope = mode == 4 ? StudioMovieExportSession.Scope(isStudioVisible: true, isForeground: false, accountID: nil) : scope
+                try require(!state.start(request, from: vm, scope: suppliedScope), "Invalid direct export started")
+                try require(!state.start(request, from: vm, scope: scope), "Rejected direct request replayed")
+                try require(!state.isBusy && state.session.output == nil && state.directArtifactDescription == nil &&
+                    state.directError != nil && fm.contentsOfDirectory(atPath: output.path).isEmpty, "Rejected request created an artifact")
+                state.session.close(); await vm.backToProjects()
+            }
+        }
         await test("actual movie exports through observable panel state then safely starts after close") {
             let (vm,state,output) = try await create(root.appendingPathComponent("fresh"))
             var notifications = 0

@@ -7,6 +7,7 @@ struct SpatterMotionRecipePanel: View {
     @ObservedObject var vm: StudioViewModel
     let onBack: () -> Void
     let onExport: () -> Void
+    let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = SpatterStudioEditSession()
@@ -143,6 +144,12 @@ struct SpatterMotionRecipePanel: View {
                         Button("Save project") { Task { _ = await vm.save() } }
                             .disabled(!receiptIsCurrent || vm.isSaving)
                             .accessibilityIdentifier("spatter.motion.save")
+                        Button("Export this edit as MP4") {
+                            guard let request = session.prepareMovieExport(in: vm, currentScope: scope) else { return }
+                            session.close(); onMovieExport(request)
+                        }
+                        .disabled(session.saveState(in: vm, currentScope: scope) != .saved || session.isWorking)
+                        .accessibilityIdentifier("spatter.motion.export-mp4")
                         Button("Open PNG export") {
                             guard receiptIsCurrent else { return }
                             session.close(); onExport()

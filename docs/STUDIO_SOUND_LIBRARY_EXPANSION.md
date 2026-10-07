@@ -9,3 +9,9 @@ The existing library rows are already lazy. Production metadata loading previous
 The actual asynchronous loader took 647 ms in a separate Mac measurement while its MainActor serviced 93 scheduled ticks, with a maximum measured interval of 8.8 ms. Search across six real queries had a 9.5 ms median and 13.8 ms maximum. These are Mac framework measurements, not physical iPhone or simulator UI latency claims.
 
 Seven production groups pass, including asynchronous content equivalence, cancellation before I/O, all actual file decodes and the full import/edit/persistence journey. The changed catalogue and SwiftUI audio panel pass the iPhone SDK check with all 120 application declarations. The current catalogue source and UI need a fresh native app/simulator run after integration. Source staging alone is not a bundled library or release.
+
+## Searchable tags — October 7 follow-up
+
+All 2,127 entries now have bounded curated family tags, such as `collision` for the 128 impact sounds and `game-ui` across the 151 interface/button clips. Search intersects tags with title terms and the selected category; the UI shows the first three tags and exposes the complete list to VoiceOver. Existing IDs, audio bytes, rights, timing and waveforms remain unchanged. The manifest is 7,608,411 bytes. Older tagless catalogues remain readable; malformed, duplicate and oversized tags fail validation.
+
+Ten production groups passed in 151.424 seconds, including all 2,127 actual Apple decodes, measured waveforms, real audition/add/undo/save/reopen, tag search and invalid metadata cases. Independent bounded static review passed. The new native category/tag/count/empty/clear/preview/stop/add/cold-reopen journey is implemented but runtime remains pending. The preview control now announces Stop preview only after the real player starts. This does not complete all catalogue error/cancellation UI or optional audio-pack download requirements.

@@ -11,7 +11,7 @@ EXTENDED_CASE_SECONDS = {
 }
 # Includes editable tween/easing/undo/cold-reopen coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 69
+MAXIMUM_CASES = 74
 SUITE_OVERHEAD_SECONDS = 300
 
 

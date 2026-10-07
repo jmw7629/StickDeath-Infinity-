@@ -8,6 +8,8 @@ import UIKit
 struct StudioMovieExportControls: View {
     @ObservedObject var vm: StudioViewModel
     @ObservedObject var movie: StudioMoviePanelState
+    var directRequest: StudioMoviePanelState.DirectRequest? = nil
+    var onDirectRequestConsumed: () -> Void = {}
     var onReady: () -> Void = {}
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
@@ -46,6 +48,14 @@ struct StudioMovieExportControls: View {
                 Text(pending).foregroundColor(.white.opacity(0.75))
                     .font(.system(size: 11, design: .monospaced))
                     .accessibilityIdentifier("studio.export.movie.share.pending")
+            }
+            if let error = movie.directError {
+                Text(error).foregroundColor(Color(hex: "#FF8888"))
+                    .accessibilityIdentifier("studio.export.movie.direct-error")
+            }
+            if let provenance = movie.directArtifactDescription {
+                Text(provenance).font(.system(size: 10, design: .monospaced))
+                    .accessibilityIdentifier("studio.export.movie.spatter-receipt")
             }
             if let error = session.errorMessage {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
@@ -167,7 +177,14 @@ struct StudioMovieExportControls: View {
                 .id(request.id)
             }
         }
-        .onAppear { isVisible = true; refreshScope(); refreshPreview() }
+        .onAppear {
+            isVisible = true; refreshScope()
+            if let request = directRequest {
+                _ = movie.start(request, from: vm, scope: scope)
+                onDirectRequestConsumed()
+            }
+            refreshPreview()
+        }
         .onDisappear {
             preview.stop()
             // A full-screen native activity may cover this section without

@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -34,6 +35,16 @@ final class StudioViewModel: ObservableObject {
     @Published var textInput = ""
     @Published var textStyle = StudioTextStyle() { didSet { rememberDrawingToolPreferences() } }
     private var savedRevision: Int?
+    var storageScanRequest: StudioStorageScanRequest { storage.storageScanRequest }
+    func clearRegenerableStorageCache() throws -> DeviceStorageManager.CacheClearReceipt {
+        try storage.clearCache()
+    }
+    func obsoleteRevisionCleanupRequest(id: UUID) throws -> StudioRevisionCleanupRequest {
+        guard !isEditing, !isSaving, !isManagingProjects else {
+            throw StudioDocumentError.unavailable("Save and return to projects before cleaning older saved versions.")
+        }
+        return StudioRevisionCleanupRequest(store: storage, projectID: id)
+    }
     private let storage: DeviceStorageManager
     @Published private var imageClipboard: AnimationFrame?
     private var copiedImageLayer: CanvasLayer?
@@ -611,6 +622,134 @@ final class StudioViewModel: ObservableObject {
             try storage.saveNewAnimation(project)
             message = nil; await loadProjects()
         } catch { message = "Copy could not be saved. Original preserved: \(error.localizedDescription)" }
+    }
+    private func requirePortableLibrary() throws {
+        guard !isEditing, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
+            throw StudioDocumentError.unavailable("Save and return to projects before transferring a project backup.")
+        }
+    }
+    func preparePortableBackup(_ metadata: AnimationMetadata,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) async throws -> Data {
+        try requirePortableLibrary()
+        guard !isManagingProjects else { throw StudioDocumentError.unavailable("Another project operation is running.") }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        try Task.checkCancellation()
+        guard let original = try storage.loadAnimation(id: metadata.id) else {
+            throw StudioDocumentError.invalid("This project is no longer available.")
+        }
+        // Backup retains the original stored record, including historical bytes.
+        let data = try storage.portableBundle(for: original, checkCancellation: checkCancellation)
+        await Task.yield(); try checkCancellation(); try Task.checkCancellation(); try requirePortableLibrary()
+        return data
+    }
+    func importPortableProject(from url: URL,
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) async throws -> AnimationMetadata {
+        try requirePortableLibrary()
+        guard !isManagingProjects else { throw StudioDocumentError.unavailable("Another project operation is running.") }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        try checkCancellation()
+        // Read in a bounded background task while retaining the provider scope.
+        let reader = Task.detached(priority: .userInitiated) { try Self.readPortableFile(url) }
+        let data = try await withTaskCancellationHandler(operation: { try await reader.value }, onCancel: { reader.cancel() })
+        try checkCancellation(); try Task.checkCancellation()
+        isManagingProjects = false
+        return try await importPortableProject(data, checkCancellation: checkCancellation)
+    }
+    /// Same production entry point is exercised by transport/collision tests.
+    /// The fresh identity is allocated locally; imported IDs never replace files.
+    func importPortableProject(_ data: Data, newProjectID: UUID = UUID(),
+                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) async throws -> AnimationMetadata {
+        try requirePortableLibrary()
+        guard !isManagingProjects else { throw StudioDocumentError.unavailable("Another project operation is running.") }
+        isManagingProjects = true; defer { isManagingProjects = false }
+        try checkCancellation()
+        let original = try storage.projectFromPortableBundle(data, checkCancellation: checkCancellation)
+        let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-project-validation-" + UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let staged = DeviceStorageManager(documentsDirectory: scratch, cachesDirectory: scratch)
+        try staged.saveNewAnimation(original)
+        let validator = StudioViewModel(storage: staged)
+        guard await validator.openProject(original.metadata) else {
+            throw StudioDocumentError.invalid(validator.message ?? "Project asset validation failed.")
+        }
+        // Opening validates raster pixels; managed audio also needs the same
+        // actual bounded decoder used by Files import before it becomes playable.
+        // Unreferenced historical audio remains opaque and byte-preserved.
+        let referencedAudio = validator.document.referencedAudioAssetIDs
+        let managed = original.audioTracks.filter { referencedAudio.contains($0.id) }
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        guard Set(managed.map(\.id)) == referencedAudio else {
+            throw StudioDocumentError.invalid("The backup is missing referenced managed audio.")
+        }
+        var managedBytes = 0
+        for asset in managed {
+            guard asset.legacySourceFilename == nil, asset.startTime == 0,
+                  asset.duration.isFinite, asset.duration > 0, asset.duration <= 300,
+                  StudioAudioImportService.Container(rawValue: asset.format) != nil,
+                  let bytes = asset.audioData, !bytes.isEmpty, bytes.count <= 16 * 1024 * 1024,
+                  bytes.count <= Self.maximumManagedAudioBytes - managedBytes else {
+                throw StudioDocumentError.invalid("The backup's managed audio exceeds supported metadata or byte limits.")
+            }
+            managedBytes += bytes.count
+        }
+        for asset in managed {
+            try checkCancellation(); try Task.checkCancellation()
+            let bytes = asset.audioData!
+            let file = scratch.appendingPathComponent("validate-" + asset.id.uuidString + "." + asset.format)
+            try bytes.write(to: file, options: .withoutOverwriting)
+            let decoded = try await StudioAudioImportService.shared.importAudio(from: file, name: asset.name, scratchParent: scratch)
+            try checkCancellation(); try Task.checkCancellation()
+            guard decoded.originalData == bytes, decoded.container.rawValue == asset.format,
+                  abs(decoded.duration - asset.duration) <= 1 / decoded.sampleRate else {
+                throw StudioDocumentError.invalid("The backup's audio metadata does not match its decoded source.")
+            }
+            try FileManager.default.removeItem(at: file)
+        }
+        let document = try validator.document.duplicated(name: validator.document.name, id: newProjectID)
+        let imported = try validator.storageProject(document, rasters: validator.retainedRasterFrames)
+        try FileManager.default.removeItem(at: scratch)
+        await Task.yield()
+        try checkCancellation(); try Task.checkCancellation(); try requirePortableLibrary()
+        // No suspension between final eligibility/cancellation and collision-safe
+        // creation. All decoding and asset validation happened in private staging.
+        try storage.saveNewAnimation(imported)
+        await loadProjects()
+        return imported.metadata
+    }
+    nonisolated private static func readPortableFile(_ url: URL) throws -> Data {
+        guard url.isFileURL, url.host == nil || url.host == "" || url.host == "localhost" else {
+            throw StudioDocumentError.invalid("Choose a local project backup file.")
+        }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK | O_NOCTTY)
+        guard descriptor >= 0 else { throw StudioDocumentError.invalid("The project file is unavailable or is a link.") }
+        defer { _ = Darwin.close(descriptor) }
+        var before = stat()
+        guard fstat(descriptor, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_size > 0, before.st_size <= DeviceStorageManager.maximumPortableBundleBytes else {
+            throw StudioDocumentError.invalid("The backup must be a regular file within the project size limit.")
+        }
+        var data = Data(), bytes = [UInt8](repeating: 0, count: 65_536)
+        data.reserveCapacity(Int(before.st_size))
+        while data.count < before.st_size {
+            try Task.checkCancellation()
+            let count = Darwin.read(descriptor, &bytes, min(bytes.count, Int(before.st_size) - data.count))
+            if count < 0 && errno == EINTR { continue }
+            guard count > 0 else { throw StudioDocumentError.invalid("The project file changed or could not be read completely.") }
+            data.append(bytes, count: count)
+        }
+        var after = stat(), extra: UInt8 = 0
+        guard Darwin.read(descriptor, &extra, 1) == 0, fstat(descriptor, &after) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
+            throw StudioDocumentError.invalid("The project file changed during transfer. Select it again.")
+        }
+        try Task.checkCancellation()
+        return data
     }
     @Published var recoverableProjects: [AnimationMetadata] = []
     func loadRecoverableProjects() {

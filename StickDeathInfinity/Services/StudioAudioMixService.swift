@@ -341,6 +341,7 @@ private final class MixAudioReader {
     let originalFrames: Int64
     let container: String
     private let pcmBytesPerFrame: UInt32?
+    private let sourceFormat: AudioStreamBasicDescription
     init(data: Data) throws {
         memory = MixAudioMemory(data)
         // Recoverable truncated RIFF/FORM must not become a shorter valid mix.
@@ -395,6 +396,7 @@ private final class MixAudioReader {
             guard let kind = kinds[type] else { throw StudioAudioMixService.MixError.unsupportedAudio }
             var client = mixPCMFormat(); size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
             guard ExtAudioFileSetProperty(ext, kExtAudioFileProperty_ClientDataFormat, size, &client) == noErr else { throw StudioAudioMixService.MixError.unsupportedAudio }
+            sourceFormat = format
             originalRate = format.mSampleRate; originalChannels = Int(format.mChannelsPerFrame); originalFrames = frames; container = kind
             pcmBytesPerFrame = format.mFormatID == kAudioFormatLinearPCM && format.mBytesPerFrame > 0 ? format.mBytesPerFrame : nil
             self.file = opened; self.extended = ext
@@ -410,13 +412,18 @@ private final class MixAudioReader {
         // frames. For 16538 PCM frames at 44.1kHz, 18000 emitted 48kHz frames
         // map to 16537.5 and Tell reports 16537, despite complete physical data.
         // Admit this specific quantization only after independently proving the
-        // complete PCM byte extent. Compressed, same-rate and integral cases
-        // retain strict EOF equality; arbitrary short sources are not tolerated.
-        guard let pcmBytesPerFrame, originalRate != StudioAudioMixService.sampleRate,
+        // complete physical source. AAC can report this same quantization;
+        // admit it only after checking the valid-frame table and every packet.
+        // Same-rate/integral cases and arbitrary short sources remain invalid.
+        guard originalRate != StudioAudioMixService.sampleRate,
               abs(exact - exact.rounded()) >= 0.0000001,
               outputFrames == Int(exact.rounded(.down)),
               position == Int64((Double(outputFrames) * originalRate / StudioAudioMixService.sampleRate).rounded(.down)) else {
             throw StudioAudioMixService.MixError.invalidSamples
+        }
+        guard let pcmBytesPerFrame else {
+            try verifyCompleteAACPackets(file)
+            return
         }
         var audioBytes: UInt64 = 0
         var size = UInt32(MemoryLayout<UInt64>.size)
@@ -424,6 +431,47 @@ private final class MixAudioReader {
         guard !expected.overflow,
               AudioFileGetProperty(file, kAudioFilePropertyAudioDataByteCount, &size, &audioBytes) == noErr,
               audioBytes == expected.partialValue else { throw StudioAudioMixService.MixError.invalidSamples }
+    }
+    /// Prove the complete compressed payload independently of ExtAudioFileTell's
+    /// rate-converted position. No padded samples or arbitrary short-read waiver.
+    private func verifyCompleteAACPackets(_ file: AudioFileID) throws {
+        guard container == "m4a", sourceFormat.mFormatID == kAudioFormatMPEG4AAC,
+              sourceFormat.mFramesPerPacket > 0 else { throw StudioAudioMixService.MixError.invalidSamples }
+        var table = AudioFilePacketTableInfo()
+        var size = UInt32(MemoryLayout<AudioFilePacketTableInfo>.size)
+        guard AudioFileGetProperty(file, kAudioFilePropertyPacketTableInfo, &size, &table) == noErr,
+              table.mNumberValidFrames == originalFrames, table.mPrimingFrames >= 0,
+              table.mRemainderFrames >= 0 else { throw StudioAudioMixService.MixError.invalidSamples }
+        var packetCount: UInt64 = 0, audioBytes: UInt64 = 0
+        size = UInt32(MemoryLayout<UInt64>.size)
+        guard AudioFileGetProperty(file, kAudioFilePropertyAudioDataPacketCount, &size, &packetCount) == noErr,
+              packetCount > 0, packetCount <= UInt64(memory.data.count) else { throw StudioAudioMixService.MixError.invalidSamples }
+        size = UInt32(MemoryLayout<UInt64>.size)
+        guard AudioFileGetProperty(file, kAudioFilePropertyAudioDataByteCount, &size, &audioBytes) == noErr,
+              audioBytes > 0, audioBytes <= UInt64(memory.data.count) else { throw StudioAudioMixService.MixError.invalidSamples }
+        let totalFrames = packetCount.multipliedReportingOverflow(by: UInt64(sourceFormat.mFramesPerPacket))
+        let declaredFrames = UInt64(originalFrames) + UInt64(table.mPrimingFrames) + UInt64(table.mRemainderFrames)
+        guard !totalFrames.overflow, totalFrames.partialValue == declaredFrames else { throw StudioAudioMixService.MixError.invalidSamples }
+        var packetBound: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioFileGetProperty(file, kAudioFilePropertyPacketSizeUpperBound, &size, &packetBound) == noErr,
+              packetBound > 0, packetBound <= 1024 * 1024 else { throw StudioAudioMixService.MixError.resourceLimit }
+        // One packet at a time bounds memory independently of a hostile table.
+        var buffer = [UInt8](repeating: 0, count: Int(packetBound))
+        var consumed: UInt64 = 0
+        for index in 0..<packetCount {
+            try Task.checkCancellation()
+            var bytes = packetBound, packets: UInt32 = 1, description = AudioStreamPacketDescription()
+            let status = buffer.withUnsafeMutableBytes { raw in
+                AudioFileReadPacketData(file, false, &bytes, &description, Int64(index), &packets, raw.baseAddress!)
+            }
+            guard status == noErr, packets == 1, bytes > 0, bytes <= packetBound,
+                  description.mStartOffset == 0, description.mDataByteSize == bytes,
+                  description.mVariableFramesInPacket == 0 || description.mVariableFramesInPacket == sourceFormat.mFramesPerPacket,
+                  UInt64(bytes) <= audioBytes - consumed else { throw StudioAudioMixService.MixError.invalidSamples }
+            consumed += UInt64(bytes)
+        }
+        guard consumed == audioBytes else { throw StudioAudioMixService.MixError.invalidSamples }
     }
     func read(frames: Int) throws -> [Float] {
         guard let extended else { throw StudioAudioMixService.MixError.codecFailure }

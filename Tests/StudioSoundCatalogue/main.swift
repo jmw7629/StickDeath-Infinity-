@@ -59,6 +59,41 @@ func require(_ test: @autoclosure () throws -> Bool, _ message: String) throws {
             try require(catalogue.search("zzzz-no-sound", category: nil).isEmpty, "invented search result")
             try require(catalogue.search("", category: item.category).allSatisfy { $0.category == item.category }, "category leaked")
         }
+        try await test("curated tags search actual families with title and category intersections") {
+            try require(catalogue.sounds.allSatisfy { !($0.tags ?? []).isEmpty }, "bundled asset missing tags")
+            let impacts = catalogue.search("COLLISION", category: nil)
+            try require(impacts.count == 128 && impacts.allSatisfy { $0.category == "Impacts & Crashes" }, "tag search missed real impact family")
+            let mining = catalogue.search("collision mining 003", category: "Impacts & Crashes")
+            try require(mining.count == 1 && mining.first?.title == "Impact Mining 003", "tag/title intersection incorrect")
+            try require(catalogue.search("collision", category: "Space").isEmpty, "tag bypassed category")
+            try require(catalogue.search("game-ui", category: nil).count == 151, "shared tag failed across categories")
+            try require(catalogue.search("game-ui", category: "Buttons & UI").count == 51, "tag/category filter incorrect")
+        }
+        try await test("tag metadata remains bounded and old tagless catalogues stay readable") {
+            let directory = root.appendingPathComponent("tag-validation")
+            try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+            let original = try Data(contentsOf: bundle.appendingPathComponent("catalogue.json"))
+            let object = try JSONSerialization.jsonObject(with: original) as! [String: Any]
+            let first = (object["sounds"] as! [[String: Any]])[0]
+            func write(_ tags: [String]?) throws {
+                var item = first
+                if let tags { item["tags"] = tags } else { item.removeValue(forKey: "tags") }
+                try JSONSerialization.data(withJSONObject: ["schemaVersion": 1, "sounds": [item]])
+                    .write(to: directory.appendingPathComponent("catalogue.json"))
+            }
+            try write(nil)
+            let legacy = try StudioSoundCatalogue(directory: directory)
+            try require(legacy.sounds[0].tags == nil && legacy.search("card fan", category: nil).count == 1,
+                        "old catalogue lost search support")
+            for tags in [[""], ["collision", "collision"], ["bad\nlabel"], ["-edge"], ["edge-"],
+                         [String(repeating: "x", count: 33)], (0..<17).map { "tag-\($0)" }] {
+                try write(tags)
+                do { _ = try StudioSoundCatalogue(directory: directory); throw CatalogueFailure(message: "invalid tags accepted") }
+                catch StudioSoundCatalogue.CatalogueError.invalid { }
+            }
+            try require(try Data(contentsOf: bundle.appendingPathComponent("catalogue.json")) == original,
+                        "validation changed bundled metadata")
+        }
         try await test("catalogue rejects silent placeholders and reencoded duplicates without touching original assets") {
             let invalid = root.appendingPathComponent("invalid-metadata")
             try fm.createDirectory(at: invalid, withIntermediateDirectories: false)

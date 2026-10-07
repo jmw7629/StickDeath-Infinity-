@@ -375,6 +375,39 @@ private actor Barrier {
             let out=try await StudioAudioMixService().mix(document:document([clip(compressed,volume:0.5)]),retainedAudioTracks:[compressed],durationSeconds:0.1,outputParent:scratch)
             let pcm=try read(out);for n in 200..<4600 {try near(pcm[0][n],0.0625);try near(pcm[1][n],-0.125)};try out.cleanup();try empty()
         }
+        try await test("actual bundled AAC fractional EOF mixes completely and truncated encoded payload still fails") {
+            let filename = "7a6ba4661a10ff06cd0c8c758f671bb4347fa6b4d26e23b6e7cb9165ee9aa24a.m4a"
+            let repository = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            let bytes = try Data(contentsOf: repository.appendingPathComponent("StickDeathInfinity/Resources/StudioSounds/" + filename))
+            try check(digest(bytes) == String(filename.prefix(64)), "Actual licensed AAC fixture changed")
+            let asset = AudioTrack(id: UUID(), name: "Card Fan 1", format: "m4a", audioData: bytes,
+                startTime: 0, duration: 31788.0 / 44100.0)
+            // Match the production timeline session's explicit ceiling to a
+            // whole output frame; the source clip retains its actual duration.
+            let timelineDuration = ceil(asset.duration * 48000) / 48000
+            let out = try await StudioAudioMixService().mix(document: document([clip(asset)]), retainedAudioTracks: [asset],
+                durationSeconds: timelineDuration, outputParent: scratch)
+            let pcm = try read(out)
+            try check(out.receipt.frameCount == 34600 && pcm.count == 2 && pcm[0].count == 34600,
+                "AAC conversion changed real source timing")
+            try check(pcm[0][34599] == 0 && pcm[1][34599] == 0,
+                "Explicit timeline ceiling must not invent an extra source sample")
+            try check(pcm.allSatisfy { $0.allSatisfy(\.isFinite) } && pcm.flatMap { $0 }.contains { abs($0) > 0.001 },
+                "AAC mix substituted silence or invalid samples")
+            try out.cleanup(); try empty()
+            // Cut inside the real encoded payload, retaining original duration.
+            // A successful shorter decode must never become a successful mix.
+            for cut in [bytes.count / 2, bytes.count - 128] {
+                var damaged = asset; damaged.audioData = Data(bytes.prefix(cut))
+                try await rejects {
+                    _ = try await StudioAudioMixService().mix(document: document([clip(damaged)]), retainedAudioTracks: [damaged],
+                        durationSeconds: timelineDuration, outputParent: scratch)
+                }
+                try empty()
+            }
+            try check(try Data(contentsOf: repository.appendingPathComponent("StickDeathInfinity/Resources/StudioSounds/" + filename)) == bytes,
+                "AAC source was overwritten")
+        }
         try await test("real 120-second mix stays bounded and repeat boundaries contain the original samples") {
             let asset=try fixture(seconds:20,format:"caf") {n,channel in channel==0 ? (n%480==0 ? 0.2 : 0) : -0.1}
             let repeated=(0..<6).map {clip(asset,start:Double($0)*20,volume:0.5,track:($0%4)+1)}

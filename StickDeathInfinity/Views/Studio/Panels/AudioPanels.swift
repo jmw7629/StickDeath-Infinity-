@@ -178,6 +178,7 @@ private struct StudioAudioWorkspace: View {
                 .font(.specialElite(14)).padding(14).background(Color(hex: "1B1B28"))
                 .cornerRadius(16).padding(.horizontal, 16)
                 .accessibilityIdentifier("studio.audio.search")
+            ScrollViewReader { libraryScroll in
             ScrollView {
                 VStack(spacing: 10) {
                     AudioFilesImportControls(vm: vm, audio: audio)
@@ -211,9 +212,14 @@ private struct StudioAudioWorkspace: View {
                             .font(.caption).tint(.sdRed).padding(16)
                             .accessibilityIdentifier("studio.audio.catalogue.loading")
                     }
-                }.padding(.bottom, 12)
+                }.padding(.bottom, 12).id("studio.audio.library.start")
             }
             .accessibilityIdentifier("studio.audio.library.scroll")
+            // A new filter is a new result list. Keeping the category grid's
+            // offset would hide its count, Clear filters and first sounds.
+            .onChange(of: category) { _, _ in libraryScroll.scrollTo("studio.audio.library.start", anchor: .top) }
+            .onChange(of: search) { _, _ in libraryScroll.scrollTo("studio.audio.library.start", anchor: .top) }
+            }
         }
     }
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
@@ -252,7 +258,7 @@ private struct StudioAudioWorkspace: View {
                         Image(systemName: audio.playingClipID == sound.id ? "stop.fill" : "play.fill")
                             .frame(width: 44, height: 44).background(Color.white.opacity(0.06)).clipShape(Circle())
                     }.disabled(audio.isBusy || timeline.isPreparing)
-                        .accessibilityLabel("Preview " + sound.title)
+                        .accessibilityLabel((audio.playingClipID == sound.id ? "Stop preview " : "Preview ") + sound.title)
                         .accessibilityIdentifier("studio.audio.catalogue.preview." + sound.id)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(sound.title).font(.specialElite(14)).lineLimit(1)
@@ -260,6 +266,11 @@ private struct StudioAudioWorkspace: View {
                             Text(String(format: "%.2fs", sound.duration)).font(.caption2)
                             MeasuredAudioWaveform(peaks: sound.waveformPeaks).frame(width: 56, height: 14)
                         }.foregroundColor(.sdStudioSecondaryText)
+                        if let tags = sound.tags, !tags.isEmpty {
+                            Text(tags.prefix(3).joined(separator: " · "))
+                                .font(.system(size: 9)).foregroundColor(.sdStudioActionText).lineLimit(1)
+                                .accessibilityLabel("Tags: " + tags.joined(separator: ", "))
+                        }
                         Text(sound.author + " · CC0").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
                     }
                     Spacer(minLength: 0)

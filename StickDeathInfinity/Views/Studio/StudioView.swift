@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
@@ -13,6 +14,8 @@ struct StudioView: View {
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
+    @State private var spatterMovieRequest: StudioMoviePanelState.DirectRequest?
+
     var body: some View {
         Group {
             if vm.isEditing { editorBody }
@@ -41,7 +44,7 @@ struct StudioView: View {
             if vm.activePanel == .gradientEndColor { ColorPickerPanel(vm: vm, target: .gradientEnd) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
-            if vm.activePanel == .export { ExportPanel(vm: vm) }
+            if vm.activePanel == .export { ExportPanel(vm: vm, directRequest: spatterMovieRequest, onDirectRequestConsumed: { spatterMovieRequest = nil }) }
             if vm.activePanel == .framesViewer { FramesViewerPanel(vm: vm) }
             if vm.activePanel == .soundLibrary { SoundLibraryPanel(vm: vm) }
             if vm.activePanel == .audioTimeline { AudioTimelinePanel(vm: vm) }
@@ -62,13 +65,20 @@ struct StudioView: View {
             guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
                   authVM.userId == request.accountID, vm.document.id == request.projectID,
                   vm.document.revision == request.revision else {
+                spatterMovieRequest = nil
                 vm.message = "The project changed before export opened. Open Export for the current project."
                 return
             }
+            if spatterMovieRequest != nil { vm.exportFormat = .mp4 }
             vm.activePanel = .export
         }) {
             SpatterAISheet(vm: vm, onExport: {
+                spatterMovieRequest = nil
                 spatterExportRequest = (vm.document.id, vm.document.revision, authVM.userId)
+                vm.activePanel = .none
+            }, onMovieExport: { request in
+                spatterMovieRequest = request
+                spatterExportRequest = (request.projectID, request.revision, request.accountID)
                 vm.activePanel = .none
             })
         }
@@ -375,78 +385,97 @@ struct FramesViewerPanel: View {
 // MARK: - Background Library Panel
 struct BackgroundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var authVM: AuthViewModel
     @State private var selectedCategory = "Gradients"
-    
-    let categories = [
-        ("Gradients", 24), ("Solid", 18), ("Patterns", 12), ("Nature", 8),
-        ("Space", 6), ("Urban", 10), ("Abstract", 15), ("Textures", 9),
-    ]
-    
-    let backgrounds: [(name: String, colors: [String])] = [
-        ("Sunset", ["FF6B35", "F72585"]), ("Ocean", ["0077B6", "00B4D8"]),
-        ("Forest", ["2D6A4F", "40916C"]), ("Neon", ["7209B7", "F72585"]),
-        ("Midnight", ["0D1B2A", "1B263B"]), ("Fire", ["D00000", "FFBA08"]),
-        ("Ice", ["48CAE4", "ADE8F4"]), ("Void", ["0A0A0F", "1A1A24"]),
-    ]
-    
+    @State private var preparation: Task<Void, Never>?
+    @State private var requestID: UUID?
+    @State private var notice: String?
+    private let categories = ["Gradients", "Solid"]
+    private var presets: [StudioImageImportService.BackgroundPreset] { StudioImageImportService.BackgroundPreset.all }
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
             VStack(spacing: 0) {
                 PanelHeader(title: "Background Library", icon: "photo.on.rectangle") {
-                    vm.activePanel = .none
+                    cancel(); vm.activePanel = .none
                 }
-                
+                Text("Adds to this frame behind drawings. Original images are never replaced. Undo removes the added background.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
+                if let notice { Text(notice).font(.caption).foregroundStyle(.red).padding(8)
+                    .accessibilityIdentifier("studio.background.notice") }
+                if requestID != nil {
+                    HStack { ProgressView(); Text("Preparing background…"); Button("Cancel", action: cancel) }
+                        .font(.caption).padding(8)
+                }
                 HStack(spacing: 0) {
-                    // Sidebar categories (pill style with red bg)
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 4) {
-                            ForEach(categories, id: \.0) { cat in
-                                Button(action: { selectedCategory = cat.0 }) {
-                                    Text("\(cat.0) (\(cat.1))")
+                            ForEach(categories, id: \.self) { category in
+                                Button(action: { selectedCategory = category }) {
+                                    Text("\(category) (\(presets.filter { $0.category == category }.count))")
                                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                        .foregroundColor(selectedCategory == cat.0 ? .white : .white.opacity(0.4))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .background(selectedCategory == cat.0 ? Color.red : Color(hex: "1A1A24"))
+                                        .foregroundColor(selectedCategory == category ? .white : .white.opacity(0.4))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                        .background(selectedCategory == category ? Color.red : Color(hex: "1A1A24"))
                                         .cornerRadius(8)
-                                }
+                                }.accessibilityIdentifier("studio.background.category." + category.lowercased())
                             }
-                        }
-                        .padding(8)
-                    }
-                    .frame(width: 120)
-                    .background(Color(hex: "0D0D14"))
-                    
-                    // Background grid
+                        }.padding(8)
+                    }.frame(width: 120).background(Color(hex: "0D0D14"))
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            ForEach(backgrounds, id: \.name) { bg in
-                                Button(action: {
-                                    // Apply background
-                                    vm.activePanel = .none
-                                }) {
+                            ForEach(presets.filter { $0.category == selectedCategory }) { preset in
+                                Button(action: { add(preset) }) {
                                     VStack(spacing: 4) {
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: bg.colors.map { Color(hex: $0) },
-                                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                                )
-                                            )
-                                            .frame(height: 80)
-                                        
-                                        Text(bg.name)
-                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .fill(LinearGradient(colors: [Color(hex: preset.startHex), Color(hex: preset.endHex)],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 80)
+                                        Text(preset.name).font(.system(size: 10, weight: .medium, design: .monospaced))
                                             .foregroundColor(.white.opacity(0.6))
                                     }
-                                }
+                                }.disabled(requestID != nil)
+                                    .accessibilityIdentifier("studio.background.preset." + preset.id)
                             }
-                        }
-                        .padding(12)
+                        }.padding(12)
                     }
                 }
+            }
+        }
+        .onDisappear { cancel() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cancel() } }
+        .onChange(of: authVM.userId) { _, _ in cancel() }
+    }
+
+    private func cancel() {
+        requestID = nil; preparation?.cancel(); preparation = nil
+    }
+    private func add(_ preset: StudioImageImportService.BackgroundPreset) {
+        guard requestID == nil else { return }
+        guard vm.isEditing, !vm.isSaving, !vm.isPlaying, vm.activeStrokeID == nil,
+              vm.pendingBrushStroke == nil, vm.textDraft == nil, scenePhase == .active else {
+            notice = "Finish saving, playback and any drawing or text draft before adding a background."; return
+        }
+        guard vm.currentFrame.rasterAssetID == nil else {
+            notice = "This frame already has an original image. Add a blank frame first; nothing was replaced."; return
+        }
+        let document = vm.document, account = authVM.userId, token = UUID()
+        requestID = token; notice = nil
+        preparation = Task { @MainActor in
+            do {
+                let imported = try await StudioImageImportService.shared.prepareBackground(presetID: preset.id,
+                    width: document.width, height: document.height)
+                try Task.checkCancellation()
+                guard requestID == token, scenePhase == .active, authVM.userId == account,
+                      vm.activePanel == .backgroundLibrary else { return }
+                _ = try vm.attachImportedImage(imported, expectedProjectID: document.id, expectedRevision: document.revision,
+                    frameID: document.activeFrameID, layerID: document.activeLayerID)
+                requestID = nil; preparation = nil; vm.activePanel = .none
+            } catch is CancellationError {
+                if requestID == token { requestID = nil; preparation = nil; notice = "Background cancelled. Nothing was added." }
+            } catch {
+                if requestID == token { requestID = nil; preparation = nil; notice = error.localizedDescription }
             }
         }
     }
@@ -801,7 +830,9 @@ struct AIVoiceMakerSheet: View {
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
     let onExport: () -> Void
+    let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
     @State private var showLocalRecipe = false
+    @State private var showingPersonalMemory = false
     @StateObject private var spatterVM = SpatterAIViewModel()
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var prompt = ""
@@ -812,7 +843,7 @@ struct SpatterAISheet: View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             if showLocalRecipe {
-                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onExport: onExport)
+                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onExport: onExport, onMovieExport: onMovieExport)
             } else {
             VStack(spacing: 0) {
                 HStack {
@@ -835,6 +866,10 @@ struct SpatterAISheet: View {
                         .font(.caption).foregroundColor(.red)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.local-motion")
+                    Button("Local memory preferences…") { showingPersonalMemory = true }
+                        .font(.caption).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)
+                        .accessibilityIdentifier("spatter.studio.memory")
+                    if let error = spatterVM.memoryError { Text(error).font(.caption).foregroundColor(.red) }
                     Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.cloud")
@@ -891,8 +926,19 @@ struct SpatterAISheet: View {
             }
             }
         }
-        .onDisappear { spatterVM.endSession() }
-        .onChange(of: authVM.userId) { _ in spatterVM.endSession(); prompt = ""; contextError = nil }
+        .sheet(isPresented: $showingPersonalMemory) { SpatterPersonalMemorySheet(vm: spatterVM) }
+        .onAppear { if authVM.state != .loading { spatterVM.configurePersonalMemory(accountID: authVM.userId) } }
+        .onDisappear { spatterVM.suspendPersonalMemory() }
+        .onChange(of: authVM.userId) { _ in
+            showingPersonalMemory = false; prompt = ""; contextError = nil
+            if authVM.state == .loading { spatterVM.suspendPersonalMemory() }
+            else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
+        }
+        .onChange(of: authVM.state) { _, state in
+            showingPersonalMemory = false; prompt = ""; contextError = nil
+            if state == .loading { spatterVM.suspendPersonalMemory() }
+            else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
+        }
     }
 
     private func sendMessage() {
@@ -1107,4 +1153,105 @@ struct PanelHeader: View {
         .padding(.vertical, 12)
         .background(Color(hex: "0D0D14"))
     }
+}
+
+private struct SpatterPersonalMemoryDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
+    init(_ preferences: SpatterPersonalPreferences) throws { data = try preferences.encoded() }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw SpatterPersonalMemoryStore.Failure.invalid }
+        _ = try SpatterPersonalPreferences.decode(data); self.data = data
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}
+
+private struct SpatterPersonalMemorySheet: View {
+    @ObservedObject var vm: SpatterAIViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var draft = SpatterPersonalPreferences()
+    @State private var notice: String?
+    @State private var showingImport = false
+    @State private var showingExport = false
+    @State private var confirmingReset = false
+    @State private var exportDocument: SpatterPersonalMemoryDocument?
+    @State private var capturedAccount: String?
+    @State private var active = false
+
+    private var current: Bool { active && scenePhase == .active && authVM.state != .loading && authVM.userId == capturedAccount }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Personal preferences · device only") {
+                    Text("Off by default. Save only choices you select here. Spatter does not learn from transcripts, infer emotions or save secrets. These preferences add local guidance hints and are never included automatically in cloud requests.")
+                        .font(.caption)
+                    Text(capturedAccount == nil ? "Guest preferences on this device" : "Preferences for the signed-in account on this device")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Use my local preferences", isOn: $draft.enabled).accessibilityIdentifier("spatter.memory.enabled")
+                    Picker("Guidance", selection: $draft.guidance) {
+                        ForEach(SpatterPersonalPreferences.Guidance.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    }
+                    Picker("Animation focus", selection: $draft.focus) {
+                        ForEach(SpatterPersonalPreferences.Focus.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    }
+                    Button("Save preferences") {
+                        guard current else { return }
+                        if vm.savePersonalPreferences(draft) { notice = "Saved on this device. Cloud advice is unchanged." }
+                    }.accessibilityIdentifier("spatter.memory.save")
+                    Text("Turning off stops using the saved choices. Reset deletes them. Each account and guest has a separate record; signing out never transfers preferences to another account. App-managed preferences are excluded from device backup. Explicitly exported files remain wherever you save them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Inspect and transfer") {
+                    Text((try? String(decoding: vm.personalPreferences.encoded(), as: UTF8.self)) ?? "Preferences unavailable")
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .accessibilityIdentifier("spatter.memory.inspect")
+                    Button("Import preference JSON…") { showingImport = true }.accessibilityIdentifier("spatter.memory.import")
+                    Text("Import loads choices into this form only. Review them and explicitly Save to enable them for this account.").font(.caption)
+                    Button("Export saved preferences…") {
+                        guard current else { return }
+                        do { exportDocument = try .init(vm.personalPreferences); showingExport = true }
+                        catch { notice = error.localizedDescription }
+                    }.accessibilityIdentifier("spatter.memory.export")
+                    Button("Reset saved preferences", role: .destructive) { confirmingReset = true }
+                        .accessibilityIdentifier("spatter.memory.reset")
+                }
+                if let message = vm.memoryError ?? notice { Text(message).font(.caption).accessibilityIdentifier("spatter.memory.notice") }
+            }
+            .navigationTitle("Local Memory")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .disabled(!current)
+            .confirmationDialog("Delete saved preferences for this account on this device?", isPresented: $confirmingReset, titleVisibility: .visible) {
+                Button("Reset preferences", role: .destructive) {
+                    guard current else { return }
+                    if vm.resetPersonalMemory() { draft = .init(); notice = "Saved preferences deleted. Local memory is off." }
+                }
+                Button("Cancel", role: .cancel) { }
+            }
+            .fileImporter(isPresented: $showingImport, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
+                guard current else { return }
+                do {
+                    guard let url = try result.get().first else { return }
+                    draft = try SpatterPersonalMemoryStore.readImport(url)
+                    notice = "Imported into this form. Review the choices and Save to apply."
+                } catch { notice = "Import did not change saved preferences. " + error.localizedDescription }
+            }
+            .fileExporter(isPresented: $showingExport, document: exportDocument, contentType: .json, defaultFilename: "SDI-local-preferences") { result in
+                exportDocument = nil
+                guard current else { return }
+                switch result {
+                case .success: notice = "Preference JSON exported. No account identity or conversation was included."
+                case .failure: notice = "Export did not complete. Saved preferences are unchanged."
+                }
+            }
+        }
+        .onAppear { capturedAccount = authVM.userId; draft = vm.personalPreferences; active = true }
+        .onDisappear { invalidate() }
+        .onChange(of: authVM.userId) { _, _ in invalidate(); dismiss() }
+        .onChange(of: authVM.state) { _, state in if state == .loading { invalidate(); dismiss() } }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { invalidate(); dismiss() } }
+        .preferredColorScheme(.dark)
+    }
+    private func invalidate() { active = false; draft = .init(); exportDocument = nil; showingImport = false; showingExport = false }
 }

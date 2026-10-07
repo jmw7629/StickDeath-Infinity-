@@ -21,6 +21,8 @@ struct StudioSoundCatalogue: Sendable {
         let sampleRate: Double
         let channels: Int
         let waveformPeaks: [Float]
+        /// Optional for older catalogues; tags describe curated sound families, not inferred rights.
+        let tags: [String]?
     }
     private struct Manifest: Decodable { let schemaVersion: Int; let sounds: [Sound] }
     let sounds: [Sound]
@@ -50,6 +52,7 @@ struct StudioSoundCatalogue: Sendable {
                   sound.waveformPeaks.count == 256, sound.waveformPeaks.contains(where: { $0 > 0 }),
                   sound.waveformPeaks.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
                   [sound.title, sound.category, sound.author].allSatisfy(Self.label),
+                  Self.validTags(sound.tags),
                   sound.license == "CC0-1.0", sound.licenseURL == "https://creativecommons.org/publicdomain/zero/1.0/",
                   let source = URL(string: sound.sourceURL), source.scheme == "https", source.user == nil,
                   source.password == nil, let host = source.host, ["kenney.nl", "opengameart.org"].contains(host) else { throw CatalogueError.invalid }
@@ -89,7 +92,7 @@ struct StudioSoundCatalogue: Sendable {
         let terms = query.split(whereSeparator: \.isWhitespace).map(String.init)
         return sounds.filter { sound in
             (category == nil || sound.category == category) && terms.allSatisfy {
-                (sound.title + " " + sound.category + " " + sound.author).localizedCaseInsensitiveContains($0)
+                (sound.title + " " + sound.category + " " + sound.author + " " + (sound.tags ?? []).joined(separator: " ")).localizedCaseInsensitiveContains($0)
             }
         }
     }
@@ -114,6 +117,14 @@ struct StudioSoundCatalogue: Sendable {
         let checked = try checkedResource(sound)
         return AudioTrack(id: UUID(), name: sound.title, format: (sound.filename as NSString).pathExtension,
                           audioData: checked.data, startTime: 0, duration: sound.duration)
+    }
+    private static func validTags(_ tags: [String]?) -> Bool {
+        guard let tags else { return true }
+        return tags.count <= 16 && Set(tags).count == tags.count && tags.allSatisfy { tag in
+            !tag.isEmpty && tag.utf8.count <= 32 && tag.utf8.allSatisfy {
+                (97...122).contains($0) || (48...57).contains($0) || $0 == 45
+            } && tag.first != "-" && tag.last != "-"
+        }
     }
     private static func hash(_ text: String) -> Bool {
         text.utf8.count == 64 && text.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }

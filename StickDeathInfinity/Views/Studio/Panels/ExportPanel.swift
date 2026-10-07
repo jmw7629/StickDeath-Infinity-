@@ -5,6 +5,8 @@ import UniformTypeIdentifiers
 
 struct ExportPanel: View {
     @ObservedObject var vm: StudioViewModel
+    var directRequest: StudioMoviePanelState.DirectRequest? = nil
+    var onDirectRequestConsumed: () -> Void = {}
     @StateObject private var session = StudioExportSession()
     @StateObject private var movie = StudioMoviePanelState()
     @StateObject private var gif = StudioGIFPanelState()
@@ -40,7 +42,7 @@ struct ExportPanel: View {
                         }
                     }
                     if vm.exportFormat == .mp4 {
-                        StudioMovieExportControls(vm: vm, movie: movie, onReady: {
+                        StudioMovieExportControls(vm: vm, movie: movie, directRequest: directRequest, onDirectRequestConsumed: onDirectRequestConsumed, onReady: {
                             proxy.scrollTo("studio.export.movie.result", anchor: .top)
                         })
                     } else if vm.exportFormat == .gif {

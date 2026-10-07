@@ -8,4 +8,4 @@ Before enabling any provider, configure its callback and allowlist in the existi
 
 Exercise success, cancellation, denial, expired authorization, malformed callback, session restoration, account switching and sign-out against the configured provider before declaring it available. Microsoft tenant selection and owner consent are explicit deployment gates. No credentials or live cloud provider calls are needed for the injected native regression tests.
 
-The separate `StickDeathInfinityAuthTests` scheme contains five native regression cases. CI clears backend/provider build settings and requires all five tests to pass with no failures or skips. Compilation alone does not satisfy execution. The main 69-case Studio UI suite remains a separate gate.
+The separate `StickDeathInfinityAuthTests` scheme contains five native regression cases. CI clears backend/provider build settings and requires all five tests to pass with no failures or skips. Compilation alone does not satisfy execution. The main 72-case Studio UI suite remains a separate gate.

@@ -1,10 +1,24 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct StudioProjectLibrary: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var transferContext = StudioPortableTransferContext()
+    @State private var importGeneration: UUID?
+    @State private var backupGeneration: UUID?
+    @State private var showingImport = false
+    @State private var showingBackup = false
+    @State private var backupDocument: StudioPortableProjectFile?
+    @State private var backupName = "Animation.sdiproject"
+    @State private var transferTask: Task<Void, Never>?
+    @State private var transferID: UUID?
+    @State private var transferNotice: String?
     @State private var removal: AnimationMetadata?
     @State private var showingRecovery = false
+    @State private var showingStorage = false
     @State private var creating = false
     @State private var name = "Untitled Animation"
     @State private var format = 0
@@ -75,9 +89,22 @@ struct StudioProjectLibrary: View {
                 }.padding(.horizontal, 12).background(Color(hex: "17171F")).cornerRadius(12)
                 Text("\(matchingProjects.count) of \(vm.savedProjects.count) projects · \(sort.rawValue)")
                     .font(.caption).foregroundColor(.gray).accessibilityIdentifier("studio.library.count")
+                HStack {
+                    Button { importGeneration = transferContext.generation; showingImport = true } label: {
+                        Label("Import project backup", systemImage: "square.and.arrow.down").font(.caption).foregroundColor(.gray)
+                    }.accessibilityIdentifier("studio.library.import-backup")
+                    Spacer()
+                    if let transferNotice { Text(transferNotice).font(.caption).foregroundColor(.gray) }
+                }
+                HStack {
                 Button { vm.loadRecoverableProjects(); showingRecovery = true } label: {
                     Label("Recently Deleted", systemImage: "trash").font(.caption).foregroundColor(.gray)
                 }.accessibilityIdentifier("studio.library.recently-deleted")
+                Spacer()
+                Button { showingStorage = true } label: {
+                    Label("Storage", systemImage: "internaldrive").font(.caption).foregroundColor(.gray)
+                }.accessibilityIdentifier("studio.library.storage")
+                }
                 ScrollView {
                     if vm.savedProjects.isEmpty {
                         VStack(spacing: 14) {
@@ -132,6 +159,51 @@ struct StudioProjectLibrary: View {
                     .refreshable { await vm.loadProjects() }
             }.padding(16).disabled(vm.isManagingProjects)
         }
+        .overlay(alignment: .bottom) {
+            if transferTask != nil {
+                HStack {
+                    ProgressView().tint(.red)
+                    Text("Transferring project backup…").font(.caption)
+                    Button("Cancel") { transferTask?.cancel() }
+                        .accessibilityIdentifier("studio.library.transfer.cancel")
+                }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
+            }
+        }
+        .fileImporter(isPresented: $showingImport, allowedContentTypes: [.data], allowsMultipleSelection: false) { result in
+            guard importGeneration == transferContext.generation, transferContext.isActive else { return }
+            importGeneration = nil
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                startTransfer { check in
+                    let metadata = try await vm.importPortableProject(from: url, checkCancellation: check)
+                    transferNotice = "Imported \(metadata.title) as a new project."
+                }
+            case .failure(let error):
+                transferNotice = isPickerCancellation(error) ? "Import cancelled. Projects unchanged." : error.localizedDescription
+            }
+        }
+        .fileExporter(isPresented: $showingBackup, document: backupDocument, contentType: .data, defaultFilename: backupName) { result in
+            backupDocument = nil
+            guard backupGeneration == transferContext.generation, transferContext.isActive else { return }
+            backupGeneration = nil
+            switch result {
+            case .success: transferNotice = "Project backup saved to Files."
+            case .failure(let error):
+                transferNotice = isPickerCancellation(error) ? "Backup cancelled. Original preserved." : error.localizedDescription
+            }
+        }
+        .onAppear { transferContext.update(active: scenePhase == .active, accountID: authVM.userId) }
+        .onDisappear { invalidateTransfers() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { invalidateTransfers() }
+            transferContext.update(active: phase == .active, accountID: authVM.userId)
+        }
+        .onChange(of: authVM.userId) { _, _ in
+            showingStorage = false
+            invalidateTransfers()
+            transferContext.update(active: scenePhase == .active, accountID: authVM.userId)
+        }
         .confirmationDialog("Move this project to Recently Deleted?", isPresented: Binding(
             get: { removal != nil }, set: { if !$0 { removal = nil } }), titleVisibility: .visible) {
             if let selected = removal {
@@ -141,6 +213,7 @@ struct StudioProjectLibrary: View {
             }
             Button("Cancel", role: .cancel) { removal = nil }
         } message: { Text("Your complete project stays on this device and can be restored. Nothing is permanently erased.") }
+        .sheet(isPresented: $showingStorage) { StudioStorageSheet(vm: vm) }
         .sheet(isPresented: $showingRecovery) {
             NavigationStack {
                 List {
@@ -207,12 +280,249 @@ struct StudioProjectLibrary: View {
             }.preferredColorScheme(.dark)
         }
     }
+    private func isPickerCancellation(_ error: Error) -> Bool {
+        (error as NSError).domain == NSCocoaErrorDomain && (error as NSError).code == NSUserCancelledError
+    }
+    private func invalidateTransfers() {
+        transferContext.invalidate()
+        transferTask?.cancel()
+        showingImport = false; showingBackup = false
+        importGeneration = nil; backupGeneration = nil; backupDocument = nil
+        if transferTask != nil { transferNotice = "Transfer cancelled because the active screen or account changed. Existing device projects are preserved." }
+    }
+    private func startTransfer(_ operation: @escaping @MainActor (@escaping @MainActor () throws -> Void) async throws -> Void) {
+        guard transferTask == nil, transferContext.isActive else { return }
+        let id = UUID(), generation = transferContext.generation
+        let context = transferContext
+        transferID = id; transferNotice = nil
+        transferTask = Task { @MainActor in
+            defer { if transferID == id { transferTask = nil; transferID = nil } }
+            do {
+                try await operation {
+                    try Task.checkCancellation()
+                    guard context.isActive, context.generation == generation else { throw CancellationError() }
+                }
+            }
+            catch is CancellationError { transferNotice = "Transfer cancelled. Existing projects preserved." }
+            catch { transferNotice = error.localizedDescription }
+        }
+    }
     @ViewBuilder private func projectActions(_ project: AnimationMetadata) -> some View {
+        Button {
+            searchFocused = false
+            startTransfer { check in
+                let data = try await vm.preparePortableBackup(project, checkCancellation: check)
+                try check()
+                backupGeneration = transferContext.generation
+                backupDocument = StudioPortableProjectFile(data: data)
+                backupName = "Animation-" + project.id.uuidString + ".sdiproject"
+                showingBackup = true
+            }
+        } label: {
+            Label("Save Project Backup to Files", systemImage: "square.and.arrow.up")
+        }.disabled(vm.isManagingProjects).accessibilityIdentifier("studio.project.backup.\(project.id.uuidString)")
         Button { searchFocused = false; Task { await vm.duplicateProject(project) } } label: {
             Label("Duplicate Project", systemImage: "doc.on.doc")
         }.disabled(vm.isManagingProjects)
         Button(role: .destructive) { searchFocused = false; removal = project } label: {
             Label("Move to Recently Deleted", systemImage: "trash")
         }
+    }
+}
+
+/// Opaque, bounded native project data. No ZIP paths or executable content.
+private struct StudioPortableProjectFile: FileDocument {
+    static var readableContentTypes: [UTType] { [.data] }
+    let data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws {
+        guard let bytes = configuration.file.regularFileContents,
+              bytes.count <= DeviceStorageManager.maximumPortableBundleBytes else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        data = bytes
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        guard data.count <= DeviceStorageManager.maximumPortableBundleBytes else { throw CocoaError(.fileWriteOutOfSpace) }
+        return FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Device projects are not reassigned on login. Only a pending transfer loses
+/// authority when its initiating visible foreground/account context changes.
+@MainActor private final class StudioPortableTransferContext: ObservableObject {
+    private(set) var generation = UUID()
+    private(set) var isActive = false
+    private var accountID: String?
+    func invalidate() { generation = UUID(); isActive = false }
+    func update(active: Bool, accountID: String?) {
+        if self.accountID != accountID || !active { invalidate() }
+        self.accountID = accountID; isActive = active
+    }
+}
+
+private struct StudioStorageSheet: View {
+    @ObservedObject var vm: StudioViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var usage: StudioStorageUsage?
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var scanning = false
+    @State private var confirmingClear = false
+    @State private var cleanupProject: UUID?
+    @State private var cleanupPreview: DeviceStorageManager.RevisionCleanupPreview?
+    @State private var confirmingCleanup = false
+    @State private var cleanupBusy = false
+    @State private var cleanupNotice: String?
+    @State private var cleanupTask: Task<Void, Never>?
+    @State private var refresh = UUID()
+    @State private var cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("On this device") {
+                    Text("Measures Documents and disk caches, including every saved revision. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded. This is not total app or device usage.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    if scanning { ProgressView("Measuring files…").accessibilityIdentifier("studio.storage.scanning") }
+                    if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("studio.storage.error") }
+                    if let usage {
+                        row("Projects and revisions", usage.projects)
+                        row("Recently Deleted", usage.recentlyDeleted)
+                        row("Media", usage.media)
+                        row("Other documents and historical files", usage.otherDocuments)
+                        row("Preserved disk caches", usage.preservedCaches)
+                        LabeledContent("Documents and cache bytes", value: bytes(usage.totalFileBytes))
+                            .accessibilityIdentifier("studio.storage.total")
+                        if usage.skippedLinksAndSpecialFiles > 0 {
+                            Text("\(usage.skippedLinksAndSpecialFiles) links or special files excluded; their targets were not followed.").font(.caption)
+                        }
+                    }
+                    Button("Refresh usage") { refresh = UUID() }
+                        .disabled(scanning).accessibilityIdentifier("studio.storage.refresh")
+                }
+                Section("Older successful saves") {
+                    Text("Remove obsolete full-document snapshots only when their successful save history can be verified. Keeps the current and previous version, original media, legacy files, and failed-save recovery data. Permanent removal is optional; back up projects first. This does not clear Undo or delete your project.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Picker("Project", selection: $cleanupProject) {
+                        Text("Choose a project").tag(UUID?.none)
+                        ForEach(vm.savedProjects, id: \.id) { project in
+                            Text(project.title).tag(Optional(project.id))
+                                .accessibilityIdentifier("studio.storage.project-option." + project.id.uuidString)
+                        }
+                    }.disabled(cleanupBusy)
+                    .accessibilityIdentifier("studio.storage.project-picker")
+                    .onChange(of: cleanupProject) { _, _ in cleanupPreview = nil; cleanupNotice = nil }
+                    Button("Review older saved versions") { previewCleanup() }
+                        .disabled(cleanupProject == nil || cleanupBusy)
+                        .accessibilityIdentifier("studio.storage.review-revisions")
+                    if cleanupBusy { ProgressView("Checking project storage…") }
+                    if let preview = cleanupPreview {
+                        Text("\(preview.candidates) verified obsolete versions · \(bytes(preview.removableFileBytes)) of file contents. Current and previous saved versions stay on this device.")
+                            .font(.caption).accessibilityIdentifier("studio.storage.revision-preview")
+                        if preview.candidates > 0 {
+                            Button("Remove reviewed old versions", role: .destructive) { confirmingCleanup = true }
+                                .disabled(cleanupBusy).accessibilityIdentifier("studio.storage.remove-revisions")
+                        } else {
+                            Text("No eligible old versions. Historical and unverified recovery files are preserved.").font(.caption)
+                        }
+                        if preview.moreBatchesAvailable {
+                            Text("More versions remain. Review another bounded batch after this one finishes.").font(.caption)
+                        }
+                    }
+                    if let cleanupNotice { Text(cleanupNotice).font(.caption).accessibilityIdentifier("studio.storage.revision-result") }
+                }
+                Section("Regenerable working memory") {
+                    LabeledContent("Estimated frame cache memory", value: bytes(Int64(cacheBytes)))
+                    Text("Clear releases cached frame encodings from memory. It does not free disk space. Existing projects, history, media, backups and exports are preserved. Unclassified disk cache files remain untouched.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button("Clear working cache") { confirmingClear = true }
+                        .accessibilityIdentifier("studio.storage.clear-cache")
+                    if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.storage.notice") }
+                }
+            }
+            .accessibilityIdentifier("studio.storage.list")
+            .navigationTitle("Device Storage")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .confirmationDialog(confirmingCleanup ? "Permanently remove these older saved versions?" : "Clear regenerable working cache?",
+                                isPresented: Binding(get: { confirmingClear || confirmingCleanup },
+                                    set: { if !$0 { confirmingClear = false; confirmingCleanup = false } }),
+                                titleVisibility: .visible) {
+                if confirmingCleanup {
+                    Button("Remove reviewed old versions", role: .destructive) { performCleanup() }
+                        .accessibilityIdentifier("studio.storage.confirm-remove-revisions")
+                } else {
+                    Button("Clear working cache") {
+                        do {
+                            let result = try vm.clearRegenerableStorageCache()
+                            cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
+                            notice = "Cleared \(result.entries) cached frames (estimated \(bytes(Int64(result.releasedMemoryBytes)))). No files were deleted."
+                        } catch { self.error = error.localizedDescription }
+                    }
+                }
+                Button("Cancel", role: .cancel) { }
+                    .accessibilityIdentifier("studio.storage.cancel-confirmation")
+            } message: {
+                if confirmingCleanup {
+                    Text("The current and previous versions stay. Removed older versions cannot be recovered unless you exported a backup. Physical free space may differ from removed file bytes.")
+                } else {
+                    Text("Only regenerable frame encodings in memory are cleared. No files are removed.")
+                }
+            }
+            .task(id: refresh) {
+                guard scenePhase == .active else { return }
+                scanning = true; usage = nil; error = nil
+                cacheBytes = DeviceStorageManager.snapshotEncodingCacheFootprint.bytes
+                let request = vm.storageScanRequest
+                let worker = Task.detached(priority: .utility) { try request.scan() }
+                do {
+                    let result = try await withTaskCancellationHandler {
+                        try await worker.value
+                    } onCancel: { worker.cancel() }
+                    try Task.checkCancellation()
+                    usage = result
+                } catch is CancellationError { }
+                catch { self.error = error.localizedDescription }
+                scanning = false
+            }
+        }.preferredColorScheme(.dark)
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cleanupTask?.cancel(); dismiss() } }
+        .onDisappear { cleanupTask?.cancel() }
+    }
+    private func previewCleanup() {
+        guard let id = cleanupProject, !cleanupBusy else { return }
+        cleanupBusy = true; cleanupPreview = nil; cleanupNotice = nil
+        cleanupTask = Task {
+            defer { cleanupBusy = false }
+            do {
+                let request = try vm.obsoleteRevisionCleanupRequest(id: id)
+                let worker = Task.detached(priority: .utility) { try request.preview() }
+                let preview = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                try Task.checkCancellation()
+                cleanupPreview = preview
+            } catch is CancellationError { }
+            catch { cleanupNotice = error.localizedDescription }
+        }
+    }
+    private func performCleanup() {
+        guard let preview = cleanupPreview, !cleanupBusy else { return }
+        cleanupBusy = true; cleanupNotice = nil
+        cleanupTask = Task {
+            defer { cleanupBusy = false; cleanupPreview = nil; refresh = UUID() }
+            do {
+                let request = try vm.obsoleteRevisionCleanupRequest(id: preview.projectID)
+                let worker = Task.detached(priority: .utility) { try request.remove(expected: preview.selectedRevision, confirmationToken: preview.confirmationToken) }
+                let result = try await withTaskCancellationHandler { try await worker.value } onCancel: { worker.cancel() }
+                cleanupNotice = "Removed \(result.removedRevisions) obsolete versions (\(bytes(result.removedFileBytes)) of file contents). Current, previous, original and unverified recovery files remain." + (result.stoppedReason.map { " " + $0 } ?? "")
+            } catch is CancellationError { cleanupNotice = "Cancelled before any versions were removed." }
+            catch { cleanupNotice = error.localizedDescription }
+        }
+    }
+    private func bytes(_ amount: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: amount, countStyle: .file)
+    }
+    private func row(_ title: String, _ bucket: StudioStorageUsage.Bucket) -> some View {
+        LabeledContent(title, value: "\(bytes(bucket.bytes)) · \(bucket.files) files")
     }
 }

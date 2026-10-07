@@ -1,5 +1,13 @@
 import Foundation
 
+/// Explicit local export intent, independent of renderer and presentation ownership.
+struct StudioMovieExportRequest: Equatable {
+    let editRequestID: UUID
+    let projectID: UUID
+    let revision: Int
+    let accountID: String?
+}
+
 /// Local command transport for the current canonical editor. This is neither a
 /// provider client nor authorization to publish, send messages, or operate a host.
 enum StudioCommandError: LocalizedError, Equatable {

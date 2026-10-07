@@ -47,9 +47,10 @@ jobs:
         run: python3 scripts/verify_retired_communications.py
   native-production-tests:
     runs-on: macos-15
-    # The standalone production suites took 21 minutes on run 35579052983.
-    # Keep this work ahead of the app/UI job without concurrent Mac runners.
-    timeout-minutes: 40
+    # Production took 34m05s on run 37557518936 before portable validation.
+    # New backup coverage and actual audio decoding in every VM recipe need
+    # bounded headroom; retain all gates and sequential Mac runners.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -98,6 +99,28 @@ jobs:
             Tests/DeviceStorage/main.swift \
             -o "$RUNNER_TEMP/sdi-device-storage-tests"
           "$RUNNER_TEMP/sdi-device-storage-tests"
+      - name: Verify accurate local storage and safe regenerable cache release
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            Tests/StudioStorageManagement/main.swift \
+            -o "$RUNNER_TEMP/sdi-storage-management-tests"
+          "$RUNNER_TEMP/sdi-storage-management-tests"
       - name: Verify production offline Studio document journeys
         shell: bash
         run: |
@@ -120,6 +143,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             Tests/StudioDocument/main.swift \
@@ -151,6 +175,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -198,6 +223,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -233,6 +259,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -268,6 +295,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -303,6 +331,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -338,6 +367,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -373,6 +403,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -408,6 +439,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -443,6 +475,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -478,6 +511,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -513,6 +547,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -548,6 +583,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -645,6 +681,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -675,6 +712,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
@@ -729,6 +767,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             Tests/StudioCommandIntegration/main.swift \
@@ -1014,6 +1053,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1045,6 +1085,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1076,6 +1117,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1108,6 +1150,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -1142,6 +1185,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -1179,6 +1223,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -1222,6 +1267,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
@@ -1229,6 +1275,36 @@ jobs:
             Tests/SpatterConversation/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-conversation-tests"
           "$RUNNER_TEMP/sdi-spatter-conversation-tests"
+      - name: Verify opt-in local Spatter preferences and account isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
+            StickDeathInfinity/ViewModels/SpatterAIViewModel.swift \
+            Tests/SpatterPersonalMemory/main.swift \
+            -o "$RUNNER_TEMP/sdi-spatter-memory-tests"
+          "$RUNNER_TEMP/sdi-spatter-memory-tests"
       - name: Verify explicit local motion recipes through production Studio commands
         shell: bash
         run: |
@@ -1251,6 +1327,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
@@ -1279,6 +1356,7 @@ jobs:
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
@@ -1313,6 +1391,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioColorSamplingService.swift \
@@ -1336,6 +1415,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1369,6 +1449,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1419,6 +1500,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             Tests/StudioAudioVideoMux/main.swift \
@@ -1456,6 +1538,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             Tests/StudioMixedMovieExport/main.swift \
@@ -1478,6 +1561,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1516,6 +1600,7 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1582,7 +1667,7 @@ jobs:
             Tests/StudioMovieImportExport/main.swift \
             -o "$RUNNER_TEMP/sdi-movie-import-export-tests"
           "$RUNNER_TEMP/sdi-movie-import-export-tests"
-      - name: Verify MP4 panel state and completion-owned share lifetime
+      - name: Verify portable project backups with original assets and cancellation
         shell: bash
         run: |
           set -euo pipefail
@@ -1598,6 +1683,51 @@ jobs:
             StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
             StickDeathInfinity/Models/StudioDocument.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Storage/DeviceStorageManager.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Services/StudioExportService.swift \
+            StickDeathInfinity/Models/StudioBrush.swift \
+            StickDeathInfinity/Services/StudioBrushRenderer.swift \
+            StickDeathInfinity/Models/StudioCommands.swift \
+            StickDeathInfinity/App/AppConfig.swift \
+            StickDeathInfinity/App/SpatterBackendClient.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
+            StickDeathInfinity/Services/StudioImageImportService.swift \
+            StickDeathInfinity/Services/StudioRasterImage.swift \
+            StickDeathInfinity/Services/StudioMovieExportService.swift \
+            StickDeathInfinity/Services/StudioMuxCapture.swift \
+            StickDeathInfinity/Services/StudioMovieExportSession.swift \
+            StickDeathInfinity/Services/StudioAudioMixService.swift \
+            StickDeathInfinity/Services/StudioMuxOwnership.swift \
+            StickDeathInfinity/Services/StudioAudioVideoMuxService.swift \
+            StickDeathInfinity/Services/StudioMixedMovieExportService.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
+            StickDeathInfinity/Services/StudioVideoAudioImportService.swift \
+            StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
+            StickDeathInfinity/Services/StudioImageProviderFile.swift \
+            Tests/StudioPortableProjects/main.swift \
+            -o "$RUNNER_TEMP/sdi-portable-project-tests"
+          "$RUNNER_TEMP/sdi-portable-project-tests"
+      - name: Verify MP4 panel state and completion-owned share lifetime
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
+            StickDeathInfinity/Models/Models.swift \
+            StickDeathInfinity/Models/StudioSmudge.swift \
+            StickDeathInfinity/Models/StudioBlur.swift \
+            StickDeathInfinity/Models/StudioSharpen.swift \
+            StickDeathInfinity/Models/StudioDodgeBurn.swift \
+            StickDeathInfinity/Models/StudioSmudgeDescriptor.swift \
+            StickDeathInfinity/Models/StudioBlurDescriptor.swift \
+            StickDeathInfinity/Models/StudioSharpenDescriptor.swift \
+            StickDeathInfinity/Models/StudioDodgeBurnDescriptor.swift \
+            StickDeathInfinity/Models/StudioDocument.swift \
+            StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
@@ -1653,6 +1783,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioGIFEncoder.swift \
@@ -1691,6 +1822,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioGIFEncoder.swift \
@@ -1730,6 +1862,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Storage/DeviceStorageManager.swift \
             StickDeathInfinity/ViewModels/StudioViewModel.swift \
+            StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
             StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Services/StudioGIFEncoder.swift \
@@ -1749,17 +1882,28 @@ jobs:
       - name: Verify real Dodge and Burn exposure history settings cancellation and exported media
         run: python3 scripts/test_studio_dodge_burn.py --output-directory "$RUNNER_TEMP/studio-dodge-burn"
 
+      - name: Verify actual licensed image-pack download decoding cache and cancellation
+        shell: bash
+        run: |
+          set -euo pipefail
+          swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioImageCatalogue.swift \
+            Tests/StudioImagePack/main.swift \
+            -o "$RUNNER_TEMP/sdi-image-pack-tests"
+          "$RUNNER_TEMP/sdi-image-pack-tests" \
+            StickDeathInfinity/Resources/StudioImages \
+            Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip
   native-ios-build:
     needs: native-production-tests
     # Always report this required gate, including a failed/cancelled dependency.
     if: ${{ always() }}
     runs-on: macos-15
-    # Match the bounded inventory: 69 cases x 180 seconds, three measured
+    # Match the bounded inventory: 74 cases x 180 seconds, three measured
     # extra minutes, five minutes overhead and 25 minutes build/preservation.
     # The separate five-case auth suite adds a bounded 17 minutes on the same runner.
     # This is a ceiling; the job exits as soon as all cases finish. One Mac
     # runner at a time, unchanged case limits, no retries or skipped cases.
-    timeout-minutes: 257
+    timeout-minutes: 272
     steps:
       - name: Require successful production verification
         shell: bash

@@ -56,6 +56,7 @@ final class SpatterStudioEditSession: ObservableObject {
     private var taskID: UUID?
     private var generation = UUID()
     private var acceptedIDs: Set<UUID> = []
+    private var exportedEditIDs: Set<UUID> = []
     private var appliedAccountID: String?
 
     /// Injection is only a scheduling/cancellation boundary for deterministic
@@ -213,6 +214,20 @@ final class SpatterStudioEditSession: ObservableObject {
               studio.document.revision == result.receipt.revision else { return .projectChanged }
         if studio.isSaving { return .saving }
         return studio.isDirty ? .unsaved : .saved
+    }
+    /// A user explicitly requests this saved edit's MP4; never parse provider
+    /// prose into export authority. The receiving panel rechecks this capture.
+    func prepareMovieExport(in studio: StudioViewModel, currentScope: Scope) -> StudioMovieExportRequest? {
+        guard saveState(in: studio, currentScope: currentScope) == .saved,
+              !isWorking, let edit = appliedEdit, !exportedEditIDs.contains(edit.receipt.requestID),
+              studio.textDraft == nil, studio.activeStrokeID == nil, studio.pendingBrushStroke == nil,
+              !studio.isPlaying else {
+            notice = "Save the current edit and finish any active draft before requesting its MP4. Each edit can hand off one direct export."
+            return nil
+        }
+        exportedEditIDs.insert(edit.receipt.requestID)
+        return .init(editRequestID: edit.receipt.requestID, projectID: edit.receipt.projectID,
+            revision: edit.receipt.revision, accountID: currentScope.accountID)
     }
     @discardableResult
     func cancel() -> Bool {

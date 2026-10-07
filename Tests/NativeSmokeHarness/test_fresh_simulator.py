@@ -12,6 +12,7 @@ from unittest.mock import patch
 ROOT = pathlib.Path(__file__).resolve().parents[2] / 'scripts/native-smoke'
 sys.path.insert(0, str(ROOT))
 import select_simulator as select
+import run_auth_ci as auth
 from seed_diagnostics import Result, run_bounded
 
 SHA = 'a' * 40
@@ -356,6 +357,60 @@ class FreshSimulator(unittest.TestCase):
         for forbidden in ('SECRET-CONTENT', '/private/never-persist', 'dataPath'):
             self.assertNotIn(forbidden, text)
         self.assertEqual(self.marker()['steps'][0]['stderr']['numericErrorCodes'], ['14'])
+
+    def test_auth_runner_reuses_verified_marker_before_starting_real_auth_command(self):
+        self.run_selector()
+        (self.root / 'sdi-native-build/SourcePackages/checkouts').mkdir(parents=True)
+        commands = []
+        def subprocess_run(argv, **kwargs):
+            if argv[:2] == ['git', 'diff']:
+                return
+            self.assertEqual(argv[0], 'python3')
+            self.assertEqual(pathlib.Path(argv[1]).name, 'select_simulator.py')
+            self.assertEqual(argv[2], '--copy-marker')
+            self.assertEqual(argv[4:], ['--expected-udid', self.new_id, '--source', SHA])
+            select.copy_marker(pathlib.Path(argv[3]), self.new_id, SHA)
+        def bounded(command, log, timeout):
+            commands.append(command)
+            copied = json.loads((log.parent / 'fresh-simulator.json').read_text())
+            self.assertEqual(copied['sourceCommit'], SHA)
+            self.assertEqual(copied['created']['udid'], self.new_id)
+            # No Xcode execution: preserve a deliberate command failure through
+            # the real auth runner, rather than fabricating a passing receipt.
+            log.write_text('bounded command failure fixture\n')
+            return 23 if command[0] == 'xcodebuild' else 1
+        with patch.dict(os.environ, {'SDI_SMOKE_SIMULATOR_UDID': self.new_id}), \
+             patch.object(auth.subprocess, 'run', side_effect=subprocess_run), \
+             patch.object(auth.subprocess, 'check_output', return_value=SHA + '\n'), \
+             patch.object(auth, 'run', side_effect=bounded):
+            self.assertEqual(auth.main(), 23)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(commands[0][:2], ['xcodebuild', 'test'])
+        self.assertIn('StickDeathInfinityAuthTests', commands[0])
+        self.assertIn('platform=iOS Simulator,id=' + self.new_id, commands[0])
+        self.assertEqual(commands[0][commands[0].index('-jobs') + 1], '2')
+        self.assertIn('SUPABASE_URL=', commands[0])
+        paths = list(self.root.glob('sdi-native-smoke.auth.*'))
+        self.assertEqual(len(paths), 1)
+        self.assertIn('artifact_path=' + str(paths[0]), self.output.read_text())
+        receipt = json.loads((paths[0] / 'receipt.json').read_text())
+        self.assertEqual(receipt['exitCode'], 23)
+        self.assertFalse(receipt['runtimeVerified'])
+        self.assert_one_create()
+
+    def test_auth_runner_rejects_foreign_simulator_before_any_native_command(self):
+        self.run_selector()
+        def subprocess_run(argv, **kwargs):
+            if argv[:2] != ['git', 'diff']:
+                select.copy_marker(pathlib.Path(argv[3]), self.old_id, SHA)
+        with patch.dict(os.environ, {'SDI_SMOKE_SIMULATOR_UDID': self.old_id}), \
+             patch.object(auth.subprocess, 'run', side_effect=subprocess_run), \
+             patch.object(auth.subprocess, 'check_output', return_value=SHA + '\n'), \
+             patch.object(auth, 'run') as native:
+            with self.assertRaisesRegex(ValueError, 'does not match'):
+                auth.main()
+            native.assert_not_called()
+        self.assert_one_create()
 
     def test_copy_requires_same_verified_run_source_device(self):
         self.run_selector()

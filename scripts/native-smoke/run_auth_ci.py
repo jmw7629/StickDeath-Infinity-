@@ -31,7 +31,9 @@ def main():
     udid = os.environ["SDI_SMOKE_SIMULATOR_UDID"]
     subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], check=True)
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    evidence = Path(tempfile.mkdtemp(prefix="sdi-native-auth.", dir=temporary))
+    # The shared ownership validator accepts only isolated native-smoke paths.
+    # Keep auth evidence distinct without bypassing that path/marker contract.
+    evidence = Path(tempfile.mkdtemp(prefix="sdi-native-smoke.auth.", dir=temporary))
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         output.write(f"artifact_path={evidence}\n")
     subprocess.run(["python3", str(Path(__file__).with_name("select_simulator.py")),

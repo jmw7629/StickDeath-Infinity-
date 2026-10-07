@@ -55,6 +55,43 @@ private final class CommitFailureStore: DeviceStorageManager {
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
 
+        test("portable bundle preserves complete project bytes without writing either store") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let (other, target) = try fixture(); defer { try? FileManager.default.removeItem(at: target) }
+            var original = project(frames: [red, blue])
+            original.editableDocumentData = Data("opaque editable fixture".utf8)
+            original.audioTracks = [AudioTrack(id: UUID(), name: "Owned tone", format: "wav", audioData: tone, startTime: 0, duration: 0.01)]
+            let portableData = try store.portableBundle(for: original)
+            var prefixed = Data([0, 1, 2]); prefixed.append(portableData)
+            let recovered = try other.projectFromPortableBundle(prefixed.dropFirst(3))
+            try require(try encoded(original) == encoded(recovered), "Portable roundtrip changed project content")
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path) && !FileManager.default.fileExists(atPath: other.animationsDir.path), "Encoding or decoding wrote a project")
+        }
+        test("portable bundle rejects corruption truncation extension and unsupported headers") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let original = try store.portableBundle(for: project())
+            var corrupt = original; corrupt[corrupt.count - 1] ^= 1
+            var wrongVersion = original; wrongVersion[14] = 50
+            var extra = original; extra.append(0)
+            var hugeLength = original
+            for index in 16..<24 { hugeLength[index] = 255 }
+            for invalid in [Data(), Data(original.prefix(24)), Data(original.dropLast()), corrupt, wrongVersion, extra, hugeLength] {
+                try rejects { _ = try store.projectFromPortableBundle(invalid) }
+            }
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path), "Rejected bundle modified storage")
+        }
+        test("portable bundle cancellation never writes storage or returns partial output") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let original = try store.portableBundle(for: project())
+            for stop in 1...3 {
+                var count = 0
+                try rejects { _ = try store.portableBundle(for: project()) { count += 1; if count == stop { throw CancellationError() } } }
+                count = 0
+                try rejects { _ = try store.projectFromPortableBundle(original) { count += 1; if count == stop { throw CancellationError() } } }
+            }
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path), "Cancelled bundle operation modified storage")
+        }
+
         test("complete production snapshot preserves layers audio IDs metadata and opaque editable bytes") {
             let (store, root) = try fixture()
             var p = project(frames: [red, nil, blue])

@@ -27,7 +27,10 @@ def seed_video_fixture(udid: str, output: Path) -> None:
     report = {'simulatorUDID': udid, 'source': 'Original generated H264, variable timestamps, 90-degree orientation',
               'route': 'System Photos library; actual video-only PHPicker selection required', 'attempts': 1, 'status': 'running'}
     try:
-        for name, command, timeout in [('compile', compiler, 60),
+        # Run 37557518936 exhausted the 60s cold macOS fixture compiler
+        # budget before generation or Photos import began. Keep one attempt;
+        # this allocation stays inside the existing native job build budget.
+        for name, command, timeout in [('compile', compiler, 180),
             ('generate', [str(folder / 'generate-video'), str(movie)], 45),
             ('addmedia', ['xcrun', 'simctl', 'addmedia', udid, str(movie)], 120)]:
             began = time.monotonic()
