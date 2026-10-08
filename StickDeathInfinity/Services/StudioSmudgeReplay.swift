@@ -130,11 +130,12 @@ enum StudioSmudgeReplay {
                 guard ordered.contains(where: { $0.hasPixelEffect }) else { continue }
                 var base: CGImage?
                 var prefix = frame; prefix.elements = []
-                for element in ordered {
+                var consumedElements = 0
+                for (elementIndex, element) in ordered.enumerated() {
                     try checkCancellation()
                     guard element.hasPixelEffect else { prefix.elements.append(element); continue }
                     let source = try renderPrefix(prefix, layer: layer, canvasSize: canvasSize,
-                                                  rasters: rasters, base: base)
+                                                  rasters: rasters, base: base, rasterElementOffset: consumedElements)
                     let original = try pixels(source)
                     let changed: StudioSmudge.Pixels
                     if let descriptor = element.smudge {
@@ -162,6 +163,9 @@ enum StudioSmudgeReplay {
                     } else { throw Failure.unprepared }
                     let image = try cgImage(changed)
                     images[element.id] = image; base = image; prefix.elements.removeAll()
+                    // An image before this effect is now part of base. An image
+                    // after it remains eligible at its absolute later stack slot.
+                    consumedElements = elementIndex + 1
                 }
             }
         }
@@ -172,12 +176,14 @@ enum StudioSmudgeReplay {
 
     @MainActor
     private static func renderPrefix(_ frame: AnimationFrame, layer: CanvasLayer, canvasSize: CGSize,
-                                     rasters: [String: StudioRasterImage.Prepared], base: CGImage?) throws -> CGImage {
+                                     rasters: [String: StudioRasterImage.Prepared], base: CGImage?,
+                                     rasterElementOffset: Int) throws -> CGImage {
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         var failure: Error?
         let content = Canvas { context, size in
             failure = StudioFrameRenderer.drawRawLayer(context: &context, frame: frame, layer: layer,
-                canvasSize: canvasSize, size: size, preparedBrushes: brushes, preparedRaster: nil, baseImage: base, preparedRasters: rasters)
+                canvasSize: canvasSize, size: size, preparedBrushes: brushes, preparedRaster: nil, baseImage: base, preparedRasters: rasters,
+                rasterElementOffset: rasterElementOffset)
         }.frame(width: canvasSize.width, height: canvasSize.height)
         let renderer = ImageRenderer(content: content)
         renderer.scale = 1; renderer.isOpaque = false

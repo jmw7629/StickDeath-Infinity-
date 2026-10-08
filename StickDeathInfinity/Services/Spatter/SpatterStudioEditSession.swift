@@ -30,6 +30,7 @@ final class SpatterStudioEditSession: ObservableObject {
         let isLayerGlowEdit: Bool
         let isLayerDuplicate: Bool
         let isLayerUpdate: Bool
+        let imageReflectionAxis: StudioReflectionAxis?
         let isAudioEdit: Bool
         let renamedProjectName: String?
         let addedAudioClipCount: Int
@@ -39,6 +40,10 @@ final class SpatterStudioEditSession: ObservableObject {
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if let imageReflectionAxis {
+                let direction = imageReflectionAxis == .horizontal ? "horizontally" : "vertically"
+                return "Flipped the selected image \(direction) in one undoable local edit. Original image bytes are unchanged."
+            }
             if selectedErasureMaskCount > 0 {
                 return "Added \(selectedErasureMaskCount) erasure \(selectedErasureMaskCount == 1 ? "mask" : "masks") to selected drawings in one undoable local edit. Original artwork remains editable."
             }
@@ -115,14 +120,17 @@ final class SpatterStudioEditSession: ObservableObject {
         let displayedFrameID: String?
         let selectedElementIDs: Set<String>
         let selectedAudioClipID: String?
+        let selectedImage: StudioViewModel.ImageMoveCapture?
         let selectedTool: DrawingTool?
         let activePanel: StudioPanelType
         let isPlaying: Bool
-        init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext) {
+        init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
+             selectedImage: StudioViewModel.ImageMoveCapture?) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
             selectedAudioClipID = screen.selectedAudioClipID; selectedTool = screen.selectedTool
+            self.selectedImage = selectedImage
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
         }
     }
@@ -166,7 +174,8 @@ final class SpatterStudioEditSession: ObservableObject {
             try Self.requireEligible(studio, screen: screen)
         } catch { reject(error); return false }
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
-        let captured = Capture(accountID: accountID, screen: screen, document: document)
+        let captured = Capture(accountID: accountID, screen: screen, document: document,
+                               selectedImage: studio.currentImageMoveCapture())
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -200,8 +209,24 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isExposure = !isLayerUpdate && !isRename && SpatterFrameExposureInstruction.isInstruction(draft)
                 let isLayerDuplicate = !isLayerUpdate && !isRename && SpatterLayerDuplicateInstruction.isInstruction(draft)
                 let isGlow = !isLayerUpdate && !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
+                let isImage = !isLayerUpdate && !isRename && SpatterImageReflectionInstruction.isInstruction(draft)
+                var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if isErasure {
+                if isImage {
+                    let instruction = try SpatterImageReflectionInstruction.parse(draft)
+                    guard captured.selectedTool == .move, captured.selectedElementIDs.isEmpty,
+                          !captured.isPlaying, let image = captured.selectedImage,
+                          image.placement.projectID == captured.projectID,
+                          image.placement.revision == captured.revision,
+                          image.placement.frameID == captured.activeFrameID,
+                          image.placement.layerID == captured.activeLayerID else {
+                        throw SessionError.unavailable("Select one visible, unlocked image with Move before flipping it. Deselect drawings and stop playback.")
+                    }
+                    preparedRequest = try instruction.prepare(in: document, frameID: image.placement.frameID,
+                        layerID: image.placement.layerID, assetID: image.placement.assetID,
+                        requestID: submissionID, checkCancellation: check)
+                    imageReflectionAxis = instruction.axis
+                } else if isErasure {
                     preparedRequest = try SpatterSelectedErasureInstruction.parse(draft).prepare(in: document,
                         selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
                 } else if isRename {
@@ -240,7 +265,12 @@ final class SpatterStudioEditSession: ObservableObject {
                 let previousMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: check)
+                let receipt = try studio.applyStudioCommands(preparedRequest, checkCancellation: {
+                    try check()
+                    // The cancellation clock may reenter the editor. Preserve the
+                    // exact selected image instance/token even at the final commit.
+                    try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                })
                 let newIDs = Set(receipt.createdFrameIDs)
                 let addedTicks = studio.frames.filter { newIDs.contains($0.id) }.reduce(0) { $0 + $1.durationTicks }
                 let oldAudioIDs = Set(document.editableAudioClips.map(\.id))
@@ -248,7 +278,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,
@@ -282,7 +312,8 @@ final class SpatterStudioEditSession: ObservableObject {
         let screen = studio.commandScreenContext
         try Self.requireEligible(studio, screen: screen)
         guard let document = screen.document,
-              Capture(accountID: scope.accountID, screen: screen, document: document) == captured else { throw SessionError.contextChanged }
+              Capture(accountID: scope.accountID, screen: screen, document: document,
+                      selectedImage: studio.currentImageMoveCapture()) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {

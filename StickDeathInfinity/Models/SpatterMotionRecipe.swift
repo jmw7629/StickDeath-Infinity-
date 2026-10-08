@@ -867,3 +867,52 @@ struct SpatterLayerUpdateInstruction: Equatable {
             action:.apply([.updateLayer(.init(layer:.id(context.activeLayerID),settings:settings))]))
     }
 }
+
+/// Explicit image intent only. The session separately owns the selected image
+/// token; this context check never substitutes a preferred/fallback image.
+struct SpatterImageReflectionInstruction: Equatable {
+    let axis: StudioReflectionAxis
+    static let horizontalExample = "Flip selected image horizontally."
+    static let verticalExample = "Flip selected image vertically."
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Flip selected image horizontally. or Flip selected image vertically. as one complete instruction. Nothing changed."
+            case .invalidContext: return "Select the image on its visible, unlocked active layer with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "flip" && words.dropFirst().contains("image")
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else {
+            throw SpatterMotionRecipe.RecipeError.instructionTooLong
+        }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let expression = try NSRegularExpression(
+            pattern: #"\A\s*flip\s+selected\s+image\s+(horizontally|vertically)\.?\s*\z"#,
+            options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { throw Failure.unsupported }
+        return .init(axis: text[range].lowercased() == "horizontally" ? .horizontal : .vertical)
+    }
+    func prepare(in context: StudioCommandContext, frameID: String, layerID: String, assetID: String,
+                 requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard frameID == context.activeFrameID, layerID == context.activeLayerID,
+              let frame = context.frames.first(where: { $0.id == frameID }),
+              frame.imageLayerID == layerID, frame.imageAssetID == assetID, frame.imagePlacement != nil,
+              assetID.hasPrefix("image-"), UUID(uuidString: String(assetID.dropFirst(6))) != nil,
+              let layer = context.layers.first(where: { $0.id == layerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+            throw Failure.invalidContext
+        }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.reflectImage(.init(frame: .id(frameID), assetID: assetID, axis: axis, layer: .id(layerID)))]))
+    }
+}

@@ -94,6 +94,95 @@ private struct Failure: Error, CustomStringConvertible {
         return CGSize(width: maxX - minX + 1, height: maxY - minY + 1)
     }
 
+    private static func mixedStackReplayPixels() throws {
+        let layer = CanvasLayer(id: "stack", name: "Stack")
+        let asset = "image-" + UUID().uuidString
+        var rgba: [UInt8] = []
+        for _ in 0..<64 { for x in 0..<64 { rgba += x < 32 ? [0, 0, 0, 128] : [128, 128, 128, 128] } }
+        let original = try StudioSmudge.Pixels(width: 64, height: 64, rgba: rgba)
+        let sourceImage = try StudioSmudgeReplay.cgImage(original)
+        guard let png = NSBitmapImageRep(cgImage: sourceImage).representation(using: .png, properties: [:]) else {
+            throw Failure(description: "Stack fixture PNG encoding failed")
+        }
+        let sources = [asset: png], size = CGSize(width: 64, height: 64)
+        var base = AnimationFrame(id: "stack-frame", elements: [], rasterAssetID: asset, rasterLayerID: layer.id,
+            rasterPlacement: .init(x: 0, y: 0, width: 64, height: 64))
+        func effect(_ id: String) -> DrawnElement {
+            .init(id: id, tool: .blur, points: [.init(x: 32, y: 32)], color: "#000000", width: 40,
+                opacity: 1, layerID: layer.id, blur: .init(hardness: 1, radius: 4))
+        }
+        @MainActor func render(_ frame: AnimationFrame, live: DrawnElement? = nil) throws -> StudioSmudge.Pixels {
+            let brushes = try StudioFrameRenderer.prepare(frame: frame, liveElement: live)
+            let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: [layer], sourceData: sources)
+            let replay = try StudioSmudgeReplay.prepare(frame: frame, layers: [layer], canvasSize: size,
+                rasterData: nil, rasterDataByID: sources, liveElement: live)
+            var failure: Error?
+            let renderer = ImageRenderer(content: Canvas { context, actual in
+                failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: [layer], canvasSize: size,
+                    size: actual, liveElement: live, preparedBrushes: brushes, preparedSmudges: replay,
+                    rasterSources: sources, preparedRasters: rasters)
+            }.frame(width: 64, height: 64))
+            renderer.scale = 1; renderer.isOpaque = false
+            guard let image = renderer.cgImage else { throw Failure(description: "Mixed stack render unavailable") }
+            if let failure { throw failure }
+            return try StudioSmudgeReplay.pixels(image)
+        }
+        func blur(_ pixels: StudioSmudge.Pixels) throws -> StudioSmudge.Pixels {
+            let input = try StudioBlur.Pixels(width: 64, height: 64, rgba: pixels.rgba)
+            let result = try StudioBlur.apply(to: input, path: [.init(x: 32, y: 32)],
+                settings: .init(diameter: 40, hardness: 1, radius: 4, strength: 1))
+            return try StudioSmudgeReplay.pixels(StudioSmudgeReplay.cgImage(.init(width: 64, height: 64, rgba: result.rgba)))
+        }
+        let imageOnly = try render(base), once = try blur(imageOnly), twice = try blur(once)
+        guard once.rgba != imageOnly.rgba, twice.rgba != once.rgba else {
+            throw Failure(description: "Real blur oracle does not distinguish successive effects")
+        }
+        let blank = [UInt8](repeating: 0, count: 64 * 64 * 4)
+        base.elements = [effect("first"), effect("second")]
+        for slot in 0...2 {
+            var frame = base; frame.rasterStackPosition = slot == 0 ? nil : slot
+            let replay = try StudioSmudgeReplay.prepare(frame: frame, layers: [layer], canvasSize: size,
+                rasterData: nil, rasterDataByID: sources)
+            guard let first = replay.images["first"], let second = replay.images["second"] else {
+                throw Failure(description: "Missing real effect prefix")
+            }
+            let firstPixels = try StudioSmudgeReplay.pixels(first).rgba
+            let secondPixels = try StudioSmudgeReplay.pixels(second).rgba
+            guard firstPixels == (slot == 0 ? once.rgba : blank),
+                  secondPixels == (slot == 0 ? twice.rgba : slot == 1 ? once.rgba : blank) else {
+                throw Failure(description: "Image consumed at wrong effect prefix slot \(slot)")
+            }
+            let final = try render(frame)
+            guard final.rgba == (slot == 0 ? twice.rgba : slot == 1 ? once.rgba : imageOnly.rgba) else {
+                throw Failure(description: "Final layer repeats, drops or reorders image at slot \(slot)")
+            }
+            // Cached effects are tied to exact persisted stack metadata.
+            var moved = frame; moved.rasterStackPosition = slot == 2 ? nil : slot + 1
+            do {
+                try replay.validate(frame: moved, layers: [layer], canvasSize: size, rasterData: nil,
+                    rasterDataByID: sources, liveElement: nil)
+                throw Failure(description: "Old effect cache accepted changed image slot")
+            } catch StudioSmudgeReplay.Failure.stale { }
+        }
+        print("PASS image before between and after successive blur effects matches exact real pixel prefixes without duplicate alpha")
+        var liveFrame = base; liveFrame.elements = [effect("first")]; liveFrame.rasterStackPosition = 1
+        let livePixels = try render(liveFrame, live: effect("live"))
+        guard livePixels.rgba == once.rgba else { throw Failure(description: "End-slot image did not precede live effect") }
+        // Identical legacy nil and explicit zero preserve the old compositor.
+        var legacy = base; legacy.rasterStackPosition = nil
+        var zero = legacy; zero.rasterStackPosition = 0
+        guard try render(legacy).rgba == render(zero).rgba else { throw Failure(description: "Nil legacy stack pixels changed") }
+        var invalid = base; invalid.rasterStackPosition = 3
+        do { _ = try render(invalid); throw Failure(description: "Out-of-range full-frame image slot rendered") }
+        catch StudioRasterLayerInstance.Failure.invalid { }
+        do {
+            _ = try StudioSmudgeReplay.prepare(frame: liveFrame, layers: [layer], canvasSize: size,
+                rasterData: nil, rasterDataByID: [:])
+            throw Failure(description: "Image above a flattened effect bypassed source validation")
+        } catch StudioRasterImage.Failure.missing { }
+        print("PASS live effect end-slot legacy equality stale cache invalid slot and missing later source guards")
+    }
+
     static func main() {
         do {
             let red = CanvasLayer(id: "red", name: "Red")
@@ -152,7 +241,8 @@ private struct Failure: Error, CustomStringConvertible {
                 halo.glowStrength = 1; halo.glowRadius = 0
                 try requirePixel("zero radius cannot extend source at \(edge)", centerPixel(layers: [halo], elements: ink, edge: edge, sampleY: 24, white: false), [0,0,0,0])
             }
-            print("STUDIO_RENDERER_TESTS=PASS 10 existing cases plus 2 scales of analytical blend/order and glow color/strength/radius/alpha goldens")
+            try mixedStackReplayPixels()
+            print("STUDIO_RENDERER_TESTS=PASS 10 existing cases plus 2 scales of analytical blend/order and glow color/strength/radius/alpha goldens plus 2 mixed image/effect replay groups")
         } catch {
             print("STUDIO_RENDERER_TESTS=FAIL \(error)")
             exit(1)

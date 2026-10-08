@@ -1128,6 +1128,102 @@ private func rejects(_ action: () throws -> Void) throws {
             vm.selectDrawingTool(.move)
             try require(vm.hasMixedArtworkSelection, "Lasso to Move dropped mixed selection")
         }
+        @MainActor func orderFixture() async throws -> (StudioViewModel, DeviceStorageManager, String, DrawnElement, DrawnElement, DrawnElement) {
+            let (vm, store) = try await project(root)
+            let importedImage = try await imported(png(opaqueBlue: true), in: root)
+            let asset = try attach(importedImage, to: vm), layer = vm.currentFrame.rasterLayerID!
+            vm.selectLayer(layer); vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 50,y:50,width:60,height:60)), "Order image placement")
+            let u = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x:20,y:70),.init(x:140,y:70)], color:"#000000",width:8,opacity:1,layerID:layer)
+            let d = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x:80,y:55),.init(x:80,y:105)], color:"#00FF00",width:8,opacity:1,layerID:layer)
+            let v = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x:20,y:90),.init(x:140,y:90)], color:"#FFFF00",width:8,opacity:1,layerID:layer)
+            try require(vm.commitElement(u) && vm.commitElement(d) && vm.commitElement(v), "Order drawing fixture")
+            return (vm,store,asset,u,d,v)
+        }
+        @MainActor func selectOrderGroup(_ vm: StudioViewModel, drawingID: String) throws {
+            vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .artwork
+            vm.areaSelectionKind = .rectangle; vm.areaSelectionSmoothing = 0; vm.selectionMode = .new
+            guard let capture = vm.beginAreaSelection() else { throw Failure(message:"Order selection missing") }
+            try require(vm.finishAreaSelection(capture, points:[.init(x:45,y:45),.init(x:115,y:115)]), "Order selection failed")
+            try require(vm.hasMixedArtworkSelection && vm.selectedElementIDs == [drawingID], "Order selection included crossing unselected drawings")
+            vm.selectDrawingTool(.move)
+        }
+        try await test("mixed Forward Back crosses image and drawings preserving unselected order pixels one Undo and cold PNG") {
+            let (vm,store,asset,u,d,v) = try await orderFixture()
+            try selectOrderGroup(vm,drawingID:d.id)
+            let before = vm.currentFrame, originalPixels = try render(vm), originalSource = vm.originalImageSource(asset)
+            try pixel(originalPixels.pixel(60,70),[0,0,0,255]); try pixel(originalPixels.pixel(80,90),[255,255,0,255])
+            try require(vm.orderSelected(forward:true), "Mixed Forward refused explicit image and drawing")
+            let ordered = vm.currentFrame, actual = try render(vm)
+            try require(ordered.elements.map(\.id) == [u.id,v.id,d.id] && ordered.rasterStackPosition == 1,
+                        "Forward did not change [I,U,D,V] into [U,I,V,D]")
+            try pixel(actual.pixel(60,70),[255,0,0,255]); try pixel(actual.pixel(80,90),[0,255,0,255])
+            try require(vm.selectedElementIDs == [d.id] && vm.hasMixedArtworkSelection && vm.originalImageSource(asset) == originalSource,
+                        "Forward lost selection or immutable source")
+            vm.undo(); try require(vm.currentFrame == before && render(vm).bytes == originalPixels.bytes, "Mixed order was not one Undo")
+            vm.redo(); try require(vm.currentFrame == ordered && render(vm).bytes == actual.bytes, "Mixed order Redo changed pixels")
+            try selectOrderGroup(vm,drawingID:d.id)
+            try require(vm.orderSelected(forward:false) && render(vm).bytes == originalPixels.bytes && vm.currentFrame.elements.map(\.id) == [u.id,d.id,v.id],
+                        "Back did not restore actual original stack")
+            vm.undo(); try require(vm.currentFrame == ordered, "Back Undo lost forward stack")
+            let saved = await vm.save(); try require(saved,"Mixed order save")
+            let cold = StudioViewModel(storage:store)
+            let opened = await cold.openProject(try store.loadAnimation(id:vm.document.id)!.metadata)
+            try require(opened && cold.currentFrame == ordered && render(cold).bytes == actual.bytes && cold.originalImageSource(asset) == originalSource,
+                        "Cold reopen lost image stack or source")
+            let output = try await StudioExportService().export(document:cold.document,format:.pngSequence,outputParent:root,rasterData:{cold.rasterData($0)})
+            try require(decoded(output.imageURLs[0]).bytes == actual.bytes,"Mixed image stack PNG differs from actual canvas")
+        }
+        try await test("mixed order cancellation late selection and locked image reject atomically") {
+            let (vm,_,asset,_,d,_) = try await orderFixture(); try selectOrderGroup(vm,drawingID:d.id)
+            var checkpoints = 0
+            try require(vm.orderSelected(forward:true,checkCancellation:{checkpoints += 1}),"Order cancellation checkpoint fixture")
+            try require(checkpoints > 1,"Order lacks final cancellation checkpoint")
+            vm.undo(); try selectOrderGroup(vm,drawingID:d.id)
+            let before = vm.document, rgba = try render(vm).bytes, undo = vm.canUndo, redo = vm.canRedo, source = vm.originalImageSource(asset)
+            for stop in 1...checkpoints {
+                var calls = 0
+                try require(!vm.orderSelected(forward:true,checkCancellation:{calls += 1; if calls == stop {throw CancellationError()}}),"Cancelled mixed order committed")
+                try require(vm.document == before && vm.canUndo == undo && vm.canRedo == redo && vm.selectedElementIDs == [d.id] &&
+                            vm.hasMixedArtworkSelection && vm.originalImageSource(asset) == source,"Cancelled mixed order changed history/source/selection")
+            }
+            var calls = 0
+            try require(!vm.orderSelected(forward:true,checkCancellation:{calls += 1; if calls == checkpoints {vm.deselectAreaImage()}}) && vm.document == before,
+                        "Late image deselection allowed drawing-only partial order")
+            try require(render(vm).bytes == rgba,"Rejected order changed rendered content")
+            try selectOrderGroup(vm,drawingID:d.id); vm.setLayerLockMode(vm.activeLayerID,mode:.full)
+            let locked = vm.document
+            try require(!vm.orderSelected(forward:true) && vm.document == locked && vm.originalImageSource(asset) == source,
+                        "Locked image order changed drawings or source")
+        }
+        try await test("stacked image survives deletion below it appended drawing linked duplication and filtered mixed clipboard") {
+            let (vm,_,asset,u,d,_) = try await orderFixture(); try selectOrderGroup(vm,drawingID:d.id)
+            try require(vm.orderSelected(forward:true),"Stack lifetime Forward")
+            let layer = vm.currentFrame.rasterLayerID!, source = vm.originalImageSource(asset)
+            try require(vm.copySelectedArtwork(),"Ordered mixed Copy")
+            try require(vm.pasteSelectedArtwork(),"Ordered mixed Paste")
+            let pasted = vm.currentFrame.rasterAliases!.last!
+            try require((pasted.stackPosition ?? 0) == 0 && vm.currentFrame.rasterAssetID(on:pasted.layerID) == asset,
+                        "Filtered clipboard failed to remap image slot against only copied drawings")
+            vm.undo(); vm.selectLayer(layer); vm.duplicateLayer(layer)
+            let aliasLayer = vm.activeLayerID
+            try require(vm.currentFrame.rasterInstance(on:aliasLayer)?.stackPosition == 1 && vm.currentFrame.referencedRasterAssetIDs == [asset],
+                        "Layer duplication lost image stack or invented source")
+            vm.undo(); vm.selectLayer(layer)
+            vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .drawings; vm.areaSelectionKind = .rectangle; vm.selectionMode = .new
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!,points:[.init(x:10,y:60),.init(x:150,y:78)]) && vm.selectedElementIDs == [u.id],
+                        "Delete-below fixture selected wrong artwork")
+            vm.deleteSelected()
+            try require(!vm.currentFrame.elements.contains(where:{$0.id == u.id}) && (vm.currentFrame.rasterStackPosition ?? 0) == 0,
+                        "Deleting below image did not remap its stack")
+            try pixel(render(vm).pixel(60,70),[255,0,0,255])
+            let fresh = DrawnElement(id:UUID().uuidString,tool:.line,points:[.init(x:55,y:70),.init(x:70,y:70)],color:"#FF00FF",width:6,opacity:1,layerID:layer)
+            try require(vm.commitElement(fresh),"Append after image stack")
+            try pixel(render(vm).pixel(60,70),[255,0,255,255])
+            try require((vm.currentFrame.rasterStackPosition ?? 0) == 0 && vm.originalImageSource(asset) == source,
+                        "Drawing append moved image above new paint or changed its original")
+            vm.undo(); try pixel(render(vm).pixel(60,70),[255,0,0,255])
+        }
         try await test("mixed rectangle New Add Subtract selects real drawing and image without changing document or clipboard") {
             let (vm, _, _, line, other) = try await mixedFixture()
             let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
@@ -1529,6 +1625,35 @@ private func rejects(_ action: () throws -> Void) throws {
                 try require(capture.assetID == id && vm.placeImage(capture, at: rect), "Independent placement used wrong source")
             }
             return (vm, store, a, b)
+        }
+        try await test("independent image stack moves only its selected source while linked duplication retains slot and originals") {
+            let (vm,store,a,b) = try await dualFixture()
+            let layer = vm.currentFrame.rasterLayerInstances.first { vm.currentFrame.rasterAssetID(on:$0.layerID) == b }!.layerID
+            vm.selectLayer(layer)
+            let stroke = DrawnElement(id:UUID().uuidString,tool:.line,points:[.init(x:92,y:90),.init(x:118,y:90)],color:"#000000",width:8,opacity:1,layerID:layer)
+            try require(vm.commitElement(stroke),"Independent image order stroke")
+            let before = vm.currentFrame, pixelsBefore = try render(vm), sources = vm.rasterSources(for:vm.currentFrame)
+            try pixel(pixelsBefore.pixel(98,90),[0,0,0,255])
+            vm.selectDrawingTool(.move); try require(vm.setImageCanvasMove(true),"Explicit independent image selection")
+            try require(vm.orderSelected(forward:true),"Independent image Forward")
+            let ordered = vm.currentFrame, actual = try render(vm)
+            try require(ordered.rasterInstance(on:layer)?.stackPosition == 1 && (ordered.rasterStackPosition ?? 0) == 0,
+                        "Independent alias order changed primary stack")
+            try pixel(actual.pixel(98,90),[255,0,0,255]); try pixel(actual.pixel(20,20),pixelsBefore.pixel(20,20))
+            try require(vm.rasterSources(for:ordered) == sources && ordered.referencedRasterAssetIDs == [a,b],"Ordering discarded an independent source")
+            vm.undo(); try require(vm.currentFrame == before && render(vm).bytes == pixelsBefore.bytes,"Independent order Undo")
+            vm.redo(); try require(vm.currentFrame == ordered && render(vm).bytes == actual.bytes,"Independent order Redo")
+            vm.selectLayer(layer); vm.duplicateLayer(layer)
+            let copy = vm.activeLayerID
+            try require(vm.currentFrame.rasterInstance(on:copy)?.stackPosition == 1 && vm.currentFrame.rasterAssetID(on:copy) == b &&
+                        vm.currentFrame.referencedRasterAssetIDs == [a,b],"Linked duplicate lost independent image stack/source")
+            try pixel(render(vm).pixel(98,90),[255,0,0,255]); try pixel(render(vm).pixel(20,20),actual.pixel(20,20))
+            vm.undo()
+            let saved = await vm.save(); try require(saved,"Independent stack save")
+            let cold = StudioViewModel(storage:store)
+            let opened = await cold.openProject(try store.loadAnimation(id:vm.document.id)!.metadata)
+            try require(opened && cold.currentFrame == ordered && cold.rasterSources(for:cold.currentFrame) == sources && render(cold).bytes == actual.bytes,
+                        "Independent stack cold reopen lost source or pixels")
         }
         try await test("two independent imports compose on one frame with exact originals cold reopen portable and PNG") {
             let (vm, store, a, b) = try await dualFixture()

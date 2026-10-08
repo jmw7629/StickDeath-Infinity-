@@ -561,6 +561,84 @@ private final class NetworkTrap: URLProtocol {
                 catch SpatterLayerUpdateInstruction.Failure.unsupported { }
             }
         }
+        try await test("explicit selected image flip grammar rejects suffixes controls and quoted rename routing") {
+            for (text, axis) in [(SpatterImageReflectionInstruction.horizontalExample, StudioReflectionAxis.horizontal),
+                                 (SpatterImageReflectionInstruction.verticalExample, .vertical),
+                                 ("  FLIP selected IMAGE HORIZONTALLY  ", .horizontal)] {
+                try require(SpatterImageReflectionInstruction.isInstruction(text), "Image intent was not classified")
+                try require(SpatterImageReflectionInstruction.parse(text).axis == axis, "Wrong reflection axis")
+            }
+            for bad in ["Flip selected image diagonally.", "Flip image horizontally.", "Flip selected image horizontally. Delete image.",
+                        "Flip selected image horizontally..", "Flip selected image horizontally and vertically.",
+                        "Flip selected image horizontally; shell rm", "Flip selected image horizontally\n", "Flip selected image\thorizontally.",
+                        "Flip selected image horizontally.\u{0000}", "Flip selected image horizontally with asset image-123."] {
+                try require(SpatterImageReflectionInstruction.isInstruction(bad), "Malformed image intent escaped its parser")
+                do { _ = try SpatterImageReflectionInstruction.parse(bad); throw Failure(message: "Malformed image flip accepted") }
+                catch SpatterImageReflectionInstruction.Failure.unsupported { }
+            }
+            for rename in ["Rename project to \"Flip selected image horizontally\".", "Rename active layer to \"Flip selected image vertically\"."] {
+                try require(!SpatterImageReflectionInstruction.isInstruction(rename), "Quoted name was interpreted as image authority")
+            }
+            do { _ = try SpatterImageReflectionInstruction.parse(String(repeating: "x", count: 1025)); throw Failure(message: "Overlong image instruction accepted") }
+            catch SpatterMotionRecipe.RecipeError.instructionTooLong { }
+        }
+        try await test("image flip preparation binds explicit active alias and matches real editor with context and cancellation guards") {
+            var doc = try StudioDocument.new(name: "Image reflection context", width: 128, height: 128, fps: 12)
+            doc.schemaVersion = 31
+            let primary = doc.activeLayerID, alias = UUID().uuidString
+            let primaryAsset = "image-" + UUID().uuidString, selectedAsset = "image-" + UUID().uuidString
+            doc.layers.append(CanvasLayer(id: alias, name: "Selected image")); doc.activeLayerID = alias
+            doc.frames[0].rasterAssetID = primaryAsset; doc.frames[0].rasterLayerID = primary
+            doc.frames[0].rasterPlacement = .init(x: 10, y: 20, width: 40, height: 20)
+            doc.frames[0].rasterAliases = [.init(layerID: alias, placement: .init(x: 60, y: 60, width: 40, height: 20), assetID: selectedAsset)]
+            try doc.validate()
+            let frameID = doc.activeFrameID, context = StudioCommandContext(document: doc)
+            for axis in [StudioReflectionAxis.horizontal, .vertical] {
+                let parsed = SpatterImageReflectionInstruction(axis: axis), requestID = UUID()
+                let request = try parsed.prepare(in: context, frameID: frameID, layerID: alias, assetID: selectedAsset, requestID: requestID)
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1, case .reflectImage(let command) = commands[0],
+                      case .id(let targetFrame) = command.frame, case .id(let targetLayer)? = command.layer else {
+                    throw Failure(message: "Image parser did not emit one explicit typed reflection")
+                }
+                try require(targetFrame == frameID && targetLayer == alias && command.assetID == selectedAsset && command.axis == axis &&
+                    request.requestID == requestID && request.expectedRevision == doc.revision && request.projectID == doc.id,
+                    "Reflection request changed captured identity")
+                var actual = try StudioDocumentEditor(document: doc), manual = try StudioDocumentEditor(document: doc)
+                _ = try StudioCommandExecutor.execute(decoded, editor: &actual)
+                try manual.reflectImage(frameID: frameID, assetID: selectedAsset, axis: axis, layerID: alias)
+                try require(content(actual.document) == content(manual.document) && actual.document.frames[0].rasterInstance(on: primary) == doc.frames[0].rasterInstance(on: primary),
+                    "Typed image reflection differed from manual command or touched another source")
+                actual.undo(); try require(actual.document.frames == doc.frames, "Image flip was not one Undo")
+                for stop in 1...2 {
+                    var calls = 0
+                    do { _ = try parsed.prepare(in: context, frameID: frameID, layerID: alias, assetID: selectedAsset, checkCancellation: {
+                        calls += 1; if calls == stop { throw CancellationError() }
+                    }); throw Failure(message: "Image preparation ignored cancellation") }
+                    catch is CancellationError { }
+                }
+            }
+            let parsed = try SpatterImageReflectionInstruction.parse(SpatterImageReflectionInstruction.horizontalExample)
+            for (frame, layer, asset) in [("missing", alias, selectedAsset), (frameID, primary, primaryAsset), (frameID, alias, primaryAsset)] {
+                do { _ = try parsed.prepare(in: context, frameID: frame, layerID: layer, assetID: asset); throw Failure(message: "Image target mismatch accepted") }
+                catch SpatterImageReflectionInstruction.Failure.invalidContext { }
+            }
+            for variant in 0..<6 {
+                var invalid = doc
+                switch variant {
+                case 0: invalid.layers[1].visible = false
+                case 1: invalid.layers[1].opacity = 0
+                case 2: invalid.layers[1].locked = true; invalid.layers[1].lockMode = "full"
+                case 3: invalid.layers[1].lockMode = "position"
+                case 4: invalid.layers[1].lockMode = "alpha"
+                default: invalid.frames[0].rasterAliases = nil
+                }
+                do { _ = try parsed.prepare(in: StudioCommandContext(document: invalid), frameID: frameID, layerID: alias, assetID: selectedAsset)
+                    throw Failure(message: "Unavailable image silently fell back to primary") }
+                catch SpatterImageReflectionInstruction.Failure.invalidContext { }
+            }
+            try require(NetworkTrap.count == 0, "Image parser attempted network access")
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

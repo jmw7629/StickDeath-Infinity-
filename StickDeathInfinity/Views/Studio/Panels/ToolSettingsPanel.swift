@@ -564,6 +564,16 @@ struct FloatingToolSettingsPanel: View {
                         imageRotateButton("Rotate left 90°", direction: .counterclockwise)
                         imageRotateButton("Rotate right 90°", direction: .clockwise)
                     }
+                    HStack(spacing: 8) {
+                        Button("Image forward") { _ = vm.orderSelected(forward: true) }
+                            .accessibilityIdentifier("studio.image-order.forward")
+                        Button("Image backward") { _ = vm.orderSelected(forward: false) }
+                            .accessibilityIdentifier("studio.image-order.backward")
+                    }
+                    .font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
+                    .disabled(vm.selectedImageCutCapture == nil)
+                    Text("Select the image with Move to order it among drawings on the same layer. Layers keep their own order.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     Button("Delete image…", role: .destructive) {
                         guard let capture = vm.prepareImagePlacement() else { return }
                         imageDeletion = capture; showingImageDeletion = true
@@ -641,12 +651,12 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil) || (vm.hasMixedArtworkSelection && (action.contains("Fwd") || action.contains("Back"))))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
                 if vm.hasMixedArtworkSelection {
-                    Text("Copy and Cut preserve the selected drawings and image together. Lock layers includes both kinds of artwork; ordering requires selecting one kind.")
+                    Text("Copy, Cut and ordering include the selected drawings and image together. Forward and Back move within each layer; the layer order stays unchanged. Lock layers includes both kinds of artwork.")
                         .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                         .accessibilityIdentifier("studio.selection.mixed-limitations")
                 }

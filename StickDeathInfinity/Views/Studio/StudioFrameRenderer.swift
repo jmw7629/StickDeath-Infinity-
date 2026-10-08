@@ -319,8 +319,22 @@ struct StudioFrameRenderer {
                              canvasSize: CGSize, size: CGSize, preparedBrushes: PreparedBrushes,
                              preparedRaster: StudioRasterImage.Prepared?, baseImage: CGImage? = nil,
                              smudges: [String: CGImage] = [:], liveElement: DrawnElement? = nil,
-                             preparedRasters: [String: StudioRasterImage.Prepared] = [:]) -> Error? {
+                             preparedRasters: [String: StudioRasterImage.Prepared] = [:],
+                             rasterElementOffset: Int? = nil) -> Error? {
         let selectedRaster = frame.rasterInstance(on: layer.id)
+        let ordered = frame.elements.filter { $0.layerID == layer.id }
+        let imagePosition = selectedRaster?.stackPosition ?? 0
+        // Replay prefixes retain the absolute image slot while their element
+        // array contains only the suffix since the previous flattened effect.
+        let offset = rasterElementOffset ?? 0
+        guard imagePosition >= 0, imagePosition <= 20_000, offset >= 0, offset <= 20_000,
+              ordered.count <= 20_000 - offset,
+              rasterElementOffset != nil || selectedRaster == nil || imagePosition <= ordered.count else {
+            return StudioRasterLayerInstance.Failure.invalid
+        }
+        let relativeImagePosition = imagePosition - offset
+        let shouldDrawImage = (baseImage == nil || rasterElementOffset != nil)
+            && relativeImagePosition >= 0 && relativeImagePosition <= ordered.count
         let raster = selectedRaster.map { $0.regionMask?.sampledInstance($0) ?? $0 }
         let preparedRaster = frame.rasterAssetID(on: layer.id).flatMap { preparedRasters[$0] } ?? preparedRaster
         do {
@@ -334,11 +348,10 @@ struct StudioFrameRenderer {
                 guard preparedRaster.assetID == frame.rasterAssetID(on: layer.id),
                       preparedRaster.managed == (raster.placement != nil) else { throw StudioRasterImage.Failure.invalid }
             }
-            if raster?.placement != nil && preparedRaster == nil && baseImage == nil { throw StudioRasterImage.Failure.missing }
+            if raster?.placement != nil && preparedRaster == nil && (baseImage == nil || shouldDrawImage) { throw StudioRasterImage.Failure.missing }
         } catch { return error }
-        if let baseImage {
-            context.draw(Image(decorative: baseImage, scale: 1), in: CGRect(origin: .zero, size: size))
-        } else if let raster, let image = preparedRaster {
+        func drawSelectedRaster(in context: inout GraphicsContext) {
+            guard let raster, let image = preparedRaster else { return }
             let rect: CGRect
             if let placement = raster.placement {
                 rect = CGRect(x: placement.x / canvasSize.width * size.width,
@@ -373,11 +386,17 @@ struct StudioFrameRenderer {
             drawImage(image.image, crop: raster.crop, regionMask: raster.regionMask, in: rect, context: &picture)
             }
         }
-        for element in frame.elements where element.layerID == layer.id {
+        if let baseImage {
+            context.draw(Image(decorative: baseImage, scale: 1), in: CGRect(origin: .zero, size: size))
+        }
+        for (index, element) in ordered.enumerated() {
+            if shouldDrawImage && relativeImagePosition == index { drawSelectedRaster(in: &context) }
             var elementContext = context
             do { try drawPreparedElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,
                 brush: preparedBrushes.strokes[element.id], smudges: smudges) } catch { return error }
         }
+        // The persisted end slot is below any current live stroke/effect.
+        if shouldDrawImage && relativeImagePosition == ordered.count { drawSelectedRaster(in: &context) }
         if let element = liveElement, element.layerID == layer.id {
             var elementContext = context
             do { try drawPreparedElement(context: &elementContext, element: element, size: size, canvasSize: canvasSize,

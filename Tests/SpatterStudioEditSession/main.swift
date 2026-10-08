@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import AVFoundation
+import ImageIO
+import UniformTypeIdentifiers
 
 private struct Failure: Error { let message: String }
 private func require(_ condition: Bool, _ message: String) throws { if !condition { throw Failure(message: message) } }
@@ -1489,6 +1491,150 @@ private final class NetworkTrap: URLProtocol {
                 await vm.flush()
             }
             }
+        }
+        @MainActor func imageReflectionFixture(_ name: String) async throws -> (StudioViewModel, DeviceStorageManager, String, String) {
+            let (vm, store) = try await fixture(name)
+            // Four distinct opaque quadrants make BOTH reflection axes observable.
+            var bytes: [UInt8] = []
+            for y in 0..<16 { for x in 0..<16 {
+                bytes += y < 8 ? (x < 8 ? [255, 0, 0, 255] : [0, 255, 0, 255])
+                    : (x < 8 ? [0, 0, 255, 255] : [255, 255, 0, 255])
+            } }
+            let cg = CGImage(width: 16, height: 16, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 64,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue:
+                    CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                provider: CGDataProvider(data: Data(bytes) as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+            let png = NSMutableData()
+            guard let writer = CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil) else { throw Failure(message: "Image fixture encoder unavailable") }
+            CGImageDestinationAddImage(writer, cg, nil)
+            try require(CGImageDestinationFinalize(writer), "Image fixture encoding failed")
+            let file = root.appendingPathComponent(UUID().uuidString + ".png")
+            try (png as Data).write(to: file)
+            let imported = try await StudioImageImportService.shared.importImage(from: file, name: "Four quadrant source")
+            let asset = try vm.attachImportedImage(imported, expectedProjectID: vm.document.id,
+                expectedRevision: vm.document.revision, frameID: vm.currentFrame.id, layerID: vm.activeLayerID)
+            guard let importedLayer = vm.currentFrame.rasterLayerID,
+                  vm.currentFrame.rasterAssetID(on: importedLayer) == asset else { throw Failure(message: "Imported image layer identity missing") }
+            vm.selectLayer(importedLayer)
+            vm.selectDrawingTool(.move)
+            try require(vm.cropImage(vm.prepareImagePlacement()!, crop: .init(x: 0.125, y: 0.125, width: 0.75, height: 0.75)), "Actual source crop failed")
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 20, y: 24, width: 48, height: 32), rotationDegrees: 25), "Actual angled placement failed")
+            let selectedLayer = vm.activeLayerID
+            vm.duplicateLayer(selectedLayer)
+            let siblingLayer = vm.activeLayerID
+            try require(siblingLayer != selectedLayer && vm.currentFrame.rasterLayerInstances.count == 2, "Linked sibling fixture missing")
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 96, y: 38, width: 20, height: 20), rotationDegrees: 0), "Sibling placement failed")
+            vm.selectLayer(selectedLayer)
+            try require(vm.setImageCanvasMove(true), "Explicit image selection failed")
+            vm.activePanel = .spatterAI; await vm.flush()
+            return (vm, store, asset, siblingLayer)
+        }
+        @MainActor func imageReflectionPixels(_ vm: StudioViewModel) throws -> [UInt8] {
+            let frame = vm.currentFrame, doc = vm.document, sources = vm.rasterSources(for: frame)
+            let brushes = try StudioFrameRenderer.prepare(frame: frame)
+            let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: doc.layers, sourceData: sources)
+            var failure: Error?
+            let renderer = ImageRenderer(content: Canvas { context, size in
+                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+                failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: doc.layers,
+                    canvasSize: CGSize(width: doc.width, height: doc.height), size: size,
+                    preparedBrushes: brushes, rasterSources: sources, preparedRasters: rasters)
+            }.frame(width: CGFloat(doc.width), height: CGFloat(doc.height)))
+            renderer.scale = 1; renderer.isOpaque = true
+            guard let image = renderer.cgImage else { throw Failure(message: "Image reflection render missing") }
+            if let failure { throw failure }
+            var bytes = [UInt8](repeating: 0, count: image.width * image.height * 4)
+            let rendered = bytes.withUnsafeMutableBytes { buffer -> Bool in
+                guard let cg = CGContext(data: buffer.baseAddress, width: image.width, height: image.height,
+                    bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+                cg.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height)); return true
+            }
+            try require(rendered, "Actual image reflection pixels unavailable"); return bytes
+        }
+        try await test("selected image reflection matches manual cropped angled pixels preserves sibling source and one Undo cold state") {
+            for axis in [StudioReflectionAxis.horizontal, .vertical] {
+                let (vm, store, asset, siblingLayer) = try await imageReflectionFixture("image-reflect-\(axis.rawValue)")
+                let before = vm.document, original = vm.originalImageSource(asset)
+                let beforePixels = try imageReflectionPixels(vm), sibling = vm.currentFrame.rasterInstance(on: siblingLayer)
+                let manualCapture = vm.prepareImagePlacement()!
+                try require(vm.reflectImage(manualCapture, axis: axis), "Manual reflection failed")
+                let manual = vm.document, expected = try imageReflectionPixels(vm)
+                try require(expected != beforePixels, "Asymmetric image did not visibly reflect")
+                vm.undo(); try require(content(vm.document) == content(before), "Manual Undo changed original content")
+                try require(vm.setImageCanvasMove(true), "Reselection after manual Undo failed")
+                await vm.flush()
+                let submitted = vm.document, session = SpatterStudioEditSession()
+                let direction = axis == .horizontal ? "horizontally" : "vertically"
+                try require(session.submit("Flip selected image \(direction).", in: vm, accountID: nil, currentScope: { guest }), "Image instruction not scheduled")
+                await session.waitForCompletion()
+                try require(session.status == .applied && session.appliedEdit?.imageReflectionAxis == axis &&
+                    session.appliedEdit?.summary == "Flipped the selected image \(direction) in one undoable local edit. Original image bytes are unchanged.", "Image reflection receipt was not factual")
+                try require(content(vm.document) == content(manual) && vm.document.revision == submitted.revision + 1 &&
+                    vm.currentFrame.rasterInstance(on: siblingLayer) == sibling && vm.originalImageSource(asset) == original &&
+                    (try imageReflectionPixels(vm)) == expected, "Spatter changed sibling/source or diverged from manual image pixels")
+                let changed = vm.document
+                vm.undo(); try require(content(vm.document) == content(submitted) && (try imageReflectionPixels(vm)) == beforePixels, "One reflection Undo failed")
+                vm.redo(); try require(content(vm.document) == content(changed) && (try imageReflectionPixels(vm)) == expected, "Reflection Redo failed")
+                try require(await vm.save(), "Reflected image save failed")
+                guard let stored = try store.loadAnimation(id: vm.document.id) else { throw Failure(message: "Reflected image archive missing") }
+                let reopened = StudioViewModel(storage: store)
+                try require(await reopened.openProject(stored.metadata), "Reflected image cold open failed")
+                try require(content(reopened.document) == content(changed) && reopened.originalImageSource(asset) == original &&
+                    (try imageReflectionPixels(reopened)) == expected, "Cold reflected image lost source, geometry or pixels")
+            }
+        }
+        try await test("image reflection rejects absent mixed locked hidden and inactive selection without a fallback") {
+            for mode in ["none", "mixed", "locked", "hidden", "inactive"] {
+                let (vm, _, asset, sibling) = try await imageReflectionFixture("image-reflect-denied-\(mode)")
+                switch mode {
+                case "none": vm.deselectAreaImage()
+                case "locked": vm.setLayerLockMode(vm.activeLayerID, mode: .full)
+                case "hidden": vm.toggleLayerVisibility(vm.activeLayerID)
+                case "inactive": vm.selectLayer(sibling)
+                default:
+                    try require(vm.commitElement(.init(id: UUID().uuidString, tool: .line,
+                        points: [.init(x: 8, y: 8), .init(x: 16, y: 8)], color: "#000000", width: 2,
+                        opacity: 1, layerID: vm.activeLayerID)), "Mixed drawing fixture failed")
+                    vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .artwork; vm.areaSelectionKind = .rectangle; vm.selectionMode = .new
+                    guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Mixed region unavailable") }
+                    try require(vm.finishAreaSelection(capture, points: [.init(x: 1, y: 1), .init(x: 86, y: 78)]), "Mixed region failed")
+                    vm.selectDrawingTool(.move); try require(vm.hasMixedArtworkSelection, "Mixed fixture was not mixed")
+                }
+                vm.activePanel = .spatterAI; await vm.flush()
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo, original = vm.originalImageSource(asset)
+                let session = SpatterStudioEditSession()
+                _ = session.submit("Flip selected image horizontally.", in: vm, accountID: nil, currentScope: { guest })
+                await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before &&
+                    vm.canUndo == undo && vm.canRedo == redo && vm.originalImageSource(asset) == original, "Rejected image instruction edited another target")
+            }
+        }
+        try await test("image reflection fences same revision image reselection and cancellation at both async boundaries") {
+            for boundary in 1...2 { for change in ["reselect", "cancel", "account", "close", "deadline"] {
+                let (vm, _, asset, _) = try await imageReflectionFixture("image-reflect-fence-\(boundary)-\(change)")
+                let before = vm.document, undo = vm.canUndo, redo = vm.canRedo, original = vm.originalImageSource(asset)
+                let gate = Gate(), start = ContinuousClock.now
+                var instant = start, account: String? = nil
+                let session = SpatterStudioEditSession(now: { instant }, checkpoint: { try await gate.pause() })
+                try require(session.submit("Flip selected image vertically.", in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) }), "Image fence submission failed")
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                switch change {
+                case "reselect":
+                    let old = vm.currentImageMoveCapture(); vm.deselectAreaImage()
+                    try require(vm.setImageCanvasMove(true) && vm.currentImageMoveCapture() != old && vm.document == before, "Same-revision reselect fixture invalid")
+                case "cancel": session.cancel()
+                case "account": account = "other"
+                case "close": session.close()
+                default: instant = start.advanced(by: .seconds(16))
+                }
+                try gate.release(boundary); await session.waitForCompletion()
+                let status: SpatterStudioEditSession.Status = change == "cancel" ? .cancelled : change == "close" ? .closed : change == "deadline" ? .timedOut : .stale
+                try require(session.status == status && session.appliedEdit == nil && vm.document == before &&
+                    vm.canUndo == undo && vm.canRedo == redo && vm.originalImageSource(asset) == original,
+                    "Image selection/lifecycle fence allowed partial edit at boundary \(boundary): \(change)")
+            } }
         }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")

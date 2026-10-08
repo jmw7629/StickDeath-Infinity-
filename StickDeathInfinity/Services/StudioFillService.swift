@@ -144,7 +144,7 @@ enum StudioFillService {
             guard let instance = frame.rasterInstance(on: imageLayerID), instance.placement != nil,
                   let sourceID = frame.rasterAssetID(on: imageLayerID), sources[sourceID] != nil,
                   let projected = frame.projectedRasterFrame(on: imageLayerID) else { throw Failure.missingRaster }
-            isolated = projected; isolated.elements = []
+            isolated = projected; isolated.elements = []; isolated.rasterStackPosition = nil
         }
         let images = try StudioFrameRenderer.prepareRasters(frame: isolated, layers: layers, sourceData: sources, maximumDimension: 8192)
         let prepared = try StudioFrameRenderer.prepare(frame: isolated)

@@ -697,6 +697,26 @@ private struct Failure: Error { let message: String }
         let capture = try StudioFillService.capture(document:before,frameID:before.activeFrameID,layerID:layer,point:CGPoint(x:64,y:64),color:"#0000FF",opacity:1,settings:context.settings,sampleAllLayers:true,rasterDataByID:sources,selectedImageLayerID:layer)
         guard let coverage = capture.selectionCoverage else { throw Failure(message:"Image alpha missing") }
         try require(coverage[64*128+64] > 100 && coverage[64*128+64] < 200 && coverage[2*128+2] == 0,"Actual partial image alpha was flattened or bounded-box substituted")
+        // Order a real drawing beneath the image through the production editor.
+        // Isolated image coverage must ignore that drawing without retaining an
+        // impossible positive slot in its empty projection.
+        var orderedEditor = try StudioDocumentEditor(document: before)
+        var underneath = shape("below-selected-image", opacity: 1)
+        underneath.layerID = layer
+        try orderedEditor.commit(underneath, frameID: before.activeFrameID)
+        try orderedEditor.orderSelectedArtwork(frameID: before.activeFrameID, elementIDs: [],
+            imageAssetID: asset, imageLayerID: layer, forward: true)
+        let orderedDocument = orderedEditor.document, retainedSources = sources
+        try require(orderedDocument.frames.first(where: { $0.id == before.activeFrameID })?.rasterInstance(on: layer)?.stackPosition == 1,
+                    "Ordered Fill fixture did not put the image above its drawing")
+        let orderedCapture = try StudioFillService.capture(document: orderedDocument,
+            frameID: before.activeFrameID, layerID: layer, point: CGPoint(x:64,y:64), color:"#0000FF", opacity:1,
+            settings:context.settings, sampleAllLayers:true, rasterDataByID:sources, selectedImageLayerID:layer)
+        try require(orderedCapture.selectionCoverage == coverage,
+                    "Ordered selected-image coverage changed original partial alpha or included the drawing")
+        try require(orderedEditor.document == orderedDocument && sources == retainedSources
+                    && sources[asset] == imported.normalizedPNG,
+                    "Isolated image coverage rewrote persisted stacking or original source")
         for lock in ["full", "alpha"] {
             var blocked = before
             let index = blocked.layers.firstIndex(where:{$0.id == layer})!

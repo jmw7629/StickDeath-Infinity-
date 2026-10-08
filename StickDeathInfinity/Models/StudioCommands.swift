@@ -137,6 +137,10 @@ enum StudioCommand: Codable {
     struct DeleteSelectedArtwork: Codable {
         let frame: StudioCommandReference; let elementIDs: [String]; let image: SelectedArtworkImage?
     }
+    struct OrderSelectedArtwork: Codable {
+        let frame: StudioCommandReference; let elementIDs: [String]; let image: SelectedArtworkImage?
+        let direction: StudioCommandDirection
+    }
     struct TransformElements: Codable { let frame: StudioCommandReference; let elementIDs: [String]; let scaleX: Double; let scaleY: Double; let rotation: Double }
     struct UpdateText: Codable { let frame: StudioCommandReference; let elementID: String; let text: StudioTextDescriptor; let color: String; let opacity: Double }
     struct CropImage: Codable { let frame: StudioCommandReference; let assetID: String; let crop: StudioImageCrop; var layer: StudioCommandReference? = nil }
@@ -176,7 +180,7 @@ enum StudioCommand: Codable {
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
-    case transformSelectedArtwork(TransformSelectedArtwork), deleteSelectedArtwork(DeleteSelectedArtwork)
+    case transformSelectedArtwork(TransformSelectedArtwork), deleteSelectedArtwork(DeleteSelectedArtwork), orderSelectedArtwork(OrderSelectedArtwork)
     case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
     case cutElements(DeleteElements)
     case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
@@ -199,6 +203,7 @@ enum StudioCommand: Codable {
         case "updateImagePlacement": self = .updateImagePlacement(try container.decode(UpdateImagePlacement.self, forKey: key))
         case "transformSelectedArtwork": self = .transformSelectedArtwork(try container.decode(TransformSelectedArtwork.self, forKey: key))
         case "deleteSelectedArtwork": self = .deleteSelectedArtwork(try container.decode(DeleteSelectedArtwork.self, forKey: key))
+        case "orderSelectedArtwork": self = .orderSelectedArtwork(try container.decode(OrderSelectedArtwork.self, forKey: key))
         case "transformElements": self = .transformElements(try container.decode(TransformElements.self, forKey: key))
         case "updateText": self = .updateText(try container.decode(UpdateText.self, forKey: key))
         case "draw": self = .draw(try container.decode(Draw.self, forKey: key))
@@ -241,6 +246,7 @@ enum StudioCommand: Codable {
         case .updateImagePlacement(let value): try container.encode(value, forKey: StudioWireKey("updateImagePlacement"))
         case .transformSelectedArtwork(let value): try container.encode(value, forKey: StudioWireKey("transformSelectedArtwork"))
         case .deleteSelectedArtwork(let value): try container.encode(value, forKey: StudioWireKey("deleteSelectedArtwork"))
+        case .orderSelectedArtwork(let value): try container.encode(value, forKey: StudioWireKey("orderSelectedArtwork"))
         case .transformElements(let value): try container.encode(value, forKey: StudioWireKey("transformElements"))
         case .updateText(let value): try container.encode(value, forKey: StudioWireKey("updateText"))
         case .eraseSelectedElements(let value): try container.encode(value, forKey: StudioWireKey("eraseSelectedElements"))
@@ -435,6 +441,7 @@ enum StudioCommandExecutor {
             "updateImagePlacement": ["layer", "frame", "assetID", "placement", "rotationDegrees"],
             "transformSelectedArtwork": ["frame", "elementIDs", "image", "dx", "dy", "scale", "rotation", "flipHorizontal", "flipVertical"],
             "deleteSelectedArtwork": ["frame", "elementIDs", "image"],
+            "orderSelectedArtwork": ["frame", "elementIDs", "image", "direction"],
             "transformElements": ["frame", "elementIDs", "scaleX", "scaleY", "rotation"],
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
@@ -464,7 +471,7 @@ enum StudioCommandExecutor {
                 if key == "layer", ["cropImage", "rotateImage", "reflectImage", "deleteImage", "updateImagePlacement"].contains(kind), fields[key] == nil { continue }
                 try reference(fields[key])
             }
-            if ["transformSelectedArtwork", "deleteSelectedArtwork"].contains(kind), let image = fields["image"], !(image is NSNull) {
+            if ["transformSelectedArtwork", "deleteSelectedArtwork", "orderSelectedArtwork"].contains(kind), let image = fields["image"], !(image is NSNull) {
                 _ = try object(image, keys: ["assetID", "layerID"])
             }
             if kind == "canvasOptions" {
@@ -907,6 +914,12 @@ enum StudioCommandExecutor {
                   Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
             try editor.orderElements(frameID: id, ids: Set(value.elementIDs), forward: value.direction == .later,
                                      checkCancellation: checkCancellation)
+        case .orderSelectedArtwork(let value):
+            guard value.elementIDs.count <= maximumGeneratedElements,
+                  Set(value.elementIDs).count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            try editor.orderSelectedArtwork(frameID: frame(value.frame), elementIDs: Set(value.elementIDs),
+                imageAssetID: value.image?.assetID, imageLayerID: value.image?.layerID,
+                forward: value.direction == .later, checkCancellation: checkCancellation)
         case .cropImage(let value):
             try editor.cropImage(frameID: frame(value.frame), assetID: value.assetID, crop: value.crop,
                 layerID: imageLayer(value.layer, frame: value.frame, assetID: value.assetID), checkCancellation: checkCancellation)

@@ -1383,6 +1383,51 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     catch is StudioCommandError { }
                 }
             }
+            try test("mixed artwork order strict wire binds image and drawing identities in one reversible edit") {
+                var doc = try StudioDocument.new(name: "Mixed order wire", width: 64, height: 64, fps: 12)
+                let layer = doc.activeLayerID, frame = doc.activeFrameID, asset = "image-" + UUID().uuidString
+                doc.schemaVersion = 3
+                doc.frames[0].rasterAssetID = asset; doc.frames[0].rasterLayerID = layer
+                doc.frames[0].rasterPlacement = .init(x: 8, y: 8, width: 32, height: 32)
+                doc.frames[0].elements = ["unselected", "selected", "top"].map {
+                    DrawnElement(id: $0, tool: .line, points: [.init(x: 4, y: 8), .init(x: 40, y: 8)],
+                                 color: "#000000", width: 2, opacity: 1, layerID: layer)
+                }
+                var editor = try StudioDocumentEditor(document: doc)
+                let command = StudioCommand.orderSelectedArtwork(.init(frame: .id(frame), elementIDs: ["selected"],
+                    image: .init(assetID: asset, layerID: layer), direction: .later))
+                let encoded = try JSONEncoder().encode(request(editor, .apply([command])))
+                let decoded = try StudioCommandExecutor.decode(encoded)
+                let receipt = try StudioCommandExecutor.execute(decoded, editor: &editor)
+                try require(receipt.outcome == .applied && editor.document.schemaVersion == 33 &&
+                    editor.document.frames[0].elements.map(\.id) == ["unselected", "top", "selected"] &&
+                    editor.document.frames[0].rasterStackPosition == 1 && editor.document.frames[0].rasterAssetID == asset,
+                    "Mixed order wire lost target identity or image position")
+                let changed = editor.document
+                editor.undo(); try require(content(editor.document) == content(doc), "Mixed order was not one Undo")
+                editor.redo(); try require(content(editor.document) == content(changed), "Mixed order Redo changed identities")
+                let wire = try JSONSerialization.jsonObject(with: encoded) as! [String: Any]
+                let frameRef: [String: Any] = ["id": frame]
+                let malformedBodies: [[String: Any]] = [
+                    ["frame": frameRef, "elementIDs": ["selected"], "image": ["assetID": asset, "layerID": layer, "shell": "run"], "direction": "later"],
+                    ["frame": frameRef, "elementIDs": ["selected"], "image": ["assetID": asset], "direction": "later"],
+                    ["frame": frameRef, "elementIDs": ["selected"], "image": NSNull(), "direction": "front"],
+                    ["frame": frameRef, "elementIDs": ["selected"], "image": NSNull(), "direction": "later", "script": "run"]
+                ]
+                for fields in malformedBodies {
+                    var malformed = wire; malformed["action"] = ["apply": [["orderSelectedArtwork": fields]]]
+                    do { _ = try StudioCommandExecutor.decode(JSONSerialization.data(withJSONObject: malformed)); throw Failure(message: "Malformed order accepted") }
+                    catch is StudioCommandError { }
+                }
+                for invalid in [
+                    StudioCommand.OrderSelectedArtwork(frame: .id(frame), elementIDs: [], image: nil, direction: .later),
+                    .init(frame: .id(frame), elementIDs: ["selected", "selected"], image: nil, direction: .later),
+                    .init(frame: .id(frame), elementIDs: ["missing"], image: .init(assetID: asset, layerID: layer), direction: .later),
+                    .init(frame: .id(frame), elementIDs: ["selected"], image: .init(assetID: "image-" + UUID().uuidString, layerID: layer), direction: .later)
+                ] { try rejected(request(editor, .apply([.orderSelectedArtwork(invalid)])), editor: &editor) }
+                try rejected(request(editor, .apply([command, .selectFrame(.id("missing"))])), editor: &editor)
+                try rejected(request(editor, .apply([command])), editor: &editor, cancellation: { throw CancellationError() })
+            }
             print("STUDIO_COMMAND_TESTS=PASS \(passed) production command cases")
         } catch {
             print("STUDIO_COMMAND_TESTS=FAIL \(error)")

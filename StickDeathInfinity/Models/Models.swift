@@ -715,12 +715,14 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
     var rasterAliases: [StudioRasterLayerInstance]? = nil
     /// Schema32: nondestructive source-pixel visibility, nil preserves full image.
     var rasterRegionMask: StudioImageRegionMask? = nil
+    /// Schema33: same-layer persisted elements below the image; nil preserves legacy bottom placement.
+    var rasterStackPosition: Int? = nil
     var durationTicks: Int { min(600, max(1, holdTicks ?? 1)) }
 
     var rasterLayerInstances: [StudioRasterLayerInstance] {
         guard rasterAssetID != nil, let rasterLayerID else { return [] }
         return [.init(layerID: rasterLayerID, placement: rasterPlacement, reflection: rasterReflection,
-                      quarterTurns: rasterQuarterTurns, crop: rasterCrop, rotationDegrees: rasterRotationDegrees, regionMask: rasterRegionMask)] + (rasterAliases ?? [])
+                      quarterTurns: rasterQuarterTurns, crop: rasterCrop, rotationDegrees: rasterRotationDegrees, regionMask: rasterRegionMask, stackPosition: rasterStackPosition)] + (rasterAliases ?? [])
     }
     /// Resolve source identity without changing historical nil alias metadata.
     func rasterAssetID(on layerID: String) -> String? {
@@ -794,18 +796,84 @@ struct AnimationFrame: Codable, Identifiable, Equatable {
                 rasterAliases = aliases.isEmpty ? nil : aliases
             } else {
                 rasterAssetID = nil; rasterLayerID = nil; rasterPlacement = nil
-                rasterReflection = nil; rasterQuarterTurns = nil; rasterRotationDegrees = nil; rasterCrop = nil; rasterAliases = nil; rasterRegionMask = nil
+                rasterReflection = nil; rasterQuarterTurns = nil; rasterRotationDegrees = nil; rasterCrop = nil; rasterAliases = nil; rasterRegionMask = nil; rasterStackPosition = nil
             }
         } else {
             rasterAliases?.removeAll { $0.layerID == layerID }
             if rasterAliases?.isEmpty == true { rasterAliases = nil }
         }
     }
+    /// Canonical bottom-to-top order within one layer. Images retain their
+    /// immutable source identity; this token only marks their compositing slot.
+    func orderedContent(on layerID: String) throws -> [LayerContentToken] {
+        let drawings = elements.filter { $0.layerID == layerID }
+        guard Set(drawings.map(\.id)).count == drawings.count else { throw StudioRasterLayerInstance.Failure.invalid }
+        var tokens = drawings.map { LayerContentToken.drawing($0.id) }
+        if let image = rasterInstance(on: layerID) {
+            let position = image.stackPosition ?? 0
+            guard (0...drawings.count).contains(position) else { throw StudioRasterLayerInstance.Failure.invalid }
+            tokens.insert(.image, at: position)
+        }
+        return tokens
+    }
+    /// Reorder only existing members, preserving every other layer's order and
+    /// all element/image metadata. Invalid or duplicate tokens are never clamped.
+    mutating func setOrderedContent(_ tokens: [LayerContentToken], on layerID: String) throws {
+        let positions = elements.indices.filter { elements[$0].layerID == layerID }
+        let originals = positions.map { elements[$0] }
+        let drawingIDs = tokens.compactMap { token -> String? in
+            if case .drawing(let id) = token { return id }; return nil
+        }
+        let imageCount = tokens.filter { $0 == .image }.count
+        var image = rasterInstance(on: layerID)
+        guard drawingIDs.count == originals.count, Set(drawingIDs).count == drawingIDs.count,
+              Set(drawingIDs) == Set(originals.map(\.id)), imageCount == (image == nil ? 0 : 1) else {
+            throw StudioRasterLayerInstance.Failure.invalid
+        }
+        let byID = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, $0) })
+        var next = self
+        for (position, id) in zip(positions, drawingIDs) { next.elements[position] = byID[id]! }
+        if image != nil, let index = tokens.firstIndex(of: .image) {
+            if (image!.stackPosition ?? 0) != index {
+                image!.stackPosition = index == 0 ? nil : index
+                try next.updateRasterInstance(image!)
+            }
+        }
+        self = next
+    }
+    /// Ordinary appends stay above existing content. Deleting drawings below
+    /// an unchanged image slot removes those slots, not the image's ordering.
+    /// Explicit image reorders and new frame/layer/source copies retain theirs.
+    mutating func reconcileRasterStackPositions(afterDeletingElementsFrom previous: AnimationFrame) throws {
+        guard id == previous.id, rasterLayerInstances.contains(where: { ($0.stackPosition ?? 0) > 0 }) else { return }
+        var next = self
+        var remainingByLayer: [String: Set<String>] = [:]
+        for element in elements { if let layer = element.layerID { remainingByLayer[layer, default: []].insert(element.id) } }
+        for var image in rasterLayerInstances {
+            guard let old = previous.rasterInstance(on: image.layerID),
+                  rasterAssetID(on: image.layerID) == previous.rasterAssetID(on: image.layerID),
+                  (image.stackPosition ?? 0) == (old.stackPosition ?? 0),
+                  let position = old.stackPosition, position > 0 else { continue }
+            let below = previous.elements.lazy.filter { $0.layerID == image.layerID }.prefix(position)
+            let remaining = remainingByLayer[image.layerID, default: []]
+            let removed = below.filter { !remaining.contains($0.id) }.count
+            guard removed > 0 else { continue }
+            let updated = position - removed
+            guard updated >= 0 else { throw StudioRasterLayerInstance.Failure.invalid }
+            image.stackPosition = updated == 0 ? nil : updated
+            try next.updateRasterInstance(image)
+        }
+        self = next
+    }
     private mutating func assignPrimaryRasterInstance(_ instance: StudioRasterLayerInstance) {
         rasterLayerID = instance.layerID; rasterPlacement = instance.placement
         rasterReflection = instance.reflection; rasterQuarterTurns = instance.quarterTurns; rasterCrop = instance.crop
-        rasterRotationDegrees = instance.rotationDegrees; rasterRegionMask = instance.regionMask
+        rasterRotationDegrees = instance.rotationDegrees; rasterRegionMask = instance.regionMask; rasterStackPosition = instance.stackPosition
     }
+}
+
+enum LayerContentToken: Equatable {
+    case drawing(String), image
 }
 
 struct StudioRasterLayerInstance: Codable, Equatable {
@@ -818,6 +886,7 @@ struct StudioRasterLayerInstance: Codable, Equatable {
     /// Schema31 source override; nil inherits the frame primary source.
     var assetID: String? = nil
     var regionMask: StudioImageRegionMask? = nil
+    var stackPosition: Int? = nil
     enum Failure: LocalizedError {
         case invalid
         var errorDescription: String? { "The selected linked image is unavailable or ambiguous. Nothing changed." }

@@ -713,6 +713,7 @@ final class StudioViewModel: ObservableObject {
             case .updateText(let text): edits += 1; try addUnits(text.text.content.utf8.count)
             case .transformElements(let selection): edits += selection.elementIDs.count; try addUnits(selection.elementIDs.count, weight: 32)
             case .transformSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
+            case .orderSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
             case .deleteSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
             case .duplicateFrame, .duplicateLayer, .pasteElements, .tweenFrames:
                 // Aliases may duplicate content created earlier in this batch.
@@ -1391,19 +1392,49 @@ final class StudioViewModel: ObservableObject {
         } catch { message = error.localizedDescription }
     }
     @discardableResult
-    func orderSelected(forward: Bool) -> Bool {
-        guard !hasMixedArtworkSelection else { message = "Select drawings alone to change their order. Mixed group order is unavailable."; return false }
-        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil else {
+    func orderSelected(forward: Bool,
+                       checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        guard isEditing, !isPlaying, !isSaving, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil else {
             message = "Finish the current Studio operation before changing artwork order."; return false
         }
         let ids = selectedElementIDs
-        guard !ids.isEmpty else { message = "Select drawn artwork before changing its order."; return false }
-        let revision = document.revision
+        let mixed = isSelectingMixedArtwork ? captureArtworkSelection() : nil
+        let imageOnly = isSelectingMixedArtwork ? nil : currentImageMoveCapture()
+        if isSelectingMixedArtwork {
+            guard mixed != nil else { message = "Select the current artwork again before changing its order."; return false }
+        } else if imageMoveTarget != nil {
+            guard ids.isEmpty, let imageOnly, imageOnly.placement.layerID == activeLayerID else {
+                message = "Select the image on its active, unlocked layer before changing its order."; return false
+            }
+        } else if ids.isEmpty {
+            message = "Select drawings or an image before changing artwork order."; return false
+        }
+        let project = document.id, revision = document.revision, frame = currentFrame.id
+        let layer = activeLayerID, tool = selectedTool, mode = selectionMode
+        let token = imageMoveTarget?.selectionID, generation = areaSelectionGeneration
+        let image: StudioCommand.SelectedArtworkImage?
+        if let target = mixed?.image { image = .init(assetID: target.assetID, layerID: target.layerID) }
+        else if let target = imageOnly?.placement { image = .init(assetID: target.assetID, layerID: target.layerID) }
+        else { image = nil }
         do {
-            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
-                expectedRevision: revision, action: .apply([.orderElements(.init(frame: .id(currentFrame.id),
-                    elementIDs: ids.sorted(), direction: forward ? .later : .earlier))])))
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: project,
+                expectedRevision: revision, action: .apply([.orderSelectedArtwork(.init(frame: .id(frame),
+                    elementIDs: ids.sorted(), image: image, direction: forward ? .later : .earlier))])), checkCancellation: {
+                try checkCancellation()
+                guard self.isEditing, !self.isPlaying, !self.isSaving,
+                      self.activeStrokeID == nil, self.pendingBrushStroke == nil, self.textDraft == nil,
+                      self.document.id == project, self.document.revision == revision,
+                      self.currentFrame.id == frame, self.activeLayerID == layer,
+                      self.selectedTool == tool, self.selectionMode == mode,
+                      self.selectedElementIDs == ids, self.imageMoveTarget?.selectionID == token,
+                      self.areaSelectionGeneration == generation,
+                      mixed == nil || self.captureArtworkSelection() == mixed,
+                      imageOnly == nil || self.currentImageMoveCapture() == imageOnly else {
+                    throw StudioCommandError.staleRevision
+                }
+            })
             editor.selectedElementIDs = ids
+            if imageMoveTarget?.areaRevision != nil { imageMoveTarget?.areaRevision = document.revision }
             // Successful direct manipulation keeps the canvas geometry and existing errors unchanged.
             return true
         } catch { message = error.localizedDescription; return false }
@@ -3130,6 +3161,11 @@ final class StudioViewModel: ObservableObject {
             var candidate = editor
             try candidate.copyElements(frameID: capture.frameID, ids: capture.ids, checkCancellation: checkCancellation)
             guard let elements = candidate.clipboardElements else { throw StudioCommandError.staleClipboard }
+            // A filtered clipboard has fewer drawings than the source frame.
+            // Preserve the image's relation to only the drawings actually copied.
+            let below = currentFrame.elements.filter { $0.layerID == image.layerID }
+                .prefix(copied.rasterStackPosition ?? 0).filter { capture.ids.contains($0.id) }.count
+            copied.rasterStackPosition = below == 0 ? nil : below
             copied.elements = elements; copied.holdTicks = nil
             let layerIDs = Set(elements.compactMap(\.layerID)).union([image.layerID])
             let appearances = layers.filter { layerIDs.contains($0.id) }
@@ -3196,7 +3232,8 @@ final class StudioViewModel: ObservableObject {
                 try value.frames[index].appendRasterInstance(.init(layerID: imageLayer,
                     placement: copied.rasterPlacement, reflection: copied.rasterReflection,
                     quarterTurns: copied.rasterQuarterTurns, crop: copied.rasterCrop,
-                    rotationDegrees: copied.rasterRotationDegrees, regionMask: copied.rasterRegionMask), assetID: assetID)
+                    rotationDegrees: copied.rasterRotationDegrees, regionMask: copied.rasterRegionMask,
+                    stackPosition: copied.rasterStackPosition), assetID: assetID)
                 if copied.rasterRegionMask != nil { value.schemaVersion = max(value.schemaVersion, 32) }
                 for element in copied.elements {
                     try checkCancellation()
@@ -3279,7 +3316,7 @@ final class StudioViewModel: ObservableObject {
               let sourceLayer = layers.first(where: { $0.id == capture.layerID }),
               var copied = currentFrame.projectedRasterFrame(on: capture.layerID) else { return false }
         // Copy only the selected linked instance; immutable source bytes remain shared.
-        copied.elements = []; copied.holdTicks = nil
+        copied.elements = []; copied.holdTicks = nil; copied.rasterStackPosition = nil
         copiedImageLayer = sourceLayer
         imageClipboard = copied
         imageClipboardEditorVersion = editor.clipboardVersion
@@ -3303,7 +3340,7 @@ final class StudioViewModel: ObservableObject {
                   let record = retainedRasterFrames[capture.placement.assetID] else {
                 throw StudioDocumentError.unavailable("Select the image on its active, visible, unlocked layer with Move before cutting. Nothing changed.")
             }
-            copied.elements = []; copied.holdTicks = nil
+            copied.elements = []; copied.holdTicks = nil; copied.rasterStackPosition = nil
             let before = document, previousClipboard = imageClipboard, previousLayer = copiedImageLayer
             let previousScope = imageClipboardEditorVersion, version = editor.clipboardVersion
             try checkCancellation()
@@ -3490,8 +3527,9 @@ final class StudioViewModel: ObservableObject {
             switch action {
             case .copy:
                 guard var frame = currentFrame.projectedRasterFrame(on: selected.capture.layerID) else { throw StudioImageRegionService.Failure.invalid }
-                frame.elements = []; frame.holdTicks = nil
-                let fragment = try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation)
+                frame.elements = []; frame.holdTicks = nil; frame.rasterStackPosition = nil
+                var fragment = try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation)
+                fragment.stackPosition = nil
                 try frame.updateRasterInstance(fragment); copied = frame
             case .delete, .move:
                 let operation: StudioDocumentEditor.ImageRegionAction

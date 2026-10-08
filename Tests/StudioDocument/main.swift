@@ -18,6 +18,127 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
 }
 
 @main @MainActor struct StudioDocumentTests {
+    private static func mixedImageOrdering() throws {
+        func requireOrder(_ frame: AnimationFrame, _ layer: String, _ expected: [LayerContentToken], _ message: String) throws {
+            let actual = try frame.orderedContent(on: layer)
+            try require(actual == expected, message)
+        }
+        var original = try StudioDocument.new(name: "Mixed stacking", width: 128, height: 128, fps: 12)
+        original.schemaVersion = 3
+        let layer = original.activeLayerID, frameID = original.activeFrameID
+        let asset = "image-" + UUID().uuidString
+        original.frames[0].rasterAssetID = asset; original.frames[0].rasterLayerID = layer
+        original.frames[0].rasterPlacement = .init(x: 10, y: 10, width: 60, height: 40)
+        original.frames[0].elements = [stroke(layer: layer, id: "U"), stroke(layer: layer, id: "D"), stroke(layer: layer, id: "V")]
+        let start: [LayerContentToken] = [.image, .drawing("U"), .drawing("D"), .drawing("V")]
+        try requireOrder(original.frames[0], layer, start, "Legacy image bottom order changed")
+        var editor = try StudioDocumentEditor(document: original)
+        var checkpoints = 0
+        try editor.orderSelectedArtwork(frameID: frameID, elementIDs: ["D"], imageAssetID: asset, imageLayerID: layer,
+            forward: true, checkCancellation: { checkpoints += 1 })
+        let forward = editor.document
+        let expected: [LayerContentToken] = [.drawing("U"), .image, .drawing("V"), .drawing("D")]
+        try requireOrder(forward.frames[0], layer, expected, "Selected block or unselected relative order changed")
+        try require(forward.schemaVersion == 33 && forward.frames[0].rasterStackPosition == 1 &&
+            forward.layers == original.layers && forward.referencedRasterAssetIDs == original.referencedRasterAssetIDs,
+            "Ordering changed source/layers or failed additive schema")
+        let decoded = try StudioDocumentArchive.decode(StudioDocumentArchive(document: forward, rasterFrameIndices: [asset: 0]).encoded())
+        try require(decoded.document == forward, "Cold schema33 archive lost stacking")
+        editor.undo(); try require(editor.document.frames == original.frames && editor.document.schemaVersion == 3, "Ordering was not one reversible transaction")
+        editor.redo(); try require(editor.document.frames == forward.frames, "Ordering Redo lost combined tokens")
+        for stop in 1...checkpoints {
+            var cancelled = try StudioDocumentEditor(document: original), calls = 0
+            do {
+                try cancelled.orderSelectedArtwork(frameID: frameID, elementIDs: ["D"], imageAssetID: asset, imageLayerID: layer,
+                    forward: true, checkCancellation: { calls += 1; if calls == stop { throw CancellationError() } })
+                throw Failure(text: "Mixed ordering ignored cancellation")
+            } catch is CancellationError { }
+            try require(cancelled.document == original && !cancelled.canUndo, "Cancelled order published partial changes/history")
+        }
+        try editor.orderSelectedArtwork(frameID: frameID, elementIDs: ["D"], imageAssetID: asset, imageLayerID: layer, forward: false)
+        try requireOrder(editor.document.frames[0], layer, start, "Backward order did not restore member order")
+        let atBottom = editor.document
+        try editor.orderSelectedArtwork(frameID: frameID, elementIDs: [], imageAssetID: asset, imageLayerID: layer, forward: false)
+        try require(editor.document == atBottom, "Boundary no-op created a revision")
+        print("PASS mixed image/drawing stable ordering schema33 cold archive one Undo and every cancellation boundary")
+
+        var deleted = try StudioDocumentEditor(document: forward)
+        deleted.selectedElementIDs = ["U"]; try deleted.deleteSelected()
+        try requireOrder(deleted.document.frames[0], layer, [.image, .drawing("V"), .drawing("D")],
+                    "Deleting below image did not remap its slot")
+        deleted.undo(); try require(deleted.document.frames == forward.frames, "Deletion Undo lost image slot")
+        deleted.selectedElementIDs = ["V"]; try deleted.deleteSelected()
+        try require(deleted.document.frames[0].rasterStackPosition == 1, "Deleting above image moved it")
+        var append = try StudioDocumentEditor(document: forward)
+        try append.commit(stroke(layer: layer, id: "new"), frameID: frameID)
+        try requireOrder(append.document.frames[0], layer, expected + [.drawing("new")], "Append inserted drawing below image")
+        try append.orderElements(frameID: frameID, ids: ["U"], forward: true)
+        try requireOrder(append.document.frames[0], layer, [.image, .drawing("U"), .drawing("V"), .drawing("D"), .drawing("new")],
+                    "Drawing-only order ignored the image neighbor")
+        var copies = try StudioDocumentEditor(document: original)
+        try copies.orderSelectedArtwork(frameID: frameID, elementIDs: ["D"], imageAssetID: asset, imageLayerID: layer, forward: true)
+        copies.copyFrame(); copies.undo(); try copies.pasteFrame()
+        let pasted = copies.document.frames.first { $0.id == copies.document.activeFrameID }!
+        try require(copies.document.schemaVersion == 33 && pasted.id != frameID && pasted.rasterStackPosition == 1 &&
+            Set(pasted.elements.map(\.id)).isDisjoint(with: Set(original.frames[0].elements.map(\.id))),
+            "Frame clipboard paste lost schema/slot or regenerated IDs were mistaken for deletion")
+        var linked = try StudioDocumentEditor(document: forward)
+        try linked.duplicateLayer(layer)
+        let alias = linked.document.activeLayerID
+        try require(linked.document.frames[0].rasterInstance(on: alias)?.stackPosition == 1, "Layer clone lost image order")
+        try linked.deleteLayer(layer)
+        try require(linked.document.frames[0].rasterLayerID == alias && linked.document.frames[0].rasterStackPosition == 1 &&
+            linked.document.frames[0].rasterAssetID == asset, "Primary promotion lost image order/source")
+        try require(linked.document.frames[0].projectedRasterFrame(on: alias)?.rasterStackPosition == 1, "Projected image frame lost order")
+        print("PASS image slots survive drawing append/delete/order frame copy ID regeneration layer clone and primary promotion")
+
+        for position in [-1, 4, Int.max] {
+            var invalid = original; invalid.schemaVersion = 33; invalid.frames[0].rasterStackPosition = position
+            do { try invalid.validate(); throw Failure(text: "Invalid image position accepted") } catch StudioDocumentError.invalid { }
+        }
+        var oldSchema = original; oldSchema.frames[0].rasterStackPosition = 1
+        do { try oldSchema.validate(); throw Failure(text: "Legacy schema accepted nonzero image order") } catch StudioDocumentError.invalid { }
+        var zero = original; zero.frames[0].rasterStackPosition = 0; try zero.validate()
+        var malformed = forward.frames[0]; let beforeMalformed = malformed
+        do { try malformed.setOrderedContent([.image, .drawing("U"), .drawing("U"), .drawing("D")], on: layer)
+            throw Failure(text: "Duplicate combined token accepted") } catch StudioRasterLayerInstance.Failure.invalid { }
+        try require(malformed == beforeMalformed, "Malformed token list partially mutated frame")
+        for mode in ["hidden", "zero", "full", "position", "alpha", "stale", "unpaired"] {
+            var doc = original
+            switch mode {
+            case "hidden": doc.layers[0].visible = false
+            case "zero": doc.layers[0].opacity = 0
+            case "full": doc.layers[0].locked = true; doc.layers[0].lockMode = "full"
+            case "position", "alpha": doc.layers[0].lockMode = mode
+            default: break
+            }
+            var rejected = try StudioDocumentEditor(document: doc)
+            var denied = false
+            do { try rejected.orderSelectedArtwork(frameID: frameID, elementIDs: ["D"],
+                imageAssetID: mode == "stale" ? "missing" : asset, imageLayerID: mode == "unpaired" ? nil : layer, forward: true) }
+            catch { denied = true }
+            try require(denied && rejected.document == doc && !rejected.canUndo, "Invalid mixed order changed content/history: \(mode)")
+        }
+
+        // Model-only callers must reject stale Wand input without depending on
+        // the command transport target or changing document/history.
+        var staleRegion = try StudioDocumentEditor(document: original)
+        let expectedImage = original.frames[0].rasterInstance(on: layer)!
+        let mask = StudioImageRegionMask(width: 1, height: 1, spans: [.init(row: 0, start: 0, end: 1)])
+        do {
+            try staleRegion.editImageRegion(frameID: frameID, layerID: layer, sourceID: "image-" + UUID().uuidString,
+                expected: expectedImage, fragment: expectedImage, remainderMask: mask,
+                fragmentLayerID: UUID().uuidString, action: .delete)
+            throw Failure(text: "Stale image-region source was accepted")
+        } catch StudioDocumentError.unavailable(let message) {
+            try require(message == "The selected image changed. Select it again before editing its region.",
+                        "Stale region rejection lost factual model error")
+        }
+        try require(staleRegion.document == original && !staleRegion.canUndo && !staleRegion.canRedo,
+                    "Stale image-region rejection changed document or history")
+        print("PASS malformed image order tokens schema bounds locks visibility and stale source fail without mutation")
+    }
+
     private static func imageMaskHistoryBudget() throws {
         var value = try StudioDocument.new(name: "Wand history budget", width: 320, height: 240, fps: 12)
         value.schemaVersion = 32
@@ -647,6 +768,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             let openedGrid = await gridReopened.openProject(try onionStore.loadAnimation(id: onion.document.id)!.metadata)
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
+            try mixedImageOrdering()
             try imageMaskHistoryBudget()
             try linkedRasterJourneys()
             // Historical disabled colors were opaque metadata, including eight-digit and
@@ -733,7 +855,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
                 try require(openedFinal && finalSpace.document == dirtyBefore, "Retry cold reopen lost dirty artwork")
             }
             print("PASS actual VM payload/receipt disk-full dirty retention, old cold reader, retry and final cold reopen")
-            print("STUDIO_DOCUMENT_TESTS=PASS 23 journeys")
+            print("STUDIO_DOCUMENT_TESTS=PASS 26 journeys")
         } catch {
             print("STUDIO_DOCUMENT_TESTS=FAIL \(error)")
             exit(1)
