@@ -63,13 +63,14 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False, shard_index=None, prepared_commit=None):
         calls = self.calls
         waits = self.waits
         signals = self.signals
 
         def inventory(cmd, **kw):
             calls.append(tuple(cmd))
+            if cmd == ["git", "rev-parse", "HEAD"]: return "1" * 40 + "\n"
             return json.dumps(self.inventory(state='Shutdown', available=available)).encode()
 
         def run(cmd, **kw):
@@ -109,6 +110,9 @@ class Harness(unittest.TestCase):
                 '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '180',
                 '-maximum-test-execution-time-allowance', '240', '-parallel-testing-enabled', 'NO',
                 '-maximum-concurrent-test-simulator-destinations', '1']
+        if shard_index is not None:
+            argv[1:1] = ['--shard-index', str(shard_index)]
+            (self.out / 'source-and-config.json').write_text(json.dumps({'sourceCommit': prepared_commit or '1' * 40}))
         def bounded(cmd, *args, **kw):
             calls.append(tuple(cmd))
             if readiness_failure and cmd[:3] == ['xcrun', 'simctl', 'spawn']:
@@ -121,6 +125,23 @@ class Harness(unittest.TestCase):
             if video_failure: raise subprocess.TimeoutExpired('video addmedia', 120)
         with patch.object(rec, 'seed_video_fixture', side_effect=video), patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
+
+    def test_actual_recorder_constructs_only_reviewed_shard_and_keeps_seed_failure(self):
+        self.assertEqual(self.recording(shard_index=1, video_failure=True), 4)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        budget = json.loads((self.out / 'ui-test-budget.json').read_text())
+        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (51, 9660))
+        self.assertEqual([c for c in tests[0] if c.startswith('-only-testing:')],
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n for n in budget['testNames']])
+        self.assertIn((True, 9660), self.waits)
+        self.assertEqual(budget['sourceCommit'], '1' * 40)
+
+    def test_recorder_rejects_wrong_prepared_source_before_test_or_recording(self):
+        with self.assertRaises(ValueError):
+            self.recording(shard_index=0, prepared_commit='2' * 40)
+        self.assertFalse(any(c[:2] == ('xcodebuild', 'test-without-building') for c in self.calls))
+        self.assertFalse(any(c[:3] == ('xcrun', 'simctl', 'io') for c in self.calls))
 
     def test_failed_video_seed_runs_all_ui_once_and_keeps_gate_failed(self):
         self.assertEqual(self.recording(video_failure=True), 4)
@@ -165,7 +186,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 9 * (240 - 180) + 300)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 10 * (240 - 180) + 300)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
@@ -191,7 +212,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['recordingExitCode'], 0)
         self.assertIsNone(report['recordingError'])
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 9 * (240 - 180) + 300))
+        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 10 * (240 - 180) + 300))
         self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)

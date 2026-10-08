@@ -2002,17 +2002,27 @@ jobs:
             StickDeathInfinity/Resources/StudioImages \
             Tests/StudioImagePack/Fixtures/kenney-1-bit-pack.zip \
             "$RUNNER_TEMP/sdi-image-pack-fixtures/archive-paths.json"
-  native-ios-build:
+  native-ios-shards:
     needs: native-production-tests
-    # Always report this required gate, including a failed/cancelled dependency.
-    if: ${{ always() }}
+    # Do not allocate Mac runners after a failed/cancelled production gate.
+    if: ${{ needs.native-production-tests.result == 'success' }}
     runs-on: macos-15
-    # Match the bounded inventory: 101 cases x 180 seconds, nine bounded
-    # extra minutes, five minutes overhead and 25 minutes build/preservation.
-    # The separate nine-case auth suite adds a bounded 17 minutes on the same runner.
-    # This is a ceiling; the job exits as soon as all cases finish. One Mac
-    # runner at a time, explicit per-case limits, no retries or skipped cases.
-    timeout-minutes: 359
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - shard: 0
+            timeout: 207
+          - shard: 1
+            timeout: 186
+    env:
+      SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}
+    # Sorted alternating partitions preserve all 102 native cases (51/51).
+    # Per-case 180/240s, no retries, one simulator and one Mac job at a time.
+    # Both shards include 300s evidence overhead + 25m build/preservation;
+    # shard zero alone also retains the 17m authentication suite.
+    timeout-minutes: ${{ matrix.timeout }}
     steps:
       - name: Require successful production verification
         shell: bash
@@ -2026,6 +2036,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Build checked-in native iOS target without signing or deployment
+        id: build
         shell: bash
         run: |
           set -euo pipefail
@@ -2040,11 +2051,12 @@ jobs:
           echo 'XCODE_IOS_BUILD=PASS'
       - name: Verify simulator review packaging rules
         id: native-review-rules
+        if: matrix.shard == 0
         continue-on-error: true
         run: python3 -m unittest discover -s Tests/NativeReviewPackage -p 'test_*.py' -v
       - name: Preserve the unconfigured universal simulator app
         id: native-review-app
-        if: ${{ !cancelled() && steps.native-review-rules.outcome == 'success' }}
+        if: ${{ matrix.shard == 0 && !cancelled() && steps.native-review-rules.outcome == 'success' }}
         continue-on-error: true
         shell: bash
         run: |
@@ -2056,11 +2068,11 @@ jobs:
           echo "artifact_path=$RUNNER_TEMP/sdi-native-review-app" >> "$GITHUB_OUTPUT"
       - name: Upload native simulator review app
         id: native-review-upload
-        if: ${{ !cancelled() && steps.native-review-app.outcome == 'success' }}
+        if: ${{ matrix.shard == 0 && !cancelled() && steps.native-review-app.outcome == 'success' }}
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}
+          name: native-simulator-app-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ steps.native-review-app.outputs.artifact_path }}
           retention-days: 3
           compression-level: 0
@@ -2076,38 +2088,41 @@ jobs:
           bash scripts/native-smoke/run_smoke_ci.sh
       - name: Exercise actual authentication state with isolated local transport
         id: native-auth
-        if: ${{ !cancelled() && steps.native-smoke.outputs.simulator_udid != '' }}
+        if: ${{ matrix.shard == 0 && !cancelled() && steps.native-smoke.outputs.simulator_udid != '' }}
         timeout-minutes: 17
         env:
           SDI_SMOKE_SIMULATOR_UDID: ${{ steps.native-smoke.outputs.simulator_udid }}
         run: python3 scripts/native-smoke/run_auth_ci.py
       - name: Preserve native authentication evidence
-        if: always() && steps.native-auth.outputs.artifact_path != ''
+        id: auth-upload
+        if: always() && matrix.shard == 0 && steps.native-auth.outputs.artifact_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-auth-${{ github.event.pull_request.head.sha || github.sha }}
+          name: native-auth-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}
           path: ${{ steps.native-auth.outputs.artifact_path }}
           retention-days: 3
           if-no-files-found: error
       - name: Preserve owned simulator setup receipt even when creation fails
+        id: setup-upload
         if: always() && steps.native-smoke.outputs.simulator_setup_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-simulator-setup-${{ github.event.pull_request.head.sha || github.sha }}
+          name: native-simulator-setup-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ steps.native-smoke.outputs.simulator_setup_path }}
           retention-days: 3
           if-no-files-found: error
       - name: Preserve native smoke evidence from this exact source
+        id: smoke-upload
         if: always() && steps.native-smoke.outputs.artifact_path != ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: native-studio-${{ github.event.pull_request.head.sha || github.sha }}
+          name: native-studio-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ steps.native-smoke.outputs.artifact_path }}
           retention-days: 3
           compression-level: 3
           if-no-files-found: error
       - name: Require successful native simulator app preservation
-        if: always()
+        if: always() && matrix.shard == 0
         shell: bash
         env:
           SDI_REVIEW_RULES: ${{ steps.native-review-rules.outcome }}
@@ -2120,3 +2135,51 @@ jobs:
           test "$SDI_REVIEW_RULES" = success
           test "$SDI_REVIEW_PACKAGE" = success
           test "$SDI_REVIEW_UPLOAD" = success
+      - name: Preserve exact shard execution and gate receipt
+        if: always()
+        env:
+          SDI_STEP_RESULTS: ${{ toJSON(steps) }}
+          SDI_UI_EVIDENCE: ${{ steps.native-smoke.outputs.artifact_path }}
+        run: |
+          python3 scripts/native-smoke/shard_receipt.py collect \
+            --source Tests/NativeUI/StudioSmokeUITests.swift --commit "$(git rev-parse HEAD)" \
+            --index "$SDI_NATIVE_SHARD_INDEX" --input "${SDI_UI_EVIDENCE:-$RUNNER_TEMP/missing-ui-evidence}" \
+            --output "$RUNNER_TEMP/native-shard-receipt/receipt.json"
+      - name: Upload compact native shard receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: native-shard-receipt-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/native-shard-receipt/receipt.json
+          retention-days: 3
+          if-no-files-found: error
+  native-ios-build:
+    # Keep the required check name. A partial, cancelled or absent shard stays red.
+    needs: [source-security, spatter-production-tests, native-production-tests, native-ios-shards]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Download only compact receipts for this exact run attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SDI_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --pattern "native-shard-receipt-$SDI_EXPECTED_HEAD-$GITHUB_RUN_ATTEMPT-*" \
+            --dir "$RUNNER_TEMP/native-shard-receipts"
+      - name: Require complete disjoint passing native execution and all gates
+        env:
+          SDI_DEPENDENCY_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 scripts/native-smoke/shard_receipt.py aggregate \
+            --source Tests/NativeUI/StudioSmokeUITests.swift --commit "$(git rev-parse HEAD)" \
+            --input "$RUNNER_TEMP/native-shard-receipts" \
+            --output "$RUNNER_TEMP/native-complete-receipt.json"

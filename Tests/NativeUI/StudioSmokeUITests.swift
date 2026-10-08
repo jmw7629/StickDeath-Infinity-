@@ -5975,6 +5975,91 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testImageDrawingOrderUndoAndColdReopen() throws {
+        executionTimeAllowance = 240
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        try importLicensedImageForExport(app, canvas: canvas)
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5) && imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        let image = try pixels(canvas.screenshot().image)
+        // Choose an actual opaque image row, rather than assuming the library
+        // drawing occupies a hard-coded point. The stroke stays on its layer.
+        var bestRow = image.height / 2, bestCount = 0
+        for y in (image.height / 5)..<(image.height * 4 / 5) {
+            var count = 0
+            for x in (image.width / 10)..<(image.width * 9 / 10) {
+                let i = (y * image.width + x) * 4
+                if max(image.bytes[i], max(image.bytes[i + 1], image.bytes[i + 2])) < 90 { count += 1 }
+            }
+            if count > bestCount { bestCount = count; bestRow = y }
+        }
+        XCTAssertGreaterThan(bestCount, 12, "Imported image has no opaque test crossing")
+        guard bestCount > 12 else { throw NSError(domain: "NativeImageOrder", code: 1) }
+        try choosePickerTestColor("#FF0000", app: app)
+        try pickerRailControl("studio.tool.brush", app: app, forward: false).tap()
+        app.buttons["studio.brush-library"].tap()
+        let round = app.buttons["studio.brush-family.round"]
+        XCTAssertTrue(round.waitForExistence(timeout: 5)); round.tap()
+        app.sliders["studio.setting.size"].adjust(toNormalizedSliderPosition: 0.7)
+        app.sliders["studio.setting.opacity"].adjust(toNormalizedSliderPosition: 1)
+        app.buttons["studio.tool-settings.close"].tap()
+        let y = CGFloat(bestRow) / CGFloat(image.height)
+        canvas.coordinate(withNormalizedOffset: .init(dx: 0.1, dy: y)).press(forDuration: 0.05,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: .init(dx: 0.9, dy: y)))
+        try waitForStableCanvas(canvas, expected: frame)
+        let drawingOnTop = try pixels(canvas.screenshot().image)
+        let originalColors = imageFixtureColors(drawingOnTop)
+        XCTAssertGreaterThan(originalColors[0], 20, "Real red drawing was not added")
+        @MainActor func orderImage(_ direction: String) throws {
+            try selectToolbarTool("move", app: app)
+            let target = try fillPreferenceControl("studio.image-move.target", app: app)
+            if target.value as? String != "Image" { target.tap() }
+            XCTAssertEqual(target.value as? String, "Image")
+            let control = try fillPreferenceControl("studio.image-order." + direction, app: app)
+            XCTAssertTrue(control.isEnabled && control.isHittable); control.tap()
+            let deselect = try fillPreferenceControl("studio.image-move.target", app: app)
+            if deselect.value as? String == "Image" { deselect.tap() }
+            XCTAssertEqual(deselect.value as? String, "Drawings")
+            app.buttons["studio.tool-settings.close"].tap()
+            try waitForStableCanvas(canvas, expected: frame)
+            XCTAssertEqual(canvas.frame, frame, "Ordering resized the Studio canvas")
+        }
+        try orderImage("forward")
+        let imageOnTop = try pixels(canvas.screenshot().image)
+        XCTAssertLessThan(imageFixtureColors(imageOnTop)[0], originalColors[0] - 12,
+                          "Image Forward did not occlude the crossing red drawing on the same layer")
+        XCTAssertGreaterThan(try changedPixelCount(drawingOnTop, imageOnTop), 20)
+        capture(app, name: "same-layer-image-forward-real-crossing")
+        app.buttons["studio.undo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawingOnTop, pixels(canvas.screenshot().image)), 4,
+                                "One Undo did not restore image below drawing")
+        app.buttons["studio.redo"].tap()
+        XCTAssertLessThanOrEqual(try changedPixelCount(imageOnTop, pixels(canvas.screenshot().image)), 4,
+                                "One Redo did not restore image above drawing")
+        try orderImage("backward")
+        XCTAssertLessThanOrEqual(try changedPixelCount(drawingOnTop, pixels(canvas.screenshot().image)), 4,
+                                "Image Backward did not restore the original crossing")
+        app.buttons["studio.undo"].tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(imageOnTop, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(imageOnTop, pixels(restored.screenshot().image)), 4,
+                                "Cold reopening lost the persisted image-above-drawing order")
+        capture(reopened, name: "same-layer-image-order-cold-reopened")
+    }
+
+    @MainActor
     func testImageFlipsUndoAndColdReopen() throws {
         let app = try launchGuestStudio(); defer { app.terminate() }
         let projectName = try createProjectIfLibraryIsShown(app)

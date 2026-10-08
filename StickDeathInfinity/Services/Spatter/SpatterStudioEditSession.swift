@@ -30,6 +30,7 @@ final class SpatterStudioEditSession: ObservableObject {
         let isLayerGlowEdit: Bool
         let isLayerDuplicate: Bool
         let isLayerUpdate: Bool
+        let artworkOrderForward: Bool?
         let imageReflectionAxis: StudioReflectionAxis?
         let isAudioEdit: Bool
         let renamedProjectName: String?
@@ -40,6 +41,10 @@ final class SpatterStudioEditSession: ObservableObject {
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if let artworkOrderForward {
+                return receipt.outcome == .unchanged ? "Selected artwork is already at this ordering boundary. Nothing changed."
+                    : "Moved selected artwork \(artworkOrderForward ? "forward" : "backward") within its layers in one undoable local edit."
+            }
             if let imageReflectionAxis {
                 let direction = imageReflectionAxis == .horizontal ? "horizontally" : "vertically"
                 return "Flipped the selected image \(direction) in one undoable local edit. Original image bytes are unchanged."
@@ -121,16 +126,18 @@ final class SpatterStudioEditSession: ObservableObject {
         let selectedElementIDs: Set<String>
         let selectedAudioClipID: String?
         let selectedImage: StudioViewModel.ImageMoveCapture?
+        let selectedArtwork: StudioViewModel.SelectionHandleCapture?
+        let mixedArtwork: Bool
         let selectedTool: DrawingTool?
         let activePanel: StudioPanelType
         let isPlaying: Bool
         init(accountID: String?, screen: StudioViewModel.CommandScreenContext, document: StudioCommandContext,
-             selectedImage: StudioViewModel.ImageMoveCapture?) {
+             selectedImage: StudioViewModel.ImageMoveCapture?, selectedArtwork: StudioViewModel.SelectionHandleCapture?, mixedArtwork: Bool) {
             self.accountID = accountID; projectID = document.projectID; revision = document.revision
             activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
             displayedFrameID = screen.displayedFrameID; selectedElementIDs = screen.selectedElementIDs
             selectedAudioClipID = screen.selectedAudioClipID; selectedTool = screen.selectedTool
-            self.selectedImage = selectedImage
+            self.selectedImage = selectedImage; self.selectedArtwork = selectedArtwork; self.mixedArtwork = mixedArtwork
             activePanel = screen.activePanel; isPlaying = screen.isPlaying
         }
     }
@@ -175,7 +182,7 @@ final class SpatterStudioEditSession: ObservableObject {
         } catch { reject(error); return false }
         guard let document = screen.document else { reject(SessionError.outsideStudio); return false }
         let captured = Capture(accountID: accountID, screen: screen, document: document,
-                               selectedImage: studio.currentImageMoveCapture())
+                               selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork)
         let started = now()
         let deadline = started.advanced(by: budget)
         acceptedIDs.insert(submissionID)
@@ -210,9 +217,28 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isLayerDuplicate = !isLayerUpdate && !isRename && SpatterLayerDuplicateInstruction.isInstruction(draft)
                 let isGlow = !isLayerUpdate && !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
                 let isImage = !isLayerUpdate && !isRename && SpatterImageReflectionInstruction.isInstruction(draft)
+                let isOrder = !isLayerUpdate && !isRename && SpatterArtworkOrderInstruction.isInstruction(draft)
+                var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if isImage {
+                if isOrder {
+                    let instruction = try SpatterArtworkOrderInstruction.parse(draft)
+                    guard captured.selectedTool == .move, !captured.isPlaying else { throw SpatterArtworkOrderInstruction.Failure.selection }
+                    let image: StudioCommand.SelectedArtworkImage?
+                    if captured.mixedArtwork {
+                        guard let selection = captured.selectedArtwork, let target = selection.image else { throw SpatterArtworkOrderInstruction.Failure.selection }
+                        image = .init(assetID: target.assetID, layerID: target.layerID)
+                    } else if let target = captured.selectedImage {
+                        guard captured.selectedElementIDs.isEmpty else { throw SpatterArtworkOrderInstruction.Failure.selection }
+                        image = .init(assetID: target.placement.assetID, layerID: target.placement.layerID)
+                    } else {
+                        guard captured.selectedArtwork != nil, !captured.selectedElementIDs.isEmpty else { throw SpatterArtworkOrderInstruction.Failure.selection }
+                        image = nil
+                    }
+                    preparedRequest = try instruction.prepare(in: document, selectedElementIDs: captured.selectedElementIDs,
+                        image: image, requestID: submissionID, checkCancellation: check)
+                    artworkOrderForward = instruction.forward
+                } else if isImage {
                     let instruction = try SpatterImageReflectionInstruction.parse(draft)
                     guard captured.selectedTool == .move, captured.selectedElementIDs.isEmpty,
                           !captured.isPlaying, let image = captured.selectedImage,
@@ -278,7 +304,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,
@@ -313,7 +339,7 @@ final class SpatterStudioEditSession: ObservableObject {
         try Self.requireEligible(studio, screen: screen)
         guard let document = screen.document,
               Capture(accountID: scope.accountID, screen: screen, document: document,
-                      selectedImage: studio.currentImageMoveCapture()) == captured else { throw SessionError.contextChanged }
+                      selectedImage: studio.currentImageMoveCapture(), selectedArtwork: studio.beginSelectionHandle(), mixedArtwork: studio.isSelectingMixedArtwork) == captured else { throw SessionError.contextChanged }
     }
     private func reject(_ error: Error) {
         if let sessionError = error as? SessionError {

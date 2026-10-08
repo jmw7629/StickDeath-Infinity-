@@ -11,7 +11,7 @@ import time
 
 from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
 from seed_video_fixture import seed_video_fixture
-from test_budget import build_test_budget
+from test_budget import build_test_budget, build_shard_budget
 
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
@@ -34,6 +34,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--udid", required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--shard-index", type=int, default=os.environ.get("SDI_NATIVE_SHARD_INDEX"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -71,7 +72,8 @@ def main() -> int:
         # Run every test, including Photos; never skip or retry the failed seed.
         fixture_error = type(error).__name__
         print(json.dumps({"photoFixtureSeeded": False, "failureClass": fixture_error,
-                          "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
+                          "mandatoryGateStillFailed": True, "allUITestsWillRun": args.shard_index is None,
+                          "allAssignedUITestsWillRun": True, "shardIndex": args.shard_index}), flush=True)
 
     # This new journey uses the real video-only Photos picker. Setup never
     # injects a project or bypasses the app's actual import commands.
@@ -82,7 +84,8 @@ def main() -> int:
         except (subprocess.SubprocessError, OSError, ValueError) as error:
             video_fixture_error = type(error).__name__
             print(json.dumps({"videoFixtureSeeded": False, "failureClass": video_fixture_error,
-                              "mandatoryGateStillFailed": True, "allUITestsWillRun": True}), flush=True)
+                              "mandatoryGateStillFailed": True, "allUITestsWillRun": args.shard_index is None,
+                          "allAssignedUITestsWillRun": True, "shardIndex": args.shard_index}), flush=True)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -91,12 +94,20 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Cases retain a hard 180s default; three measured long journeys allow 240s.
-    # Budget the whole suite
+    # Cases retain a hard 180s default; only reviewed named journeys allow 240s.
+    # Budget the complete inventory or its explicit deterministic shard
     # from the exact checked-in inventory, so a growing suite cannot be cut
-    # off by an unrelated smaller fixed deadline. No retries or filtered cases.
+    # off by an unrelated smaller fixed deadline. No retries or caller-supplied filtering.
     source = pathlib.Path(__file__).resolve().parents[2] / "Tests/NativeUI/StudioSmokeUITests.swift"
-    budget = build_test_budget(source.read_text(), command)
+    if args.shard_index is None:
+        budget = build_test_budget(source.read_text(), command)
+    else:
+        budget, command = build_shard_budget(source.read_text(), command, args.shard_index)
+        prepared = json.loads((output / "source-and-config.json").read_text())
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        if prepared.get("sourceCommit") != commit:
+            raise ValueError("Prepared build source must match the shard checkout")
+        budget["sourceCommit"] = commit
     (output / "ui-test-budget.json").write_text(json.dumps(budget, indent=2) + "\n")
     test_timeout_seconds = budget["suiteSeconds"]
     def interrupted(_signal: int, _frame: object) -> None:

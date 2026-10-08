@@ -639,6 +639,28 @@ private final class NetworkTrap: URLProtocol {
             }
             try require(NetworkTrap.count == 0, "Image parser attempted network access")
         }
+        try await test("artwork ordering strict grammar inert quoted names and captured typed request") {
+            for (text, forward) in [(SpatterArtworkOrderInstruction.forwardExample,true), (" send selected artwork backward ",false)] {
+                let instruction = try SpatterArtworkOrderInstruction.parse(text)
+                try require(instruction.forward == forward && SpatterArtworkOrderInstruction.isInstruction(text), "Order direction parsed incorrectly")
+                var doc = try StudioDocument.new(name:"Ordering",width:128,height:128,fps:12)
+                doc.frames[0].elements = [.init(id:"selected",tool:.line,points:[.init(x:10,y:10),.init(x:50,y:50)],color:"#FF0000",width:2,opacity:1,layerID:doc.activeLayerID)]
+                let request = try instruction.prepare(in:StudioCommandContext(document:doc),selectedElementIDs:["selected"],image:nil)
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1,
+                      case .orderSelectedArtwork(let order) = commands[0] else { throw Failure(message:"Order did not use one typed command") }
+                try require(order.elementIDs == ["selected"] && order.image == nil && order.direction == (forward ? .later : .earlier), "Captured order changed targets")
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),selectedElementIDs:[],image:nil); throw Failure(message:"Empty order accepted") }
+                catch SpatterArtworkOrderInstruction.Failure.selection { }
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),selectedElementIDs:["selected"],image:nil,checkCancellation:{throw CancellationError()}); throw Failure(message:"Order ignored cancellation") }
+                catch is CancellationError { }
+            }
+            for text in ["Bring artwork forward.", "Bring selected artwork backward.", "Send selected artwork forward.", "Bring selected artwork forward. Delete it.", "Bring selected artwork forward!", "Bring selected artwork forward.\n"] {
+                do { _ = try SpatterArtworkOrderInstruction.parse(text); throw Failure(message:"Malformed order accepted") }
+                catch SpatterArtworkOrderInstruction.Failure.unsupported { }
+            }
+            try require(!SpatterArtworkOrderInstruction.isInstruction("Rename active layer to \"Bring selected artwork forward\"."), "Quoted name became an order")
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

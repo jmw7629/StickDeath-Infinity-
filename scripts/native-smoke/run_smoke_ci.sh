@@ -74,6 +74,10 @@ if [[ -d "$sdi_results" ]]; then
       > "$sdi_run/test-summary.json" 2> "$sdi_run/summary-export.log"; then
     sdi_evidence_status=3
   fi
+  if ! xcrun xcresulttool get test-results tests --path "$sdi_results" \
+      > "$sdi_run/test-tree.json" 2> "$sdi_run/test-tree-export.log"; then
+    sdi_evidence_status=3
+  fi
 else
   sdi_evidence_status=3
 fi

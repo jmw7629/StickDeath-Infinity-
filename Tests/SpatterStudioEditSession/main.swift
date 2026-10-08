@@ -1636,6 +1636,94 @@ private final class NetworkTrap: URLProtocol {
                     "Image selection/lifecycle fence allowed partial edit at boundary \(boundary): \(change)")
             } }
         }
+        @MainActor func selectOrdering(_ vm: StudioViewModel, mode: String) throws {
+            vm.activePanel = .none
+            if mode == "mixed" {
+                vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .artwork
+                vm.areaSelectionKind = .rectangle; vm.selectionMode = .new; vm.areaSelectionSmoothing = 0
+                guard let capture = vm.beginAreaSelection() else { throw Failure(message:"Mixed order capture") }
+                try require(vm.finishAreaSelection(capture,points:[.init(x:5,y:5),.init(x:85,y:85)]) && vm.hasMixedArtworkSelection
+                    && vm.selectedElementIDs == ["order-D"], "Mixed order selection lost image or included crossing drawing")
+                vm.selectDrawingTool(.move)
+            } else {
+                vm.clearElementSelection(); vm.selectDrawingTool(.move)
+                try require(vm.setImageCanvasMove(true), "Order image selection")
+            }
+            vm.activePanel = .spatterAI
+        }
+        try await test("selected image and mixed artwork ordering match manual pixels Undo Redo and cold source") {
+            for mode in ["image", "mixed"] {
+                let (vm, store, asset, sibling) = try await imageReflectionFixture("order-" + mode)
+                let layer = vm.activeLayerID
+                vm.deselectAreaImage()
+                try require(vm.commitElement(.init(id:"order-D",tool:.rectangle,points:[.init(x:30,y:30),.init(x:58,y:50)],color:"#FF00FF",width:2,opacity:1,layerID:layer,shape:.init(fillColor:"#FF00FF"))), "Order drawing fixture")
+                try require(vm.commitElement(.init(id:"order-U",tool:.line,points:[.init(x:1,y:40),.init(x:125,y:40)],color:"#000000",width:4,opacity:1,layerID:layer)), "Crossing order fixture")
+                await vm.flush(); try selectOrdering(vm,mode:mode)
+                let before = vm.document, source = vm.originalImageSource(asset), other = vm.currentFrame.rasterInstance(on:sibling)
+                let oldPixels = try imageReflectionPixels(vm)
+                try require(vm.orderSelected(forward:true), "Manual artwork order failed")
+                let expected = vm.document, pixels = try imageReflectionPixels(vm)
+                try require(pixels != oldPixels, "Order fixture did not visibly change")
+                vm.undo(); await vm.flush(); try selectOrdering(vm,mode:mode)
+                let submitted = vm.document, session = SpatterStudioEditSession()
+                try require(session.submit(SpatterArtworkOrderInstruction.forwardExample,in:vm,accountID:nil,currentScope:{guest}), "Order submission refused")
+                await session.waitForCompletion()
+                try require(session.status == .applied && session.appliedEdit?.artworkOrderForward == true
+                    && session.appliedEdit?.summary.contains("within its layers") == true
+                    && content(vm.document) == content(expected) && (try imageReflectionPixels(vm)) == pixels
+                    && vm.currentFrame.rasterInstance(on:sibling) == other && vm.originalImageSource(asset) == source, "Spatter order differs from manual pixels/source")
+                vm.undo(); try require(content(vm.document) == content(submitted) && (try imageReflectionPixels(vm)) == oldPixels, "Order one Undo failed")
+                vm.redo(); await vm.flush()
+                let savedOrder = await vm.save()
+                try require(content(vm.document) == content(expected) && savedOrder, "Order Redo/save failed")
+                let reopened = StudioViewModel(storage:store)
+                let stored = try store.loadAnimation(id:vm.document.id)!
+                try require(await reopened.openProject(stored.metadata), "Order cold reopen failed")
+                try require((try imageReflectionPixels(reopened)) == pixels && reopened.originalImageSource(asset) == source
+                    && before.frames.count == reopened.frames.count, "Order cold pixels/source/timeline changed")
+            }
+        }
+        try await test("drawing ordering boundary no-op and captured selection cancellation fail closed") {
+            let (vm, _) = try await fixture("drawing-order")
+            try erasureArtwork(vm); await vm.flush(); vm.activePanel = .spatterAI
+            let before = vm.document
+            let noOp = SpatterStudioEditSession()
+            _ = noOp.submit(SpatterArtworkOrderInstruction.forwardExample,in:vm,accountID:nil,currentScope:{guest}); await noOp.waitForCompletion()
+            try require(noOp.status == .applied && noOp.appliedEdit?.receipt.outcome == .unchanged && vm.document == before
+                && noOp.appliedEdit?.summary.contains("Nothing changed") == true, "Order boundary falsely changed document")
+            let back = SpatterStudioEditSession()
+            _ = back.submit(SpatterArtworkOrderInstruction.backwardExample,in:vm,accountID:nil,currentScope:{guest}); await back.waitForCompletion()
+            try require(back.status == .applied && vm.currentFrame.elements.first?.id == "selected-red", "Drawing Back failed")
+            vm.undo(); await vm.flush()
+            for boundary in 1...2 { for change in ["selection", "cancel"] {
+                _ = vm.selectElement(at:CGPoint(x:64,y:48)); await vm.flush()
+                let captured = vm.document, gate = Gate(), session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                _ = session.submit(SpatterArtworkOrderInstruction.backwardExample,in:vm,accountID:nil,currentScope:{guest})
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "selection" { vm.clearElementSelection() } else { session.cancel() }
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "selection" ? .stale : .cancelled) && vm.document == captured && session.appliedEdit == nil, "Order stale/cancel mutated artwork")
+            } }
+        }
+        try await test("image order rejects unavailable layer and fences same-revision reselection") {
+            for mode in ["locked", "hidden", "none", "reselect"] {
+                let (vm, _, asset, _) = try await imageReflectionFixture("order-denied-" + mode)
+                if mode == "locked" { vm.setLayerLockMode(vm.activeLayerID,mode:.full) }
+                if mode == "hidden" { vm.toggleLayerVisibility(vm.activeLayerID) }
+                if mode == "none" { vm.deselectAreaImage() }
+                await vm.flush()
+                let before = vm.document, source = vm.originalImageSource(asset), gate = Gate()
+                let session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                _ = session.submit(SpatterArtworkOrderInstruction.forwardExample,in:vm,accountID:nil,currentScope:{guest})
+                try await gate.waitFor(1)
+                if mode == "reselect" {
+                    vm.deselectAreaImage(); try require(vm.setImageCanvasMove(true) && vm.document == before, "Same-revision order reselection failed")
+                }
+                try gate.release(1); await session.waitForCompletion()
+                try require(session.status == (mode == "reselect" ? .stale : .rejected) && vm.document == before
+                    && vm.originalImageSource(asset) == source && session.appliedEdit == nil, "Unavailable/stale order edited artwork")
+            }
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

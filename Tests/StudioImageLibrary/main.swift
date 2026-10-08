@@ -763,13 +763,59 @@ private final class NetworkTrap: URLProtocol {
             try require(second.apply(currentScope: scope) && second.appliedImage?.assetID != firstID, "Library identity reused as instance identity")
             try require(editor.originalImageSource(second.appliedImage!.assetID)?.catalogueAttribution == provenance, "Second original lost rights")
         }
-        try await test("existing imported picture rejects replacement without changing history or pixels") {
-            let (editor, _) = try await fixture(), first = try await prepare(editor)
+        try await test("second library Add appends independent artwork preserving first source Undo and cold pixels") {
+            let (editor, storage) = try await fixture(), first = try await prepare(editor)
             try require(first.apply(currentScope: scope), "First Add failed")
-            let before = editor.document, pixels = try await exported(editor), next = try await prepare(editor)
-            try require(!next.apply(currentScope: scope) && editor.document == before, "Existing picture silently overwritten")
-            try require(try await exported(editor) == pixels, "Rejected Add changed actual output")
-            editor.undo(); try require(editor.currentFrame.rasterAssetID == nil, "Rejected Add inserted a history step")
+            let firstID = first.appliedImage!.assetID
+            guard let firstLayer = editor.currentFrame.rasterLayerID,
+                  let chosen = catalogue.images.first(where: { $0.id == "kenney.scribble-dungeons.dragon" }) else {
+                throw Failure(message: "Independent library fixture missing")
+            }
+            let secondBytes = try catalogue.checkedPNG(chosen), secondRights = try catalogue.attribution(for: chosen)
+            let firstSource = editor.originalImageSource(firstID)
+            let before = editor.document, pixels = try await exported(editor)
+            let next = try await prepare(editor, selectedImage: chosen)
+            try require(next.apply(currentScope: scope), "Second explicit Add did not append an image")
+            let secondID = next.appliedImage!.assetID, after = editor.document
+            guard let secondInstance = editor.currentFrame.rasterLayerInstances.first(where: {
+                editor.currentFrame.rasterAssetID(on: $0.layerID) == secondID
+            }) else { throw Failure(message: "Second image instance missing") }
+            try require(secondID != firstID && secondInstance.layerID != firstLayer
+                && after.revision == before.revision + 1 && after.frames.count == before.frames.count
+                && after.layers.count == before.layers.count + 1
+                && editor.currentFrame.rasterLayerInstances.count == 2
+                && editor.currentFrame.referencedRasterAssetIDs == Set([firstID, secondID]),
+                "Second Add replaced an identity, layer or timeline instead of one append")
+            try require(editor.currentFrame.rasterInstance(on: firstLayer) == before.frames[0].rasterInstance(on: firstLayer)
+                && editor.originalImageSource(firstID) == firstSource
+                && firstSource?.originalData == original && firstSource?.catalogueAttribution == provenance
+                && editor.originalImageSource(secondID)?.originalData == secondBytes
+                && editor.originalImageSource(secondID)?.catalogueAttribution == secondRights,
+                "Second Add changed first image geometry/source or confused independent rights")
+            let combined = try await exported(editor)
+            try require(combined != pixels, "Second real library image did not change exported pixels")
+            let afterDuplicateAttempt = editor.document
+            try require(!next.apply(currentScope: scope) && editor.document == afterDuplicateAttempt,
+                "Consumed Add session appended again")
+            editor.undo()
+            let undoPixels = try await exported(editor)
+            try require(editor.document.frames == before.frames && editor.document.layers == before.layers
+                && undoPixels == pixels && editor.originalImageSource(firstID) == firstSource,
+                "One Undo did not restore first image pixels and source")
+            editor.redo()
+            let redoPixels = try await exported(editor)
+            try require(editor.document.frames == after.frames && editor.document.layers == after.layers
+                && redoPixels == combined, "One Redo did not restore both images")
+            try require(await editor.save(), "Independent library images save failed")
+            let stored = try storage.loadAnimation(id: editor.document.id)!, reopened = StudioViewModel(storage: storage)
+            try require(await reopened.openProject(stored.metadata), "Independent library images cold reopen failed")
+            let coldPixels = try await exported(reopened)
+            try require(reopened.currentFrame == after.frames[0]
+                && coldPixels == combined
+                && reopened.originalImageSource(firstID) == firstSource
+                && reopened.originalImageSource(secondID)?.originalData == secondBytes
+                && reopened.originalImageSource(secondID)?.catalogueAttribution == secondRights,
+                "Cold reopen lost independent library pixels, source or rights")
         }
         try await test("cancel or stale context during verification never attaches or publishes preview") {
             for cancel in [true, false] {

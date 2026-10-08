@@ -5,6 +5,7 @@ import re
 PER_CASE_SECONDS = 180
 MAXIMUM_CASE_SECONDS = 240
 EXTENDED_CASE_SECONDS = {
+    "testImageDrawingOrderUndoAndColdReopen": 240,
     "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 240,
     "testSpatterSelectedAudioPlacementUndoAndColdReopen": 240,
 
@@ -18,7 +19,7 @@ EXTENDED_CASE_SECONDS = {
 }
 # Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 101
+MAXIMUM_CASES = 102
 SUITE_OVERHEAD_SECONDS = 300
 
 
@@ -60,3 +61,22 @@ def build_test_budget(source: str, command: list[str]) -> dict:
             "suiteSeconds": sum(extended.get(name, PER_CASE_SECONDS) for name in names) + SUITE_OVERHEAD_SECONDS,
             "maximumCases": MAXIMUM_CASES, "sourceSHA256": hashlib.sha256(source.encode()).hexdigest(),
             "retries": 0, "parallelSimulators": 1}
+
+
+# Only this function owns selectors. The unsharded validator still rejects all
+# caller-supplied filters before constructing the deterministic partition.
+def build_shard_budget(source: str, command: list[str], index: int, count: int = 2) -> tuple[dict, list[str]]:
+    if type(index) is not int or count != 2 or type(count) is not int or index not in (0, 1):
+        raise ValueError("Native UI requires exactly two shards, numbered zero and one")
+    full = build_test_budget(source, command)
+    if full["testCount"] != MAXIMUM_CASES:
+        raise ValueError("Sharded CI requires the complete reviewed inventory")
+    names = sorted(full["testNames"])
+    assigned = names[index::count]
+    value = dict(full, fullTestNames=names, fullTestCount=len(names),
+                 testNames=assigned, testCount=len(assigned), shardIndex=index, shardCount=count,
+                 suiteSeconds=sum(EXTENDED_CASE_SECONDS.get(n, PER_CASE_SECONDS) for n in assigned) + SUITE_OVERHEAD_SECONDS)
+    value["extendedCases"] = {n: EXTENDED_CASE_SECONDS[n] for n in assigned if n in EXTENDED_CASE_SECONDS}
+    value["assignmentSHA256"] = hashlib.sha256("\n".join(assigned).encode()).hexdigest()
+    selectors = ["-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/" + n for n in assigned]
+    return value, command + selectors

@@ -916,3 +916,50 @@ struct SpatterImageReflectionInstruction: Equatable {
             action: .apply([.reflectImage(.init(frame: .id(frameID), assetID: assetID, axis: axis, layer: .id(layerID)))]))
     }
 }
+
+
+/// Explicit local ordering only; the session owns captured selection authority.
+struct SpatterArtworkOrderInstruction: Equatable {
+    let forward: Bool
+    static let forwardExample = "Bring selected artwork forward."
+    static let backwardExample = "Send selected artwork backward."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Bring selected artwork forward. or Send selected artwork backward. as one complete instruction. Nothing changed."
+            case .selection: return "Select drawings, an image, or mixed artwork with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["bring", "send"].contains(words.first.map(String.init) ?? "") && words.contains("artwork")
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let expression = try NSRegularExpression(pattern: #"\A\s*(bring\s+selected\s+artwork\s+forward|send\s+selected\s+artwork\s+backward)\.?\s*\z"#, options: [.caseInsensitive])
+        guard expression.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)) != nil else { throw Failure.unsupported }
+        return .init(forward: text.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("bring"))
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>,
+                 image: StudioCommand.SelectedArtworkImage?, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard !selectedElementIDs.isEmpty || image != nil, selectedElementIDs.count <= 1024,
+              selectedElementIDs.allSatisfy({ !$0.isEmpty && $0.count <= 160 }),
+              let frame = context.frames.first(where: { $0.id == context.activeFrameID }),
+              selectedElementIDs.count <= frame.elementCount else { throw Failure.selection }
+        if let image {
+            guard frame.imageLayerID == image.layerID, frame.imageAssetID == image.assetID,
+                  frame.imagePlacement != nil, image.layerID == context.activeLayerID,
+                  let layer = context.layers.first(where: { $0.id == image.layerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { throw Failure.selection }
+        }
+        try checkCancellation()
+        return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
+            action:.apply([.orderSelectedArtwork(.init(frame:.id(context.activeFrameID),elementIDs:selectedElementIDs.sorted(),
+                image:image,direction:forward ? .later : .earlier))]))
+    }
+}

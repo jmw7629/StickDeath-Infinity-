@@ -31,6 +31,7 @@ struct SpatterMotionRecipePanel: View {
     private var isExposureDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterFrameExposureInstruction.isInstruction(draft) }
     private var isGlowDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterLayerGlowInstruction.isInstruction(draft) }
     private var isAudioDraft: Bool { !isLayerDraft && SpatterAudioInstruction.isAudioInstruction(draft) }
+    private var isOrderDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterArtworkOrderInstruction.isInstruction(draft) }
     private var isImageDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterImageReflectionInstruction.isInstruction(draft) }
     private var selectedImage: StudioViewModel.ImageMoveCapture? {
         guard vm.selectedElementIDs.isEmpty, !vm.isPlaying,
@@ -38,11 +39,13 @@ struct SpatterMotionRecipePanel: View {
         return image
     }
     private var exampleText: String {
+        if isOrderDraft { return SpatterArtworkOrderInstruction.forwardExample }
         if isImageDraft { return SpatterImageReflectionInstruction.horizontalExample }
         return
         isLayerDuplicateDraft ? SpatterLayerDuplicateInstruction.example : isLayerUpdateDraft ? (draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("rename") ? SpatterLayerUpdateInstruction.renameExample : SpatterLayerUpdateInstruction.opacityExample) : isExposureDraft ? SpatterFrameExposureInstruction.example : isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
+        if isOrderDraft { return "Move selected drawings, an image, or mixed artwork one step forward or backward within each layer. Other layers keep their order. One Undo reverses the edit." }
         if isImageDraft { return "Flip the selected image horizontally or vertically using the same Move controls. Its original file, crop and other image instances stay intact. One Undo reverses the edit." }
         return
         isLayerDuplicateDraft ? "Duplicate the active layer across existing frames with fresh artwork identities and linked original images. Layer appearance and locks follow the same Layers operation. One Undo removes the duplicate; no frames are added." : isLayerUpdateDraft ? "Rename the active layer or change its opacity using the same Layers controls. Artwork stays editable; one Undo restores the prior settings. No frames are added." : isExposureDraft ? "Change the selected existing frame to 1–600 ticks. Duration is ticks divided by project FPS; no frames are added. One Undo restores its prior exposure." : isErasureDraft ? "Erase only the selected drawings along a straight path. Original geometry stays editable. Unselected drawings keep their original editable geometry. One Undo restores all selected drawings." : isGlowDraft ? "Change the active layer glow across its frames using the same Layers controls. One Undo reverses the complete style edit." : isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
@@ -52,6 +55,7 @@ struct SpatterMotionRecipePanel: View {
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
+        if isOrderDraft { return "Select artwork with Move before opening Spatter. Use Bring selected artwork forward. or Send selected artwork backward. Mixed selection must explicitly include its image. Selected layers must be visible and unlocked; Apply rechecks the exact selection." }
         if isImageDraft { return "Select one image with Move before opening Spatter. Deselect drawings and stop playback. Use Flip selected image horizontally. or Flip selected image vertically. The layer must be visible and unlocked. Apply checks the exact selection again; choosing an example only fills the draft." }
         return
         isLayerDraft ? "Select the target layer before opening Spatter. Use Duplicate active layer., Rename active layer to \"Foreground\"., or Set active layer opacity to 50%. Names have 1–120 characters; quoted text is only a name. Opacity is 0–100%. Apply validates the captured layer and revision; Undo reverses the complete edit." : isErasureDraft ? "Select drawings before opening Spatter. Use canvas percentages, hard or soft mode, size 1–512 pixels and strength 0–100%. Every selected layer must be visible and unlocked, without backdrop-dependent effects or alpha paint. Apply adds masks; it adds no frames." : isGlowDraft ? "Use a six-digit #RRGGBB color, radius 0–128 canvas pixels and strength 0–100%. Disable preserves the stored style. Select the target layer before opening Spatter; Apply changes only that layer." : isRenameDraft ? "Use one name in double quotes, with 1–120 characters and no control characters. Stop playback before applying. The quoted name is text, never another instruction." : isTwoActorDraft ? "Give each actor its own color, action and direction. Use 12–60 project FPS; duration must fit 8–24 ticks. Longer durations reject without stretching poses. No soundtrack or publication is generated." : isAudioDraft
@@ -85,7 +89,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
@@ -95,9 +99,16 @@ struct SpatterMotionRecipePanel: View {
                     Text(exampleText).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
-                    Button(isImageDraft || isLayerDraft || isExposureDraft || isAudioDraft || isRenameDraft || isErasureDraft || isGlowDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
+                    Button(isOrderDraft || isImageDraft || isLayerDraft || isExposureDraft || isAudioDraft || isRenameDraft || isErasureDraft || isGlowDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.motion.example")
+                    Menu("Use an artwork order instruction") {
+                        Button("Bring selected artwork forward") { draft = SpatterArtworkOrderInstruction.forwardExample }
+                        Button("Send selected artwork backward") { draft = SpatterArtworkOrderInstruction.backwardExample }
+                    }
+                    .disabled(session.isWorking || session.isClosed)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("spatter.artwork.order-examples")
                     Menu("Use an image flip instruction") {
                         Button("Flip selected image horizontally") { draft = SpatterImageReflectionInstruction.horizontalExample }
                             .accessibilityIdentifier("spatter.image.horizontal-example")
@@ -189,7 +200,7 @@ struct SpatterMotionRecipePanel: View {
                         .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
-                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
+                    Text("\(draft.utf8.count) / 1,024 bytes · " + (isOrderDraft ? "Selected artwork" : isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                     Button("Apply local edit") {
                         draftFocused = false
