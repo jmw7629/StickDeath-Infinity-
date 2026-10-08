@@ -1724,6 +1724,214 @@ private final class NetworkTrap: URLProtocol {
                     && vm.originalImageSource(asset) == source && session.appliedEdit == nil, "Unavailable/stale order edited artwork")
             }
         }
+        try await test("Hide Show matches manual pixels preserves locks one Undo no-op and cold artwork") {
+            for lock in [LayerLockMode.free, .full, .position, .alpha] {
+                let (vm, store) = try await fixture("visibility-" + lock.rawValue)
+                try require(vm.commitElement(styledStroke(vm)), "Visibility artwork failed")
+                vm.setLayerLockMode(vm.activeLayerID,mode:lock); await vm.flush()
+                let original = vm.document, target = vm.activeLayerID, visiblePixels = try erasurePixels(vm.document)
+                vm.toggleLayerVisibility(target)
+                let manual = vm.document, hiddenPixels = try erasurePixels(vm.document)
+                try require(hiddenPixels != visiblePixels, "Visibility fixture did not change rendered pixels")
+                vm.undo(); await vm.flush()
+                let session = SpatterStudioEditSession()
+                try require(session.submit(SpatterLayerUpdateInstruction.hideExample,in:vm,accountID:nil,currentScope:{guest}), "Hide submission failed")
+                await session.waitForCompletion()
+                try require(session.status == .applied && session.appliedEdit?.layerVisibility == false
+                    && session.notice == "Hid the active layer in one undoable local edit. Artwork and lock settings are unchanged."
+                    && content(vm.document) == content(manual) && (try erasurePixels(vm.document)) == hiddenPixels
+                    && vm.frames == original.frames && vm.layers.first?.lockMode == lock.rawValue,
+                    "Hide differs from manual pixels, lock policy or artwork")
+                let hidden = vm.document
+                vm.undo(); try require(content(vm.document) == content(original) && (try erasurePixels(vm.document)) == visiblePixels, "Hide one Undo failed")
+                vm.redo(); await vm.flush()
+                let noOpBefore = vm.document, undoBefore = vm.canUndo, redoBefore = vm.canRedo
+                _ = session.submit(SpatterLayerUpdateInstruction.hideExample,in:vm,accountID:nil,currentScope:{guest}); await session.waitForCompletion()
+                try require(session.appliedEdit?.receipt.outcome == .unchanged && session.notice == "The active layer is already hidden. Nothing changed."
+                    && vm.document == noOpBefore && vm.canUndo == undoBefore && vm.canRedo == redoBefore, "Hide no-op mutated history or lied")
+                let saved = await vm.save(); try require(saved, "Hidden save failed")
+                let cold = StudioViewModel(storage:store), stored = try store.loadAnimation(id:vm.document.id)!
+                try require(await cold.openProject(stored.metadata), "Hidden cold open failed")
+                try require(content(cold.document) == content(hidden) && (try erasurePixels(cold.document)) == hiddenPixels, "Cold hidden artwork changed")
+                cold.activePanel = .spatterAI; await cold.flush()
+                let show = SpatterStudioEditSession()
+                _ = show.submit(SpatterLayerUpdateInstruction.showExample,in:cold,accountID:nil,currentScope:{guest}); await show.waitForCompletion()
+                try require(show.status == .applied && show.appliedEdit?.layerVisibility == true
+                    && content(cold.document) == content(original) && (try erasurePixels(cold.document)) == visiblePixels,
+                    "Show did not restore original locked artwork/pixels")
+                cold.undo(); try require(content(cold.document) == content(hidden), "Show Undo failed")
+                await cold.flush()
+            }
+        }
+        try await test("visibility captures revision account and cancellation at both preparation boundaries") {
+            for boundary in 1...2 { for change in ["revision", "account", "cancel"] {
+                let (vm, _) = try await fixture("visibility-fence-\(boundary)-\(change)")
+                try require(vm.commitElement(styledStroke(vm)), "Visibility fence fixture"); await vm.flush()
+                let gate = Gate(); var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                try require(session.submit(SpatterLayerUpdateInstruction.hideExample,in:vm,accountID:nil,
+                    currentScope:{.init(isStudioVisible:true,accountID:account)}), "Visibility fence submit failed")
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { vm.setLayerOpacity(vm.activeLayerID,opacity:0.4); await vm.flush() }
+                else if change == "account" { account = "other" }
+                else { session.cancel() }
+                let beforeRelease = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == beforeRelease && vm.canUndo == undo && vm.canRedo == redo,
+                    "Stale/cancelled visibility changed artwork or history")
+            } }
+        }
+        @MainActor func layerOrderFixture(_ name: String) async throws -> (StudioViewModel,DeviceStorageManager,String,String) {
+            let (vm,store) = try await fixture(name)
+            let bottom = vm.activeLayerID
+            try require(vm.commitElement(.init(id:"order-blue",tool:.rectangle,points:[.init(x:16,y:16),.init(x:112,y:80)],color:"#0000FF",width:2,opacity:1,layerID:bottom,shape:.init(fillColor:"#0000FF"))), "Bottom layer artwork")
+            vm.addLayer(); let top = vm.activeLayerID
+            try require(vm.commitElement(.init(id:"order-red",tool:.rectangle,points:[.init(x:16,y:16),.init(x:112,y:80)],color:"#FF0000",width:2,opacity:1,layerID:top,shape:.init(fillColor:"#FF0000"))), "Top layer artwork")
+            await vm.flush(); return (vm,store,top,bottom)
+        }
+        try await test("whole layer Down Up matches manual overlap pixels stable identities Undo and cold state") {
+            let (vm,store,top,bottom) = try await layerOrderFixture("whole-layer-order")
+            let original = vm.document, topPixels = try erasurePixels(vm.document)
+            vm.moveLayerDown(top); let manual = vm.document, lowerPixels = try erasurePixels(vm.document)
+            try require(topPixels != lowerPixels && vm.layers.map(\.id) == [bottom,top], "Manual order fixture failed to invert overlapping pixels")
+            vm.undo(); await vm.flush()
+            let down = SpatterStudioEditSession()
+            _ = down.submit(SpatterLayerOrderInstruction.downExample,in:vm,accountID:nil,currentScope:{guest}); await down.waitForCompletion()
+            try require(down.status == .applied && down.appliedEdit?.layerOrderUp == false && content(vm.document) == content(manual)
+                && (try erasurePixels(vm.document)) == lowerPixels && vm.frames == original.frames && vm.activeLayerID == top,
+                "Spatter Down changed IDs/content or differs from manual pixels")
+            let changed = vm.document
+            vm.undo(); try require(content(vm.document) == content(original) && (try erasurePixels(vm.document)) == topPixels, "Layer order one Undo")
+            vm.redo(); await vm.flush(); let saved = await vm.save(); try require(saved, "Layer order save")
+            let stored = try store.loadAnimation(id:vm.document.id)!, cold = StudioViewModel(storage:store)
+            try require(await cold.openProject(stored.metadata), "Layer order cold open")
+            try require(content(cold.document) == content(changed) && (try erasurePixels(cold.document)) == lowerPixels, "Layer order cold render")
+            cold.activePanel = .spatterAI; await cold.flush()
+            let up = SpatterStudioEditSession()
+            _ = up.submit(SpatterLayerOrderInstruction.upExample,in:cold,accountID:nil,currentScope:{guest}); await up.waitForCompletion()
+            try require(up.status == .applied && up.appliedEdit?.layerOrderUp == true && content(cold.document) == content(original)
+                && (try erasurePixels(cold.document)) == topPixels, "Layer Up did not restore actual overlap")
+            await cold.flush(); let bound = cold.document, undo = cold.canUndo, redo = cold.canRedo
+            _ = up.submit(SpatterLayerOrderInstruction.upExample,in:cold,accountID:nil,currentScope:{guest}); await up.waitForCompletion()
+            try require(up.status == .rejected && up.appliedEdit == nil && cold.document == bound
+                && cold.canUndo == undo && cold.canRedo == redo, "Top boundary falsely applied or changed history")
+        }
+        try await test("whole layer order preserves hidden locked properties and rejects stale or cancelled authority") {
+            for lock in [LayerLockMode.full,.position,.alpha] {
+                let (vm,_,top,_) = try await layerOrderFixture("layer-order-lock-"+lock.rawValue)
+                vm.setLayerLockMode(top,mode:lock); vm.toggleLayerVisibility(top); await vm.flush()
+                let before = vm.document, settings = vm.layers.first!
+                let session = SpatterStudioEditSession()
+                _ = session.submit(SpatterLayerOrderInstruction.downExample,in:vm,accountID:nil,currentScope:{guest}); await session.waitForCompletion()
+                try require(session.status == .applied && vm.layers.last == settings && vm.frames == before.frames,
+                    "Whole-layer order diverged from manual hidden/lock policy")
+                vm.undo(); try require(content(vm.document) == content(before), "Hidden locked order Undo failed"); await vm.flush()
+            }
+            for boundary in 1...2 { for change in ["layer","account","cancel"] {
+                let (vm,_,_,bottom) = try await layerOrderFixture("layer-order-fence")
+                let gate = Gate(); var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                _ = session.submit(SpatterLayerOrderInstruction.downExample,in:vm,accountID:nil,currentScope:{.init(isStudioVisible:true,accountID:account)})
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "layer" { vm.selectLayer(bottom); await vm.flush() }
+                else if change == "account" { account = "other" }
+                else { session.cancel() }
+                let beforeRelease = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == beforeRelease && vm.canUndo == undo && vm.canRedo == redo, "Layer-order stale/cancel edited another target")
+            } }
+        }
+        try await test("active frame duplicate preserves editable image sources exposure pixels Undo and cold identities") {
+            let (vm,store,asset,_) = try await imageReflectionFixture("frame-duplicate")
+            try require(vm.commitElement(styledStroke(vm)), "Frame duplicate drawing")
+            vm.setFrameHold(vm.currentFrame.id,ticks:7); await vm.flush()
+            let before = vm.document, originalFrame = vm.currentFrame, source = vm.originalImageSource(asset)
+            let pixels = try imageReflectionPixels(vm)
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterFrameActionInstruction.Action.duplicate.example,in:vm,accountID:nil,currentScope:{guest}); await session.waitForCompletion()
+            let duplicated = vm.currentFrame, after = vm.document
+            try require(session.status == .applied && session.appliedEdit?.frameAction == .duplicate
+                && after.frames.count == before.frames.count + 1 && duplicated.id != originalFrame.id
+                && duplicated.durationTicks == 7 && after.totalTimelineTicks == before.totalTimelineTicks + 7
+                && duplicated.referencedRasterAssetIDs == originalFrame.referencedRasterAssetIDs
+                && duplicated.rasterLayerInstances == originalFrame.rasterLayerInstances
+                && Set(duplicated.elements.map(\.id)).isDisjoint(with:Set(originalFrame.elements.map(\.id)))
+                && duplicated.elements.map(\.points) == originalFrame.elements.map(\.points)
+                && (try imageReflectionPixels(vm)) == pixels && vm.originalImageSource(asset) == source,
+                "Duplicate lost editable geometry/exposure/source or reused identities")
+            vm.undo(); try require(content(vm.document) == content(before) && (try imageReflectionPixels(vm)) == pixels, "Frame duplicate one Undo")
+            vm.redo(); await vm.flush(); let saved = await vm.save(); try require(saved, "Duplicated frame save")
+            let cold = StudioViewModel(storage:store), record = try store.loadAnimation(id:vm.document.id)!
+            try require(await cold.openProject(record.metadata), "Duplicated frame cold open")
+            try require(content(cold.document) == content(after) && (try imageReflectionPixels(cold)) == pixels
+                && cold.originalImageSource(asset) == source, "Duplicate cold source/pixels/identity changed")
+            await cold.flush()
+        }
+        try await test("active frame movement and deletion match timeline commands duration render order and one Undo") {
+            let (vm,store) = try await fixture("frame-move-delete")
+            try require(vm.commitElement(styledStroke(vm)), "Frame source drawing")
+            let sourceFrame = vm.currentFrame.id
+            vm.setFrameHold(sourceFrame,ticks:5); vm.addFrame(); let blankID = vm.currentFrame.id
+            vm.selectFrame(sourceFrame); await vm.flush()
+            let before = vm.document, sourcePixels = try erasurePixels(vm.document)
+            vm.moveFrame(sourceFrame,offset:1); let manual = vm.document, blankPixels = try erasurePixels(vm.document)
+            try require(blankPixels != sourcePixels, "Frame move did not change first playback frame")
+            vm.undo(); await vm.flush()
+            let move = SpatterStudioEditSession()
+            _ = move.submit(SpatterFrameActionInstruction.Action.later.example,in:vm,accountID:nil,currentScope:{guest}); await move.waitForCompletion()
+            try require(move.status == .applied && content(vm.document) == content(manual)
+                && vm.frames.map(\.id) == [blankID,sourceFrame] && vm.document.totalTimelineTicks == before.totalTimelineTicks
+                && vm.document.frameIndex(atTick:0) == 0 && vm.document.frameIndex(atTick:1) == 1
+                && (try erasurePixels(vm.document)) == blankPixels, "Move changed duration/identity or playback render")
+            vm.undo(); try require(content(vm.document) == content(before), "Move one Undo"); vm.redo(); await vm.flush()
+            let earlier = SpatterStudioEditSession()
+            _ = earlier.submit(SpatterFrameActionInstruction.Action.earlier.example,in:vm,accountID:nil,currentScope:{guest}); await earlier.waitForCompletion()
+            try require(earlier.status == .applied && vm.frames == before.frames, "Earlier frame move failed")
+            await vm.flush(); let deleteBefore = vm.document
+            vm.deleteFrame(sourceFrame); let manualDelete = vm.document
+            vm.undo(); await vm.flush()
+            let deletion = SpatterStudioEditSession()
+            _ = deletion.submit(SpatterFrameActionInstruction.Action.delete.example,in:vm,accountID:nil,currentScope:{guest}); await deletion.waitForCompletion()
+            try require(deletion.status == .applied && content(vm.document) == content(manualDelete)
+                && vm.frames.map(\.id) == [blankID] && vm.document.totalTimelineTicks == 1,
+                "Delete removed wrong frame or exposure")
+            vm.undo(); try require(content(vm.document) == content(deleteBefore) && (try erasurePixels(vm.document)) == sourcePixels, "Delete Undo lost actual artwork")
+            vm.redo(); await vm.flush(); let last = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            _ = deletion.submit(SpatterFrameActionInstruction.Action.delete.example,in:vm,accountID:nil,currentScope:{guest}); await deletion.waitForCompletion()
+            try require(deletion.status == .rejected && deletion.appliedEdit == nil && vm.document == last
+                && vm.canUndo == undo && vm.canRedo == redo, "Last frame deletion falsely succeeded")
+            let saved = await vm.save(); try require(saved, "Deleted timeline save")
+            let cold = StudioViewModel(storage:store), record = try store.loadAnimation(id:vm.document.id)!
+            try require(await cold.openProject(record.metadata), "Deleted timeline cold open")
+            try require(content(cold.document) == content(last) && (try erasurePixels(cold.document)) == blankPixels, "Deleted timeline cold pixels changed")
+            await cold.flush()
+        }
+        try await test("frame actions reject playback plural targets stale frame account and cancellation") {
+            for mode in ["playback","plural"] {
+                let (vm,_) = try await fixture("frame-reject-"+mode); vm.addFrame(); await vm.flush()
+                if mode == "playback" { vm.togglePlayback() }
+                let before = vm.document, session = SpatterStudioEditSession()
+                _ = session.submit(mode == "plural" ? "Delete selected frames." : SpatterFrameActionInstruction.Action.delete.example,in:vm,accountID:nil,currentScope:{guest})
+                await session.waitForCompletion(); vm.stopPlayback()
+                try require(session.status != .applied && session.appliedEdit == nil && vm.document == before, "Frame action broadened selection or edited playback")
+            }
+            for boundary in 1...2 { for change in ["frame","account","cancel"] {
+                let (vm,_) = try await fixture("frame-fence"); let first = vm.currentFrame.id; vm.addFrame(); await vm.flush()
+                let gate = Gate(); var account: String? = nil
+                let session = SpatterStudioEditSession(checkpoint:{try await gate.pause()})
+                _ = session.submit(SpatterFrameActionInstruction.Action.delete.example,in:vm,accountID:nil,currentScope:{.init(isStudioVisible:true,accountID:account)})
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "frame" { vm.selectFrame(first); await vm.flush() }
+                else if change == "account" { account = "other" }
+                else { session.cancel() }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await session.waitForCompletion()
+                try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
+                    && vm.document == held && vm.canUndo == undo && vm.canRedo == redo, "Frame context/cancellation edited another frame")
+            } }
+        }
         try await test("local recipe session makes zero URLSession HTTP requests") {
             try require(NetworkTrap.count == 0, "Local recipe session contacted a provider or network")
         }

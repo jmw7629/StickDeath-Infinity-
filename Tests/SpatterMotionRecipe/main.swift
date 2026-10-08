@@ -661,6 +661,90 @@ private final class NetworkTrap: URLProtocol {
             }
             try require(!SpatterArtworkOrderInstruction.isInstruction("Rename active layer to \"Bring selected artwork forward\"."), "Quoted name became an order")
         }
+        try await test("layer visibility strict parser typed settings and independent opacity support") {
+            let doc = try StudioDocument.new(name:"Visibility",width:128,height:128,fps:12)
+            for (text, expected) in [(SpatterLayerUpdateInstruction.hideExample,false), (" show active layer. ",true)] {
+                let instruction = try SpatterLayerUpdateInstruction.parse(text)
+                try require(instruction.visible == expected && instruction.name == nil && instruction.opacity == nil
+                    && SpatterLayerUpdateInstruction.isInstruction(text), "Visibility classification/value mismatch")
+                let request = try instruction.prepare(in:StudioCommandContext(document:doc))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1,
+                      case .updateLayer(let update) = commands[0] else { throw Failure(message:"Visibility bypassed typed settings") }
+                try require(update.settings.visible == expected && update.settings.opacity == nil && update.settings.lock == nil,
+                            "Visibility instruction altered opacity/locks")
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),checkCancellation:{throw CancellationError()}); throw Failure(message:"Visibility ignored cancellation") }
+                catch is CancellationError { }
+            }
+            for bad in ["Hide active layer", "Hide all layers.", "Show active layer. Delete project.", "Hide active layer.\n", "Hide active layer!", "Show active layer to 40%."] {
+                do { _ = try SpatterLayerUpdateInstruction.parse(bad); throw Failure(message:"Malformed visibility accepted") }
+                catch SpatterLayerUpdateInstruction.Failure.unsupported { }
+            }
+            let opacity = try SpatterLayerUpdateInstruction.parse("Set active layer opacity to 40%.")
+            try require(opacity.opacity == 0.4 && opacity.visible == nil, "Existing opacity behavior changed")
+            let name = try SpatterLayerUpdateInstruction.parse("Rename active layer to \"Hide active layer\".")
+            try require(name.name == "Hide active layer" && name.visible == nil, "Quoted visibility text executed")
+            do { _ = try SpatterLayerUpdateInstruction(name:nil,opacity:0.4,visible:false).prepare(in:StudioCommandContext(document:doc)); throw Failure(message:"Ambiguous settings instruction accepted") }
+            catch SpatterLayerUpdateInstruction.Failure.unsupported { }
+        }
+        try await test("whole layer ordering uses strict captured moveLayer and rejects boundaries") {
+            var doc = try StudioDocument.new(name:"Layer order",width:128,height:96,fps:12)
+            let other = CanvasLayer(id:UUID().uuidString,name:"Other")
+            doc.layers.append(other)
+            for up in [false,true] {
+                doc.activeLayerID = up ? other.id : doc.layers[0].id
+                let text = up ? SpatterLayerOrderInstruction.upExample : SpatterLayerOrderInstruction.downExample
+                let instruction = try SpatterLayerOrderInstruction.parse(text)
+                try require(instruction.up == up && SpatterLayerOrderInstruction.isInstruction(text), "Layer order parse")
+                let request = try instruction.prepare(in:StudioCommandContext(document:doc))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1,
+                      case .moveLayer(let command) = commands[0] else { throw Failure(message:"Layer order bypassed moveLayer") }
+                try require(command.direction == (up ? .earlier : .later), "Layer direction reversed")
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),checkCancellation:{throw CancellationError()}); throw Failure(message:"Layer order ignored cancellation") }
+                catch is CancellationError { }
+                doc.activeLayerID = up ? doc.layers[0].id : other.id
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc)); throw Failure(message:"Boundary layer order accepted") }
+                catch SpatterLayerOrderInstruction.Failure.boundary { }
+            }
+            for text in ["Move active layer up", "Move active layer sideways.", "Move active layer up. Hide it.", "Move active layer up.\n", "Move all layers down."] {
+                do { _ = try SpatterLayerOrderInstruction.parse(text); throw Failure(message:"Malformed layer order accepted") }
+                catch SpatterLayerOrderInstruction.Failure.unsupported { }
+            }
+            try require(!SpatterLayerOrderInstruction.isInstruction("Rename active layer to \"Move active layer up\"."), "Quoted name became layer movement")
+        }
+        try await test("singular frame actions strict grammar captured command and invalid boundaries") {
+            var doc = try StudioDocument.new(name:"Frame actions",width:128,height:96,fps:12)
+            let first = doc.activeFrameID
+            doc.frames.append(.init(id:UUID().uuidString,elements:[]))
+            for action in SpatterFrameActionInstruction.Action.allCases {
+                doc.activeFrameID = action == .earlier ? doc.frames[1].id : first
+                let instruction = try SpatterFrameActionInstruction.parse(action.example)
+                try require(instruction.action == action && SpatterFrameActionInstruction.isInstruction(action.example), "Frame action parse mismatch")
+                let request = try instruction.prepare(in:StudioCommandContext(document:doc))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1 else { throw Failure(message:"Frame action not one typed command") }
+                switch (action,commands[0]) {
+                case (.duplicate,.duplicateFrame),(.delete,.deleteFrame),(.earlier,.moveFrame),(.later,.moveFrame): break
+                default: throw Failure(message:"Wrong frame command")
+                }
+                do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),checkCancellation:{throw CancellationError()}); throw Failure(message:"Frame preparation ignored cancellation") }
+                catch is CancellationError { }
+            }
+            for text in ["Delete selected frames.","Duplicate active frames.","Move frame 2 later.","Delete active frame. Hide layer.","Move active frame earlier", "Duplicate active frame.\n"] {
+                try require(SpatterFrameActionInstruction.isInstruction(text), "Malformed frame intent bypassed frame rejection")
+                do { _ = try SpatterFrameActionInstruction.parse(text); throw Failure(message:"Malformed/plural frame action accepted") }
+                catch SpatterFrameActionInstruction.Failure.unsupported { }
+            }
+            doc.frames.removeLast(); doc.activeFrameID = first
+            do { _ = try SpatterFrameActionInstruction(action:.delete).prepare(in:StudioCommandContext(document:doc)); throw Failure(message:"Last frame delete accepted") }
+            catch SpatterFrameActionInstruction.Failure.lastFrame { }
+            for action in [SpatterFrameActionInstruction.Action.earlier,.later] {
+                do { _ = try SpatterFrameActionInstruction(action:action).prepare(in:StudioCommandContext(document:doc)); throw Failure(message:"Frame boundary accepted") }
+                catch SpatterFrameActionInstruction.Failure.boundary { }
+            }
+            try require(!SpatterFrameActionInstruction.isInstruction("Rename active layer to \"Delete active frame\"."), "Quoted frame instruction became authority")
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

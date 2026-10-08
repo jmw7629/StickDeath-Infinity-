@@ -100,7 +100,7 @@ struct StudioImageLibraryView: View {
                             query = ""; category = nil; collection = "All"; includeCartoonWeapons = true; searchFocused = false
                         }.font(.caption).foregroundColor(.red)
                     }.foregroundColor(.white.opacity(0.7))
-                    Text("Choose a picture to preview it. Add attaches it to a new image layer. This build supports one imported picture per frame.")
+                    Text("Choose a picture to preview it. Add attaches it to a new image layer.")
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(.horizontal, 20)

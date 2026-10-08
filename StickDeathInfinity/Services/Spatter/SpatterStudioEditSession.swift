@@ -27,9 +27,12 @@ final class SpatterStudioEditSession: ObservableObject {
         let receipt: StudioCommandReceipt
         let selectedErasureMaskCount: Int
         let frameExposureTicks: Int?
+        let frameAction: SpatterFrameActionInstruction.Action?
         let isLayerGlowEdit: Bool
         let isLayerDuplicate: Bool
         let isLayerUpdate: Bool
+        let layerVisibility: Bool?
+        let layerOrderUp: Bool?
         let artworkOrderForward: Bool?
         let imageReflectionAxis: StudioReflectionAxis?
         let isAudioEdit: Bool
@@ -41,6 +44,14 @@ final class SpatterStudioEditSession: ObservableObject {
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if let frameAction {
+                switch frameAction {
+                case .duplicate: return "Duplicated the active frame in one undoable local edit. Its editable artwork and exposure were copied."
+                case .delete: return "Deleted only the active frame in one undoable local edit. Undo restores its artwork and exposure."
+                case .earlier: return "Moved the active frame one position earlier in one undoable local edit. Its identity and exposure are unchanged."
+                case .later: return "Moved the active frame one position later in one undoable local edit. Its identity and exposure are unchanged."
+                }
+            }
             if let artworkOrderForward {
                 return receipt.outcome == .unchanged ? "Selected artwork is already at this ordering boundary. Nothing changed."
                     : "Moved selected artwork \(artworkOrderForward ? "forward" : "backward") within its layers in one undoable local edit."
@@ -59,6 +70,14 @@ final class SpatterStudioEditSession: ObservableObject {
             if let frameExposureTicks {
                 return receipt.outcome == .unchanged ? "The selected frame already has this exposure. Nothing changed."
                     : "Set selected frame exposure to \(frameExposureTicks) ticks at \(fps) FPS in one undoable local edit."
+            }
+            if let layerOrderUp {
+                return receipt.outcome == .unchanged ? "Layer order did not change."
+                    : "Moved the active layer \(layerOrderUp ? "up" : "down") in one undoable local edit. Artwork, visibility and lock settings are unchanged."
+            }
+            if let layerVisibility {
+                return receipt.outcome == .unchanged ? "The active layer is already \(layerVisibility ? "shown" : "hidden"). Nothing changed."
+                    : "\(layerVisibility ? "Showed" : "Hid") the active layer in one undoable local edit. Artwork and lock settings are unchanged."
             }
             if isLayerUpdate {
                 return receipt.outcome == .unchanged ? "The active layer settings already match. Nothing changed."
@@ -218,10 +237,24 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isGlow = !isLayerUpdate && !isRename && SpatterLayerGlowInstruction.isInstruction(draft)
                 let isImage = !isLayerUpdate && !isRename && SpatterImageReflectionInstruction.isInstruction(draft)
                 let isOrder = !isLayerUpdate && !isRename && SpatterArtworkOrderInstruction.isInstruction(draft)
+                let isLayerOrder = !isLayerUpdate && !isRename && SpatterLayerOrderInstruction.isInstruction(draft)
+                let isFrameAction = !isLayerUpdate && !isRename && SpatterFrameActionInstruction.isInstruction(draft)
+                var frameAction: SpatterFrameActionInstruction.Action?
+                var layerOrderUp: Bool?
+                var layerVisibility: Bool?
                 var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if isOrder {
+                if isFrameAction {
+                    guard !captured.isPlaying, captured.displayedFrameID == captured.activeFrameID else { throw SpatterFrameActionInstruction.Failure.unavailable }
+                    let instruction = try SpatterFrameActionInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
+                    frameAction = instruction.action
+                } else if isLayerOrder {
+                    let instruction = try SpatterLayerOrderInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
+                    layerOrderUp = instruction.up
+                } else if isOrder {
                     let instruction = try SpatterArtworkOrderInstruction.parse(draft)
                     guard captured.selectedTool == .move, !captured.isPlaying else { throw SpatterArtworkOrderInstruction.Failure.selection }
                     let image: StudioCommand.SelectedArtworkImage?
@@ -261,7 +294,9 @@ final class SpatterStudioEditSession: ObservableObject {
                     preparedRequest = try SpatterFrameExposureInstruction.parse(draft).prepare(in: document,
                         requestID: submissionID, checkCancellation: check)
                 } else if isLayerUpdate {
-                    preparedRequest = try SpatterLayerUpdateInstruction.parse(draft).prepare(in:document,requestID:submissionID,checkCancellation:check)
+                    let instruction = try SpatterLayerUpdateInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
+                    layerVisibility = instruction.visible
                 } else if isLayerDuplicate {
                     preparedRequest = try SpatterLayerDuplicateInstruction.parse(draft).prepare(in:document, requestID:submissionID, checkCancellation:check)
                 } else if isGlow {
@@ -304,7 +339,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, frameAction:frameAction, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, layerVisibility:layerVisibility, layerOrderUp:layerOrderUp, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,

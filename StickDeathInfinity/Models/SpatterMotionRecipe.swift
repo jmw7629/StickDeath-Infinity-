@@ -827,16 +827,19 @@ struct SpatterLayerDuplicateInstruction: Equatable {
 struct SpatterLayerUpdateInstruction: Equatable {
     let name: String?
     let opacity: Double?
+    var visible: Bool? = nil
     static let renameExample = "Rename active layer to \"Foreground\"."
+    static let hideExample = "Hide active layer."
+    static let showExample = "Show active layer."
     static let opacityExample = "Set active layer opacity to 50%."
     static func isInstruction(_ text: String) -> Bool {
-        text.range(of:#"\A\s*(?:rename\s+active\s+layer|set\s+active\s+layer\s+opacity)\b"#, options:[.regularExpression,.caseInsensitive]) != nil
+        text.range(of:#"\A\s*(?:rename\s+active\s+layer|set\s+active\s+layer\s+opacity|(?:hide|show)\s+active\s+layer)\b"#, options:[.regularExpression,.caseInsensitive]) != nil
     }
     enum Failure: LocalizedError {
         case unsupported, invalidContext
         var errorDescription: String? {
             switch self {
-            case .unsupported: return "Use Rename active layer to \"Foreground\". or Set active layer opacity to 50%. Names use 1–120 characters and opacity is 0–100%. Nothing changed."
+            case .unsupported: return "Use Rename active layer to \"Foreground\". or Set active layer opacity to 50%. Hide active layer. and Show active layer. change visibility. Names use 1–120 characters and opacity is 0–100%. Nothing changed."
             case .invalidContext: return "Select an existing active layer before changing its settings. Nothing changed."
             }
         }
@@ -844,6 +847,12 @@ struct SpatterLayerUpdateInstruction: Equatable {
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
         let range = NSRange(text.startIndex...,in:text)
+        let visibility = try NSRegularExpression(pattern:#"\A\s*(hide|show)\s+active\s+layer\.\s*\z"#,options:[.caseInsensitive])
+        if let match = visibility.firstMatch(in:text,range:range), let word = Range(match.range(at:1),in:text) {
+            guard !text.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else { throw Failure.unsupported }
+            return .init(name:nil,opacity:nil,visible:text[word].lowercased() == "show")
+        }
+
         let rename = try NSRegularExpression(pattern:#"\A\s*rename\s+active\s+layer\s+to\s+"([^"\r\n]+)"\.\s*\z"#,options:[.caseInsensitive])
         if let match = rename.firstMatch(in:text,range:range), let value = Range(match.range(at:1),in:text) {
             let name = String(text[value]).trimmingCharacters(in:.whitespacesAndNewlines)
@@ -859,9 +868,9 @@ struct SpatterLayerUpdateInstruction: Equatable {
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
         guard context.layers.contains(where:{$0.id == context.activeLayerID}) else { throw Failure.invalidContext }
-        guard (name != nil) != (opacity != nil), name.map(StudioCommandExecutor.isValidLayerName) ?? true,
+        guard [name != nil, opacity != nil, visible != nil].filter({$0}).count == 1, name.map(StudioCommandExecutor.isValidLayerName) ?? true,
               opacity.map({$0.isFinite && (0...1).contains($0)}) ?? true else { throw Failure.unsupported }
-        var settings = StudioCommandLayerSettings(); settings.name = name; settings.opacity = opacity
+        var settings = StudioCommandLayerSettings(); settings.name = name; settings.opacity = opacity; settings.visible = visible
         try checkCancellation()
         return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
             action:.apply([.updateLayer(.init(layer:.id(context.activeLayerID),settings:settings))]))
@@ -961,5 +970,102 @@ struct SpatterArtworkOrderInstruction: Equatable {
         return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
             action:.apply([.orderSelectedArtwork(.init(frame:.id(context.activeFrameID),elementIDs:selectedElementIDs.sorted(),
                 image:image,direction:forward ? .later : .earlier))]))
+    }
+}
+
+
+struct SpatterLayerOrderInstruction: Equatable {
+    let up: Bool
+    static let upExample = "Move active layer up."
+    static let downExample = "Move active layer down."
+    enum Failure: LocalizedError {
+        case unsupported, unavailable, boundary
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Move active layer up. or Move active layer down. as one complete instruction. Nothing changed."
+            case .unavailable: return "Select an existing active layer before changing layer order. Nothing changed."
+            case .boundary: return "The active layer cannot move farther in this direction. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of:#"\A\s*move\s+active\s+layer\b"#,options:[.regularExpression,.caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else { throw Failure.unsupported }
+        let pattern = try NSRegularExpression(pattern:#"\A\s*move\s+active\s+layer\s+(up|down)\.\s*\z"#,options:[.caseInsensitive])
+        guard let match = pattern.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)),
+              let word = Range(match.range(at:1),in:text) else { throw Failure.unsupported }
+        return .init(up:text[word].lowercased() == "up")
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard let index = context.layers.firstIndex(where:{$0.id == context.activeLayerID}) else { throw Failure.unavailable }
+        guard context.layers.indices.contains(index + (up ? -1 : 1)) else { throw Failure.boundary }
+        try checkCancellation()
+        return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
+            action:.apply([.moveLayer(.init(target:.id(context.activeLayerID),direction:up ? .earlier : .later))]))
+    }
+}
+
+
+/// One explicit active-frame operation. Never infer a plural frame selection.
+struct SpatterFrameActionInstruction: Equatable {
+    enum Action: String, CaseIterable { case duplicate, earlier, later, delete
+        var example: String {
+            switch self {
+            case .duplicate: return "Duplicate active frame."
+            case .earlier: return "Move active frame earlier."
+            case .later: return "Move active frame later."
+            case .delete: return "Delete active frame."
+            }
+        }
+    }
+    let action: Action
+    enum Failure: LocalizedError {
+        case unsupported, unavailable, boundary, lastFrame, capacity
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Duplicate active frame., Move active frame earlier., Move active frame later., or Delete active frame. as one complete instruction. Only one active frame is targeted. Nothing changed."
+            case .unavailable: return "Select an existing active frame and stop playback before editing frames. Nothing changed."
+            case .boundary: return "The active frame cannot move farther in this direction. Nothing changed."
+            case .lastFrame: return "The last frame cannot be deleted. Nothing changed."
+            case .capacity: return "The project has reached its 1,000-frame limit. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["duplicate","move","delete"].contains(words.first.map(String.init) ?? "")
+            && words.contains(where:{$0 == "frame" || $0 == "frames"})
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else { throw Failure.unsupported }
+        let pattern = try NSRegularExpression(pattern:#"\A\s*(duplicate\s+active\s+frame|delete\s+active\s+frame|move\s+active\s+frame\s+(?:earlier|later))\.\s*\z"#,options:[.caseInsensitive])
+        guard pattern.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)) != nil else { throw Failure.unsupported }
+        let words = text.lowercased().split { !$0.isLetter }
+        return .init(action:words.first == "duplicate" ? .duplicate : words.first == "delete" ? .delete : words.last == "earlier" ? .earlier : .later)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard let index = context.frames.firstIndex(where:{$0.id == context.activeFrameID}) else { throw Failure.unavailable }
+        let command: StudioCommand
+        switch action {
+        case .duplicate:
+            guard context.frames.count < 1000 else { throw Failure.capacity }
+            command = .duplicateFrame(.init(source:.id(context.activeFrameID),result:"duplicated_frame"))
+        case .delete:
+            guard context.frames.count > 1 else { throw Failure.lastFrame }
+            command = .deleteFrame(.id(context.activeFrameID))
+        case .earlier, .later:
+            guard context.frames.indices.contains(index + (action == .earlier ? -1 : 1)) else { throw Failure.boundary }
+            command = .moveFrame(.init(target:.id(context.activeFrameID),direction:action == .earlier ? .earlier : .later))
+        }
+        try checkCancellation()
+        return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,action:.apply([command]))
     }
 }

@@ -7,7 +7,8 @@ SOURCES = ['StickDeathInfinity/Models/StudioDodgeBurn.swift', 'StickDeathInfinit
 
 # StudioViewModel validates managed audio when importing portable projects.
 # Blur, Sharpen and Dodge/Burn reuse this production source list.
-SOURCES += ['StickDeathInfinity/Services/StudioAudioImportService.swift']
+SOURCES += ['StickDeathInfinity/Services/StudioAudioImportService.swift',
+            'StickDeathInfinity/Services/StudioImageRegionService.swift']
 
 def main():
     parser=argparse.ArgumentParser()
