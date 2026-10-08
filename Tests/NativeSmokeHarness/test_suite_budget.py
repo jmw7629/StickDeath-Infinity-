@@ -65,20 +65,20 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertIn("testSelectedImageAlphaFillUndoAndColdReopen", value["testNames"])
         self.assertIn("testSpatterLayerDuplicateRenameUndoAndColdReopen", value["testNames"])
         self.assertEqual(value["testCount"], 102)
-        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 600 + 300)
+        self.assertEqual(value["suiteSeconds"], value["testCount"] * 180 + 660 + 300)
         self.assertEqual((value["retries"], value["parallelSimulators"]), (0, 1))
         self.assertIn("testImageDrawingOrderUndoAndColdReopen", value["testNames"])
         workflow = (ROOT / ".github/workflows/spatter-client-verify.yml").read_text()
         native_job = workflow.split("  native-ios-shards:", 1)[1].split("  native-ios-build:", 1)[0]
         self.assertIn("    timeout-minutes: ${{ matrix.timeout }}", native_job)
         self.assertIn("            timeout: 207", native_job)
-        self.assertIn("            timeout: 186", native_job)
+        self.assertIn("            timeout: 187", native_job)
         # Nine isolated native auth cases share
         # the existing runner in a separately bounded 17-minute step.
         self.assertIn("        timeout-minutes: 17", native_job)
         auth_source = (ROOT / "Tests/AuthState/AuthStateTests.swift").read_text()
         self.assertEqual(auth_source.count("    func test"), 9)
-        for index, minutes in ((0, 207), (1, 186)):
+        for index, minutes in ((0, 207), (1, 187)):
             shard, _ = budget.build_shard_budget(source, COMMAND, index)
             self.assertLessEqual(shard["suiteSeconds"] + (25 + (17 if index == 0 else 0)) * 60, minutes * 60)
         for name in ("testDodgePixelsUndoAndColdReopen", "testBurnPixelsUndoAndColdReopen",
@@ -123,7 +123,8 @@ class NativeSuiteBudget(unittest.TestCase):
         self.assertEqual(value["extendedCases"]["testSpatterSelectedAudioPlacementUndoAndColdReopen"], 240)
         self.assertEqual(value["extendedCases"]["testSelectedImageAlphaFillUndoAndColdReopen"], 240)
         self.assertEqual(value["extendedCases"]["testImageDrawingOrderUndoAndColdReopen"], 240)
-        self.assertEqual(sum(value["extendedCases"].values()), 2400)
+        self.assertEqual(sum(value["extendedCases"].values()), 2640)
+        self.assertEqual(value["extendedCases"]["testSharpenPixelsUndoAndColdReopen"], 240)
         self.assertEqual(value["extendedCases"]["testMixedDrawingImageMoveDeleteUndoAndColdReopen"], 240)
         self.assertEqual(value["extendedCases"]["testMixedArtworkCopyCutPasteUndoAndColdReopen"], 240)
         self.assertEqual(value["extendedCases"]["testImageWandRegionCopyDeletePasteUndoAndColdReopen"], 240)

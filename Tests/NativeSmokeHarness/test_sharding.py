@@ -58,7 +58,7 @@ class NativeSharding(unittest.TestCase):
     def test_actual_inventory_partition_and_command_ownership(self):
         full = build_test_budget(SOURCE, receipt.COMMAND)
         names = []
-        for index, count, seconds, longcases in ((0,51,9900,7),(1,51,9660,3)):
+        for index, count, seconds, longcases in ((0,51,9900,7),(1,51,9720,4)):
             b, command = build_shard_budget(SOURCE, receipt.COMMAND, index)
             self.assertEqual((b['testCount'],b['suiteSeconds'],len(b['extendedCases'])),(count,seconds,longcases))
             self.assertEqual(b['testNames'],sorted(full['testNames'])[index::2])

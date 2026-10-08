@@ -2710,6 +2710,8 @@ final class StudioSmokeUITests: XCTestCase {
     }
     @MainActor
     func testSharpenPixelsUndoAndColdReopen() throws {
+        // CI37718624465 reached Redo at 180s after real effect and Undo passed.
+        executionTimeAllowance = 240
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let name = try createProjectIfLibraryIsShown(app)
@@ -3055,6 +3057,20 @@ final class StudioSmokeUITests: XCTestCase {
                 else { scroll.swipeUp(velocity: .slow) }
             }
             XCTAssertTrue(scroll.frame.intersection(app.frame).contains(picker.frame) && picker.isHittable)
+            // Keyboard dismissal can change the popup geometry. Require the
+            // real swatch's actionable bounds to settle before the one tap.
+            var previousPickerFrame: CGRect?
+            var previousPopupFrame: CGRect?
+            let pickerReady = expectation(for: NSPredicate { _, _ in
+                guard app.keyboards.count == 0, picker.exists, picker.isEnabled,
+                      picker.isHittable else { return false }
+                let current = picker.frame, currentPopup = popup.frame
+                guard scroll.frame.intersection(app.frame).contains(current) else { return false }
+                defer { previousPickerFrame = current; previousPopupFrame = currentPopup }
+                return previousPickerFrame == current && previousPopupFrame == currentPopup
+            }, evaluatedWith: picker).waitUntilFulfilled(timeout: 8)
+            if !pickerReady { captureHierarchy(app, name: "native-text-colorwell-not-settled") }
+            XCTAssertTrue(pickerReady, "Native Text color swatch did not become stable and actionable")
             // Observed ColorWell includes its label; only the right circular
             // swatch opens UIKit's picker. Derive its center from actual bounds.
             let well = picker.frame
@@ -4624,7 +4640,7 @@ final class StudioSmokeUITests: XCTestCase {
         let redo = app.buttons["studio.redo"]
         XCTAssertFalse(undo.isEnabled, "The brush journey requires a new blank project")
 
-        try waitForButton("Brush", in: app).tap()
+        try selectToolbarTool("brush", app: app)
         let library = app.buttons["studio.brush-library"]
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let round = app.buttons["studio.brush-family.round"]
@@ -4670,7 +4686,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true"), evaluatedWith: redo).waitUntilFulfilled(timeout: 5))
         XCTAssertLessThanOrEqual(try changedPixelCount(before, pixels(canvas.screenshot().image)), 4)
 
-        try waitForButton("Brush", in: app).tap()
+        try selectToolbarTool("brush", app: app)
         XCTAssertTrue(library.waitForExistence(timeout: 5)); library.tap()
         let stipple = app.buttons["studio.brush-family.stipple"]
         XCTAssertTrue(stipple.waitForExistence(timeout: 5)); XCTAssertTrue(stipple.isHittable); stipple.tap()
@@ -5033,7 +5049,10 @@ final class StudioSmokeUITests: XCTestCase {
         let copy = app.buttons["studio.copy"], paste = app.buttons["studio.paste"]
         XCTAssertEqual(copy.label, "Copy selected image"); XCTAssertTrue(copy.isEnabled); copy.tap()
         XCTAssertEqual(paste.label, "Paste image")
-        XCTAssertFalse(paste.isEnabled, "Image paste must not replace the occupied source frame or fall back to its old frame clipboard")
+        // Paste appends an independent image even when this frame is occupied.
+        // The next blank-frame paste still proves the clipboard excludes siblings,
+        // blue drawings and the older full-frame copy.
+        XCTAssertTrue(paste.isEnabled, "An occupied frame must allow an independent image paste")
         app.buttons["studio.add-frame"].tap()
         try waitForStableCanvas(canvas, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4, "Add frame did not create the actual blank destination")
@@ -5180,7 +5199,7 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
                                 "One Undo did not restore the cut image")
-        XCTAssertFalse(paste.isEnabled, "Image Paste must not overwrite the restored occupied frame")
+        XCTAssertTrue(paste.isEnabled, "Image Paste must remain available to append an independent instance")
         app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(blank, pixels(canvas.screenshot().image)), 4,
                                 "One Redo did not remove the image again")
@@ -6129,7 +6148,7 @@ final class StudioSmokeUITests: XCTestCase {
         try imageControl("studio.image.apply", app: app).tap()
         XCTAssertTrue(try imageControl("studio.image.result", app: app).label.hasPrefix("Added Dungeon Dragon"))
         try closeImagePanel(app);try settlePickerCanvasAfterSave(app, canvas: canvas)
-        func control(_ id: String) throws -> XCUIElement {
+        @MainActor func control(_ id: String) throws -> XCUIElement {
             let button = app.buttons[id]
             XCTAssertTrue(button.waitForExistence(timeout: 5))
             let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
@@ -6158,8 +6177,24 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(try changedPixelCount(selected, moved), 100, "Real image drag changed no canvas pixels")
         capture(app, name: "image-canvas-drag")
         app.buttons["studio.undo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        // History restores artwork and deliberately clears transient selection.
+        // Restore the same visible selection before comparing selected pixels.
+        try selectToolbarTool("move", app: app)
+        XCTAssertEqual(try control("studio.image-move.target").value as? String, "Drawings")
+        try control("studio.image-move.target").tap()
+        XCTAssertEqual(app.buttons["studio.image-move.target"].value as? String, "Image")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(selected, pixels(canvas.screenshot().image)), 4, "One Undo lost the prior image placement")
         app.buttons["studio.redo"].tap();try settlePickerCanvasAfterSave(app, canvas: canvas)
+        // History restores artwork and deliberately clears transient selection.
+        // Restore the same visible selection before comparing selected pixels.
+        try selectToolbarTool("move", app: app)
+        XCTAssertEqual(try control("studio.image-move.target").value as? String, "Drawings")
+        try control("studio.image-move.target").tap()
+        XCTAssertEqual(app.buttons["studio.image-move.target"].value as? String, "Image")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
         XCTAssertLessThanOrEqual(try changedPixelCount(moved, pixels(canvas.screenshot().image)), 4, "One Redo lost the moved image")
         // Compare persisted artwork without transient red selection decoration.
         try selectToolbarTool("move", app: app);try control("studio.image-move.target").tap()
@@ -6739,7 +6774,13 @@ final class StudioSmokeUITests: XCTestCase {
         }
         folderInput.typeText(folderName)
         let done = app.keyboards.buttons["Done"]
-        XCTAssertTrue(done.isHittable); done.tap()
+        // Files enables Done after its inline rename validator accepts the name.
+        // A hittable but disabled keyboard key does not commit the new folder.
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", folderName),
+            evaluatedWith: folderInput).waitUntilFulfilled(timeout: 5))
+        XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true AND hittable == true"),
+            evaluatedWith: done).waitUntilFulfilled(timeout: 5), "Files must accept the folder name before Done")
+        done.tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: folderInput)
             .waitUntilFulfilled(timeout: 5), "Actual folder rename must finish before choosing the destination")
         let destination = app.collectionViews["File View"].cells.matching(NSPredicate(format: "label CONTAINS %@", folderName)).firstMatch
@@ -6942,13 +6983,16 @@ final class StudioSmokeUITests: XCTestCase {
         let nativeShare = app.otherElements["ShareSheet.RemoteContainerView"].firstMatch
         let files = nativeShare.cells.matching(NSPredicate(format: "label == %@", "Save to Files")).firstMatch
         let dismiss = nativeShare.buttons["header.closeButton"]
-        // Run35527329460 recorded the real MP4 share sheet and Save to Files,
-        // but the action's first AX snapshots had no application children.
-        // Wait for usable remote actions within the existing ten-second bound.
-        // Do not retap Share, use coordinates, skip or substitute an app mock.
-        let shareReady = expectation(for: NSPredicate { _, _ in
-            nativeShare.exists && files.exists && files.isHittable && dismiss.isHittable
-        }, evaluatedWith: nil).waitUntilFulfilled(timeout: 10)
+        // CI37718624465 captured real Close and Save to Files at about 16s
+        // after Share; initial remote snapshots consumed the old 10s window.
+        // Both actual controls share one 20s deadline. Never retap Share.
+        let shareDeadline = Date().addingTimeInterval(20)
+        let nativeCloseReady = expectation(for: NSPredicate { _, _ in
+            dismiss.exists && dismiss.isEnabled && dismiss.isHittable
+        }, evaluatedWith: dismiss).waitUntilFulfilled(timeout: 20)
+        let shareReady = nativeCloseReady && expectation(for: NSPredicate { _, _ in
+            files.exists && files.isEnabled && files.isHittable && dismiss.isHittable
+        }, evaluatedWith: files).waitUntilFulfilled(timeout: max(0, shareDeadline.timeIntervalSinceNow))
         if !shareReady {
             capture(app, name: "mp4-native-share-readiness-failure")
             captureHierarchy(app, name: "mp4-native-share-readiness-failure-hierarchy")
@@ -7681,7 +7725,10 @@ final class StudioSmokeUITests: XCTestCase {
         let projectName = "Native smoke \(UUID().uuidString.prefix(8))"
         if library.exists {
             let create = app.buttons["studio.new-project"]
-            XCTAssertTrue(create.waitUntilPresent(timeout: 5)); create.tap()
+            XCTAssertTrue(create.waitUntilPresent(timeout: 5))
+            XCTAssertTrue(expectation(for: NSPredicate(format: "enabled == true AND hittable == true"),
+                evaluatedWith: create).waitUntilFulfilled(timeout: 5), "New Project must be interactive after entering Studio")
+            create.tap()
             let name = app.textFields["studio.project-name"]
             XCTAssertTrue(name.waitUntilPresent(timeout: 5))
             name.tap()

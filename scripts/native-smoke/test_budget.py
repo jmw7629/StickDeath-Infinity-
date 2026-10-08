@@ -5,6 +5,7 @@ import re
 PER_CASE_SECONDS = 180
 MAXIMUM_CASE_SECONDS = 240
 EXTENDED_CASE_SECONDS = {
+    "testSharpenPixelsUndoAndColdReopen": 240,
     "testImageDrawingOrderUndoAndColdReopen": 240,
     "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 240,
     "testSpatterSelectedAudioPlacementUndoAndColdReopen": 240,
