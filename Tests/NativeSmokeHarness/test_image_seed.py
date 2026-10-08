@@ -1,3 +1,5 @@
+from pathlib import Path
+import hashlib
 """Exercise the real Python harness with mocked subprocesses; no native runtime claim."""
 import importlib.util, json, os, pathlib, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
@@ -127,14 +129,26 @@ class Harness(unittest.TestCase):
             return rec.main()
 
     def test_actual_recorder_constructs_only_reviewed_shard_and_keeps_seed_failure(self):
-        self.assertEqual(self.recording(shard_index=1, video_failure=True), 4)
+        # Keep original assignment/deadline assertions; this shard consumes video
+        # only if the real source inventory assigns the consuming case to it.
+        from test_budget import build_shard_budget
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        import re
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        required = rec.VIDEO_FIXTURE_CASE in names[1::2]
+        self.assertEqual(self.recording(shard_index=1, video_failure=True), 4 if required else 0)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        if not required:
+            self.assertIsNone(report['videoFixtureSeeded'])
+            self.assertEqual(report['videoFixtureStatus'], 'not_required')
+            self.assertFalse(any(c[0] == 'seed-video' for c in self.calls))
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (51, 9720))
+        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (52, 10020))
         self.assertEqual([c for c in tests[0] if c.startswith('-only-testing:')],
                          ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n for n in budget['testNames']])
-        self.assertIn((True, 9720), self.waits)
+        self.assertIn((True, 10020), self.waits)
         self.assertEqual(budget['sourceCommit'], '1' * 40)
 
     def test_recorder_rejects_wrong_prepared_source_before_test_or_recording(self):
@@ -142,6 +156,39 @@ class Harness(unittest.TestCase):
             self.recording(shard_index=0, prepared_commit='2' * 40)
         self.assertFalse(any(c[:2] == ('xcodebuild', 'test-without-building') for c in self.calls))
         self.assertFalse(any(c[:3] == ('xcrun', 'simctl', 'io') for c in self.calls))
+
+    def test_required_shard_video_failure_still_fails_without_skipping_assigned_cases(self):
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        import re
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        shard = names.index(rec.VIDEO_FIXTURE_CASE) % 2
+        self.assertEqual(self.recording(shard_index=shard, video_failure=True), 4)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['videoFixtureSeeded'])
+        self.assertEqual(report['videoFixtureStatus'], 'failed')
+        self.assertEqual(sum(c[0] == 'seed-video' for c in self.calls), 1)
+        actual = next(c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building'))
+        self.assertEqual([v for v in actual if v.startswith('-only-testing:')],
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n for n in names[shard::2]])
+
+    def test_fixture_plan_binds_actual_consumers_and_fails_closed_on_helper_changes(self):
+        import re
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), rec.FIXTURE_SOURCE_SHA256,
+                         "Review fixture dependencies before updating the source pin")
+        for consumer, kind in [(rec.PHOTO_FIXTURE_CASE, 'image'), (rec.VIDEO_FIXTURE_CASE, 'video')]:
+            plan = rec.fixture_requirements(source, {'testNames': [consumer], 'fullTestNames': names}, True)
+            self.assertTrue(plan[kind])
+        cancel = 'testRotoscopeFilesPickerCancelPreservesProject'
+        plan = rec.fixture_requirements(source, {'testNames': [cancel], 'fullTestNames': names}, True)
+        self.assertFalse(plan['image']); self.assertFalse(plan['video'])
+        changed = rec.fixture_requirements(source + '\n// changed shared helper', {}, True)
+        self.assertTrue(changed['image']); self.assertTrue(changed['video'])
+        all_tests = rec.fixture_requirements(source, {}, False)
+        self.assertTrue(all_tests['image']); self.assertTrue(all_tests['video'])
+        with self.assertRaises(ValueError):
+            rec.fixture_requirements(source, {'testNames': ['unknown'], 'fullTestNames': names}, True)
 
     def test_failed_video_seed_runs_all_ui_once_and_keeps_gate_failed(self):
         self.assertEqual(self.recording(video_failure=True), 4)

@@ -199,7 +199,7 @@ final class SpatterAIViewModel: ObservableObject {
 
     /// Current shipping behavior takes precedence over historical brain packs.
     /// These are instructions for the user, never execution receipts.
-    static let currentGuideVersion = "2026-10-07.5"
+    static let currentGuideVersion = "2026-10-08.2"
     private static let portableProjectGuide = "Save and return to the project library. In a saved project's menu, choose Save Project Backup to Files, choose a destination and complete the Files save; the system confirmation can be labelled Save or Move. The .sdiproject backup contains the saved editable project and its stored media; MP4 and GIF exports are not editable project backups. Wait for Project backup saved to Files before treating the save as complete. To bring it back, choose Import project backup in the library and select the .sdiproject file. Validation must finish before a separate project with a new identity is created; it does not overwrite the original or restore prior-process Undo history. Cancelling changes no projects. If a file is unsupported, damaged or too large, keep the original and report the displayed error; I cannot repair it or claim it was imported. This is an explicit Files transfer, not automatic cloud sync or a backup of every app setting."
     private static let deviceStorageGuide = "Open Storage in the project library, then Refresh to measure files. The report covers Documents and disk caches, including saved revisions. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded; the number is not total app or device usage. Clear releases cached frame encodings from memory, not disk space. It preserves projects, history, media, backups and exports, and leaves unclassified disk cache files untouched. I cannot inspect free device space or promise a storage reduction. Keep a verified project backup before managing files outside the app; Recently Deleted is recoverable storage, not a permanent-delete or automatic-purge feature."
 
@@ -368,8 +368,53 @@ final class SpatterAIViewModel: ObservableObject {
         return findings.joined(separator: "\n\n")
     }
 
+    /// Manual tool instructions, not a claim that advice performed an edit or
+    /// can inspect tool preferences absent from the bounded conversation snapshot.
+    private static func drawingGuide(for query: String) -> String? {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
+        if !words.isDisjoint(with: ["eraser", "erasing"]) {
+            return "Choose Eraser in the single Studio toolbar and open its options popup. Size is 1–150 px, Hard uses a round edge, Soft adds a feathered edge, and Strength is 0–100%. Zero strength has no rendering effect; strength applies once per gesture, while separate gestures can accumulate. With no drawing selection it erases earlier content on the active layer, including imported image content on that layer, without modifying the original image file. This is not an image-selection-only eraser: an image selected with Move or Lasso does not create a raster-only erasing boundary. With drawings selected, only those drawings receive editable erasure masks; all target layers must be visible, nonzero-opacity and unlocked. Selected layers containing pixel effects or alpha paint require deselection. The popup offers Deselect drawings to return to layer-wide erasing. Stop playback and unlock the active layer, including Alpha lock, before erasing. Undo reverses a committed gesture. Size, mode and strength are remembered separately for Eraser on this device; Reset this tool restores its defaults without resetting the other tools or changing existing artwork. A known selected-erasing rendering limitation can change partially antialiased edges outside the stroke in some overlapping-shape cases; do not assume pixel-perfect untouched-edge parity. I cannot read your current eraser preferences from this conversation snapshot."
+        }
+        guard !words.isDisjoint(with: ["brush", "brushes", "pencil", "pen", "marker", "crayon",
+            "stipple", "grain", "calligraphy", "halftone", "hatch", "airbrush", "watercolor", "neon"]) else { return nil }
+        return "Choose Pencil, Pen, Brush, Marker or Crayon in the single Studio toolbar, then open that tool's options popup. Brush Library contains Round, Stipple, Grain, Rough Pen, Calligraphy, Dip Pen, Halftone, Hatch /, Hatch \\, Gradient, Airbrush, Watercolor and Neon. Size is 1–50 px, Opacity 0–100%, and Smoothing 0–10. Options vary with the family: Calligraphy offers Tip Angle and Pencil Tilt; textured families expose Texture, Flow, Pigment or Glow, with Grain for Stipple, Grain and Watercolor. Gradient has a separate End Color and uses the stroke opacity. Pressure Sensitivity uses measured Apple Pencil force when available; finger input keeps a steady width. Calligraphy tilt uses Pencil direction plus Tip Angle; finger input uses the fixed nib. These are rendered brush styles, not a physical wet-paint simulation. Family and settings are saved separately for each drawing tool on this device and restored when switching tools or reopening the app. Reset this tool resets only that tool's preferences; it does not restyle saved strokes or erase artwork. New strokes retain their captured settings for editable history and export. Use a visible unlocked layer and stop playback before drawing; Alpha lock instead preserves existing layer transparency. Undo reverses a committed stroke. I cannot read your current brush preferences from this conversation snapshot."
+    }
+
+    /// Read-only guide facts from the same bounded snapshot as the conversation.
+    private static func canvasGuide(for query: String, context: SpatterContext) -> String? {
+        let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
+        let grid = words.contains("grid"), onion = words.contains("onion")
+        guard grid || onion else { return nil }
+        // Explicit non-guide intents retain their existing factual routes.
+        guard words.isDisjoint(with: ["export", "backup", "publish", "billing", "refund", "rename",
+            "fill", "eraser", "erase", "brush", "pencil", "pen", "text", "smudge", "blur", "sharpen",
+            "crop", "resize", "audio", "music", "sound", "wand", "lasso", "marquee", "selection"]) else { return nil }
+        func number(_ value: Double) -> String { String(format: "%.6g", locale: Locale(identifier: "en_US_POSIX"), value) }
+        var parts: [String] = []
+        if let state = context.studio {
+            if grid {
+                let value = state.gridSettings
+                parts.append("Current grid: \(state.gridEnabled ? "enabled" : "disabled"); spacing \(number(value.spacing)) canvas points, opacity \(number(value.opacity * 100))%, \(value.tint.rawValue) tint.")
+            }
+            if onion {
+                let value = state.onionSettings
+                parts.append("Current onion skin: \(state.onionEnabled ? "enabled" : "disabled"); \(value.previousCount) previous frames, \(value.nextCount) next frames, opacity \(number(value.opacity * 100))%, \(value.tinted ? "tinted" : "untinted"). Only existing neighboring frames can appear; ghosts are hidden during playback.")
+            }
+        } else {
+            parts.append("No Studio project is open in this conversation, so I cannot report your current guide settings.")
+        }
+        if grid {
+            parts.append("In Studio's menu or Project Settings, use Grid and its Edit control for spacing, opacity and tint. The grid is a visual editor guide, not snapping or exported artwork. In the local Spatter edit popup, submit Show grid. or Hide grid. For all settings: Set grid to 32 canvas points spacing, 25% opacity, red tint. Spacing accepts 8–160 whole canvas points, opacity 5–60%, and tint blue, gray or red.")
+        }
+        if onion {
+            parts.append("In Studio's menu or Project Settings, use Onion and its Edit control for previous/next counts, opacity and tint. In the local Spatter edit popup, submit Show onion skin. or Hide onion skin. For all settings: Set onion skin to 2 previous frames, 1 next frame, 35% opacity, tinted. Counts accept 0–2, opacity 5–80%, and tinted or untinted.")
+        }
+        parts.append("Stop playback before submitting an edit. Show/Hide preserves remembered settings; configuring settings preserves visibility. One Undo restores a successful edit. Asking here only explains these controls.")
+        return parts.joined(separator: "\n\n")
+    }
+
     static func localGuidance(for query: String, context: SpatterContext) -> String {
-        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + guide + "\n\nGuidance only; no project changes were made." }
+        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + guide + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }
@@ -432,6 +477,10 @@ struct SpatterContext: Equatable {
             let visible: Bool, fullyLocked: Bool
             let opacity: Double
         }
+        let gridEnabled: Bool
+        let gridSettings: StudioGridSettings
+        let onionEnabled: Bool
+        let onionSettings: StudioOnionSettings
         let projectID: UUID
         let revision: Int
         let name: String
@@ -460,7 +509,9 @@ struct SpatterContext: Equatable {
             StudioSnapshot.Layer(id: $0.id, name: String($0.name.prefix(80)), blendMode: String($0.blendMode.prefix(32)),
                                  visible: $0.visible, fullyLocked: $0.isFullyLocked, opacity: $0.opacity)
         }
-        return SpatterContext(currentScreen: "studio", studio: .init(projectID: doc.projectID, revision: doc.revision,
+        return SpatterContext(currentScreen: "studio", studio: .init(gridEnabled: doc.gridEnabled, gridSettings: doc.gridSettings,
+            onionEnabled: doc.onionEnabled, onionSettings: doc.onionSettings,
+            projectID: doc.projectID, revision: doc.revision,
             name: String(doc.name.prefix(80)), width: doc.width, height: doc.height, fps: doc.fps,
             frameCount: doc.frames.count, layerCount: doc.layers.count, activeFrameID: doc.activeFrameID,
             activeLayerID: doc.activeLayerID, displayedFrameID: context.displayedFrameID,

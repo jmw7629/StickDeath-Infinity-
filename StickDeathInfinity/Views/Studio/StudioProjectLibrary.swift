@@ -20,11 +20,15 @@ struct StudioProjectLibrary: View {
     @State private var showingRecovery = false
     @State private var showingStorage = false
     @State private var creating = false
-    @State private var name = "Untitled Animation"
-    @State private var format = 0
+    @State private var name = ""
     @State private var fps = 12
-    @State private var customWidth = 1080
-    @State private var customHeight = 1920
+    @State private var projectWidth = 1080
+    @State private var projectHeight = 1920
+    @State private var backgroundID: String?
+    @State private var creationNotice: String?
+    @State private var creationTask: Task<Void, Never>?
+    @State private var creationBusy = false
+    @State private var libraryIsVisible = false
     @State private var search = ""
     @FocusState private var searchFocused: Bool
     @State private var sort: ProjectSort = .modified
@@ -47,24 +51,49 @@ struct StudioProjectLibrary: View {
             return left.id.uuidString < right.id.uuidString
         }
     }
-    private let formats = [("Portrait", 1080, 1920), ("Square", 1080, 1080), ("Landscape", 1920, 1080)]
 
     var body: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 16) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Studio").font(.specialElite(28)).foregroundColor(.white)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(spacing: 14) {
+                    Text("SD").font(.specialElite(20)).foregroundStyle(.white)
+                        .frame(width: 56, height: 56)
+                        .background(LinearGradient(colors: [.red, .orange], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 19))
+                        .shadow(color: .red.opacity(0.25), radius: 14, y: 6)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("StickDeath Studio").font(.specialElite(25)).foregroundStyle(.white)
                             .accessibilityIdentifier("studio.library")
-                        Text("YOUR ANIMATIONS · ON THIS DEVICE")
-                            .font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundColor(.gray)
+                        Text("Create. Animate. Destroy.").font(.specialElite(14)).foregroundStyle(.gray)
                     }
+                    Spacer(minLength: 0)
+                }
+                Button {
+                    creationNotice = nil
+                    creating.toggle()
+                } label: {
+                    Text(creating ? "− Close New Animation" : "+ New Animation")
+                        .font(.specialElite(21)).foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 68)
+                        .background(LinearGradient(colors: [Color(hex: "DC2626"), Color(hex: "FF5038")], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 20))
+                        .shadow(color: .red.opacity(0.22), radius: 16, y: 5)
+                }.buttonStyle(.plain).accessibilityIdentifier("studio.new-project")
+                    .disabled(creationBusy)
+                if creating {
+                    StudioProjectConfigurationCard(name: $name, width: $projectWidth, height: $projectHeight,
+                        fps: $fps, backgroundID: $backgroundID, submitTitle: "Create Project →",
+                        submitIdentifier: "studio.create-project", notice: creationNotice,
+                        busy: creationBusy, onSubmit: createProject)
+                    if creationBusy {
+                        Button("Cancel preparation") { creationTask?.cancel() }
+                            .font(.specialElite(14)).foregroundStyle(.red).frame(minHeight: 44)
+                    }
+                }
+                HStack {
+                    Text("YOUR PROJECTS").font(.specialElite(18)).foregroundStyle(.white)
                     Spacer()
-                    Button { creating = true } label: {
-                        Label("New Project", systemImage: "plus").font(.specialElite(13))
-                            .foregroundColor(.white).padding(12).background(Color.red).cornerRadius(12)
-                    }.accessibilityIdentifier("studio.new-project")
+                    Text("\(vm.savedProjects.count) projects").font(.specialElite(13)).foregroundStyle(.gray)
                 }
                 if let message = vm.message { Text(message).font(.caption).foregroundColor(.red).accessibilityIdentifier("studio.status") }
                 HStack(spacing: 10) {
@@ -105,7 +134,7 @@ struct StudioProjectLibrary: View {
                     Label("Storage", systemImage: "internaldrive").font(.caption).foregroundColor(.gray)
                 }.accessibilityIdentifier("studio.library.storage")
                 }
-                ScrollView {
+                VStack(spacing: 12) {
                     if vm.savedProjects.isEmpty {
                         VStack(spacing: 14) {
                             Image(systemName: "pencil.and.scribble").font(.system(size: 48)).foregroundColor(.red)
@@ -155,9 +184,12 @@ struct StudioProjectLibrary: View {
                             }
                         }
                     }
-                }.scrollDismissesKeyboard(.interactively)
-                    .refreshable { await vm.loadProjects() }
-            }.padding(16).disabled(vm.isManagingProjects)
+                }
+            }.padding(20).padding(.bottom, 32).frame(maxWidth: 760).frame(maxWidth: .infinity)
+                .disabled(vm.isManagingProjects)
+            }.scrollDismissesKeyboard(.interactively)
+                .refreshable { if !creationBusy { await vm.loadProjects() } }
+                .accessibilityIdentifier("studio.library.scroll")
         }
         .overlay(alignment: .bottom) {
             if transferTask != nil {
@@ -193,14 +225,15 @@ struct StudioProjectLibrary: View {
                 transferNotice = isPickerCancellation(error) ? "Backup cancelled. Original preserved." : error.localizedDescription
             }
         }
-        .onAppear { transferContext.update(active: scenePhase == .active, accountID: authVM.userId) }
-        .onDisappear { invalidateTransfers() }
+        .onAppear { libraryIsVisible = true; transferContext.update(active: scenePhase == .active, accountID: authVM.userId) }
+        .onDisappear { libraryIsVisible = false; if !vm.isEditing { creationTask?.cancel() }; invalidateTransfers() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { invalidateTransfers() }
+            if phase != .active { invalidateTransfers(); creationTask?.cancel() }
             transferContext.update(active: phase == .active, accountID: authVM.userId)
         }
         .onChange(of: authVM.userId) { _, _ in
             showingStorage = false
+            creationTask?.cancel()
             invalidateTransfers()
             transferContext.update(active: scenePhase == .active, accountID: authVM.userId)
         }
@@ -232,52 +265,39 @@ struct StudioProjectLibrary: View {
                     .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingRecovery = false } } }
             }.preferredColorScheme(.dark)
         }
-        .sheet(isPresented: $creating) {
-            NavigationStack {
-                Form {
-                    TextField("Project name", text: $name).accessibilityIdentifier("studio.project-name")
-                    Picker("Canvas", selection: $format) {
-                        ForEach(formats.indices, id: \.self) { i in Text(formats[i].0).tag(i) }
-                        Text("Custom").tag(formats.count)
-                    }
-                    if format == formats.count {
-                        HStack {
-                            Text("Width")
-                            TextField("Width", value: $customWidth, format: .number).keyboardType(.numberPad)
-                                .multilineTextAlignment(.trailing).accessibilityIdentifier("studio.project-width")
-                        }
-                        HStack {
-                            Text("Height")
-                            TextField("Height", value: $customHeight, format: .number).keyboardType(.numberPad)
-                                .multilineTextAlignment(.trailing).accessibilityIdentifier("studio.project-height")
-                        }
-                        Button("Swap width and height") {
-                            let previous = customWidth; customWidth = customHeight; customHeight = previous
-                        }
-                        Text("16–4096 pixels per side. Large canvases and effects require more memory; individual export formats have their own limits.").font(.caption)
-                    }
-                    Picker("Frames per second", selection: $fps) {
-                        ForEach([1, 6, 8, 10, 12, 15, 18, 24, 25, 30, 48, 50, 60], id: \.self) { Text("\($0) FPS").tag($0) }
-                    }
-                    if let message = vm.message { Text(message).foregroundColor(.red) }
-                    Text("Projects stay on this device. Use Export to create files for sharing. Cloud publishing is unavailable.").font(.caption)
+
+    }
+    private func createProject() {
+        guard !creationBusy, !vm.isManagingProjects, scenePhase == .active else { return }
+        let requestedName = name, width = projectWidth, height = projectHeight, rate = fps
+        let preset = backgroundID, account = authVM.userId
+        creationBusy = true; creationNotice = nil
+        creationTask = Task { @MainActor in
+            defer { creationBusy = false; creationTask = nil }
+            do {
+                var background: StudioImageImportService.ImportedImage?
+                if let preset {
+                    background = try await StudioImageImportService.shared.prepareBackground(presetID: preset, width: width, height: height)
                 }
-                .navigationTitle("New Animation")
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("Cancel") { creating = false } }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Create") {
-                            let selected = format == formats.count ? ("Custom", customWidth, customHeight) : formats[format]
-                            Task {
-                                _ = await vm.createProject(name: name, width: selected.1, height: selected.2, fps: fps)
-                                if vm.isEditing { creating = false }
-                            }
-                        }
-                        .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name.count > 120 || (format == formats.count && (!(16...4096).contains(customWidth) || !(16...4096).contains(customHeight))))
-                        .accessibilityIdentifier("studio.create-project")
+                try Task.checkCancellation()
+                guard libraryIsVisible, authVM.userId == account, scenePhase == .active, !vm.isEditing else { return }
+                let saved = await vm.createProject(name: requestedName, width: width, height: height, fps: rate)
+                guard saved else { creationNotice = vm.message ?? "The project could not be saved."; return }
+                if let background {
+                    guard authVM.userId == account, scenePhase == .active, !Task.isCancelled else {
+                        vm.message = "Project created without the cancelled background. Add it from Background Library."; return
                     }
+                    let document = vm.document
+                    _ = try vm.attachImportedImage(background, expectedProjectID: document.id, expectedRevision: document.revision,
+                        frameID: document.activeFrameID, layerID: document.activeLayerID)
+                    _ = await vm.save()
                 }
-            }.preferredColorScheme(.dark)
+                creating = false
+            } catch is CancellationError { creationNotice = "Preparation cancelled. No background was added." }
+            catch {
+                if vm.isEditing { vm.message = "Project created; background was not added: " + error.localizedDescription }
+                else { creationNotice = error.localizedDescription }
+            }
         }
     }
     private func isPickerCancellation(_ error: Error) -> Bool {
@@ -636,6 +656,136 @@ private struct StudioStorageSheet: View {
                 guard self.generation == generation else { return }
                 self.notice = error is CancellationError ? "Cancelled before any versions were removed." : error.localizedDescription
             }
+        }
+    }
+}
+
+
+/// Shared reference-style form for creation and editing an existing project.
+struct StudioProjectConfigurationCard: View {
+    @Binding var name: String
+    @Binding var width: Int
+    @Binding var height: Int
+    @Binding var fps: Int
+    @Binding var backgroundID: String?
+    var submitTitle: String
+    var submitIdentifier: String
+    var nameIdentifier = "studio.project-name"
+    var notice: String?
+    var busy = false
+    var canSubmit = true
+    var chooseExistingBackground: (() -> Void)? = nil
+    let onSubmit: () -> Void
+    @State private var showingCustom = false
+    private let presets: [(String, Int, Int)] = [
+        ("Portrait",1080,1920), ("Landscape",1920,1080), ("Square",1080,1080),
+        ("TikTok",1080,1920), ("YouTube",1920,1080), ("Instagram",1080,1350),
+        ("SD",640,480), ("HD",1280,720)
+    ]
+    private var valid: Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= 120 &&
+            (16...4096).contains(width) && (16...4096).contains(height) && (1...60).contains(fps)
+    }
+    private var backgroundName: String {
+        StudioImageImportService.BackgroundPreset.all.first(where: { $0.id == backgroundID })?.name ?? "Choose background…"
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            TextField("Project name…", text: $name).font(.specialElite(18)).foregroundStyle(.white)
+                .padding(16).background(Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 15))
+                .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.white.opacity(0.08)))
+                .accessibilityIdentifier(nameIdentifier)
+            heading("CANVAS SIZE")
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                ForEach(presets.indices, id: \.self) { index in
+                    let preset = presets[index]
+                    choice("\(preset.0) (\(preset.1)×\(preset.2))", selected: width == preset.1 && height == preset.2) {
+                        width = preset.1; height = preset.2
+                    }.accessibilityIdentifier("studio.project.preset." + preset.0.lowercased())
+                }
+            }
+            DisclosureGroup("Custom size · \(width) × \(height)", isExpanded: $showingCustom) {
+                HStack {
+                    dimension("Width", value: $width, identifier: "studio.project-width")
+                    Text("×").foregroundStyle(.gray)
+                    dimension("Height", value: $height, identifier: "studio.project-height")
+                    Button { let previous = width; width = height; height = previous } label: { Image(systemName: "arrow.left.arrow.right").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Swap width and height")
+                }.padding(.top, 10)
+                Text("16–4096 pixels per side").font(.specialElite(11)).foregroundStyle(.gray)
+            }.font(.specialElite(12)).tint(.red).foregroundStyle(.gray)
+            heading("FRAME RATE")
+            ViewThatFits(in: .horizontal) {
+                rateRow
+                ScrollView(.horizontal, showsIndicators: true) { rateRow }
+            }
+            Menu("More frame rates · \(fps) FPS") {
+                ForEach([1,6,8,10,12,15,18,24,25,30,48,50,60], id: \.self) { rate in
+                    Button("\(rate) FPS") { fps = rate }
+                }
+            }.font(.specialElite(11)).foregroundStyle(.gray).frame(minHeight: 30)
+            heading("BACKGROUND")
+            Group {
+                if let action = chooseExistingBackground {
+                    Button(action: action) { backgroundLabel }
+                } else {
+                    Menu {
+                        Button("White canvas (no image)") { backgroundID = nil }
+                        ForEach(StudioImageImportService.BackgroundPreset.all) { preset in
+                            Button(preset.name) { backgroundID = preset.id }
+                        }
+                    } label: { backgroundLabel }
+                }
+            }.buttonStyle(.plain).accessibilityIdentifier("studio.project.background")
+            if let notice { Text(notice).font(.specialElite(12)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            Button(action: onSubmit) {
+                HStack {
+                    if busy { ProgressView().tint(.white) }
+                    Text(busy ? "Preparing…" : submitTitle).font(.specialElite(21))
+                }.foregroundStyle(.white).frame(maxWidth: .infinity, minHeight: 58)
+                    .background(LinearGradient(colors: [Color(hex: "FF303B"), Color(hex: "FF6B00")], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 19))
+            }.buttonStyle(.plain).disabled(!valid || busy || !canSubmit)
+                .opacity(valid && canSubmit ? 1 : 0.5).accessibilityIdentifier(submitIdentifier)
+        }.padding(20).background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 24))
+            .overlay(RoundedRectangle(cornerRadius: 24).stroke(Color.white.opacity(0.08)))
+            .disabled(busy)
+    }
+    private var backgroundLabel: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "photo").foregroundStyle(.yellow)
+            Text(backgroundName).font(.specialElite(15)).foregroundStyle(.gray)
+            Spacer(); Image(systemName: "chevron.down").font(.caption).foregroundStyle(.gray)
+        }.padding(16).frame(maxWidth: .infinity, minHeight: 50)
+            .background(Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 15))
+            .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.white.opacity(0.08)))
+    }
+    private var rateRow: some View {
+        HStack(spacing: 8) {
+            ForEach([6,8,10,12,15,24,30], id: \.self) { rate in
+                choice("\(rate)", selected: fps == rate) { fps = rate }
+                    .frame(minWidth: 36).accessibilityIdentifier("studio.project.fps.\(rate)")
+            }
+        }
+    }
+    private func heading(_ title: String) -> some View {
+        Text(title).font(.specialElite(12)).tracking(1.5).foregroundStyle(Color.white.opacity(0.7))
+    }
+    private func choice(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.specialElite(12)).multilineTextAlignment(.center)
+                .foregroundStyle(selected ? Color(hex: "FF555D") : Color.gray)
+                .frame(maxWidth: .infinity, minHeight: 38).padding(.horizontal, 4)
+                .background(selected ? Color.red.opacity(0.13) : Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 15))
+                .overlay(RoundedRectangle(cornerRadius: 15).stroke(selected ? Color.red : Color.white.opacity(0.08)))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+    private func dimension(_ title: String, value: Binding<Int>, identifier: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.specialElite(11)).foregroundStyle(.gray)
+            TextField(title, value: value, format: .number).keyboardType(.numberPad)
+                .font(.specialElite(16)).foregroundStyle(.white).padding(10)
+                .background(Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier(identifier)
         }
     }
 }

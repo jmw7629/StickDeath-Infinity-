@@ -92,7 +92,10 @@ class Diagnostics(unittest.TestCase):
         self.assertLess(time.monotonic()-started,0.7)
 
     def test_unexpected_seeding_error_still_stops_recorder_and_ui_after_original_boot_gate(self):
-        argv=['rec','--udid',ID,'--output',str(self.out),'--','xcodebuild','test-without-building','-destination','id='+ID]
+        argv=['rec','--udid',ID,'--output',str(self.out),'--','xcodebuild','test-without-building',
+              '-destination','id='+ID,'-test-timeouts-enabled','YES',
+              '-default-test-execution-time-allowance','180','-maximum-test-execution-time-allowance','240',
+              '-parallel-testing-enabled','NO','-maximum-concurrent-test-simulator-destinations','1']
         inventory={'devices':{'com.apple.CoreSimulator.SimRuntime.iOS-26-2':[{'udid':ID,'name':'fixture','state':'Booted','isAvailable':True}]}}
         with patch.object(sys,'argv',argv),patch.object(rec.subprocess,'check_output',return_value=json.dumps(inventory).encode()),patch.object(rec.subprocess,'run',return_value=subprocess.CompletedProcess([],0)) as boot,patch.object(seed,'run_bounded',side_effect=OSError('Unexpected seed I/O')),patch.object(seed,'collect_failure'),patch.object(rec.subprocess,'Popen') as child:
             with self.assertRaises(OSError):rec.main()

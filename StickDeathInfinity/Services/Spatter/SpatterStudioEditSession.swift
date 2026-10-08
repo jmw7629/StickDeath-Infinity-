@@ -26,6 +26,8 @@ final class SpatterStudioEditSession: ObservableObject {
     struct AppliedEdit {
         let receipt: StudioCommandReceipt
         let selectedErasureMaskCount: Int
+        let gridInstruction: SpatterGridInstruction?
+        let onionInstruction: SpatterOnionInstruction?
         let frameExposureTicks: Int?
         let frameAction: SpatterFrameActionInstruction.Action?
         let isLayerGlowEdit: Bool
@@ -44,6 +46,20 @@ final class SpatterStudioEditSession: ObservableObject {
         let fps: Int
         let addedDurationSeconds: Double
         var summary: String {
+            if let gridInstruction {
+                if receipt.outcome == .unchanged { return "Grid settings already match. Nothing changed." }
+                if let visible = gridInstruction.visible {
+                    return "\(visible ? "Enabled" : "Disabled") grid guides in one undoable local edit. Artwork and export pixels are unchanged."
+                }
+                return "Updated grid spacing, opacity and tint in one undoable local edit. Grid visibility, onion skin and artwork are unchanged."
+            }
+            if let onionInstruction {
+                if receipt.outcome == .unchanged { return "Onion-skin settings already match. Nothing changed." }
+                if let visible = onionInstruction.visible {
+                    return "\(visible ? "Enabled" : "Disabled") onion-skin guides in one undoable local edit. Artwork and export pixels are unchanged."
+                }
+                return "Updated onion-skin counts, opacity and tint in one undoable local edit. Guide visibility and artwork are unchanged."
+            }
             if let frameAction {
                 switch frameAction {
                 case .duplicate: return "Duplicated the active frame in one undoable local edit. Its editable artwork and exposure were copied."
@@ -239,13 +255,27 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isOrder = !isLayerUpdate && !isRename && SpatterArtworkOrderInstruction.isInstruction(draft)
                 let isLayerOrder = !isLayerUpdate && !isRename && SpatterLayerOrderInstruction.isInstruction(draft)
                 let isFrameAction = !isLayerUpdate && !isRename && SpatterFrameActionInstruction.isInstruction(draft)
+                let isOnion = !isLayerUpdate && !isRename && SpatterOnionInstruction.isInstruction(draft)
+                let isGrid = !isLayerUpdate && !isRename && SpatterGridInstruction.isInstruction(draft)
+                var gridInstruction: SpatterGridInstruction?
+                var onionInstruction: SpatterOnionInstruction?
                 var frameAction: SpatterFrameActionInstruction.Action?
                 var layerOrderUp: Bool?
                 var layerVisibility: Bool?
                 var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if isFrameAction {
+                if isGrid {
+                    guard !captured.isPlaying else { throw SpatterGridInstruction.Failure.unavailable }
+                    let instruction = try SpatterGridInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    gridInstruction = instruction
+                } else if isOnion {
+                    guard !captured.isPlaying else { throw SpatterOnionInstruction.Failure.unavailable }
+                    let instruction = try SpatterOnionInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    onionInstruction = instruction
+                } else if isFrameAction {
                     guard !captured.isPlaying, captured.displayedFrameID == captured.activeFrameID else { throw SpatterFrameActionInstruction.Failure.unavailable }
                     let instruction = try SpatterFrameActionInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
@@ -339,7 +369,7 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, frameAction:frameAction, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, layerVisibility:layerVisibility, layerOrderUp:layerOrderUp, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, gridInstruction: gridInstruction, onionInstruction: onionInstruction, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, frameAction:frameAction, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, layerVisibility:layerVisibility, layerOrderUp:layerOrderUp, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,

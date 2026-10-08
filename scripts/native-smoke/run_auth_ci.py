@@ -63,7 +63,7 @@ def main():
                        evidence / "summary.json", 60)
         if exported == 0:
             summary = json.loads((evidence / "summary.json").read_text())
-            receipt["runtimeVerified"] = (code == 0 and summary.get("passedTests") == 9
+            receipt["runtimeVerified"] = (code == 0 and summary.get("passedTests") == 12
                                            and summary.get("failedTests") == 0
                                            and summary.get("skippedTests", 0) == 0)
     finally:

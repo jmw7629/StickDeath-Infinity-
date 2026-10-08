@@ -1,304 +1,194 @@
 import SwiftUI
 
+/// Reference-shaped profile. Connected facts remain unavailable until verified.
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
-    @State private var selectedTab = "projects"
-    @State private var bio = "Creator & Animator 💀 Building the future of stick figure animation."
-    @State private var isEditing = false
-    @State private var showSettings = false
-    
-    var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Header
-                HStack {
-                    Text("Profile")
-                        .font(.system(size: 20, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Button(action: { showSettings = true }) {
-                        Image(systemName: "gearshape.fill")
-                            .font(.system(size: 18))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                
-                ScrollView {
-                    VStack(spacing: 16) {
-                        // Avatar & name
-                        VStack(spacing: 8) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color(hex: "1A1A24"))
-                                    .frame(width: 80, height: 80)
-                                Text("👑")
-                                    .font(.system(size: 40))
-                            }
-                            
-                            Text(authVM.displayName ?? "Guest")
-                                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                            
-                            Text(authVM.user?.email ?? "")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
-                            
-                            // Role badge
-                            if authVM.isSuperAdmin {
-                                HStack(spacing: 4) {
-                                    Image(systemName: "shield.fill")
-                                    Text("SUPERUSER")
-                                }
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                .foregroundColor(.red)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(Color.red.opacity(0.1))
-                                .cornerRadius(6)
-                            }
-                        }
-                        
-                        // Bio
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text("Bio")
-                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                    .foregroundColor(.white.opacity(0.4))
-                                Spacer()
-                                Button(action: { isEditing.toggle() }) {
-                                    Text(isEditing ? "Save" : "Edit")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(.red)
-                                }
-                            }
-                            
-                            if isEditing {
-                                TextEditor(text: $bio)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.white)
-                                    .scrollContentBackground(.hidden)
-                                    .frame(height: 60)
-                                    .padding(8)
-                                    .background(Color(hex: "1A1A24"))
-                                    .cornerRadius(8)
-                            } else {
-                                Text(bio)
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.white.opacity(0.7))
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        
-                        // Stats
-                        HStack(spacing: 0) {
-                            ProfileStat(value: "42", label: "Projects")
-                            Divider().background(Color.white.opacity(0.1)).frame(height: 30)
-                            ProfileStat(value: "1.2K", label: "Followers")
-                            Divider().background(Color.white.opacity(0.1)).frame(height: 30)
-                            ProfileStat(value: "89", label: "Following")
-                            Divider().background(Color.white.opacity(0.1)).frame(height: 30)
-                            ProfileStat(value: "3.4K", label: "Coins")
-                        }
-                        .padding(.vertical, 12)
-                        .background(Color(hex: "12121A"))
-                        .cornerRadius(12)
-                        .padding(.horizontal, 16)
-                        
-                        // Tab selector
-                        HStack(spacing: 0) {
-                            ForEach(["projects", "analytics", "subscription"], id: \.self) { tab in
-                                Button(action: { selectedTab = tab }) {
-                                    Text(tab.capitalized)
-                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                        .foregroundColor(selectedTab == tab ? .red : .white.opacity(0.4))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(selectedTab == tab ? Color.red.opacity(0.1) : Color.clear)
-                                }
-                            }
-                        }
-                        .background(Color(hex: "12121A"))
-                        .cornerRadius(10)
-                        .padding(.horizontal, 16)
-                        
-                        // Tab content
-                        switch selectedTab {
-                        case "projects":
-                            ProjectsGrid()
-                        case "analytics":
-                            AnalyticsView()
-                        case "subscription":
-                            SubscriptionView()
-                        default:
-                            EmptyView()
-                        }
-                    }
-                }
+    let onOpenProjects: () -> Void
+    @State private var destination: Destination?
+    @State private var localProjectCount: Int?
+
+    private enum Destination: String, Identifiable {
+        case account, analytics, subscription
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .account: return "Settings"
+            case .analytics: return "Analytics"
+            case .subscription: return "Subscription"
             }
         }
-        .sheet(isPresented: $showSettings) {
-            ProfileSettingsView()
-        }
     }
-}
-
-struct ProfileStat: View {
-    let value: String
-    let label: String
-    
-    var body: some View {
-        VStack(spacing: 2) {
-            Text(value)
-                .font(.system(size: 16, weight: .bold, design: .monospaced))
-                .foregroundColor(.white)
-            Text(label)
-                .font(.system(size: 9))
-                .foregroundColor(.white.opacity(0.4))
-        }
-        .frame(maxWidth: .infinity)
+    private var profile: UserProfile? {
+        guard authVM.isAuthenticated, let user = authVM.user,
+              let id = UUID(uuidString: user.id), let current = authVM.userId,
+              id == UUID(uuidString: current) else { return nil }
+        return user
     }
-}
+    private var displayName: String {
+        let name = profile?.username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? (authVM.isAuthenticated ? "Your profile" : "Guest") : name
+    }
+    private var reportedPlan: String? {
+        guard let tier = profile?.subscriptionTier?.lowercased(),
+              ["free", "pro", "creator", "studio"].contains(tier) else { return nil }
+        return tier.capitalized
+    }
+    private var avatarURL: URL? {
+        guard let raw = profile?.avatarURL, let url = URL(string: raw),
+              url.scheme?.lowercased() == "https", url.user == nil, url.password == nil else { return nil }
+        return url
+    }
 
-struct ProjectsGrid: View {
-    let projects = [
-        ("Last Stand", "⚔️", "48 frames"),
-        ("Speed Run", "🏃", "24 frames"),
-        ("Meteor Strike", "☄️", "36 frames"),
-        ("Final Boss", "👹", "120 frames"),
-        ("Combo Attack", "💥", "60 frames"),
-        ("Training", "🎯", "16 frames"),
-    ]
-    
     var body: some View {
-        LazyVGrid(columns: [
-            GridItem(.flexible(), spacing: 8),
-            GridItem(.flexible(), spacing: 8),
-        ], spacing: 8) {
-            ForEach(projects, id: \.0) { project in
-                VStack(spacing: 4) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 10)
-                            .fill(Color(hex: "1A1A24"))
-                            .frame(height: 100)
-                        Text(project.1)
-                            .font(.system(size: 32))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 14) {
+                    AsyncImage(url: avatarURL) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Text(String(displayName.prefix(2)).uppercased())
+                            .font(.specialElite(24)).frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .background(Color(hex: "1E1E1E"))
                     }
-                    Text(project.0)
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Text(project.2)
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.4))
+                    .frame(width: 64, height: 64).clipShape(Circle())
+                    .overlay(Circle().stroke(Color.sdRed, lineWidth: 3))
+                    .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(displayName).font(.specialElite(20)).foregroundStyle(.white)
+                        Text(reportedPlan.map { "Reported plan: \($0)" } ?? (authVM.isAuthenticated ? "Plan unavailable" : "On-device guest"))
+                            .font(.specialElite(11)).padding(.horizontal, 10).padding(.vertical, 4)
+                            .background(Color.sdRed.opacity(0.18)).clipShape(RoundedRectangle(cornerRadius: 4))
+                    }
                 }
+                .padding(.top, 24)
+                .accessibilityIdentifier("profile.identity")
+
+                if let bio = profile?.bio, !bio.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(bio).font(.specialElite(13)).foregroundStyle(.secondary)
+                }
+                HStack(spacing: 0) {
+                    statistic(localProjectCount.map(String.init) ?? "—", "Projects")
+                    statistic("—", "Published")
+                    statistic("—", "Followers")
+                    statistic("—", "Likes")
+                }
+                .padding(.vertical, 14).background(Color(hex: "141414"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                Text("Projects counts saved animations on this device. Published, followers and likes are unavailable.")
+                    .font(.specialElite(11)).foregroundStyle(.secondary)
+
+                VStack(spacing: 8) {
+                    Button(action: onOpenProjects) {
+                        rowLabel("Projects on this device", icon: "folder")
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("profile.projects.open")
+                    row("Analytics", icon: "chart.bar", destination: .analytics)
+                    row("Settings", icon: "gearshape", destination: .account)
+                    row("Subscription", icon: "creditcard", destination: .subscription)
+                }
+
+                Text("Subscription").font(.specialElite(16)).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(reportedPlan ?? "Plan unavailable").font(.specialElite(16))
+                    Text("Pricing, renewal and purchase information are not connected. No payment or subscription change is available here.")
+                        .font(.specialElite(12)).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                .background(Color(hex: "141414")).clipShape(RoundedRectangle(cornerRadius: 12))
+                .accessibilityIdentifier("profile.subscription-status")
+            }
+            .padding(.horizontal, 16).padding(.bottom, 24)
+        }
+        .background(Color(hex: "0A0A0A").ignoresSafeArea())
+        .foregroundStyle(.white)
+        .task(id: authVM.userId) {
+            // Device-level inventory, never presented as a server/account portfolio.
+            localProjectCount = nil
+            if let listing = try? DeviceStorageManager.shared.listAnimationsReportingFailures(), listing.failures.isEmpty {
+                localProjectCount = listing.animations.count
             }
         }
-        .padding(.horizontal, 16)
-    }
-}
-
-struct AnalyticsView: View {
-    var body: some View {
-        VStack(spacing: 12) {
-            AnalyticsCard(title: "Total Views", value: "12.4K", change: "+18%", positive: true)
-            AnalyticsCard(title: "Total Likes", value: "3.2K", change: "+24%", positive: true)
-            AnalyticsCard(title: "Avg. Watch Time", value: "4.2s", change: "-3%", positive: false)
-            AnalyticsCard(title: "Engagement Rate", value: "68%", change: "+7%", positive: true)
-        }
-        .padding(.horizontal, 16)
-    }
-}
-
-struct AnalyticsCard: View {
-    let title: String
-    let value: String
-    let change: String
-    let positive: Bool
-    
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.4))
-                Text(value)
-                    .font(.system(size: 22, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
+        .onChange(of: authVM.userId) { _ in destination = nil }
+        .sheet(item: $destination) { page in
+            NavigationStack {
+                Group {
+                    switch page {
+                    case .account: ProfileSettingsView()
+                    case .analytics:
+                        detail("Analytics unavailable", "Views, likes and engagement have not been loaded. No activity totals are estimated.")
+                    case .subscription:
+                        detail(reportedPlan.map { "Reported plan: \($0)" } ?? "Plan unavailable",
+                               "Verified pricing and billing management are not connected. No purchase or renewal is claimed.")
+                    }
+                }
+                .navigationTitle(page.title).navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { destination = nil } } }
             }
+        }
+    }
+
+    private func statistic(_ value: String, _ label: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value).font(.specialElite(18))
+            Text(label).font(.specialElite(11)).foregroundStyle(.secondary)
+        }.frame(maxWidth: .infinity).accessibilityElement(children: .combine)
+    }
+    private func row(_ title: String, icon: String, destination page: Destination) -> some View {
+        Button { destination = page } label: {
+            rowLabel(title, icon: icon)
+        }.buttonStyle(.plain)
+    }
+    private func rowLabel(_ title: String, icon: String) -> some View {
+            HStack(spacing: 14) {
+                Image(systemName: icon).frame(width: 22)
+                Text(title).font(.specialElite(15))
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.secondary)
+            }.padding(15).background(Color(hex: "141414"))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+    private func detail(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title).font(.specialElite(20))
+            Text(text).font(.specialElite(14)).foregroundStyle(.secondary)
             Spacer()
-            Text(change)
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
-                .foregroundColor(positive ? .green : .red)
-        }
-        .padding(16)
-        .background(Color(hex: "12121A"))
-        .cornerRadius(12)
+        }.padding().frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
+/// Replace the old disconnected toggles, invented disk usage and inert Sign Out.
 struct ProfileSettingsView: View {
-    @State private var darkMode = true
-    @State private var soundEffects = true
-    @State private var autoSave = true
-    @State private var haptics = true
-    @State private var showGrid = true
-    @State private var onionSkin = false
-    @Environment(\.dismiss) var dismiss
-    
+    @EnvironmentObject var authVM: AuthViewModel
+    @State private var showingProfileEditor = false
+    private var accountEmail: String {
+        guard authVM.isAuthenticated, let user = authVM.user,
+              let id = UUID(uuidString: user.id), let current = authVM.userId,
+              id == UUID(uuidString: current) else { return "No signed-in account" }
+        return user.email ?? "Email unavailable"
+    }
     var body: some View {
-        NavigationView {
-            ZStack {
-                Color(hex: "0A0A0F").ignoresSafeArea()
-                
-                List {
-                    Section("GENERAL") {
-                        Toggle("Dark Mode", isOn: $darkMode)
-                        Toggle("Sound Effects", isOn: $soundEffects)
-                        Toggle("Haptic Feedback", isOn: $haptics)
-                    }
-                    
-                    Section("DRAWING") {
-                        Toggle("Auto Save", isOn: $autoSave)
-                        Toggle("Show Grid", isOn: $showGrid)
-                        Toggle("Onion Skinning", isOn: $onionSkin)
-                    }
-                    
-                    Section("STORAGE") {
-                        HStack {
-                            Text("Device Storage")
-                            Spacer()
-                            Text("2.4 GB / 64 GB")
-                                .foregroundColor(.white.opacity(0.4))
-                        }
-                        
-                        ProgressView(value: 2.4, total: 64)
-                            .tint(.red)
-                    }
-                    
-                    Section("ACCOUNT") {
-                        Button("Sign Out") {}
-                            .foregroundColor(.red)
-                    }
+        List {
+            Section("Account") {
+                Text(accountEmail)
+                if authVM.captureProfileEdit() != nil {
+                    Button("Edit username and bio") { showingProfileEditor = true }
+                        .accessibilityIdentifier("profile.edit.open")
+                } else {
+                    Text("Sign in with an available profile to edit username and bio.").foregroundStyle(.secondary)
                 }
-                .scrollContentBackground(.hidden)
             }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
+            Section("Studio") {
+                Text("Change grid, onion skin and project settings in the Studio menu. Those controls apply to the actual project.")
+            }
+            if authVM.isAuthenticated {
+                Section {
+                    Button("Sign Out", role: .destructive) { Task { await authVM.signOut() } }
+                        .disabled(authVM.isLoading)
+                    if let error = authVM.error { Text(error).foregroundStyle(.red) }
                 }
             }
         }
-    }
-}
-
-struct ProfileView_Previews: PreviewProvider {
-    static var previews: some View {
-        ProfileView()
-            .environmentObject(AuthViewModel())
+        .sheet(isPresented: $showingProfileEditor) { EditProfileView() }
+        .onChange(of: authVM.userId) { _ in showingProfileEditor = false }
     }
 }

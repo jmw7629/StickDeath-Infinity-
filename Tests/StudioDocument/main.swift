@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 private struct Failure: Error { let text: String }
 private func require(_ condition: @autoclosure () -> Bool, _ text: String) throws {
@@ -18,6 +19,67 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
 }
 
 @main @MainActor struct StudioDocumentTests {
+    private static func projectConfiguration() throws {
+        var original = try StudioDocument.new(name: "Settings", width: 64, height: 64, fps: 12)
+        original.schemaVersion = 6
+        var fill = DrawnElement(id: "fill", tool: .fill,
+            points: [.init(x: 0, y: 0), .init(x: 64, y: 64)],
+            color: "#FF0000", width: 1, opacity: 1, layerID: original.activeLayerID)
+        fill.fillMask = .init(width: 64, height: 64, spans: [.init(row: 20, start: 10, end: 50, alpha: 255)])
+        original.frames[0].elements = [fill]
+        var editor = try StudioDocumentEditor(document: original)
+        try editor.updateProjectSettings(name: "  Renamed  ", width: 96, height: 80, fps: 24)
+        let configured = editor.document
+        try require(configured.id == original.id && configured.name == "Renamed" &&
+            configured.width == 96 && configured.height == 80 && configured.fps == 24 &&
+            configured.frames[0].elements[0].points == fill.points &&
+            configured.frames[0].elements[0].fillMask?.spans == fill.fillMask?.spans &&
+            configured.durationSeconds == original.durationSeconds / 2,
+            "Configuration changed artwork coordinates, fill coverage, identity or tick semantics")
+        try configured.validate()
+        editor.undo()
+        try require(editor.document.frames == original.frames && editor.document.width == 64 &&
+            editor.document.fps == 12 && editor.document.name == original.name, "Configuration was not one Undo")
+        editor.redo()
+        try require(editor.document.frames == configured.frames && editor.document.width == 96, "Configuration Redo changed fill")
+        let before = editor.document
+        do { try editor.updateProjectSettings(name: "Bad crop", width: 32, height: 32, fps: 24)
+            throw Failure(text: "Configuration discarded fill spans")
+        } catch is StudioDocumentError { }
+        try require(editor.document == before, "Rejected fill crop mutated document")
+        let archive = try StudioDocumentArchive(document: configured, rasterFrameIndices: [:]).encoded()
+        let decodedConfiguration = try StudioDocumentArchive.decode(archive).document
+        try require(decodedConfiguration == configured, "Cold configuration archive changed content")
+        var media = try StudioDocument.new(name: "Media settings", width: 64, height: 64, fps: 12)
+        media.schemaVersion = 14
+        media.frames[0].rasterAssetID = "settings-source"
+        media.frames[0].rasterLayerID = media.activeLayerID
+        media.frames[0].rasterPlacement = .init(x: 8, y: 8, width: 48, height: 48)
+        media.audioClips = [.init(id: "audio", soundName: "Original audio", track: 1, startTime: 0.25, duration: 1)]
+        var mediaEditor = try StudioDocumentEditor(document: media)
+        try mediaEditor.updateProjectSettings(name: "Media settings", width: 80, height: 80, fps: 24)
+        try require(mediaEditor.document.frames == media.frames && mediaEditor.document.audioClips == media.audioClips &&
+            mediaEditor.document.referencedRasterAssetIDs == media.referencedRasterAssetIDs,
+            "Settings changed image placement/source identity or absolute audio seconds")
+        let mediaBefore = mediaEditor.document
+        do { try mediaEditor.updateProjectSettings(name: "Clipped image", width: 32, height: 32, fps: 24)
+            throw Failure(text: "Out-of-bounds managed image silently refitted")
+        } catch is StudioDocumentError { }
+        try require(mediaEditor.document == mediaBefore, "Rejected managed image resize changed original")
+        var effectDocument = try StudioDocument.new(name: "Effect", width: 64, height: 64, fps: 12)
+        effectDocument.schemaVersion = 17
+        var effect = DrawnElement(id: "effect", tool: .smudge, points: [.init(x: 20, y: 20), .init(x: 24, y: 24)],
+            color: "#000000", width: 8, opacity: 1, layerID: effectDocument.activeLayerID)
+        effect.smudge = .init()
+        effectDocument.frames[0].elements = [effect]
+        var effectEditor = try StudioDocumentEditor(document: effectDocument)
+        do { try effectEditor.updateProjectSettings(name: "Effect resized", width: 80, height: 80, fps: 12)
+            throw Failure(text: "Pixel-effect resize silently replayed changed dimensions")
+        } catch StudioDocumentError.unavailable { }
+        try require(effectEditor.document == effectDocument && !effectEditor.canUndo, "Rejected effect resize changed history")
+        print("PASS atomic project settings fill extension fixed coordinates timing Undo Redo archive and rejected lossy crop")
+    }
+
     private static func mixedImageOrdering() throws {
         func requireOrder(_ frame: AnimationFrame, _ layer: String, _ expected: [LayerContentToken], _ message: String) throws {
             let actual = try frame.orderedContent(on: layer)
@@ -623,9 +685,57 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
                 "Clipboard result failed real cold reopen or leaked the transient clipboard")
             print("PASS non-active frame copy, immutable snapshot, stale rejection, paste history and actual cold reopen")
 
+            let settingsRoot = documents.appendingPathComponent("settings-fixture")
+            let settingsStore = DeviceStorageManager(documentsDirectory: settingsRoot, cachesDirectory: settingsRoot)
+            let settingsVM = StudioViewModel(storage: settingsStore)
+            let settingsCreated = await settingsVM.createProject(name: "Settings VM", width: 64, height: 64, fps: 12)
+            try require(settingsCreated, "Settings VM project creation failed")
+            settingsVM.commitElement(stroke(layer: settingsVM.activeLayerID))
+            let settingsBefore = settingsVM.document
+            try require(settingsVM.updateProjectSettings(name: "Configured", width: 96, height: 80, fps: 24,
+                expectedProjectID: settingsBefore.id, expectedRevision: settingsBefore.revision), "Actual settings apply failed")
+            let settingsAfter = settingsVM.document
+            try require(settingsAfter.frames == settingsBefore.frames && settingsAfter.id == settingsBefore.id &&
+                settingsAfter.width == 96 && settingsAfter.fps == 24, "Settings VM rescaled artwork or changed identity")
+            try require(!settingsVM.updateProjectSettings(name: "Stale", width: 128, height: 128, fps: 30,
+                expectedProjectID: settingsBefore.id, expectedRevision: settingsBefore.revision) &&
+                settingsVM.document == settingsAfter, "Stale settings changed document")
+            settingsVM.undo()
+            try require(settingsVM.document.width == 64 && settingsVM.document.frames == settingsBefore.frames,
+                "Settings VM Undo failed")
+            settingsVM.redo()
+            let settingsSaved = await settingsVM.save()
+            try require(settingsSaved, "Configured project save failed")
+            let settingsCold = StudioViewModel(storage: settingsStore)
+            await settingsCold.loadProjects()
+            let settingsOpened = await settingsCold.openProject(settingsCold.savedProjects[0])
+            try require(settingsOpened && settingsCold.document == settingsVM.document, "Settings cold reopen lost configuration")
+            print("PASS real VM settings transaction stale guard Undo Redo save and cold reopen")
+
+            // A failed optional thumbnail refresh must not imprison already saved work.
+            let cleanExitVM = StudioViewModel(storage: store)
+            let cleanExitOpened = await cleanExitVM.openProject(firstMetadata)
+            try require(cleanExitOpened, "Clean exit fixture failed to open")
+            let cleanExitDocument = cleanExitVM.document
+            var introducedStroke = false
+            let backObserver = cleanExitVM.$savedProjects.dropFirst().sink { _ in
+                if !introducedStroke { introducedStroke = cleanExitVM.beginStrokeInput(id: "reentrant-back-stroke") }
+            }
+            await cleanExitVM.backToProjects()
+            backObserver.cancel()
+            try require(introducedStroke && cleanExitVM.isEditing &&
+                cleanExitVM.activeStrokeID == "reentrant-back-stroke" && cleanExitVM.document == cleanExitDocument,
+                "Reentrant save observer lost an in-flight stroke while leaving")
+            cleanExitVM.finishStrokeInput(id: "reentrant-back-stroke")
+
             let preserved = documents.appendingPathComponent("Animations-preserved")
             try fm.moveItem(at: store.animationsDir, to: preserved)
             try Data("blocked directory fixture".utf8).write(to: store.animationsDir)
+            await cleanExitVM.backToProjects()
+            try require(!cleanExitVM.isEditing && !cleanExitVM.isDirty &&
+                cleanExitVM.document == cleanExitDocument,
+                "Optional save failure trapped or changed already saved artwork")
+
             reopened.commitElement(stroke(layer: reopened.activeLayerID))
             let unsaved = reopened.document
             let failedSave = await reopened.save()
@@ -768,6 +878,7 @@ private final class VMRevisionSpaceFailureStore: DeviceStorageManager {
             let openedGrid = await gridReopened.openProject(try onionStore.loadAnimation(id: onion.document.id)!.metadata)
             try require(openedGrid && gridReopened.document.gridSettings == onion.document.gridSettings, "Grid cold reopen lost controls")
             print("PASS bounded grid geometry typed settings strict decoding atomic rollback undo and cold reopen")
+            try projectConfiguration()
             try mixedImageOrdering()
             try imageMaskHistoryBudget()
             try linkedRasterJourneys()

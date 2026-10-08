@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// Local Studio access is independent of an account. Session restoration owns
-/// the splash lifetime; viewing the guide never records server-side consent.
+/// account readiness; a short cancellable presentation keeps cold-start branding visible.
+/// Viewing the guide never records server-side consent.
 struct AppFlowView: View {
     @EnvironmentObject var authVM: AuthViewModel
     @AppStorage("sdi.guide.completed.v1") private var guideCompleted = false
@@ -9,6 +10,7 @@ struct AppFlowView: View {
     enum Screen { case splash, welcome, login, signup, onboarding, app }
     @State private var screen: Screen = .splash
     @State private var accountUnavailable = false
+    @State private var splashPresentationComplete = false
 
     var body: some View {
         Group {
@@ -18,6 +20,15 @@ struct AppFlowView: View {
                     restoration: authVM.restoration,
                     onRetry: { Task { await authVM.retryRestoration() } },
                     onSignIn: { navigate(to: .login) })
+                    .task {
+                        // Begin after the splash is mounted, not during auth startup.
+                        // Leaving via an explicit action cancels this view-owned task.
+                        do { try await Task.sleep(nanoseconds: 1_000_000_000) }
+                        catch { return }
+                        guard !Task.isCancelled else { return }
+                        splashPresentationComplete = true
+                        finishRestorationIfReady()
+                    }
             case .welcome:
                 WelcomeView(
                     onSignIn: { navigate(to: .login) },
@@ -47,7 +58,7 @@ struct AppFlowView: View {
 
     private func finishRestorationIfReady() {
         // A late restoration result must not interrupt an explicit offline choice.
-        guard screen == .splash, authVM.state != .loading, authVM.restoration == .ready else { return }
+        guard screen == .splash, splashPresentationComplete, authVM.state != .loading, authVM.restoration == .ready else { return }
         accountUnavailable = authVM.error != nil
         if authVM.isAuthenticated { routeSignedInUser() }
         else { navigate(to: .welcome) }

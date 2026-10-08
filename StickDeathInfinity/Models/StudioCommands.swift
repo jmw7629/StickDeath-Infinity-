@@ -356,11 +356,17 @@ struct StudioCommandContext {
     let supportedBrushFamilies = StudioBrushFamily.allCases
     let supportedTweenEasings = StudioTweenEasing.allCases
     let maximumTweenInbetweens = 24
+    let gridEnabled: Bool
+    let gridSettings: StudioGridSettings
+    let onionEnabled: Bool
+    let onionSettings: StudioOnionSettings
     let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
 
     init(document: StudioDocument) {
         projectID = document.id; revision = document.revision; name = document.name
         width = document.width; height = document.height; fps = document.fps
+        gridEnabled = document.gridEnabled; gridSettings = document.gridSettings ?? .init()
+        onionEnabled = document.onionEnabled; onionSettings = document.onionSettings ?? .init()
         activeFrameID = document.activeFrameID; activeLayerID = document.activeLayerID
         frames = document.frames.map { frame in
             let image = frame.preferredRasterInstance(activeLayerID: document.activeLayerID)

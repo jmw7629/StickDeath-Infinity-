@@ -34,7 +34,11 @@ struct MainTabView: View {
                     case .rooms:
                         CollabRoomView()
                     case .profile:
-                        ProfileView()
+                        ProfileView(onOpenProjects: {
+                            // Reuse the actual Studio tab and its shared editor.
+                            // Never force-close or discard an existing draft.
+                            activeTab = .studio
+                        })
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -2013,12 +2013,12 @@ jobs:
       matrix:
         include:
           - shard: 0
-            timeout: 207
+            timeout: 211
           - shard: 1
-            timeout: 187
+            timeout: 192
     env:
       SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}
-    # Sorted alternating partitions preserve all 102 native cases (51/51).
+    # Sorted alternating partitions preserve all 104 native cases (52/52).
     # Per-case 180/240s, no retries, one simulator and one Mac job at a time.
     # Both shards include 300s evidence overhead + 25m build/preservation;
     # shard zero alone also retains the 17m authentication suite.

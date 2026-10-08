@@ -232,7 +232,7 @@ struct StudioEditorWorkspace: View {
                 if !vm.showToolbar {
                     Button(action: { vm.showToolbar = true }) {
                         Text("SHOW TOOLS")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .font(.specialElite(10)).fontWeight(.bold)
                             .foregroundColor(.white)
                             .padding(10)
                             .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
@@ -254,7 +254,7 @@ struct ZoomButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: label == "FIT" ? 9 : 16, weight: .bold, design: .monospaced))
+                .font(label == "FIT" ? .specialElite(9) : .system(size: 16, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(Color(hex: "1E1E2A")))
@@ -318,7 +318,7 @@ struct StudioBottomBar: View {
                         Image(systemName: "square.3.layers.3d")
                             .font(.system(size: 14))
                         Text("LAYER")
-                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .font(.specialElite(7)).fontWeight(.bold)
                     }
                     .foregroundColor(.white.opacity(0.5))
                     
@@ -352,7 +352,7 @@ struct BottomBarButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 14))
                 Text(label)
-                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .font(.specialElite(7)).fontWeight(.bold)
             }
             .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
             .frame(maxWidth: .infinity)
@@ -651,7 +651,7 @@ struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .font(.specialElite(10)).fontWeight(.bold)
             .foregroundColor(.white.opacity(0.3))
             .tracking(2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -672,7 +672,7 @@ struct MenuSheetRow: View {
             HStack(spacing: 12) {
                 Text(icon).font(.system(size: 18))
                 Text(label)
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .font(.specialElite(14))
                     .foregroundColor(accent ? .red : .white)
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -696,7 +696,7 @@ struct MenuSheetToggleRow: View {
         HStack(spacing: 12) {
             Text(icon).font(.system(size: 18))
             Text(label)
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .font(.specialElite(14))
                 .foregroundColor(.white)
             Spacer()
             if hasEdit, let onEdit {
@@ -704,7 +704,7 @@ struct MenuSheetToggleRow: View {
                     .frame(minWidth: 44, minHeight: 44)
                     .accessibilityLabel("Edit " + label)
                     .accessibilityIdentifier("studio.menu.edit." + label.lowercased())
-                    .font(.system(size: 12, weight: .bold))
+                    .font(.specialElite(12)).fontWeight(.bold)
                     .foregroundColor(.red)
             }
             Toggle("", isOn: $isOn)
@@ -1165,7 +1165,7 @@ struct PanelHeader: View {
                     .foregroundColor(.red)
             }
             Text(title)
-                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .font(.specialElite(16))
                 .foregroundColor(.white)
             Spacer()
             Button(action: onClose) {

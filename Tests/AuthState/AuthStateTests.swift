@@ -6,6 +6,105 @@ import Supabase
 /// Native unit tests execute the actual AuthService and AuthViewModel against
 /// the pinned SDK's injected URLSession. No external provider or host is called.
 @MainActor final class AuthStateTests: XCTestCase {
+    func testTypedProfileEditConfirmsExactFieldsAndPreservesAccountFacts() async throws {
+        let (service, model, transport, _, _) = try await profileFixture()
+        defer { transport.invalidateAndCancel() }
+        let capture = try XCTUnwrap(model.captureProfileEdit())
+        let old = try XCTUnwrap(service.currentProfile)
+        let saved = try await model.saveProfile(username: "  New name  ", bio: "A real bio", capture: capture)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.user?.username, "New name"); XCTAssertEqual(model.user?.bio, "A real bio")
+        XCTAssertEqual(model.user?.id, old.id); XCTAssertEqual(model.user?.role, old.role)
+        XCTAssertEqual(model.user?.subscriptionTier, old.subscriptionTier)
+        XCTAssertEqual(AuthFixtureTransport.profileFields, ["username", "bio"])
+        XCTAssertEqual(AuthFixtureTransport.profileFilter?.lowercased(), "eq." + AuthFixtureTransport.alpha)
+        XCTAssertEqual(AuthFixtureTransport.profileSelect, "id,username,bio")
+        XCTAssertEqual(UUID(uuidString: old.id), UUID(uuidString: capture.userID))
+        XCTAssertNotEqual(old.id, capture.userID, "Fixture must expose lowercase database versus uppercase SDK UUID")
+        XCTAssertEqual(AuthFixtureTransport.profileWrites, 1)
+        let current = try XCTUnwrap(model.captureProfileEdit())
+        _ = try await model.saveProfile(username: "New name", bio: "A real bio", capture: current)
+        XCTAssertEqual(AuthFixtureTransport.profileWrites, 1, "No-op issued a new write")
+        do { _ = try await model.saveProfile(username: "", bio: "", capture: current); XCTFail("Invalid name sent") }
+        catch AuthService.ProfileEditFailure.invalid { }
+        do { _ = try await model.saveProfile(username: "Stale", bio: "", capture: capture); XCTFail("Old draft sent") }
+        catch AuthService.ProfileEditFailure.stale { }
+        XCTAssertEqual(AuthFixtureTransport.profileWrites, 1)
+    }
+
+    func testProfileEditRequiresConfirmedOwnedRowAndPreservesPriorProfileOnError() async throws {
+        for mode in ["failure", "wrong", "empty", "malformed"] {
+            let (service, model, transport, _, _) = try await profileFixture(mode: mode)
+            let before = service.currentProfile?.username
+            let capture = try XCTUnwrap(model.captureProfileEdit())
+            do { _ = try await model.saveProfile(username: "Updated", bio: "Bio", capture: capture); XCTFail("Unconfirmed update accepted: \(mode)") }
+            catch { }
+            XCTAssertEqual(service.currentProfile?.username, before)
+            XCTAssertEqual(service.currentProfile.flatMap { UUID(uuidString: $0.id) }, UUID(uuidString: capture.userID))
+            transport.invalidateAndCancel()
+        }
+    }
+
+    func testProfileEditLateAccountSwitchAndCancellationCannotPublishOldProfile() async throws {
+        let (service, model, transport, _, _) = try await profileFixture(mode: "hold")
+        defer { AuthFixtureTransport.releaseProfileWrites(); transport.invalidateAndCancel() }
+        let capture = try XCTUnwrap(model.captureProfileEdit())
+        let pending = Task { try await model.saveProfile(username: "Delayed", bio: "Old account", capture: capture) }
+        try await waitFor { AuthFixtureTransport.hasProfileWrite }
+        do { _ = try await model.saveProfile(username: "Overlap", bio: "", capture: capture); XCTFail("Overlapping write accepted") }
+        catch AuthService.ProfileEditFailure.busy { }
+        try await service.signIn(email: "second@example.invalid", password: "fixture-password")
+        AuthFixtureTransport.releaseProfileWrites()
+        do { _ = try await pending.value; XCTFail("Old account response published") } catch { }
+        XCTAssertEqual(model.userId?.lowercased(), AuthFixtureTransport.second)
+        XCTAssertNil(model.user)
+        let (cancelService, cancelModel, cancelTransport, expiryStorage, _) = try await profileFixture(mode: "hold")
+        defer { AuthFixtureTransport.releaseProfileWrites(); cancelTransport.invalidateAndCancel() }
+        let cancelCapture = try XCTUnwrap(cancelModel.captureProfileEdit())
+        let originalName = cancelService.currentProfile?.username
+        let inFlight = Task { try await cancelModel.saveProfile(username: "Cancelled update", bio: "", capture: cancelCapture) }
+        try await waitFor { AuthFixtureTransport.hasProfileWrite }
+        inFlight.cancel()
+        // No actor suspension between cancellation and this call: the original
+        // production worker still owns its lease until it actually unwinds.
+        do { _ = try await cancelModel.saveProfile(username: "Overlap", bio: "", capture: cancelCapture); XCTFail("Cancelled live worker lost lease") }
+        catch AuthService.ProfileEditFailure.busy { }
+        AuthFixtureTransport.releaseProfileWrites()
+        do { _ = try await inFlight.value; XCTFail("Cancelled in-flight edit published") } catch { }
+        XCTAssertEqual(cancelService.currentProfile?.username, originalName)
+        AuthFixtureTransport.resetProfileWrites("success")
+        _ = try await cancelModel.saveProfile(username: "Retry confirmed", bio: "", capture: cancelCapture)
+        XCTAssertEqual(cancelService.currentProfile?.username, "Retry confirmed")
+        let beforeExpiry = try XCTUnwrap(cancelModel.captureProfileEdit())
+        AuthFixtureTransport.resetProfileWrites("hold")
+        let expiring = Task { try await cancelModel.saveProfile(username: "Late expired", bio: "", capture: beforeExpiry) }
+        try await waitFor { AuthFixtureTransport.hasProfileWrite }
+        try expiryStorage.expireStoredSessions()
+        AuthFixtureTransport.releaseProfileWrites()
+        do { _ = try await expiring.value; XCTFail("Expired in-flight response published") }
+        catch AuthService.ProfileEditFailure.stale { }
+        XCTAssertEqual(cancelService.currentProfile?.username, "Retry confirmed")
+        XCTAssertNil(cancelModel.captureProfileEdit())
+        let writes = AuthFixtureTransport.profileWrites
+        do { _ = try await cancelModel.saveProfile(username: "Expired", bio: "", capture: beforeExpiry); XCTFail("Expired session wrote") }
+        catch AuthService.ProfileEditFailure.stale { }
+        XCTAssertEqual(AuthFixtureTransport.profileWrites, writes)
+    }
+
+    private func profileFixture(mode: String = "success") async throws -> (AuthService, AuthViewModel, URLSession, AuthFixtureStorage, SupabaseClient) {
+        AuthFixtureTransport.resetProfileWrites(mode)
+        let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [AuthFixtureTransport.self]
+        let transport = URLSession(configuration: config)
+        let storage = AuthFixtureStorage()
+        let client = SupabaseClient(supabaseURL: URL(string: "https://sdi-auth.invalid")!, supabaseKey: "fixture-publishable",
+            options: .init(auth: .init(storage: storage, autoRefreshToken: false),
+                global: .init(session: transport)))
+        let service = AuthService(client: client)
+        let model = AuthViewModel(auth: service, initializeOnStart: false)
+        try await service.signIn(email: "alpha@example.invalid", password: "fixture-password")
+        return (service, model, transport, storage, client)
+    }
+
     func testStartupRetryUsesStoredSDKSessionAndSerializesRequests() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [AuthFixtureTransport.self]
@@ -280,6 +379,34 @@ private final class AuthFixtureStorage: AuthLocalStorage, @unchecked Sendable {
 }
 private final class AuthFixtureTransport: URLProtocol {
     private static let gate = NSLock()
+    private static var patchMode = "success"
+    private static var patchRequests: [(AuthFixtureTransport, [String: Any])] = []
+    private static var patchCount = 0
+    private static var patchKeys: Set<String> = []
+    private static var patchFilter: String?
+    private static var patchSelect: String?
+    static let alpha = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+    static var profileFilter: String? { gate.lock(); defer { gate.unlock() }; return patchFilter }
+    static var profileSelect: String? { gate.lock(); defer { gate.unlock() }; return patchSelect }
+    static var profileWrites: Int { gate.lock(); defer { gate.unlock() }; return patchCount }
+    static var profileFields: Set<String> { gate.lock(); defer { gate.unlock() }; return patchKeys }
+    static var hasProfileWrite: Bool { gate.lock(); defer { gate.unlock() }; return !patchRequests.isEmpty }
+    static func resetProfileWrites(_ mode: String) { gate.lock(); defer { gate.unlock() }; patchMode = mode; patchCount = 0; patchKeys = [] }
+    static func releaseProfileWrites() {
+        gate.lock(); let requests = patchRequests; patchRequests = []; gate.unlock()
+        for (request, row) in requests { request.respond(200, row) }
+    }
+    private func requestBody() -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { return Data() }
+        stream.open(); defer { stream.close() }
+        var result = Data(), bytes = [UInt8](repeating: 0, count: 4096)
+        while stream.hasBytesAvailable && result.count <= 16_384 {
+            let count = stream.read(&bytes, maxLength: bytes.count)
+            if count <= 0 { break }; result.append(bytes, count: count)
+        }
+        return result
+    }
     private static var delayed: [AuthFixtureTransport] = []
     private static var startupMode = "success"
     private static var startupRequests = 0
@@ -307,6 +434,19 @@ private final class AuthFixtureTransport: URLProtocol {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
         }
         let url = request.url!
+        if url.path.hasSuffix("/users"), request.httpMethod == "PATCH" {
+            let fields = (try? JSONSerialization.jsonObject(with: requestBody())) as? [String: Any] ?? [:]
+            Self.gate.lock(); Self.patchCount += 1; Self.patchKeys = Set(fields.keys); let mode = Self.patchMode
+            let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            Self.patchFilter = query.first(where: { $0.name == "id" })?.value
+            Self.patchSelect = query.first(where: { $0.name == "select" })?.value
+            Self.gate.unlock()
+            if mode == "failure" { respond(403, ["message": "Fixture ownership rejected"]); return }
+            if mode == "empty" { respond(406, ["message": "Zero returned rows"]); return }
+            var row = fields; row["id"] = mode == "wrong" ? Self.second : (mode == "malformed" ? "invalid-identity" : Self.alpha)
+            if mode == "hold" { Self.gate.lock(); Self.patchRequests.append((self,row)); Self.gate.unlock(); return }
+            respond(200, row); return
+        }
         if url.path.hasSuffix("/logout") {
             client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return
         }
@@ -337,13 +477,16 @@ private final class AuthFixtureTransport: URLProtocol {
                 body = collected
             } else { body = Data() }
             let isSecond = String(decoding: body, as: UTF8.self).contains("second@example.invalid")
-            let id = isSecond ? Self.second : Self.first
+            let isAlpha = String(decoding: body, as: UTF8.self).contains("alpha@example.invalid")
+            let id = isSecond ? Self.second : (isAlpha ? Self.alpha : Self.first)
             respond(200, ["access_token": "fixture-access", "refresh_token": "fixture-refresh", "token_type": "bearer",
                 "expires_in": 3600, "expires_at": Int(Date().timeIntervalSince1970) + 3600,
                 "user": ["id": id, "aud": "authenticated", "role": "authenticated",
                     "email": isSecond ? "second@example.invalid" : "first@example.invalid",
                     "app_metadata": [:], "user_metadata": [:], "identities": [], "is_anonymous": false,
                     "created_at": "2026-10-06T00:00:00Z", "updated_at": "2026-10-06T00:00:00Z"]])
+        } else if url.path.hasSuffix("/users"), url.query?.lowercased().contains(Self.alpha) == true {
+            respond(200, ["id": Self.alpha, "username": "Existing owner-chosen name"])
         } else if url.path.hasSuffix("/users"), url.query?.lowercased().contains(Self.first) == true {
             if request.value(forHTTPHeaderField: "X-SDI-Delay-Profile") == "first" {
                 Self.gate.lock(); Self.delayed.append(self); Self.gate.unlock(); return

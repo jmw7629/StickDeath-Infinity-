@@ -1069,3 +1069,98 @@ struct SpatterFrameActionInstruction: Equatable {
         return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,action:.apply([command]))
     }
 }
+
+
+/// Complete, explicit local guide settings. Configuring does not implicitly
+/// enable guides; visibility does not replace the remembered settings.
+struct SpatterOnionInstruction: Equatable {
+    let visible: Bool?
+    let settings: StudioOnionSettings?
+    static let showExample = "Show onion skin."
+    static let hideExample = "Hide onion skin."
+    static let settingsExample = "Set onion skin to 2 previous frames, 1 next frame, 35% opacity, tinted."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["show", "hide", "set"].contains(words.first.map(String.init) ?? "") && words.contains("onion")
+    }
+    enum Failure: LocalizedError {
+        case unsupported, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Show onion skin. or Hide onion skin. To configure all settings, use Set onion skin to 2 previous frames, 1 next frame, 35% opacity, tinted. Counts are 0–2, opacity is 5–80%, and tint is tinted or untinted. Nothing changed."
+            case .unavailable: return "Open an existing frame and stop playback before changing onion-skin guides. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let range = NSRange(text.startIndex..., in: text)
+        let visibility = try NSRegularExpression(pattern: #"\A\s*(show|hide)\s+onion\s+skin\.\s*\z"#, options: [.caseInsensitive])
+        if let match = visibility.firstMatch(in: text, range: range), let word = Range(match.range(at: 1), in: text) {
+            return .init(visible: text[word].lowercased() == "show", settings: nil)
+        }
+        let pattern = try NSRegularExpression(pattern: #"\A\s*set\s+onion\s+skin\s+to\s+([0-2])\s+previous\s+frames?,\s+([0-2])\s+next\s+frames?,\s+([5-9]|[1-7][0-9]|80)%\s+opacity,\s+(tinted|untinted)\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = pattern.firstMatch(in: text, range: range) else { throw Failure.unsupported }
+        func part(_ index: Int) -> String { String(text[Range(match.range(at: index), in: text)!]) }
+        guard let previous = Int(part(1)), let next = Int(part(2)), let percent = Int(part(3)) else { throw Failure.unsupported }
+        return .init(visible: nil, settings: .init(previousCount: previous, nextCount: next,
+            opacity: Double(percent) / 100, tinted: part(4).lowercased() == "tinted"))
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }) else { throw Failure.unavailable }
+        guard (visible != nil) != (settings != nil), settings?.isValid != false else { throw Failure.unsupported }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.canvasOptions(.init(onion: visible, onionSettings: settings))]))
+    }
+}
+
+
+/// Complete grid guide settings; no background media or artwork is created.
+struct SpatterGridInstruction: Equatable {
+    let visible: Bool?
+    let settings: StudioGridSettings?
+    static let showExample = "Show grid."
+    static let hideExample = "Hide grid."
+    static let settingsExample = "Set grid to 32 canvas points spacing, 25% opacity, red tint."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["show", "hide", "set"].contains(words.first.map(String.init) ?? "") && words.contains("grid")
+    }
+    enum Failure: LocalizedError {
+        case unsupported, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Show grid. or Hide grid. To configure all settings, use Set grid to 32 canvas points spacing, 25% opacity, red tint. Spacing is 8–160 whole canvas points, opacity is 5–60%, and tint is blue, gray or red. Nothing changed."
+            case .unavailable: return "Open an existing frame and stop playback before changing grid guides. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let range = NSRange(text.startIndex..., in: text)
+        let visibility = try NSRegularExpression(pattern: #"\A\s*(show|hide)\s+grid\.\s*\z"#, options: [.caseInsensitive])
+        if let match = visibility.firstMatch(in: text, range: range), let word = Range(match.range(at: 1), in: text) {
+            return .init(visible: text[word].lowercased() == "show", settings: nil)
+        }
+        let pattern = try NSRegularExpression(pattern: #"\A\s*set\s+grid\s+to\s+([8-9]|[1-9][0-9]|1[0-5][0-9]|160)\s+canvas\s+points\s+spacing,\s+([5-9]|[1-5][0-9]|60)%\s+opacity,\s+(blue|gray|red)\s+tint\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = pattern.firstMatch(in: text, range: range) else { throw Failure.unsupported }
+        func part(_ index: Int) -> String { String(text[Range(match.range(at: index), in: text)!]) }
+        guard let spacing = Int(part(1)), let percent = Int(part(2)),
+              let tint = StudioGridSettings.Tint(rawValue: part(3).lowercased()) else { throw Failure.unsupported }
+        return .init(visible: nil, settings: .init(spacing: Double(spacing), opacity: Double(percent) / 100, tint: tint))
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.frames.contains(where: { $0.id == context.activeFrameID }) else { throw Failure.unavailable }
+        guard (visible != nil) != (settings != nil), settings?.isValid != false else { throw Failure.unsupported }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.canvasOptions(.init(grid: visible, gridSettings: settings))]))
+    }
+}

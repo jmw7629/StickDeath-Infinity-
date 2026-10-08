@@ -527,6 +527,42 @@ struct StudioDocumentEditor {
         redoDocuments.removeAll(); document = next
     }
 
+    /// Change the viewport, not artwork coordinates. Reject any resize which
+    /// would silently discard fill coverage or reinterpret flattened/effect pixels.
+    mutating func updateProjectSettings(name: String, width: Int, height: Int, fps: Int) throws {
+        let title = try StudioDocument.validatedProjectName(name)
+        guard (16...4096).contains(width), (16...4096).contains(height), (1...60).contains(fps) else {
+            throw StudioDocumentError.invalid("Canvas sides must be 16–4096 pixels and FPS must be 1–60.")
+        }
+        guard title != document.name || width != document.width || height != document.height || fps != document.fps else { return }
+        let resizing = width != document.width || height != document.height
+        try change { value in
+            if resizing {
+                for index in value.frames.indices {
+                    let frame = value.frames[index]
+                    guard !(frame.rasterAssetID != nil && frame.rasterPlacement == nil) else {
+                        throw StudioDocumentError.unavailable("This project's historical flattened images cannot be resized without changing their pixels. Name and FPS can still be changed.")
+                    }
+                    guard !frame.elements.contains(where: { $0.hasPixelEffect }) else {
+                        throw StudioDocumentError.unavailable("Canvas resizing with replayable pixel effects is unavailable. Name and FPS can still be changed.")
+                    }
+                    for elementIndex in frame.elements.indices {
+                        guard let mask = frame.elements[elementIndex].fillMask else { continue }
+                        guard mask.spans.allSatisfy({ $0.row < height && $0.end <= width }) else {
+                            throw StudioDocumentError.unavailable("This size would discard stored fill coverage. Choose a larger canvas; nothing changed.")
+                        }
+                        let resized = StudioFillMask(width: width, height: height, spans: mask.spans)
+                        try resized.validate()
+                        value.frames[index].elements[elementIndex].fillMask = resized
+                    }
+                }
+            }
+            value.name = title; value.width = width; value.height = height; value.fps = fps
+            // Existing image placement bounds, effect budgets, audio seconds and
+            // the one-hour timeline limit remain enforced by change/validate.
+        }
+    }
+
     mutating func renameProject(_ proposed: String) throws {
         let title = try StudioDocument.validatedProjectName(proposed)
         guard title != document.name else { return }

@@ -540,7 +540,10 @@ final class StudioSmokeUITests: XCTestCase {
             // sidebar. Require the real local title/content, not root.exists.
             let navigation = app.navigationBars["FullDocumentManagerViewControllerNavigationBar"]
             for _ in 0..<5 {
-                let localRoot = app.otherElements["DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: On My iPhone"]
+                // Files retains the previous folder in this container identifier after navigating back.
+                // Bind the provider identity here; the visible title and content below bind the location.
+                let localRoot = app.otherElements.matching(NSPredicate(format: "identifier BEGINSWITH %@",
+                    "DOC.browsingRoot Source: com.apple.FileProvider.LocalStorage, Title: ")).firstMatch
                 let localTitle = navigation.staticTexts["On My iPhone"]
                 let fileView = app.collectionViews["File View"].firstMatch
                 if localRoot.exists && localTitle.exists && localTitle.isHittable
@@ -849,6 +852,118 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.buttons[insertedID].value as? String, "Selected")
         XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(restored.screenshot().image)), 4)
         capture(reopened, name: "tween-ease-in-editable-cold-reopened")
+    }
+
+    @MainActor
+    func testGuestProfileProjectsAndSettingsNavigation() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate() }
+        XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8))
+        try waitForButton("Profile", in: app).tap()
+        XCTAssertTrue(app.staticTexts["Guest"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["On-device guest"].exists)
+        XCTAssertTrue(app.staticTexts["Projects counts saved animations on this device. Published, followers and likes are unavailable."].exists,
+            "Profile must identify actual device inventory and unavailable connected totals")
+        XCTAssertFalse(app.staticTexts["StickMaster"].exists, "Guest profile displayed a fabricated sample identity")
+        capture(app, name: "owner-guest-profile-reference")
+        let projects = app.buttons["profile.projects.open"]
+        XCTAssertTrue(projects.waitForExistence(timeout: 5)); XCTAssertTrue(projects.isHittable)
+        projects.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["studio.library"].firstMatch.waitForExistence(timeout: 8),
+            "Profile Projects did not open the actual project library")
+        XCTAssertTrue(app.scrollViews["studio.library.scroll"].exists)
+        try waitForButton("Profile", in: app).tap()
+        try waitForButton("Settings", in: app).tap()
+        XCTAssertTrue(app.staticTexts["No signed-in account"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Sign Out"].exists, "Guest settings invented an authenticated account")
+        capture(app, name: "owner-guest-profile-settings")
+        try waitForButton("Done", in: app).tap()
+        XCTAssertTrue(app.buttons["profile.projects.open"].waitForExistence(timeout: 5),
+            "Settings dismissal did not return to profile")
+    }
+
+    @MainActor
+    func testProjectConfigurationCardApplyUndoAndColdReopen() throws {
+        let app = try launchGuestStudio()
+        defer { app.terminate() }
+        let originalName = "Native configuration \(UUID().uuidString.prefix(8))"
+        let finalName = originalName + " edited"
+        @MainActor func reveal(_ element: XCUIElement, in scroll: XCUIElement, application: XCUIApplication, upward: Bool = true) throws {
+            XCTAssertTrue(scroll.waitForExistence(timeout: 5))
+            for _ in 0..<8 {
+                if element.exists && element.isHittable && scroll.frame.intersection(application.frame).insetBy(dx: 2, dy: 2).contains(element.frame) { return }
+                if upward { scroll.swipeUp() } else { scroll.swipeDown() }
+            }
+            XCTAssertTrue(element.exists && element.isHittable && scroll.frame.intersection(application.frame).insetBy(dx: 2, dy: 2).contains(element.frame),
+                "Project control must be fully visible before interaction")
+        }
+        @MainActor func setName(_ field: XCUIElement, _ value: String) {
+            field.tap()
+            if let old = field.value as? String {
+                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
+            }
+            field.typeText(value + "\n")
+        }
+        let library = app.scrollViews["studio.library.scroll"]
+        XCTAssertTrue(library.waitForExistence(timeout: 8))
+        app.buttons["studio.new-project"].tap()
+        let name = app.textFields["studio.project-name"]
+        try reveal(name, in: library, application: app, upward: false)
+        setName(name, originalName)
+        let sd = app.buttons["studio.project.preset.sd"]
+        try reveal(sd, in: library, application: app); sd.tap()
+        let fps24 = app.buttons["studio.project.fps.24"]
+        try reveal(fps24, in: library, application: app); fps24.tap()
+        XCTAssertTrue(sd.isSelected && fps24.isSelected, "Creation chips did not retain chosen SD/24")
+        capture(app, name: "owner-project-create-reference-card")
+        let create = app.buttons["studio.create-project"]
+        try reveal(create, in: library, application: app); create.tap()
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "24 FPS")).firstMatch.exists)
+        app.buttons["studio.menu.open"].tap()
+        let settings = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Project Settings")).firstMatch
+        XCTAssertTrue(settings.waitForExistence(timeout: 5)); settings.tap()
+        let settingsName = app.textFields["studio.settings.name"]
+        XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
+        let settingsScroll = app.scrollViews["studio.settings.scroll"]
+        setName(settingsName, finalName)
+        let hd = app.buttons["studio.project.preset.hd"]
+        try reveal(hd, in: settingsScroll, application: app); hd.tap()
+        let fps30 = app.buttons["studio.project.fps.30"]
+        try reveal(fps30, in: settingsScroll, application: app); fps30.tap()
+        capture(app, name: "owner-project-settings-reference-card")
+        let apply = app.buttons["studio.settings.rename"]
+        try reveal(apply, in: settingsScroll, application: app); apply.tap()
+        let close = app.buttons["studio.settings.close"]
+        try reveal(close, in: settingsScroll, application: app, upward: false); close.tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "30 FPS")).firstMatch.exists)
+        try waitForButton("UNDO", in: app).tap()
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "24 FPS")).firstMatch.exists)
+        try waitForButton("REDO", in: app).tap()
+        app.buttons["studio.back"].tap()
+        let project = app.buttons.matching(NSPredicate(format: "label == %@", finalName)).firstMatch
+        try reveal(project, in: library, application: app)
+        XCTAssertTrue(project.isHittable, "Configured project is not reachable in real library scroll")
+        capture(app, name: "owner-project-library-scroll")
+        app.terminate()
+        let cold = try launchGuestStudio()
+        defer { cold.terminate() }
+        let coldLibrary = cold.scrollViews["studio.library.scroll"]
+        let saved = cold.buttons.matching(NSPredicate(format: "label == %@", finalName)).firstMatch
+        try reveal(saved, in: coldLibrary, application: cold); saved.tap()
+        XCTAssertTrue(cold.descendants(matching: .any)["studio.canvas"].firstMatch.waitForExistence(timeout: 8))
+        cold.buttons["studio.menu.open"].tap()
+        let coldSettings = cold.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Project Settings")).firstMatch
+        XCTAssertTrue(coldSettings.waitForExistence(timeout: 5)); coldSettings.tap()
+        XCTAssertEqual(cold.textFields["studio.settings.name"].value as? String, finalName)
+        let coldHD = cold.buttons["studio.project.preset.hd"]
+        try reveal(coldHD, in: cold.scrollViews["studio.settings.scroll"], application: cold)
+        XCTAssertTrue(coldHD.isSelected, "Cold settings lost canvas dimensions")
+        let coldFPS = cold.buttons["studio.project.fps.30"]
+        try reveal(coldFPS, in: cold.scrollViews["studio.settings.scroll"], application: cold)
+        XCTAssertTrue(coldFPS.isSelected, "Cold settings lost frame rate")
+        capture(cold, name: "owner-project-settings-cold-reopen")
     }
 
     @MainActor
@@ -2079,6 +2194,10 @@ final class StudioSmokeUITests: XCTestCase {
             .press(forDuration: 0.2, thenDragTo: stage.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35)))
         XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "Horizontal"), evaluatedWith: rail).waitUntilFulfilled(timeout: 5))
         XCTAssertTrue(stage.frame.contains(rail.frame))
+        let selectedPicker = app.buttons["studio.tool.eyedropper"]
+        XCTAssertTrue(expectation(for: NSPredicate { _, _ in
+            selectedPicker.isHittable && rail.frame.intersection(app.frame).contains(selectedPicker.frame)
+        }, evaluatedWith: nil).waitUntilFulfilled(timeout: 5), "Undocking hid the selected Picker")
         XCTAssertFalse(undo.isEnabled, "Toolbar movement altered undo history")
         try selectToolbarTool("hand", app: app)
         app.buttons["studio.tool-settings.zoom-in"].tap()
@@ -2147,6 +2266,15 @@ final class StudioSmokeUITests: XCTestCase {
         // FIT now belongs to the selected Hand/Zoom tool, as requested.
         try selectToolbarTool("hand", app: app)
         try waitForButton("FIT", in: app)
+        let hand = app.buttons["studio.tool.hand"]
+        let rail = app.descendants(matching: .any)["studio.toolbar"].firstMatch
+        let selectedHandVisible = NSPredicate { _, _ in
+            let visible = rail.frame.intersection(app.frame)
+            return hand.exists && hand.isHittable && !visible.isNull
+                && visible.contains(hand.frame) && hand.frame.width >= 44 && hand.frame.height >= 44
+        }
+        XCTAssertTrue(expectation(for: selectedHandVisible, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Selected Hand is outside the portrait rail")
         capture(app, name: "studio-portrait")
         XCUIDevice.shared.orientation = .landscapeLeft
         let landscape = NSPredicate { _, _ in app.frame.width > app.frame.height }
@@ -2174,12 +2302,16 @@ final class StudioSmokeUITests: XCTestCase {
         let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
         XCTAssertTrue(popup.exists && app.buttons["studio.tool-settings.close"].isHittable)
         XCTAssertFalse(popup.frame.intersects(canvas.frame), "Docked Hand popup covers the fitted portrait canvas in landscape")
+        XCTAssertTrue(expectation(for: selectedHandVisible, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Selected Hand scrolled out of view when the rail docked in landscape")
         let landscapeCapture = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         landscapeCapture.name = "studio-landscape"
         landscapeCapture.lifetime = .keepAlways
         add(landscapeCapture)
         XCUIDevice.shared.orientation = .portrait
         XCTAssertTrue(expectation(for: NSPredicate { _, _ in app.frame.height > app.frame.width }, evaluatedWith: nil).waitUntilFulfilled(timeout: 8))
+        XCTAssertTrue(expectation(for: selectedHandVisible, evaluatedWith: nil).waitUntilFulfilled(timeout: 5),
+                      "Selected Hand scrolled out of view on return to portrait")
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas)
         func menuControl(_ id: String, in target: XCUIApplication) throws -> XCUIElement {
@@ -7737,7 +7869,21 @@ final class StudioSmokeUITests: XCTestCase {
             }
             name.typeText(projectName)
             let confirm = app.buttons["studio.create-project"]
-            XCTAssertTrue(confirm.waitUntilPresent(timeout: 5)); confirm.tap()
+            XCTAssertTrue(confirm.waitUntilPresent(timeout: 5))
+            // Creation is an inline scroll card. Existence alone can describe
+            // a clipped button below the keyboard or outside the viewport.
+            name.typeText("\n")
+            let scroll = app.scrollViews["studio.library.scroll"]
+            XCTAssertTrue(scroll.waitUntilPresent(timeout: 5))
+            for _ in 0..<8 {
+                if !app.keyboards.firstMatch.exists && confirm.isHittable &&
+                    scroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(confirm.frame) { break }
+                scroll.swipeUp()
+            }
+            XCTAssertFalse(app.keyboards.firstMatch.exists, "Dismiss the name keyboard before creating")
+            XCTAssertTrue(confirm.isHittable && scroll.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(confirm.frame),
+                "Create must be fully visible inside the library scroll area")
+            confirm.tap()
         }
         return projectName
     }

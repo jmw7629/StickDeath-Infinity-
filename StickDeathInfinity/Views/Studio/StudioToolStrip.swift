@@ -73,6 +73,7 @@ struct StudioToolStrip: View {
                 .accessibilityAction(named: Text("Dock tools right")) { onDock(.trailing) }
                 .accessibilityAction(named: Text("Float tools horizontally")) { onDock(.floating) }
 
+            ScrollViewReader { reader in
             ScrollView(axis == .vertical ? .vertical : .horizontal, showsIndicators: false) {
             railLayout {
                 // Color square — tap opens color picker
@@ -113,7 +114,8 @@ struct StudioToolStrip: View {
                             Image(systemName: def.icon)
                                 .font(.system(size: 16))
                             Text(def.label)
-                                .font(.system(size: 7, weight: isSelected ? .bold : .regular, design: .monospaced))
+                                .font(.specialElite(7))
+                                .fontWeight(isSelected ? .bold : .regular)
                         }
                         .foregroundColor(isSelected ? .white : .black.opacity(0.75))
                         .frame(width: 52, height: 52)
@@ -137,12 +139,31 @@ struct StudioToolStrip: View {
                         )
                         .shadow(color: isSelected ? Color(hex: def.glowColor).opacity(0.3) : .clear, radius: 4)
                     }
+                    .id(def.tool.rawValue)
                     .accessibilityLabel(def.label)
                     .accessibilityIdentifier("studio.tool.\(def.tool.rawValue)")
                 }
             }
             .padding(.horizontal, 4)
             .padding(.vertical, 6)
+        }
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .task(id: VisibilityRequest(tool: vm.selectedTool.rawValue,
+                                                vertical: axis == .vertical,
+                                                viewport: geometry.size,
+                                                position: geometry.frame(in: .named("studio.toolbar.stage")).origin)) {
+                        // Run after the changed axis/viewport has participated in
+                        // layout. Task identity excludes scroll offset, so browsing
+                        // other tools never pulls the rail back to the selection.
+                        await Task.yield()
+                        guard !Task.isCancelled, geometry.size.width > 0,
+                              geometry.size.height > 0 else { return }
+                        reader.scrollTo(vm.selectedTool.rawValue, anchor: .center)
+                    }
+            }
+        }
         }
         }
         .padding(4)
@@ -154,6 +175,13 @@ struct StudioToolStrip: View {
         .accessibilityValue(axis == .vertical ? "Vertical" : "Horizontal")
     }
     
+    private struct VisibilityRequest: Equatable {
+        let tool: String
+        let vertical: Bool
+        let viewport: CGSize
+        let position: CGPoint
+    }
+
     private var railLayout: AnyLayout {
         axis == .vertical ? AnyLayout(VStackLayout(spacing: 4)) : AnyLayout(HStackLayout(spacing: 4))
     }

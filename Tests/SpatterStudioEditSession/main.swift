@@ -52,10 +52,20 @@ private final class NetworkTrap: URLProtocol {
             .init(x: 40, y: 30, pressure: 0.9, timestamp: 0.2)], color: "#0000FF", width: 6, opacity: 0.7,
             layerID: vm.activeLayerID, brush: .init(family: .grain, seed: 9821, smoothing: 0, pressureEnabled: true))
     }
-    static func erasurePixels(_ doc: StudioDocument) throws -> [UInt8] {
-        let frame = doc.frames[0], prepared = try StudioFrameRenderer.prepare(frame: frame)
+    static func erasurePixels(_ doc: StudioDocument, includeOnion: Bool = false) throws -> [UInt8] {
+        let frame = includeOnion ? doc.frames.first(where: { $0.id == doc.activeFrameID })! : doc.frames[0], prepared = try StudioFrameRenderer.prepare(frame: frame)
+        let ghosts = includeOnion ? doc.onionGhosts : []
+        let ghostBrushes = try ghosts.map { try StudioFrameRenderer.prepare(frame: $0.frame) }
         var failure: Error?
         let renderer = ImageRenderer(content: Canvas { context, size in
+            for (index, ghost) in ghosts.enumerated() {
+                var ghostContext = StudioFrameRenderer.onionContext(context, opacity: ghost.opacity,
+                    previous: ghost.previous, tinted: ghost.tinted)
+                if let error = StudioFrameRenderer.draw(context: &ghostContext, frame: ghost.frame, layers: doc.layers,
+                    canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: ghostBrushes[index]) {
+                    failure = error; return
+                }
+            }
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: doc.layers,
                 canvasSize: CGSize(width: doc.width, height: doc.height), size: size, preparedBrushes: prepared)
         }.frame(width: CGFloat(doc.width), height: CGFloat(doc.height)))
@@ -1930,6 +1940,177 @@ private final class NetworkTrap: URLProtocol {
                 try gate.release(boundary); await session.waitForCompletion()
                 try require(session.status == (change == "cancel" ? .cancelled : .stale) && session.appliedEdit == nil
                     && vm.document == held && vm.canUndo == undo && vm.canRedo == redo, "Frame context/cancellation edited another frame")
+            } }
+        }
+
+        try await test("onion session matches manual guides actual rendered ghosts one Undo and cold persistence") {
+            let (vm, store) = try await fixture("onion-guides")
+            for index in 0..<4 {
+                try require(vm.commitElement(.init(id: "onion-stroke-\(index)", tool: .line,
+                    points: [.init(x: 10 + Double(index) * 20, y: 12), .init(x: 10 + Double(index) * 20, y: 80)],
+                    color: "#00FF00", width: 5, opacity: 1, layerID: vm.activeLayerID)), "Guide artwork fixture failed")
+                if index < 3 { vm.addFrame() }
+            }
+            vm.selectFrame(vm.frames[2].id); await vm.flush()
+            let before = vm.document, artwork = try erasurePixels(vm.document), plain = try erasurePixels(vm.document, includeOnion: true)
+            vm.onionPreviousCount = 2; vm.onionNextCount = 1; vm.onionOpacity = 0.35; vm.onionTinted = true
+            let manual = vm.document
+            for _ in 0..<4 { vm.undo() }
+            await vm.flush(); try require(content(vm.document) == content(before), "Manual guide Undo fixture drift")
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterOnionInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && content(vm.document) == content(manual)
+                && vm.visibleOnionGhosts.isEmpty && !vm.showOnionSkin && vm.frames == before.frames
+                && vm.layers == before.layers && (try erasurePixels(vm.document)) == artwork,
+                "Onion configure changed artwork/visibility or diverged from real manual settings")
+            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore all onion settings")
+            vm.redo(); await vm.flush()
+            vm.showOnionSkin = true; let manualShown = vm.document
+            let shownPixels = try erasurePixels(manualShown, includeOnion: true)
+            try require(shownPixels != plain, "Real neighboring-frame guides rendered no pixels")
+            vm.undo(); await vm.flush()
+            _ = session.submit(SpatterOnionInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && content(vm.document) == content(manualShown)
+                && vm.visibleOnionGhosts.count == 3
+                && (try erasurePixels(vm.document, includeOnion: true)) == shownPixels
+                && (try erasurePixels(vm.document)) == artwork, "Show did not match actual manual ghost rendering")
+            await vm.flush(); let noOp = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            _ = session.submit(SpatterOnionInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && session.appliedEdit?.receipt.outcome == .unchanged
+                && session.appliedEdit?.summary.contains("Nothing changed") == true && vm.document == noOp
+                && vm.canUndo == undo && vm.canRedo == redo, "No-op guides created false history/receipt")
+            _ = session.submit(SpatterOnionInstruction.hideExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.visibleOnionGhosts.isEmpty
+                && vm.document.onionSettings == noOp.onionSettings
+                && (try erasurePixels(vm.document, includeOnion: true)) == plain, "Hide lost remembered settings or guide pixels")
+            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            let saved = await vm.save(); try require(saved, "Onion settings save failed")
+            let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
+            try require(await cold.openProject(record.metadata), "Onion cold open failed")
+            try require(content(cold.document) == content(vm.document) && cold.visibleOnionGhosts.count == 3
+                && (try erasurePixels(cold.document, includeOnion: true)) == shownPixels, "Cold reopen changed real guides")
+            await cold.flush()
+        }
+        try await test("onion guides preserve layer lock visibility and reject stale context playback malformed and cancellation") {
+            let (locked, _) = try await fixture("onion-locked")
+            locked.setLayerLockMode(locked.activeLayerID, mode: .full); locked.toggleLayerVisibility(locked.activeLayerID)
+            await locked.flush(); let layers = locked.layers, session = SpatterStudioEditSession()
+            _ = session.submit(SpatterOnionInstruction.settingsExample, in: locked, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && locked.layers == layers, "Guide settings edited or incorrectly required unlocked artwork")
+            for text in ["Show onion skin. Hide active layer.", "Set onion skin to 9 previous frames, 1 next frame, 35% opacity, tinted."] {
+                await locked.flush(); let before = locked.document
+                _ = session.submit(text, in: locked, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && locked.document == before, "Malformed guide request mutated document")
+            }
+            let (playing, _) = try await fixture("onion-playback"); playing.addFrame(); await playing.flush(); playing.togglePlayback()
+            let before = playing.document, playbackSession = SpatterStudioEditSession()
+            _ = playbackSession.submit(SpatterOnionInstruction.showExample, in: playing, accountID: nil, currentScope: { guest })
+            await playbackSession.waitForCompletion(); playing.stopPlayback()
+            try require(playbackSession.status != .applied && playing.document == before, "Playback guide request falsely succeeded")
+            for boundary in 1...2 { for change in ["revision", "frame", "account", "cancel"] {
+                let (vm, _) = try await fixture("onion-fence"); let first = vm.currentFrame.id; vm.addFrame(); await vm.flush()
+                let gate = Gate(); var account: String? = nil
+                let guarded = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = guarded.submit(SpatterOnionInstruction.showExample, in: vm, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { vm.gridEnabled = true; await vm.flush() }
+                else if change == "frame" { vm.selectFrame(first); await vm.flush() }
+                else if change == "account" { account = "other" }
+                else { guarded.cancel() }
+                let held = vm.document, undo = vm.canUndo, redo = vm.canRedo
+                try gate.release(boundary); await guarded.waitForCompletion()
+                try require(guarded.status == (change == "cancel" ? .cancelled : .stale) && guarded.appliedEdit == nil
+                    && vm.document == held && vm.canUndo == undo && vm.canRedo == redo, "Guide session crossed context/cancellation fence")
+            } }
+        }
+
+        try await test("grid session matches manual controls preserves artwork pixels and onion guides with one Undo and cold persistence") {
+            let (vm, store) = try await fixture("grid-guides")
+            try require(vm.commitElement(styledStroke(vm)), "Grid artwork fixture failed")
+            vm.showOnionSkin = true; vm.onionOpacity = 0.35; await vm.flush()
+            let before = vm.document, pixels = try erasurePixels(vm.document)
+            vm.gridSpacing = 32; vm.gridOpacity = 0.25; vm.gridTint = .red
+            let manual = vm.document
+            for _ in 0..<3 { vm.undo() }
+            await vm.flush(); try require(content(vm.document) == content(before), "Manual grid fixture drift")
+            let session = SpatterStudioEditSession()
+            _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && content(vm.document) == content(manual)
+                && !vm.gridEnabled && vm.document.onionSettings == before.onionSettings
+                && vm.showOnionSkin && vm.frames == before.frames && vm.layers == before.layers
+                && (try erasurePixels(vm.document)) == pixels, "Grid configure changed unrelated guides/artwork or diverged from manual")
+            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore complete grid settings")
+            vm.redo(); await vm.flush()
+            vm.gridEnabled = true; let manualShown = vm.document
+            vm.undo(); await vm.flush()
+            _ = session.submit(SpatterGridInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && content(vm.document) == content(manualShown)
+                && (try erasurePixels(vm.document)) == pixels, "Show grid changed renderer artwork or manual state")
+            await vm.flush(); let noOp = vm.document, undo = vm.canUndo, redo = vm.canRedo
+            _ = session.submit(SpatterGridInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && session.appliedEdit?.receipt.outcome == .unchanged
+                && session.appliedEdit?.summary.contains("Nothing changed") == true && vm.document == noOp
+                && vm.canUndo == undo && vm.canRedo == redo, "Unchanged grid added history or misleading receipt")
+            _ = session.submit(SpatterGridInstruction.hideExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && !vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
+                && vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings, "Hide grid lost remembered or onion settings")
+            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            let saved = await vm.save(); try require(saved, "Grid settings save failed")
+            let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
+            try require(await cold.openProject(record.metadata), "Grid cold open failed")
+            try require(content(cold.document) == content(vm.document) && cold.gridEnabled && cold.gridSpacing == 32
+                && cold.gridOpacity == 0.25 && cold.gridTint == .red
+                && (try erasurePixels(cold.document)) == pixels, "Cold reopen changed grid settings or artwork pixels")
+            await cold.flush()
+        }
+        try await test("grid commands keep layer authority separate and reject playback malformed stale account and cancellation") {
+            let (vm, _) = try await fixture("grid-locks")
+            vm.setLayerLockMode(vm.activeLayerID, mode: .full); vm.toggleLayerVisibility(vm.activeLayerID); await vm.flush()
+            let layers = vm.layers, session = SpatterStudioEditSession()
+            _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.layers == layers, "Grid settings changed artwork permissions")
+            await vm.flush(); let settings = vm.document.gridSettings
+            _ = session.submit("Rename active layer to \"Show grid\".", in: vm, accountID: nil, currentScope: { guest })
+            await session.waitForCompletion()
+            try require(session.status == .applied && vm.layers.first?.name == "Show grid" && !vm.gridEnabled
+                && vm.document.gridSettings == settings, "Quoted grid words became guide authority")
+            for text in ["Show grid. Hide onion skin.", "Set grid to 161 canvas points spacing, 25% opacity, red tint."] {
+                await vm.flush(); let before = vm.document
+                _ = session.submit(text, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+                try require(session.status == .rejected && session.appliedEdit == nil && vm.document == before, "Malformed grid edited document")
+            }
+            let (playing, _) = try await fixture("grid-playback"); playing.addFrame(); await playing.flush(); playing.togglePlayback()
+            let before = playing.document, playback = SpatterStudioEditSession()
+            _ = playback.submit(SpatterGridInstruction.showExample, in: playing, accountID: nil, currentScope: { guest })
+            await playback.waitForCompletion(); playing.stopPlayback()
+            try require(playback.status != .applied && playing.document == before, "Grid request falsely succeeded during playback")
+            for boundary in 1...2 { for change in ["revision", "frame", "account", "cancel"] {
+                let (target, _) = try await fixture("grid-fence"); let first = target.currentFrame.id; target.addFrame(); await target.flush()
+                let gate = Gate(); var account: String? = nil
+                let guarded = SpatterStudioEditSession(checkpoint: { try await gate.pause() })
+                _ = guarded.submit(SpatterGridInstruction.showExample, in: target, accountID: nil,
+                    currentScope: { .init(isStudioVisible: true, accountID: account) })
+                if boundary == 1 { try await gate.waitFor(1) } else { try await reachSecond(gate) }
+                if change == "revision" { target.showOnionSkin = true; await target.flush() }
+                else if change == "frame" { target.selectFrame(first); await target.flush() }
+                else if change == "account" { account = "other" }
+                else { guarded.cancel() }
+                let held = target.document, undo = target.canUndo, redo = target.canRedo
+                try gate.release(boundary); await guarded.waitForCompletion()
+                try require(guarded.status == (change == "cancel" ? .cancelled : .stale) && guarded.appliedEdit == nil
+                    && target.document == held && target.canUndo == undo && target.canRedo == redo,
+                    "Grid command crossed context/cancellation fence")
             } }
         }
         try await test("local recipe session makes zero URLSession HTTP requests") {

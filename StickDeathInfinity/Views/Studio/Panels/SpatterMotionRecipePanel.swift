@@ -26,6 +26,8 @@ struct SpatterMotionRecipePanel: View {
     private var isLayerUpdateDraft: Bool { SpatterLayerUpdateInstruction.isInstruction(draft) }
     private var isLayerDuplicateDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterLayerDuplicateInstruction.isInstruction(draft) }
     private var isLayerOrderDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterLayerOrderInstruction.isInstruction(draft) }
+    private var isGridDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterGridInstruction.isInstruction(draft) }
+    private var isOnionDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterOnionInstruction.isInstruction(draft) }
     private var isFrameActionDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterFrameActionInstruction.isInstruction(draft) }
     private var isLayerDraft: Bool { isLayerUpdateDraft || isLayerDuplicateDraft || isLayerOrderDraft }
     private var isRenameDraft: Bool { !isLayerUpdateDraft && SpatterProjectRenameInstruction.isInstruction(draft) }
@@ -41,6 +43,8 @@ struct SpatterMotionRecipePanel: View {
         return image
     }
     private var exampleText: String {
+        if isGridDraft { return SpatterGridInstruction.settingsExample }
+        if isOnionDraft { return SpatterOnionInstruction.settingsExample }
         if isFrameActionDraft { return (try? SpatterFrameActionInstruction.parse(draft))?.action.example ?? SpatterFrameActionInstruction.Action.duplicate.example }
         if isLayerOrderDraft { return SpatterLayerOrderInstruction.upExample }
         if isLayerUpdateDraft {
@@ -54,6 +58,8 @@ struct SpatterMotionRecipePanel: View {
         isLayerDuplicateDraft ? SpatterLayerDuplicateInstruction.example : isLayerUpdateDraft ? (draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("rename") ? SpatterLayerUpdateInstruction.renameExample : SpatterLayerUpdateInstruction.opacityExample) : isExposureDraft ? SpatterFrameExposureInstruction.example : isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
+        if isGridDraft { return "Show or hide the canvas grid, or configure its spacing, opacity and tint. It is an editor guide, not a background image or exported artwork. One Undo restores the prior settings." }
+        if isOnionDraft { return "Show or hide neighboring-frame guides, or configure their counts, opacity and tint. These persistent editor guides do not change frame timing, artwork or export pixels. One Undo restores the prior settings." }
         if isFrameActionDraft { return "Duplicate, move, or delete only the captured active frame using the same timeline commands. One Undo restores the previous timeline. Frame movement preserves exposure; duplication adds its copied duration; deletion removes its duration." }
         if isLayerOrderDraft { return "Move the entire active layer one position up or down using the same Layers controls. Artwork, visibility and lock settings stay intact. One Undo restores layer order." }
         if isOrderDraft { return "Move selected drawings, an image, or mixed artwork one step forward or backward within each layer. Other layers keep their order. One Undo reverses the edit." }
@@ -66,6 +72,8 @@ struct SpatterMotionRecipePanel: View {
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
+        if isGridDraft { return "Stop playback. Show/Hide preserves settings; configuring preserves visibility. Specify all three settings: 8–160 whole canvas points spacing, 5–60% opacity, and blue, gray or red tint. Onion skin is unchanged. Examples only fill the draft." }
+        if isOnionDraft { return "Stop playback. Show/Hide preserves settings; configuring preserves visibility. Set all four settings explicitly: 0–2 previous and next frames, 5–80% opacity, tinted or untinted. Only existing neighboring frames appear. Examples fill the draft; Apply performs the edit." }
         if isFrameActionDraft { return "Select the frame and stop playback before opening Spatter. Use one complete active-frame instruction. Moving past an end or deleting the last frame rejects without editing. Plural or arbitrary frame targets are unavailable. Choosing an example only fills the draft; Apply performs the edit." }
         if isLayerOrderDraft { return "Use Move active layer up. or Move active layer down. Select the target layer before opening Spatter. The top layer cannot move up and the bottom layer cannot move down; those requests reject without editing." }
         if isOrderDraft { return "Select artwork with Move before opening Spatter. Use Bring selected artwork forward. or Send selected artwork backward. Mixed selection must explicitly include its image. Selected layers must be visible and unlocked; Apply rechecks the exact selection." }
@@ -102,7 +110,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
@@ -184,6 +192,18 @@ struct SpatterMotionRecipePanel: View {
                         .frame(minHeight:44)
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.layer.duplicate-example")
+                    Menu("Use a grid instruction") {
+                        Button("Show grid") { draft = SpatterGridInstruction.showExample }
+                        Button("Hide grid") { draft = SpatterGridInstruction.hideExample }
+                        Button("Configure grid") { draft = SpatterGridInstruction.settingsExample }
+                    }.frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.grid.examples")
+                    Menu("Use an onion-skin instruction") {
+                        Button("Show onion skin") { draft = SpatterOnionInstruction.showExample }
+                        Button("Hide onion skin") { draft = SpatterOnionInstruction.hideExample }
+                        Button("Configure onion skin") { draft = SpatterOnionInstruction.settingsExample }
+                    }.frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.onion.examples")
                     Menu("Use an active frame instruction") {
                         ForEach(SpatterFrameActionInstruction.Action.allCases, id: \.rawValue) { action in
                             Button(action.example) { draft = action.example }

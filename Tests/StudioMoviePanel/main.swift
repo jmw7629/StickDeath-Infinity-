@@ -177,6 +177,50 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 state.session.close(); await vm.backToProjects()
             }
         }
+        await test("direct export revalidates saved authority after panel and cleanup observers before snapshot") {
+            for atCleanup in [false, true] {
+                for mode in 0..<3 {
+                    let (vm, state, output) = try await create(root.appendingPathComponent("direct-reentrant-\(atCleanup)-\(mode)"))
+                    if mode == 2 { vm.addFrame() } // A real multi-tick document can start playback.
+                    let saved = await vm.save(); try require(saved, "Reentrant fixture save failed")
+                    let before = vm.document
+                    let request = StudioMoviePanelState.DirectRequest(editRequestID: UUID(), projectID: before.id,
+                        revision: before.revision, accountID: nil)
+                    var observed = 0, changed = false
+                    let mutate: () -> Void = {
+                        guard observed == 0 else { return }
+                        observed += 1
+                        switch mode {
+                        case 0: vm.addFrame(); changed = vm.document.revision != before.revision
+                        case 1: changed = vm.beginTextEditing()
+                        default: vm.togglePlayback(); changed = vm.isPlaying
+                        }
+                    }
+                    let listener: AnyCancellable
+                    if atCleanup {
+                        listener = state.session.$needsCleanup.dropFirst().sink { _ in mutate() }
+                    } else {
+                        listener = state.$directError.dropFirst().sink { _ in mutate() }
+                    }
+                    let started = state.start(request, from: vm, scope: scope)
+                    listener.cancel()
+                    try await idle(state)
+                    try require(observed == 1 && changed, "Actual synchronous observer did not change the expected authority")
+                    try require(!started && !state.isBusy && state.session.source == nil && state.session.output == nil &&
+                        state.directSource == nil && state.directArtifactDescription == nil &&
+                        fm.contentsOfDirectory(atPath: output.path).isEmpty,
+                        "Direct export captured a different revision or pending edit after validating its saved request")
+                    try require(state.directError?.contains("saved Spatter edit changed") == true,
+                        "Final capture rejection lost its truthful explanation")
+                    try require(!state.start(request, from: vm, scope: scope), "Rejected reentrant request replayed")
+                    if mode == 0 {
+                        vm.undo(); try require(vm.frames == before.frames, "Rejected export damaged actual edit Undo")
+                    } else if mode == 1 { vm.cancelTextEditing() }
+                    else { vm.stopPlayback() }
+                    state.session.close(); await vm.backToProjects()
+                }
+            }
+        }
         await test("actual movie exports through observable panel state then safely starts after close") {
             let (vm,state,output) = try await create(root.appendingPathComponent("fresh"))
             var notifications = 0

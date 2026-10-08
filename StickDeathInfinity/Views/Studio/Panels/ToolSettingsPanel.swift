@@ -50,7 +50,7 @@ struct FloatingToolSettingsPanel: View {
                             .font(.system(size: 14))
                             .foregroundColor(.white.opacity(0.8))
                         Text(def.label)
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
+                            .font(.specialElite(14))
                             .foregroundColor(.white.opacity(0.8))
                         Spacer()
                         Button(action: { textInputFocused = false; imageFocusedField = nil; vm.activePanel = .none }) {
@@ -171,13 +171,13 @@ struct FloatingToolSettingsPanel: View {
             toolSpecificSettings(def, compactHeight: compactHeight)
             if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .move, .lasso].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.specialElite(10))
                     .foregroundColor(.sdStudioSecondaryText)
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("studio.tool-settings.reset")
             }
             if let warning = vm.toolPreferencesWarning {
-                Text(warning).font(.system(size: 9)).foregroundColor(.orange)
+                Text(warning).font(.specialElite(9)).foregroundColor(.orange)
             }
         }
     }
@@ -209,7 +209,7 @@ struct FloatingToolSettingsPanel: View {
                     SettingsToggle(label: "Pencil Tilt", isOn: $vm.pencilTiltEnabled, accent: accentColor)
                         .accessibilityIdentifier("studio.brush.tilt")
                     Text("Tilting Pencil widens the nib and follows its direction plus Tip Angle. Finger input uses the fixed nib. Saved per tool.")
-                        .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 if [.stipple, .grain, .roughPen, .airbrush, .watercolor, .neon].contains(vm.brushFamily) {
                     SettingsSlider(label: vm.brushFamily == .airbrush ? "Flow" : vm.brushFamily == .watercolor ? "Pigment" : vm.brushFamily == .neon ? "Glow" : "Texture", value: Binding(get: { vm.brushTexture * 100 }, set: { vm.brushTexture = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
@@ -231,12 +231,12 @@ struct FloatingToolSettingsPanel: View {
                     .accessibilityIdentifier("studio.brush.gradient-end")
                     .accessibilityLabel("Gradient end color")
                     .accessibilityValue(vm.brushGradientEndColorHex.uppercased())
-                    Text("Gradient colors use the stroke opacity.").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                    Text("Gradient colors use the stroke opacity.").font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 }
                 SettingsToggle(label: "Pressure Sensitivity", isOn: $vm.pressureSensitivity, accent: .red)
                     .accessibilityIdentifier("studio.brush.pressure")
                 Text("Uses measured Apple Pencil force when available. Finger drawing keeps a steady width. This setting is saved separately for each drawing tool.")
-                    .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
             
         // ── FILL TOOL (GREEN THEME) ──
@@ -248,7 +248,7 @@ struct FloatingToolSettingsPanel: View {
                 }
                 if !vm.selectedElementIDs.isEmpty {
                     Text("Fill paints on the active layer within the selected drawings’ shapes, excluding layer glow and blending. Original objects stay editable. Deselect in Move or Lasso to fill the whole canvas region.")
-                        .font(.system(size: 10)).foregroundColor(.sdStudioSecondaryText)
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                         .accessibilityIdentifier("studio.fill.selection-coverage")
                 }
                 SettingsSlider(label: "Tolerance", value: $vm.fillTolerance, range: 0...128, unit: "", accent: .green)
@@ -278,7 +278,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...150, unit: "px", accent: accentColor)
                 
                 Text("ERASER TYPE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.specialElite(8))
                     .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
@@ -306,7 +306,7 @@ struct FloatingToolSettingsPanel: View {
                 
                 SettingsSlider(label: "Strength", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 Text(vm.selectedElementIDs.isEmpty ? "Erases this layer. Soft adds a feathered edge." : "Erases selected drawings only. Soft adds a feathered edge. Drawings with layer-wide effects require deselection.")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 if !vm.selectedElementIDs.isEmpty {
                     Button("Deselect drawings") { vm.clearElementSelection() }
                         .font(.specialElite(11)).buttonStyle(.bordered).frame(minHeight: 44)
@@ -320,7 +320,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...256, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 Text("Drag existing color on the active layer. The effect is applied when you release. Deselect artwork first.")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.smudge.instructions")
             }
 
@@ -331,7 +331,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Hardness", value: Binding(get: { vm.blurHardness * 100 }, set: { vm.blurHardness = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Radius", value: $vm.blurRadius, range: 0.5...32, unit: "px", accent: accentColor, fractionDigits: 1)
                 Text("Soften existing artwork on the active layer. Radius controls the blur; Hardness controls its edge. Applied on release. Deselect artwork first.")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.blur.instructions")
             }
 
@@ -344,7 +344,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Amount", value: Binding(get: { vm.sharpenAmount * 100 }, set: { vm.sharpenAmount = $0 / 100 }), range: 0...200, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Threshold", value: Binding(get: { vm.sharpenThreshold * 100 }, set: { vm.sharpenThreshold = $0 / 100 }), range: 0...100, unit: "%", accent: accentColor)
                 Text("Increase contrast at existing edges on this layer. Radius sets detail size; Amount sets contrast. Threshold protects subtle texture. Applied on release. Deselect artwork first.")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.sharpen.instructions")
             }
 
@@ -366,7 +366,7 @@ struct FloatingToolSettingsPanel: View {
                 Text(vm.selectedTool == .dodge
                     ? "Lighten existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first."
                     : "Darken existing color on the active layer. Exposure sets up to two stops; tonal range targets brightness. Applied on release. Deselect artwork first.")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.dodge-burn.instructions")
             }
 
@@ -439,7 +439,7 @@ struct FloatingToolSettingsPanel: View {
                     .disabled(vm.lineRulerEnabled)
                 lineRulerSettings
                 Text("Drag from the line's start. Angle snapping is measured in canvas coordinates.")
-                    .font(.system(size: 9, design: .monospaced))
+                    .font(.specialElite(9))
                     .foregroundColor(.sdStudioSecondaryText)
             }
             
@@ -454,7 +454,7 @@ struct FloatingToolSettingsPanel: View {
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 
                 Text("FILL")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.specialElite(8))
                     .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
@@ -465,7 +465,7 @@ struct FloatingToolSettingsPanel: View {
                         .frame(width: 28, height: 28)
                         .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.white.opacity(0.2), lineWidth: 1))
                     Text(vm.shapeFilled ? "Solid fill" : "No fill")
-                        .font(.system(size: 9, design: .monospaced))
+                        .font(.specialElite(9))
                         .foregroundColor(.white.opacity(0.8))
                     Spacer()
                 }
@@ -500,7 +500,7 @@ struct FloatingToolSettingsPanel: View {
                      : vm.currentFrame.rasterAssetID == nil
                      ? "Tap or drag drawn artwork to move it. Tap empty canvas to clear a New selection."
                      : "Drag drawn artwork, or choose Move image on canvas for the imported picture. Select the image layer you want to edit.")
-                    .font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.guidance")
                 if !vm.hasMixedArtworkSelection {
                 HStack(spacing: 8) {
@@ -589,7 +589,7 @@ struct FloatingToolSettingsPanel: View {
                 }
                 if !vm.isMovingImageOnCanvas {
                 Text("SELECTION MODE")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.specialElite(8))
                     .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
@@ -597,7 +597,7 @@ struct FloatingToolSettingsPanel: View {
                     ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
                         Button(action: { vm.selectionMode = mode }) {
                             Text(mode.label)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .font(.specialElite(9))
                                 .foregroundColor(vm.selectionMode == mode ? .sdStudioActionText : .sdStudioSecondaryText)
                                 .frame(maxWidth: .infinity)
                                 .frame(minHeight: 44)
@@ -617,7 +617,7 @@ struct FloatingToolSettingsPanel: View {
                 }
                 
                 Text("ACTIONS")
-                    .font(.system(size: 8, weight: .bold, design: .monospaced))
+                    .font(.specialElite(8))
                     .foregroundColor(.sdStudioSecondaryText)
                     .tracking(2)
                 
@@ -642,7 +642,7 @@ struct FloatingToolSettingsPanel: View {
                                 Text(String(action.prefix(2)))
                                     .font(.system(size: 12))
                                 Text(String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces))
-                                    .font(.system(size: 7, design: .monospaced))
+                                    .font(.specialElite(7))
                                     .foregroundColor(.sdStudioSecondaryText)
                             }
                             .frame(maxWidth: .infinity, minHeight: 44)
@@ -936,7 +936,7 @@ struct SettingsToggle: View {
     var body: some View {
         HStack {
             Text(label)
-                .font(.system(size: 10, design: .monospaced))
+                .font(.specialElite(10))
                 .foregroundColor(.sdStudioSecondaryText)
             Spacer()
             Toggle(label, isOn: $isOn)
@@ -956,7 +956,7 @@ struct FillToggleButton: View {
     var body: some View {
         Button(action: { isOn.toggle() }) {
             Text(label)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .font(.specialElite(10))
                 .foregroundColor(isOn ? accent : .sdStudioSecondaryText)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)

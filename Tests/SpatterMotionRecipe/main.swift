@@ -745,6 +745,80 @@ private final class NetworkTrap: URLProtocol {
             }
             try require(!SpatterFrameActionInstruction.isInstruction("Rename active layer to \"Delete active frame\"."), "Quoted frame instruction became authority")
         }
+
+        try await test("onion instructions strictly target persistent guides without layer or quoted-name authority") {
+            let doc = try StudioDocument.new(name: "Guides", width: 128, height: 96, fps: 12)
+            for text in [SpatterOnionInstruction.showExample, SpatterOnionInstruction.hideExample,
+                         SpatterOnionInstruction.settingsExample,
+                         "Set onion skin to 0 previous frames, 2 next frames, 5% opacity, untinted.",
+                         "Set onion skin to 2 previous frames, 0 next frames, 80% opacity, tinted."] {
+                let instruction = try SpatterOnionInstruction.parse(text)
+                try require(SpatterOnionInstruction.isInstruction(text), "Onion classifier missed supported sentence")
+                let request = try instruction.prepare(in: StudioCommandContext(document: doc))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1,
+                      case .canvasOptions(let value) = commands[0] else { throw Failure(message: "Onion instruction did not use one real canvas command") }
+                try require(value.grid == nil && value.gridSettings == nil && value.onion == instruction.visible
+                    && value.onionSettings == instruction.settings && request.expectedRevision == doc.revision,
+                    "Onion command changed unrelated guide settings or omitted revision")
+                do { _ = try instruction.prepare(in: StudioCommandContext(document: doc), checkCancellation: { throw CancellationError() }); throw Failure(message: "Onion cancellation ignored") }
+                catch is CancellationError { }
+            }
+            for text in ["Show onion skin", "Show onion skin. Hide active layer.", "Hide onion skin.\n",
+                         "Set onion skin to 02 previous frames, 1 next frame, 35% opacity, tinted.",
+                         "Set onion skin to 3 previous frames, 1 next frame, 35% opacity, tinted.",
+                         "Set onion skin to 2 previous frames, 1 next frame, 04% opacity, tinted.",
+                         "Set onion skin to 2 previous frames, 1 next frame, 81% opacity, tinted.",
+                         "Set onion skin to 2 previous frames, 1 next frame, 35.0% opacity, tinted.",
+                         "Set onion skin to 2 previous frames, 1 next frame, 999999999999999999999% opacity, tinted.",
+                         "Set onion skin to 2 previous frames, 1 next frame, NaN% opacity, tinted."] {
+                try require(SpatterOnionInstruction.isInstruction(text), "Malformed onion intent missed bounded rejection")
+                do { _ = try SpatterOnionInstruction.parse(text); throw Failure(message: "Malformed onion instruction accepted") }
+                catch SpatterOnionInstruction.Failure.unsupported { }
+            }
+            for text in [SpatterLayerUpdateInstruction.showExample, SpatterLayerUpdateInstruction.hideExample,
+                         "Rename active layer to \"Show onion skin\".", "Rename current project to \"Set onion skin\"."] {
+                try require(!SpatterOnionInstruction.isInstruction(text), "Layer or quoted title became onion authority")
+            }
+        }
+
+        try await test("grid instructions strictly preserve other guides and reject malformed bounds or title injection") {
+            let doc = try StudioDocument.new(name: "Grid", width: 128, height: 96, fps: 12)
+            for text in [SpatterGridInstruction.showExample, SpatterGridInstruction.hideExample,
+                         SpatterGridInstruction.settingsExample,
+                         "Set grid to 8 canvas points spacing, 5% opacity, blue tint.",
+                         "Set grid to 160 canvas points spacing, 60% opacity, gray tint."] {
+                let instruction = try SpatterGridInstruction.parse(text)
+                try require(SpatterGridInstruction.isInstruction(text), "Grid classifier missed supported instruction")
+                let request = try instruction.prepare(in: StudioCommandContext(document: doc))
+                let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
+                guard case .apply(let commands) = decoded.action, commands.count == 1,
+                      case .canvasOptions(let value) = commands[0] else { throw Failure(message: "Grid did not use one canonical command") }
+                try require(value.onion == nil && value.onionSettings == nil && value.grid == instruction.visible
+                    && value.gridSettings == instruction.settings && request.expectedRevision == doc.revision,
+                    "Grid command changed unrelated settings or revision binding")
+                do { _ = try instruction.prepare(in: StudioCommandContext(document: doc), checkCancellation: { throw CancellationError() }); throw Failure(message: "Grid cancellation ignored") }
+                catch is CancellationError { }
+            }
+            for text in ["Show grid", "Show grid. Hide active layer.", "Hide grid.\n",
+                         "Set grid to 7 canvas points spacing, 25% opacity, blue tint.",
+                         "Set grid to 161 canvas points spacing, 25% opacity, blue tint.",
+                         "Set grid to 032 canvas points spacing, 25% opacity, blue tint.",
+                         "Set grid to 32.0 canvas points spacing, 25% opacity, blue tint.",
+                         "Set grid to 32 canvas points spacing, 61% opacity, red tint.",
+                         "Set grid to 32 canvas points spacing, 05% opacity, red tint.",
+                         "Set grid to 32 canvas points spacing, NaN% opacity, red tint.",
+                         "Set grid to 999999999999999999999 canvas points spacing, 25% opacity, red tint.",
+                         "Set grid to 32 canvas points spacing, 25% opacity, green tint."] {
+                try require(SpatterGridInstruction.isInstruction(text), "Malformed grid intent did not route to rejection")
+                do { _ = try SpatterGridInstruction.parse(text); throw Failure(message: "Invalid grid settings accepted") }
+                catch SpatterGridInstruction.Failure.unsupported { }
+            }
+            for text in [SpatterOnionInstruction.showExample, SpatterLayerUpdateInstruction.showExample,
+                         "Rename active layer to \"Show grid\".", "Rename current project to \"Set grid\"."] {
+                try require(!SpatterGridInstruction.isInstruction(text), "Quoted title or another guide became grid authority")
+            }
+        }
         print("SPATTER_MOTION_RECIPE_TESTS=PASS \(passed) complete production parser-command-VM-storage cases")
     }
 }

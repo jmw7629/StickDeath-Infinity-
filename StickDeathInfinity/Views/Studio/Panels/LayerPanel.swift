@@ -206,7 +206,7 @@ struct LayerRow: View {
             Text(layer.name)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .font(.specialElite(14))
                 .foregroundColor(Color(hex: "DC2626"))
             
             Spacer()
@@ -269,7 +269,7 @@ struct LayerDetailView: View {
             // Opacity slider (RED bar)
             HStack {
                 Text("Opacity")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .foregroundColor(.white.opacity(0.4))
                 
                 Slider(value: Binding(get: { draftOpacity ?? layer.opacity }, set: { draftOpacity = $0 }), in: 0...1) { editing in
@@ -284,7 +284,7 @@ struct LayerDetailView: View {
             // LOCK MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("LOCK MODE")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.specialElite(9))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
@@ -307,7 +307,7 @@ struct LayerDetailView: View {
             // BLEND MODE
             VStack(alignment: .leading, spacing: 6) {
                 Text("BLEND MODE")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.specialElite(9))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
@@ -328,7 +328,7 @@ struct LayerDetailView: View {
             // GLOW toggle
             HStack {
                 Text("GLOW")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .font(.specialElite(9))
                     .foregroundColor(.white.opacity(0.3))
                     .tracking(2)
                 
@@ -368,7 +368,7 @@ struct LayerDetailView: View {
             // Layer label color (independent of rendered glow).
             HStack(spacing: 6) {
                 Text("Label:")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .foregroundColor(.white.opacity(0.4))
                 
                 ForEach([
@@ -465,7 +465,7 @@ struct LockModeButton: View {
                 Text(emoji)
                     .font(.system(size: 16))
                 Text(label)
-                    .font(.system(size: 9, weight: isSelected ? .bold : .regular, design: .monospaced))
+                    .font(.specialElite(9))
                     .foregroundColor(isSelected ? selectedColor == .clear ? .white : selectedColor : .white.opacity(0.5))
             }
             .frame(maxWidth: .infinity)
@@ -493,7 +493,7 @@ struct LayerActionButton: View {
             HStack(spacing: 4) {
                 Text(emoji).font(.system(size: 12))
                 Text(label)
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .font(.specialElite(10))
                     .foregroundColor(.white.opacity(0.6))
             }
             .padding(.horizontal, 10)

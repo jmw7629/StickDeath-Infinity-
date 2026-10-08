@@ -1077,6 +1077,24 @@ final class StudioViewModel: ObservableObject {
         } catch { message = "Project could not be opened: \(error.localizedDescription)"; return false }
     }
     @discardableResult
+    func updateProjectSettings(name: String, width: Int, height: Int, fps: Int,
+                               expectedProjectID: UUID, expectedRevision: Int) -> Bool {
+        do {
+            try requireOpenCommandEditor()
+            guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before changing project settings.") }
+            guard document.id == expectedProjectID, document.revision == expectedRevision else {
+                throw StudioDocumentError.unavailable("The project changed. Reload its settings before applying.")
+            }
+            var candidate = editor
+            try candidate.updateProjectSettings(name: name, width: width, height: height, fps: fps)
+            guard candidate.document != document else { message = nil; return true }
+            try preflightRasterDocument(candidate.document)
+            editor = candidate; scheduleSave(); message = nil
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+
+    @discardableResult
     func renameProject(_ name: String, expectedProjectID: UUID, expectedRevision: Int) -> Bool {
         do {
             try requireOpenCommandEditor()
@@ -1125,13 +1143,24 @@ final class StudioViewModel: ObservableObject {
         } catch { message = "Save failed. Your edits are still open: \(error.localizedDescription)"; return false }
     }
     func backToProjects() async {
+        let leavingProjectID = document.id
+        guard isEditing else { return }
         stopPlayback()
         guard activeStrokeID == nil else { message = "Finish the current touch stroke before leaving this project."; return }
         guard pendingBrushStroke == nil else {
             message = "Retry or explicitly discard the rejected brush draft before leaving this project."
             return
         }
-        guard await save(updateThumbnail: true), !isDirty else { return }
+        guard textDraft == nil else {
+            message = "Apply or cancel the unsaved text draft before leaving this project."
+            return
+        }
+        // Keep refreshing the library thumbnail when storage permits. Failure
+        // must not trap a document whose committed revision is already saved.
+        // Dirty work and every live draft still prevent departure.
+        _ = await save(updateThumbnail: true)
+        guard isEditing, document.id == leavingProjectID,
+              textDraft == nil, activeStrokeID == nil, pendingBrushStroke == nil, !isDirty else { return }
         isEditing = false; activePanel = .none; await loadProjects()
     }
     func flush() async { if isEditing && isDirty { _ = await save() } }

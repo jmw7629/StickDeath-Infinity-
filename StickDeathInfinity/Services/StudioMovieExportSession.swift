@@ -78,7 +78,8 @@ final class StudioMovieExportSession: ObservableObject {
     }
 
     @discardableResult
-    func start(from vm: StudioViewModel, background: Service.Background, scope: Scope) -> Bool {
+    func start(from vm: StudioViewModel, background: Service.Background, scope: Scope,
+               expectedRequest: StudioMovieExportRequest? = nil) -> Bool {
         guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isBeginningConsumer else { return false }
         isStarting = true
         defer { isStarting = false }
@@ -87,6 +88,16 @@ final class StudioMovieExportSession: ObservableObject {
         }
         guard vm.activeStrokeID == nil, vm.pendingBrushStroke == nil else {
             errorMessage = "Finish or resolve the current drawing before exporting MP4."; return false
+        }
+        func matchesSavedRequest(_ document: StudioDocument, accountID: String?) -> Bool {
+            guard let expectedRequest else { return true }
+            return expectedRequest.projectID == document.id && expectedRequest.revision == document.revision &&
+                expectedRequest.accountID == accountID && !vm.isDirty && !vm.isSaving &&
+                !vm.isPlaying && vm.textDraft == nil
+        }
+        guard matchesSavedRequest(vm.document, accountID: scope.accountID) else {
+            errorMessage = "The saved Spatter edit changed before the MP4 snapshot was captured. Nothing was exported."
+            return false
         }
         currentScope = scope
         invalidatePreview()
@@ -100,6 +111,13 @@ final class StudioMovieExportSession: ObservableObject {
         }
         // One synchronous MainActor capture; the task never retains the VM.
         let document = vm.document
+        // Both the panel handoff and output cleanup publish synchronously.
+        // Bind a direct export to its approved saved edit after those observers
+        // have run, without changing manual export's immutable-snapshot behavior.
+        guard matchesSavedRequest(document, accountID: currentScope.accountID) else {
+            errorMessage = "The saved Spatter edit changed before the MP4 snapshot was captured. Nothing was exported."
+            return false
+        }
         var rasters: [String: Data] = [:]
         for id in document.referencedRasterAssetIDs {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }

@@ -46,6 +46,14 @@ final class AuthViewModel: ObservableObject {
 
     func retryRestoration() async { await auth.retryRestoration() }
 
+    func captureProfileEdit() -> AuthService.ProfileEditCapture? { auth.captureProfileEdit() }
+
+    @discardableResult
+    func saveProfile(username: String, bio: String, capture: AuthService.ProfileEditCapture) async throws -> Bool {
+        try await auth.saveProfile(username: username, bio: bio, capture: capture)
+        return true
+    }
+
     // MARK: - Email/Password
 
     @discardableResult

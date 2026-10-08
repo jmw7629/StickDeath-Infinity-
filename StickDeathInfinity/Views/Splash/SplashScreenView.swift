@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Shown only while the existing session is being restored. There is no
-/// decorative loading delay, and local projects remain reachable while offline.
+/// Cold-start branding also remains briefly visible when restoration is immediate.
+/// Account failures stay actionable and local projects remain reachable offline.
 struct SplashScreenView: View {
     let onContinueOffline: () -> Void
     var restoration: AuthService.Restoration = .restoring
@@ -53,6 +53,10 @@ struct SplashScreenView: View {
                             Button("Sign In", action: onSignIn)
                                 .frame(minHeight: 44).foregroundColor(.white)
                                 .accessibilityIdentifier("startup.sign-in")
+                        } else if restoration == .ready {
+                            Text("Ready")
+                                .foregroundColor(.sdTextSecondary)
+                                .accessibilityIdentifier("startup.ready")
                         } else {
                             ProgressView("Restoring your session…")
                                 .tint(.sdRed)

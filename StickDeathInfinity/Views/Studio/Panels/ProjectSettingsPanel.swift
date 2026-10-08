@@ -1,78 +1,75 @@
 import SwiftUI
 
-// ═══════════════════════════════════════════════════════════════════════
-// Project Settings / Tools Menu — Matches the ⋯ menu in the video
-// ═══════════════════════════════════════════════════════════════════════
-
 struct ProjectSettingsPanel: View {
     @ObservedObject var vm: StudioViewModel
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var projectName = ""
+    @State private var width = 1080
+    @State private var height = 1920
+    @State private var fps = 12
+    @State private var backgroundID: String?
     @State private var capturedProjectID: UUID?
     @State private var capturedRevision = -1
-    private func loadName() {
-        projectName = vm.projectName; capturedProjectID = vm.document.id; capturedRevision = vm.document.revision
-    }
+    @State private var notice: String?
     @State private var showingOnionSettings = false
     @State private var showingGridSettings = false
-    
+
     var body: some View {
-        ScrollView {
-        VStack(spacing: 0) {
-            Capsule()
-                .fill(Color.white.opacity(0.2))
-                .frame(width: 36, height: 4)
-                .padding(.top, 8)
-            
-            // Header
-            HStack {
-                Text("⋯")
-                    .font(.system(size: 20))
-                Text("Project Menu")
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white)
-                Spacer()
-                Button(action: { vm.activePanel = .none }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white.opacity(0.4))
-                        .frame(width: 26, height: 26)
-                        .background(Circle().fill(Color.white.opacity(0.08)))
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-            .padding(.bottom, 12)
-            
-            // Project Settings row
-            VStack(alignment: .leading, spacing: 10) {
-                Text("PROJECT SETTINGS").font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundColor(.gray)
-                TextField("Project name", text: $projectName)
-                    .textFieldStyle(.roundedBorder).foregroundColor(.black)
-                    .accessibilityIdentifier("studio.settings.name")
-                Text("\(vm.canvasWidth) × \(vm.canvasHeight) · \(vm.fps) FPS · \(vm.frames.count) frames")
-                    .font(.caption).foregroundColor(.gray)
-                HStack {
-                    Button("Rename project") {
-                        guard let id = capturedProjectID, scenePhase == .active else { return }
-                        if vm.renameProject(projectName, expectedProjectID: id, expectedRevision: capturedRevision) { loadName() }
+        ZStack {
+            Color(hex: "0A0A0F").ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        Text("Project Settings").font(.specialElite(25)).foregroundStyle(.white)
+                        Spacer()
+                        Button { vm.activePanel = .none } label: {
+                            Image(systemName: "xmark").foregroundStyle(.gray).frame(width: 44, height: 44)
+                        }.accessibilityLabel("Close project settings").accessibilityIdentifier("studio.settings.close")
                     }
-                    .disabled(scenePhase != .active || vm.isSaving || vm.isPlaying || projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || projectName.count > 120)
-                    .accessibilityIdentifier("studio.settings.rename")
-                    Spacer()
-                    Button("Reload name") { loadName() }.accessibilityIdentifier("studio.settings.reload-name")
-                }.font(.caption).foregroundColor(.red)
-                Text("Rename keeps the same project and artwork. Undo restores the previous name.")
-                    .font(.caption2).foregroundColor(.gray)
-                if let message = vm.message { Text(message).font(.caption).foregroundColor(.red) }
-            }.padding(14)
-            
-            Divider().background(Color.white.opacity(0.05)).padding(.horizontal, 14)
-            
+                    StudioProjectConfigurationCard(name: $projectName, width: $width, height: $height,
+                        fps: $fps, backgroundID: $backgroundID, submitTitle: "Apply Changes →",
+                        submitIdentifier: "studio.settings.rename", nameIdentifier: "studio.settings.name",
+                        notice: notice, busy: vm.isSaving,
+                        canSubmit: capturedProjectID != nil && scenePhase == .active && !vm.isPlaying,
+                        chooseExistingBackground: chooseBackground, onSubmit: apply)
+                    Text("Canvas changes keep artwork at its original position and change the visible area. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings.")
+                        .font(.specialElite(12)).foregroundStyle(.gray)
+                    Button("Reload current settings") { load() }
+                        .font(.specialElite(14)).foregroundStyle(.red).frame(minHeight: 44)
+                        .accessibilityIdentifier("studio.settings.reload-name")
+                    extraTools
+                }.padding(20).padding(.bottom, 24).frame(maxWidth: 760).frame(maxWidth: .infinity)
+            }.scrollDismissesKeyboard(.interactively)
+            .accessibilityIdentifier("studio.settings.scroll")
+        }
+        .onAppear { load() }
+        .onChange(of: authVM.userId) { _, _ in capturedProjectID = nil; vm.activePanel = .none }
+        .onChange(of: vm.document.id) { _, _ in capturedProjectID = nil; vm.activePanel = .none }
+    }
+    private func load() {
+        projectName = vm.projectName; width = vm.canvasWidth; height = vm.canvasHeight; fps = vm.fps
+        capturedProjectID = vm.document.id; capturedRevision = vm.document.revision; notice = nil
+    }
+    private func apply() {
+        guard let id = capturedProjectID, scenePhase == .active else { return }
+        if vm.updateProjectSettings(name: projectName, width: width, height: height, fps: fps,
+                                    expectedProjectID: id, expectedRevision: capturedRevision) {
+            load(); notice = "Project settings updated."
+        } else { notice = vm.message ?? "Settings could not be changed." }
+    }
+    private func chooseBackground() {
+        guard capturedProjectID == vm.document.id, capturedRevision == vm.document.revision,
+              projectName == vm.projectName, width == vm.canvasWidth, height == vm.canvasHeight, fps == vm.fps else {
+            notice = "Apply or reload your settings before opening Background Library."; return
+        }
+        vm.activePanel = .backgroundLibrary
+    }
+    private var extraTools: some View {
+        VStack(spacing: 0) {
             // TOOLS section
             Text("TOOLS")
-                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                .font(.specialElite(11))
                 .foregroundColor(.white.opacity(0.3))
                 .tracking(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -89,13 +86,13 @@ struct ProjectSettingsPanel: View {
                 Text("🧅")
                     .font(.system(size: 16))
                 Text("Onion")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(.specialElite(13))
                     .foregroundColor(.white)
                 Spacer()
                 
                 Button(action: { showingOnionSettings.toggle() }) {
                     Text("Edit")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.specialElite(11))
                         .foregroundColor(.red)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -121,13 +118,13 @@ struct ProjectSettingsPanel: View {
                 Text("⊞")
                     .font(.system(size: 16))
                 Text("Grid")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(.specialElite(13))
                     .foregroundColor(.white)
                 Spacer()
                 
                 Button(action: { showingGridSettings.toggle() }) {
                     Text("Edit")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .font(.specialElite(11))
                         .foregroundColor(.red)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
@@ -147,7 +144,7 @@ struct ProjectSettingsPanel: View {
             if showingGridSettings { StudioGridSettingsControls(vm: vm) }
 
             PanelSettingsRow(icon: "✨", label: "Magic Cut") { vm.activePanel = .magicCut }
-            PanelSettingsRow(icon: "🖼", label: "Background Library") { vm.activePanel = .backgroundLibrary }
+            PanelSettingsRow(icon: "🖼", label: "Background Library") { chooseBackground() }
             PanelSettingsRow(icon: "🎬", label: "Rotoscope / Video") { vm.activePanel = .rotoscope }
             
             PanelSettingsRow(icon: "📸", label: "Add Picture") {
@@ -162,15 +159,9 @@ struct ProjectSettingsPanel: View {
                 vm.activePanel = .export
             }
             
-            Spacer().frame(height: 20)
         }
-        }
-        .background(Color(hex: "#1a1a24"))
-        .cornerRadius(16, corners: [.topLeft, .topRight])
-        .onAppear { loadName() }
-        .onChange(of: authVM.userId) { projectName = ""; capturedProjectID = nil; vm.activePanel = .none }
-        .onChange(of: vm.document.id) { projectName = ""; capturedProjectID = nil; vm.activePanel = .none }
     }
+
 }
 
 // MARK: - Settings Row
@@ -185,7 +176,7 @@ struct PanelSettingsRow: View {
                 Text(icon)
                     .font(.system(size: 16))
                 Text(label)
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .font(.specialElite(12))
                     .foregroundColor(.white)
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -217,7 +208,7 @@ struct StudioOnionSettingsControls: View {
                         .accessibilityIdentifier("studio.onion.tint")
                     Text("Farther frames fade. Ghosts are hidden during playback and never included in export.")
                         .font(.caption2).foregroundColor(.secondary)
-                }.font(.system(size: 11, design: .monospaced)).padding(.horizontal, 14).padding(.vertical, 8)
+                }.font(.specialElite(11)).padding(.horizontal, 14).padding(.vertical, 8)
     }
 }
 
@@ -236,6 +227,6 @@ struct StudioGridSettingsControls: View {
             }.pickerStyle(.segmented).accessibilityIdentifier("studio.grid.tint")
             Text("Grid moves and zooms with the canvas. It is a visual guide and is never included in exported artwork.")
                 .font(.caption2).foregroundColor(.secondary)
-        }.font(.system(size: 11, design: .monospaced)).padding(.horizontal, 14).padding(.vertical, 8)
+        }.font(.specialElite(11)).padding(.horizontal, 14).padding(.vertical, 8)
     }
 }

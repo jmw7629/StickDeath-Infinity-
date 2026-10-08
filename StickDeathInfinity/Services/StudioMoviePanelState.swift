@@ -25,7 +25,8 @@ final class StudioMoviePanelState: ObservableObject {
 
     @discardableResult
     func start(from vm: StudioViewModel, background: StudioMovieExportService.Background,
-               scope: StudioMovieExportSession.Scope) -> Bool {
+               scope: StudioMovieExportSession.Scope,
+               expectedRequest: DirectRequest? = nil) -> Bool {
         guard !isBusy, scope.isStudioVisible, scope.isForeground else { return false }
         if session.isClosed {
             guard !session.needsCleanup, session.output == nil else { return false }
@@ -33,7 +34,7 @@ final class StudioMoviePanelState: ObservableObject {
             observeSession()
         }
         directError = nil; directSource = nil
-        return session.start(from: vm, background: background, scope: scope)
+        return session.start(from: vm, background: background, scope: scope, expectedRequest: expectedRequest)
     }
     /// Consume even rejected requests: presentation retries are not authority
     /// to rerun exports. Manual Export remains available after a rejected handoff.
@@ -50,7 +51,7 @@ final class StudioMoviePanelState: ObservableObject {
             directError = "The saved Spatter edit or active account changed before export. Nothing was exported."
             return false
         }
-        guard start(from: vm, background: .white, scope: scope) else {
+        guard start(from: vm, background: .white, scope: scope, expectedRequest: request) else {
             directError = session.errorMessage ?? "MP4 export could not start in the current Studio state."
             return false
         }

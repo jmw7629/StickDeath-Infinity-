@@ -363,6 +363,68 @@ final class AuthService: ObservableObject {
     }
 
     // MARK: - Profile Management
+    struct ProfileEditCapture: Equatable {
+        let userID: String
+        fileprivate let identity: UUID
+        let username: String?
+        let bio: String?
+    }
+    enum ProfileEditFailure: LocalizedError {
+        case unavailable, busy, invalid, stale, unconfirmed
+        var errorDescription: String? {
+            switch self {
+            case .unavailable: return "Sign in with an available profile before editing."
+            case .busy: return "A profile update is still finishing. Wait before trying again."
+            case .invalid: return "Use a name of 1–80 characters and a bio of at most 500 characters, without unsupported control characters."
+            case .stale: return "Your account or profile changed. Reopen profile editing before saving."
+            case .unconfirmed: return "The server did not confirm the requested profile values. Reopen your profile to check before retrying."
+            }
+        }
+    }
+    private var profileUpdateInProgress = false
+    func captureProfileEdit() -> ProfileEditCapture? {
+        guard state == .authenticated, let rawID = userId, let id = UUID(uuidString: rawID),
+              let profile = currentProfile, UUID(uuidString: profile.id) == id,
+              let session = try? supabase.auth.currentSession, !session.isExpired,
+              session.user.id == id else { return nil }
+        return .init(userID: id.uuidString, identity: identityRevision, username: profile.username, bio: profile.bio)
+    }
+    func saveProfile(username: String, bio: String, capture: ProfileEditCapture) async throws {
+        guard !profileUpdateInProgress else { throw ProfileEditFailure.busy }
+        let name = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let biography = bio.trimmingCharacters(in: .whitespacesAndNewlines)
+        let forbiddenBio = CharacterSet.controlCharacters.subtracting(CharacterSet(charactersIn: "\n\t"))
+        guard !name.isEmpty, name.count <= 80, name.utf8.count <= 320,
+              name.rangeOfCharacter(from: .controlCharacters) == nil,
+              biography.count <= 500, biography.utf8.count <= 2000,
+              biography.rangeOfCharacter(from: forbiddenBio) == nil else { throw ProfileEditFailure.invalid }
+        try Task.checkCancellation()
+        guard captureProfileEdit() == capture else { throw ProfileEditFailure.stale }
+        let client = try supabase
+        guard let session = client.auth.currentSession, !session.isExpired else { throw ProfileEditFailure.unavailable }
+        let token = session.accessToken
+        if name == capture.username && biography == (capture.bio ?? "") { return }
+        profileUpdateInProgress = true
+        defer { profileUpdateInProgress = false }
+        struct Update: Encodable { let username: String; let bio: String }
+        struct Confirmed: Decodable { let id: String; let username: String; let bio: String? }
+        // Only these two profile columns are writable; roles/entitlements never
+        // enter this payload. Returned row is required; zero-row RLS is not success.
+        let confirmed: Confirmed = try await client.from("users")
+            .update(Update(username: name, bio: biography)).eq("id", value: capture.userID)
+            .select("id,username,bio").single().execute().value
+        try Task.checkCancellation()
+        guard captureProfileEdit() == capture, let live = client.auth.currentSession,
+              !live.isExpired, live.accessToken == token else { throw ProfileEditFailure.stale }
+        guard let confirmedID = UUID(uuidString: confirmed.id),
+              confirmedID == UUID(uuidString: capture.userID), confirmed.username == name,
+              (confirmed.bio ?? "") == biography else { throw ProfileEditFailure.unconfirmed }
+        guard var profile = currentProfile, let profileID = UUID(uuidString: profile.id),
+              profileID == UUID(uuidString: capture.userID) else { throw ProfileEditFailure.stale }
+        profile.username = confirmed.username; profile.bio = confirmed.bio
+        currentProfile = profile
+    }
+
     func updateProfile(_ updates: [String: AnyJSON]) async throws {
         guard let userId else { throw AuthError.notAuthenticated }
         try await supabase.from("users").update(updates).eq("id", value: userId).execute()

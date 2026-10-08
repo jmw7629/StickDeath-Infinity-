@@ -55,9 +55,9 @@ struct ExportPanel: View {
                         VStack(alignment: .leading, spacing: 8) {
                             sectionLabel("IMAGE QUALITY")
                             Text("Original canvas · \(document.width) × \(document.height)")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .font(.specialElite(12))
                             Text("Lossless PNG · \(document.frames.count) frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid and onion skin are not included.")
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
                             sectionLabel("BACKGROUND")
                             Picker("Export background", selection: $background) {
@@ -72,7 +72,7 @@ struct ExportPanel: View {
                     }
                     if supportedFormat == nil {
                         Text("\(vm.exportFormat.rawValue) export is not available yet. Choose PNG or Spritesheet to render actual image files.")
-                            .font(.system(size: 11, design: .monospaced))
+                            .font(.specialElite(11))
                             .foregroundColor(.white.opacity(0.7))
                     }
                     statusView
@@ -81,14 +81,14 @@ struct ExportPanel: View {
                             ProgressView(value: Double(session.completedFrames), total: Double(max(1, session.totalFrames)))
                                 .tint(Color(hex: "#DC2626"))
                             Text("Rendering \(session.completedFrames) of \(session.totalFrames) frames")
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.specialElite(11))
                             Button("Cancel export") { session.cancel() }
                                 .accessibilityIdentifier("studio.export.cancel")
                         }
                     } else {
                         Button(action: startExport) {
                             Text(supportedFormat == nil ? "\(vm.exportFormat.rawValue) UNAVAILABLE" : "EXPORT \(vm.exportFormat.rawValue)")
-                                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                                .font(.specialElite(14))
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity).padding(.vertical, 14)
                                 .background(RoundedRectangle(cornerRadius: 12).fill(Color(hex: "#DC2626")))
@@ -101,13 +101,13 @@ struct ExportPanel: View {
                         VStack(alignment: .leading, spacing: 10) {
                             sectionLabel(session.previewImage == nil ? "EXPORT FILES UNAVAILABLE" : "READY ON THIS DEVICE")
                             Text("\(output.imageURLs.count) PNG \(output.imageURLs.count == 1 ? "file" : "files") + timing manifest")
-                                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                .font(.specialElite(12))
                             Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundColor(.white.opacity(0.6))
                             if let credits = output.manifest.imageCredits, !credits.isEmpty {
                                 Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
-                                    .font(.system(size: 10, design: .monospaced))
+                                    .font(.specialElite(10))
                                     .foregroundColor(.white.opacity(0.6))
                                     .accessibilityIdentifier("studio.export.image-credits")
                             }
@@ -122,15 +122,19 @@ struct ExportPanel: View {
                                     .foregroundColor(.white.opacity(0.6))
                             }
                             Button(action: shareExport) {
-                                Label("Share files / Save to Files", systemImage: "square.and.arrow.up")
-                                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                Label {
+                                    Text("Share files / Save to Files").font(.specialElite(12))
+                                } icon: {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                }
                                     .frame(maxWidth: .infinity).padding(12)
                                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))
                             }
                             .disabled(session.isSharing || session.isRunning || session.previewImage == nil)
                             .accessibilityIdentifier("studio.export.share")
                             Text("Choose a destination in the iOS share sheet. Files stay available until you close this panel or create another export.")
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
                         }
                         .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
@@ -144,7 +148,7 @@ struct ExportPanel: View {
                         exportDestination("📷", "Instagram", "Direct publishing unavailable")
                     }
                     Text("No watermark is added. PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF uses reduced colors, a white background and no audio. Official channel publishing remains unfinished.")
-                        .font(.system(size: 10, design: .monospaced))
+                        .font(.specialElite(10))
                         .foregroundColor(.white.opacity(0.5))
                 }
                 .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 20)
@@ -173,17 +177,17 @@ struct ExportPanel: View {
     @ViewBuilder private var statusView: some View {
         if let error = session.errorMessage {
             Text(error).foregroundColor(Color(hex: "#FF8888"))
-                .font(.system(size: 11, design: .monospaced))
+                .font(.specialElite(11))
                 .accessibilityIdentifier("studio.export.status")
         } else if let notice = session.notice {
             Text(notice).foregroundColor(.white.opacity(0.75))
-                .font(.system(size: 11, design: .monospaced))
+                .font(.specialElite(11))
                 .accessibilityIdentifier("studio.export.status")
         }
     }
 
     private func sectionLabel(_ title: String) -> some View {
-        Text(title).font(.system(size: 9, weight: .bold, design: .monospaced))
+        Text(title).font(.specialElite(9))
             .foregroundColor(.white.opacity(0.4)).tracking(1)
     }
 
@@ -191,8 +195,8 @@ struct ExportPanel: View {
         HStack(spacing: 10) {
             Text(icon).font(.system(size: 18))
             VStack(alignment: .leading, spacing: 3) {
-                Text(name).font(.system(size: 12, weight: .medium, design: .monospaced))
-                Text(status).font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.5))
+                Text(name).font(.specialElite(12))
+                Text(status).font(.specialElite(9)).foregroundColor(.white.opacity(0.5))
             }
             Spacer()
         }
@@ -394,10 +398,10 @@ struct ExportFormatCard: View {
         Button(action: onTap) {
             VStack(spacing: 4) {
                 Text(format.icon).font(.system(size: 24))
-                Text(format.rawValue).font(.system(size: 12, weight: .bold, design: .monospaced))
+                Text(format.rawValue).font(.specialElite(12))
                     .foregroundColor(.white)
                 Text(format == .mp4 ? "H.264 · project audio" : format == .gif ? "Animated · no audio" : (isAvailable ? format.subtitle : "Not available yet"))
-                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .font(.specialElite(8))
                     .foregroundColor(.white.opacity(0.5)).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 14)

@@ -379,6 +379,92 @@ private final class NetworkTrap: URLProtocol {
                 try await idle(vm)
                 try require(vm.status == .cloudAdvice && vm.messages.last!.content == "Real injected retry advice", "Retry did not complete")
             }
+            try await test("drawing help explains actual families and eraser limits while preserving intent priority") {
+                var calls = 0
+                let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                let before = studio.document
+                let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
+                let cases: [(String, [String])] = [
+                    ("How do Brush Library families work?", ["Round, Stipple, Grain, Rough Pen", "Calligraphy, Dip Pen, Halftone", "Gradient, Airbrush, Watercolor and Neon", "not a physical wet-paint simulation"]),
+                    ("Does my pencil pressure work with a finger?", ["measured Apple Pencil force", "finger input keeps a steady width"]),
+                    ("How do I reset my crayon settings?", ["saved separately for each drawing tool", "reopening the app", "Reset this tool", "does not restyle saved strokes"]),
+                    ("How do I use the eraser with grid?", ["1–150 px", "Strength is 0–100%", "separate gestures can accumulate", "not an image-selection-only eraser"]),
+                    ("Can erasing affect selected drawings?", ["editable erasure masks", "pixel effects or alpha paint require deselection", "partially antialiased edges", "cannot read your current eraser preferences"]),
+                    ("How do I export neon brush strokes as MP4?", ["real output file"]),
+                    ("Copy my project with pencil strokes", ["new project identity"]),
+                    ("How do I erase an image background?", ["Open Magic Cut"]),
+                    ("How do I alpha lock my brush?", ["preserves existing layer transparency"]),
+                    ("How do I change brush hex colors?", ["six-digit RGB"]),
+                    ("What are my grid settings?", ["Current grid:"])
+                ]
+                for (question, expected) in cases {
+                    try require(chat.submit(question, context: context), "Drawing help submission rejected")
+                    try await idle(chat)
+                    let answer = chat.messages.last!.content
+                    try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"),
+                        "Drawing help fact or intent missing: \(question)")
+                    try require(chat.status == .localGuide && chat.messages.last?.origin == .local,
+                        "Manual help claimed cloud execution")
+                }
+                try require(calls == 0 && studio.document == before && SpatterKnowledgeBase.allModules.count == 120,
+                    "Drawing advice changed artwork, called a provider or replaced personality modules")
+            }
+            try await test("guide advice reports actual remembered settings without editing or cloud calls") {
+                let editor = StudioViewModel(storage: storage)
+                try require(await editor.createProject(name: "Guide facts", width: 64, height: 64, fps: 12), "Guide project creation failed")
+                let initial = try unwrap(SpatterContext.studio(editor.commandScreenContext))
+                try require(initial.studio?.gridSettings == (editor.document.gridSettings ?? .init()) &&
+                    initial.studio?.onionSettings == (editor.document.onionSettings ?? .init()), "Legacy nil defaults were not resolved from production settings")
+                editor.gridEnabled = false; editor.gridSpacing = 48; editor.gridOpacity = 0.31; editor.gridTint = .red
+                editor.showOnionSkin = true; editor.onionPreviousCount = 2; editor.onionNextCount = 0
+                editor.onionOpacity = 0.47; editor.onionTinted = true
+                let captured = try unwrap(SpatterContext.studio(editor.commandScreenContext))
+                let before = editor.document
+                var calls = 0
+                let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                try require(chat.submit("What are my current grid and onion skin settings?", context: captured), "Guide question rejected")
+                try await idle(chat)
+                let answer = chat.messages.last!.content
+                for fact in ["Current grid: disabled", "48 canvas points", "31%", "red tint",
+                             "Current onion skin: enabled", "2 previous frames, 0 next frames", "47%", "tinted",
+                             "Edit control", "Show grid.", "Hide onion skin.", "not snapping", "Guidance only"] {
+                    try require(answer.contains(fact), "Missing actual guide fact: \(fact)")
+                }
+                try require(chat.status == .localGuide && chat.messages.last?.origin == .local &&
+                    calls == 0 && editor.document == before, "Read-only guide used a provider or edited the project")
+                let summary = try captured.promptSummary()
+                try require(summary.contains("\"gridEnabled\":false") && summary.contains("\"onionEnabled\":true") &&
+                    summary.contains("\"spacing\":48") && !summary.contains(root.path), "Bounded context omitted real guide settings")
+                editor.gridEnabled = true; editor.showOnionSkin = false
+                let current = try unwrap(SpatterContext.studio(editor.commandScreenContext))
+                try require(current != captured && current.studio?.revision != captured.studio?.revision, "Settings change did not invalidate snapshot")
+                let next = SpatterAIViewModel.localGuidance(for: "Current grid and onion skin?", context: current)
+                try require(next.contains("Current grid: enabled") && next.contains("Current onion skin: disabled") &&
+                    next.contains("48 canvas points") && next.contains("47%"), "Visibility lost remembered configuration")
+                try require(SpatterAIViewModel.localGuidance(for: "Current grid?", context: captured).contains("Current grid: disabled"),
+                    "Immutable snapshot was silently rebound")
+                let unknown = SpatterAIViewModel.localGuidance(for: "Current onion skin and grid?", context: .general)
+                try require(unknown.contains("cannot report your current guide settings") && !unknown.contains("Current grid:") &&
+                    !unknown.contains("Current onion skin:"), "General advice invented a project")
+                let beforeMixedAdvice = editor.document
+                for (question, expected) in [
+                    ("How do I make an MP4 with grid?", "real output file"),
+                    ("Copy my project with onion skin", "new project identity"),
+                    ("How do I reorder layers with grid?", "insertion marker"),
+                    ("How do I add a background with onion skin?", "Open Background Library"),
+                    ("How do I use the eraser with grid?", "Strength is 0–100%")
+                ] {
+                    try require(chat.submit(question, context: current), "Mixed-intent advice rejected")
+                    try await idle(chat)
+                    let routed = chat.messages.last!.content
+                    try require(routed.contains(expected) && !routed.contains("Current grid:") &&
+                        !routed.contains("Current onion skin:"), "Guide keyword hijacked actual intent: \(question)")
+                }
+                try require(calls == 0 && editor.document == beforeMixedAdvice,
+                    "Mixed-intent advice used provider")
+                let export = SpatterAIViewModel.localGuidance(for: "How do I export MP4 with grid?", context: current)
+                try require(!export.contains("Current grid:") && export.contains("real output file"), "Guide keyword hijacked export intent")
+            }
             try await test("Studio context comes from actual canonical document and contains no asset bytes or paths") {
                 let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
                 let snapshot = try unwrap(context.studio)

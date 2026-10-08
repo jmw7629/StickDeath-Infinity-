@@ -87,7 +87,7 @@ private struct StudioAudioWorkspace: View {
                     }.padding(.horizontal, 16).padding(.bottom, 8)
                 }
                 if let notice = timeline.notice ?? vm.message {
-                    Text(notice).font(.caption2).foregroundColor(.white.opacity(0.7))
+                    Text(notice).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.7))
                         .padding(.horizontal, 16).accessibilityIdentifier("studio.audio.timelineNotice")
                 }
                 timelineControls
@@ -185,7 +185,7 @@ private struct StudioAudioWorkspace: View {
                     AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
                     if let catalogue {
                         Text("\(catalogue.sounds.count) offline sounds · CC0")
-                            .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                            .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                             .accessibilityIdentifier("studio.audio.catalogue.count")
                         if category != nil || !search.isEmpty {
                             catalogueRows(catalogue)
@@ -197,7 +197,7 @@ private struct StudioAudioWorkspace: View {
                                             Image(systemName: "waveform").font(.title2).foregroundColor(.sdStudioActionText)
                                             Text(name).font(.specialElite(15)).multilineTextAlignment(.leading)
                                             Text("\(catalogue.search("", category: name).count) sounds")
-                                                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                                                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                                         }.frame(maxWidth: .infinity, minHeight: 100, alignment: .leading)
                                             .padding(14).background(Color.sdRed.opacity(0.06)).cornerRadius(18)
                                             .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.sdRed.opacity(0.18)))
@@ -206,10 +206,10 @@ private struct StudioAudioWorkspace: View {
                             }.padding(.horizontal, 16)
                         }
                     } else if let catalogueError {
-                        Text(catalogueError).font(.caption2).foregroundColor(.sdStudioSecondaryText).padding(16)
+                        Text(catalogueError).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText).padding(16)
                     } else {
                         ProgressView("Loading sound library…")
-                            .font(.caption).tint(.sdRed).padding(16)
+                            .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).tint(.sdRed).padding(16)
                             .accessibilityIdentifier("studio.audio.catalogue.loading")
                     }
                 }.padding(.bottom, 12).id("studio.audio.library.start")
@@ -226,16 +226,16 @@ private struct StudioAudioWorkspace: View {
         let results = catalogue.search(search, category: category)
         return LazyVStack(spacing: 8) {
             HStack {
-                Text("\(results.count) matching sounds").font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                Text("\(results.count) matching sounds").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.search.count")
                 Spacer()
                 Button("Clear filters") { search = ""; category = nil; searchFocused = false }
-                    .font(.caption).foregroundColor(.sdStudioActionText)
+                    .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.search.clear")
             }.padding(.horizontal, 16)
             if results.isEmpty {
                 Text("No sounds match these filters. Try another word or clear the filters.")
-                    .font(.caption).foregroundColor(.sdStudioSecondaryText).padding(16)
+                    .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioSecondaryText).padding(16)
                     .accessibilityIdentifier("studio.audio.search.empty")
             }
             Picker("Add sounds to track", selection: $libraryTrack) {
@@ -268,10 +268,10 @@ private struct StudioAudioWorkspace: View {
                         }.foregroundColor(.sdStudioSecondaryText)
                         if let tags = sound.tags, !tags.isEmpty {
                             Text(tags.prefix(3).joined(separator: " · "))
-                                .font(.system(size: 9)).foregroundColor(.sdStudioActionText).lineLimit(1)
+                                .font(.specialElite(9)).foregroundColor(.sdStudioActionText).lineLimit(1)
                                 .accessibilityLabel("Tags: " + tags.joined(separator: ", "))
                         }
-                        Text(sound.author + " · CC0").font(.system(size: 9)).foregroundColor(.sdStudioSecondaryText)
+                        Text(sound.author + " · CC0").font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     }
                     Spacer(minLength: 0)
                     Button {
@@ -413,7 +413,7 @@ private struct StudioAudioWorkspace: View {
         return VStack(spacing: 6) {
             if vm.document.isAudioTrackMuted(clip.track) {
                 Text("Track \(clip.track) is muted")
-                    .font(.caption2).foregroundColor(.sdStudioActionText)
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.selected-track-muted")
             }
             HStack {
@@ -441,7 +441,7 @@ private struct StudioAudioWorkspace: View {
                 Spacer()
                 Button("− frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: max(1 / 48_000, clip.duration - 1 / Double(vm.fps))), clip: clip) }
                 Button("+ frame") { apply(.trim(sourceOffset: clip.sourceOffset, duration: clip.duration + 1 / Double(vm.fps)), clip: clip) }
-            }.font(.caption2).foregroundColor(.sdStudioActionText)
+            }.font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
             HStack {
                 Button("Duplicate after") {
                     guard let duplication else { return }
@@ -480,7 +480,7 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityIdentifier("studio.audio.fades.open")
                 Spacer()
                 Text(clip.fadeEnvelope == nil ? "No fades" : "Source fades on")
-                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.fades.status")
             }
             if let fadeCapture {
@@ -610,10 +610,10 @@ private struct StudioAudioFadeEditor: View {
                 input("Fade out (sec)", text: $outgoing, field: .outgoing)
             }
             Text("Fades follow the source through Trim and Split. Apply resets them to this clip.")
-                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
-            if let notice { Text(notice).font(.caption2).accessibilityIdentifier("studio.audio.fades.notice") }
+                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            if let notice { Text(notice).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).accessibilityIdentifier("studio.audio.fades.notice") }
             if vm.prepareAudioFades() != capture {
-                Text("The clip changed. Cancel and reopen its fade options.").font(.caption2)
+                Text("The clip changed. Cancel and reopen its fade options.").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2))
             }
             HStack {
                 Button { focused = nil; dismiss() } label: { Text("Cancel").frame(minHeight: 44) }
@@ -637,7 +637,7 @@ private struct StudioAudioFadeEditor: View {
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            Text(title).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(.system(size: 14, design: .monospaced)).padding(10).frame(minHeight: 44)
@@ -669,11 +669,11 @@ private struct StudioAudioNumericTrimEditor: View {
                 input("Duration (sec)", text: $duration, field: .duration)
             }
             if let notice {
-                Text(notice).font(.caption2).foregroundColor(.sdStudioActionText)
+                Text(notice).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.trim.notice")
             }
             if vm.prepareAudioTrim() != capture {
-                Text("The clip changed. Cancel and reopen its trim values.").font(.caption2)
+                Text("The clip changed. Cancel and reopen its trim values.").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2))
             }
             HStack {
                 Button("Cancel") { focused = nil; dismiss() }
@@ -696,7 +696,7 @@ private struct StudioAudioNumericTrimEditor: View {
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(title).font(.caption2).foregroundColor(.sdStudioSecondaryText)
+            Text(title).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(.system(size: 14, design: .monospaced)).padding(10)
@@ -828,7 +828,7 @@ private struct AudioFilesImportControls: View {
                 }.font(.caption).tint(.white).disabled(audio.isBusy)
             }
             Toggle("Extract audio from a video", isOn: $movieAudio)
-                .font(.caption).tint(.sdRed).disabled(audio.isBusy || showingFiles)
+                .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).tint(.sdRed).disabled(audio.isBusy || showingFiles)
                 .accessibilityIdentifier("studio.audio.movie")
             if movieAudio {
                 Stepper("Source start: \(sourceStart, specifier: "%.1f")s", value: $sourceStart, in: 0...3599, step: 0.5)
@@ -839,28 +839,28 @@ private struct AudioFilesImportControls: View {
                     ForEach([0.25, 0.5, 1.0, 2.0, 4.0], id: \.self) { Text("\($0, specifier: "%.2g")×").tag($0) }
                 }.accessibilityIdentifier("studio.audio.movie.speed")
                 Text("Choose MP4 or MOV. Extracts only the selected soundtrack interval; the original video stays in Files. Speed changes duration and pitch. No microphone or upload.")
-                    .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             }
             Text("Up to 16 MB / 5 min · mono or stereo · decoded sample limits apply")
-                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             Text("Adds audio at the selected frame. Move and trim clips in the timeline, then include them in MP4 export.")
-                .font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             if let projectNotice = vm.message {
-                Text(projectNotice).font(.caption).foregroundColor(.sdStudioActionText)
+                Text(projectNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.projectNotice")
             }
             if audio.isBusy {
                 HStack {
                     ProgressView(value: audio.progress).tint(.sdRed)
-                    Button("Cancel") { audio.cancel() }.font(.caption).foregroundColor(.sdStudioActionText)
+                    Button("Cancel") { audio.cancel() }.font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
                         .accessibilityIdentifier("studio.audio.cancel")
                 }
             }
             if let notice = audio.notice {
-                Text(notice).font(.caption).foregroundColor(.sdStudioActionText)
+                Text(notice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioActionText)
                     .accessibilityIdentifier("studio.audio.notice")
             } else if let id = audio.lastImportedClipID, vm.audioClips.contains(where: { $0.id == id }) {
-                Text("Audio added · \(vm.saveTimeAgo)").font(.caption2).foregroundColor(.sdStudioSecondaryText)
+                Text("Audio added · \(vm.saveTimeAgo)").font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.audio.imported")
             }
         }
