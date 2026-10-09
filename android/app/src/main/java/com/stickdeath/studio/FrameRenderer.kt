@@ -77,7 +77,7 @@ object FrameRenderer {
                         checkCancellation()
                         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                             color = stroke.color; strokeWidth = stroke.width
-                            alpha = ((if (stroke.tool == Tool.Eraser) 255 else android.graphics.Color.alpha(stroke.color)) * stroke.opacity).toInt().coerceIn(0, 255)
+                            this.alpha = ((if (stroke.tool == Tool.Eraser) 255 else android.graphics.Color.alpha(stroke.color)) * stroke.opacity).toInt().coerceIn(0, 255)
                             strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
                             if (stroke.tool == Tool.Eraser) xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
                         }

@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(Darwin)
 import CryptoKit
+#endif
 
 /// Public build configuration only. Provider credentials belong on the backend.
 struct AppConfig {
@@ -188,6 +190,10 @@ enum AppConfigurationError: Error, LocalizedError {
 
 /// Bounded authenticated intake transport shared by upload/review operations.
 /// Tokens remain request-local; cookies, caches and redirects are disabled.
+// Native transfer services use Apple URLSession streaming, CryptoKit and
+// protected application storage. Shared configuration above remains Foundation-
+// only so the production backend-boundary checks also compile on Linux.
+#if canImport(Darwin)
 enum SDIIntakeClient {
     enum Failure: LocalizedError {
         case configuration, authorization, unavailable, response, conflict, expired, rejected
@@ -474,3 +480,5 @@ actor SDIRenderUploads {
         }
     }
 }
+
+#endif

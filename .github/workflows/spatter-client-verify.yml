@@ -135,6 +135,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -165,6 +169,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -215,6 +220,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -253,6 +259,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -291,6 +298,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -329,6 +337,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -367,6 +376,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -405,6 +415,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -443,6 +454,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -481,6 +493,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -519,6 +532,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -557,6 +571,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -665,6 +680,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -700,6 +716,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -733,6 +750,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -791,6 +809,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -844,6 +866,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -875,6 +901,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -906,6 +936,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -963,6 +997,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1039,6 +1077,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library -D SDI_MOVIE_AUDIO_DIAGNOSTICS \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1095,6 +1137,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1129,6 +1172,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1163,6 +1207,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1198,6 +1243,9 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1235,6 +1283,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1275,6 +1324,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1315,6 +1365,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1347,6 +1401,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1379,6 +1437,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
+            StickDeathInfinity/Views/Studio/StudioFrameRenderer.swift \
+            StickDeathInfinity/Services/StudioSmudgeReplay.swift \
+            StickDeathInfinity/Extensions/Color+SD.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1410,6 +1472,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1446,6 +1509,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -1482,6 +1546,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1519,6 +1584,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1557,6 +1623,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -1597,6 +1664,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -1638,6 +1706,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1679,6 +1748,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1721,6 +1791,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1766,6 +1837,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/Models.swift \
             StickDeathInfinity/Models/StudioSmudge.swift \
             StickDeathInfinity/Models/StudioBlur.swift \
@@ -1810,6 +1882,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
             StickDeathInfinity/Services/Spatter/SpatterStudioEditSession.swift \
             StickDeathInfinity/Models/Models.swift \
@@ -1855,6 +1928,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -1896,6 +1970,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
@@ -1938,6 +2013,7 @@ jobs:
         run: |
           set -euo pipefail
           swiftc -swift-version 5 -parse-as-library \
+            StickDeathInfinity/Services/StudioFillService.swift \
             StickDeathInfinity/App/AppConfig.swift \
             StickDeathInfinity/App/SpatterBackendClient.swift \
             StickDeathInfinity/Extensions/Color+SD.swift \
