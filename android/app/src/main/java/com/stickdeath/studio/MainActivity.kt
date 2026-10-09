@@ -22,6 +22,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
@@ -213,6 +216,9 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
 }
 
 @Composable private fun Editor(vm: StudioViewModel, doc: Document) {
+    val compactHeight = LocalConfiguration.current.screenHeightDp < 480
+    var thumbnailsOverride by rememberSaveable { mutableStateOf<Boolean?>(null) }
+    val showThumbnails = thumbnailsOverride ?: !compactHeight
     val audioImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importAudio(it) }
     val imageImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importImage(it) }
     val videoFrameImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importVideoFrame(it) }
@@ -271,11 +277,13 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     Column(Modifier.fillMaxSize().safeDrawingPadding()) {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
             TextButton({ playing = false; vm.save(close = true) }, enabled = !vm.closing) { Text("Projects") }
-            Text(doc.name, Modifier.padding(horizontal = 8.dp))
+            Text(doc.name, Modifier.widthIn(max = 160.dp).padding(horizontal = 8.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
             TextButton({ playing = false; settingsCapture = doc; settingsDraft = ProjectDraft.from(doc); panel = "project" }, enabled = !vm.closing) { Text("Project settings") }
             TextButton({ vm.save() }, enabled = !vm.saving) { Text(if (vm.saving) "Saving…" else if (vm.dirty) "Save" else "Saved") }
         }
-        Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff303034)).padding(12.dp), contentAlignment = Alignment.Center) {
+            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame, playing, doc.onion.enabled)
+            StudioFloatingToolbar {
             Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(tool.name) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
             TextButton({
                 if (vm.beginImageImport()) {
@@ -296,9 +304,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.redo() }, enabled = vm.canRedo && !playing) { Text("Redo") }
             TextButton({ playing = !playing }, enabled = !vm.closing) { Text(if (playing) "Stop" else "Play") }
             FilterChip(doc.onion.enabled, { vm.updateOnion(doc.onion.copy(enabled = !doc.onion.enabled)) }, { Text("Onion skin") }, enabled = !playing && !vm.closing)
-        }
-        Box(Modifier.weight(1f).fillMaxWidth().background(Color(0xff303034)).padding(12.dp), contentAlignment = Alignment.Center) {
-            DrawingSurface(vm, doc, if (playing) doc.frames[previewIndex.coerceIn(doc.frames.indices)] else doc.frame, playing, doc.onion.enabled)
+            }
         }
         exportProgress?.let { progress ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -307,11 +313,13 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                 TextButton({ vm.cancelExport() }) { Text("Cancel export") }
             }
         }
-        Text("${doc.fps} FPS · ${doc.layer.name} · ${vm.message}", Modifier.padding(8.dp), style = MaterialTheme.typography.bodySmall)
+        Text("${doc.fps} FPS · ${doc.layer.name} · ${vm.message}",
+            Modifier.fillMaxWidth().clickable { panel = "status" }.padding(horizontal = 8.dp, vertical = 4.dp),
+            style = MaterialTheme.typography.bodySmall, maxLines = if (compactHeight) 1 else 2, overflow = TextOverflow.Ellipsis)
         LazyRow(Modifier.fillMaxWidth(), state = timelineState, horizontalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(horizontal = 8.dp)) {
             items(doc.frames, key = { it.id }) { frame ->
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Canvas(Modifier.size(80.dp, 60.dp).clipToBounds().clickable(enabled = !playing && !vm.closing) { vm.selectFrame(frame.id) }) {
+                    if (showThumbnails) Canvas(Modifier.size(80.dp, 60.dp).clipToBounds().clickable(enabled = !playing && !vm.closing) { vm.selectFrame(frame.id) }) {
                         val canvas = drawContext.canvas.nativeCanvas
                         val checkpoint = canvas.save()
                         try {
@@ -327,6 +335,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             }
         }
         Row(Modifier.horizontalScroll(rememberScrollState())) {
+            TextButton({ thumbnailsOverride = !showThumbnails }) { Text(if (showThumbnails) "Hide thumbnails" else "Show thumbnails") }
             TextButton({ vm.addFrame(false) }, enabled = !playing && !vm.closing) { Text("Add frame") }
             TextButton({ vm.addFrame(true) }, enabled = !playing && !vm.closing) { Text("Duplicate") }
             TextButton({ vm.copyFrame() }, enabled = !playing && !vm.closing) { Text("Copy frame") }
@@ -339,10 +348,17 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
+    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "status" -> "Studio status"; "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
+                    "status" -> {
+                        Text(doc.name)
+                        Text("${doc.width} × ${doc.height} · ${doc.fps} FPS · ${doc.frames.size} frames")
+                        Text("Layer: ${doc.layer.name}")
+                        Text(if (vm.dirty) "Unsaved changes" else "Project saved")
+                        Text(vm.message.ifBlank { "No current notice." })
+                    }
                     "videoFrame" -> {
                         val sourceSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
                         Text("Extract the nearest video frame at %.3f seconds into the selected animation frame. Move the animation playhead to choose a different source time.".format(sourceSeconds))

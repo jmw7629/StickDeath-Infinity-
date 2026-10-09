@@ -267,3 +267,13 @@ Audio import reports concrete read/decode/project-preparation stages with an ind
 ### Device-local library collections
 
 Sound and image browsers offer All, Favorites and Recent imports alongside category/search filters. Each library stores at most 256 favorite catalogue IDs and 50 distinct recent successful imports, newest first; previews and cancelled imports do not count. Clear recent imports preserves favorites and all project media. Unknown catalogue IDs are retained in preference storage but omitted from current results, so a temporary pack change does not erase choices. Corrupt or unsupported preference records are preserved with an error instead of overwritten. These settings stay in app-private preferences and do not contact a server. Restart/filter/limit and concurrent import UI acceptance remain deferred.
+
+### Single movable Studio toolbar
+
+The existing Android tool/action strip now lives in one white rounded floating rail over the canvas. Its dedicated handle drags without turning tool-button taps into canvas strokes. Releasing near either side docks it vertically; moving it inward restores horizontal layout. Only the rail scrolls its tools. A handle menu and accessibility actions provide left/right docking, horizontal float, collapse/expand and reset without dragging. Normalized position/dock/collapse state survives activity recreation and clamps within changed viewport bounds. Drawing tools still open the existing Settings popup; frame/timeline controls retain their separate lower location.
+
+This replaces the old fixed top tool row; it does not add a second tool rail or redesign SwiftUI. Adaptive layout, gestures, TalkBack and device visual acceptance are deferred.
+
+### Compact-height editor
+
+On windows below 480 dp tall, frame thumbnails default off while selectable frame/exposure chips remain visible. The lower controls let creators restore or hide thumbnails without changing frames or history. Project titles and the status line have bounded wrapping so long names/errors cannot consume the canvas; tapping status opens the complete current notice and project details in the existing dismissible sheet. Manual thumbnail choice survives activity recreation. Landscape, multi-window and large-text acceptance are deferred.
