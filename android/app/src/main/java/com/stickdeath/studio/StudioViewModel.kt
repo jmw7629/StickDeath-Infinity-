@@ -20,6 +20,7 @@ import kotlinx.coroutines.withContext
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ProjectStore(application)
     var importingAudio by mutableStateOf(false); private set
+    var audioImportStage by mutableStateOf<String?>(null); private set
     var previewingAudio by mutableStateOf(false); private set
     private var audioCapture: Document? = null
     private var audioImportJob: Job? = null
@@ -32,20 +33,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val captured = document ?: return false
         if (closing || importingAudio) return false
         stopAudioPreview()
-        audioCapture = captured; importingAudio = true
+        audioCapture = captured; importingAudio = true; audioImportStage = "Choose an audio file or bundled sound."
         return true
     }
     fun cancelAudioImport() {
         audioGeneration++; audioImportJob?.cancel(); audioImportJob = null
-        audioCapture = null; importingAudio = false
+        audioCapture = null; importingAudio = false; audioImportStage = null
     }
     fun importAudio(uri: Uri?) {
         val captured = audioCapture ?: return
         if (uri == null) { cancelAudioImport(); return }
         audioCapture = null
         loadAudioIntoProject(captured, "Audio ${captured.audioClips.size + 1}") {
-            getApplication<Application>().contentResolver.openInputStream(uri)?.use { AudioSource.read(it) }
-                ?: error("Files could not open this WAV.")
+            AudioFileImporter.read(getApplication<Application>(), uri) { stage ->
+                withContext(Dispatchers.Main.immediate) {
+                    currentCoroutineContext().ensureActive()
+                    if (document == captured && importingAudio && !closing) audioImportStage = stage
+                }
+            }
         }
     }
     fun addBundledSound(captured: Document, sound: BundledSound) {
@@ -55,11 +60,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     private fun loadAudioIntoProject(captured: Document, name: String, credit: AssetCredit? = null, load: suspend () -> AudioSource) {
         val generation = audioGeneration
+        audioImportStage = "Loading sound…"
         audioImportJob = viewModelScope.launch {
             try {
                 val candidate = withContext(Dispatchers.IO) {
                     audioImportMutex.withLock {
                         val source = load()
+                        withContext(Dispatchers.Main.immediate) {
+                            currentCoroutineContext().ensureActive()
+                            if (generation == audioGeneration) audioImportStage = "Preparing editable project audio…"
+                        }
                         val clip = AudioClip(name = name.take(80), source = source, assetCredit = credit)
                         val next = captured.copy(audioClips = captured.audioClips + clip)
                         // Combined image/audio Base64 must fit the complete backup,
@@ -72,14 +82,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 ensureActive()
                 if (generation != audioGeneration) return@launch
                 // Finish this import before change() cancels all stale captured operations.
-                audioImportJob = null; audioCapture = null; importingAudio = false
+                audioImportJob = null; audioCapture = null; importingAudio = false; audioImportStage = null
                 if (change { current ->
-                    require(current == captured) { "Project changed during import. Choose the WAV again." }
+                    require(current == captured) { "Project changed during import. Choose the audio file again." }
                     candidate
-                }) message = "Sound copied into project. Select its clip to edit or preview. MP4 export mixes saved audio clips over the animation duration."
+                }) {
+                    message = "Sound copied into project. Select its clip to edit or preview. MP4 export mixes saved audio clips over the animation duration."
+                    credit?.let { recordLibraryImport("sounds", it.assetID) }
+                }
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) { report(e.message ?: "Audio import failed; no clip added.") }
-            finally { if (generation == audioGeneration) { audioCapture = null; importingAudio = false; audioImportJob = null } }
+            finally { if (generation == audioGeneration) { audioCapture = null; importingAudio = false; audioImportJob = null; audioImportStage = null } }
         }
     }
     fun editAudioTrack(captured: Document, index: Int, mix: AudioTrackMix): Boolean = change { current ->
@@ -98,7 +111,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         stopAudioPreview()
         cancelAudioImport()
         val generation = audioGeneration
-        importingAudio = true
+        importingAudio = true; audioImportStage = "Preparing reversible clip edit…"
         audioImportJob = viewModelScope.launch {
             try {
                 val candidate = withContext(Dispatchers.IO) {
@@ -126,7 +139,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 ensureActive()
                 if (generation != audioGeneration) return@launch
-                audioImportJob = null; importingAudio = false
+                audioImportJob = null; importingAudio = false; audioImportStage = null
                 if (change { current ->
                     require(current == captured) { "Project changed; select the clip again." }
                     candidate
@@ -134,7 +147,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     else "Clip split at the nearest source sample. Undo joins both parts."
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { report(error.message ?: "Audio edit failed; timeline unchanged.") }
-            finally { if (generation == audioGeneration) { audioImportJob = null; importingAudio = false } }
+            finally { if (generation == audioGeneration) { audioImportJob = null; importingAudio = false; audioImportStage = null } }
         }
     }
     fun deleteAudio(captured: Document, id: String): Boolean = change { current ->
@@ -454,11 +467,20 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }) {
                     selectedStrokeIDs = setOf(id); chooseTool(Tool.Move)
                     report(resultMessage)
+                    credit?.let { recordLibraryImport("images", it.assetID) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: OutOfMemoryError) { if (generation == imageGeneration) report("Not enough memory for this image; no image was added.") }
             catch (error: Exception) { if (generation == imageGeneration) report(error.message ?: "Image import failed; no image was added.") }
             finally { if (generation == imageGeneration) { imageJob = null; importingImage = false; imageCapture = null } }
+        }
+    }
+    private fun recordLibraryImport(kind: String, id: String) {
+        val projectID = document?.id
+        viewModelScope.launch {
+            try { LibraryCollections(getApplication<Application>(), kind).recordImport(id) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { if (document?.id == projectID) report("Asset added, but its recent-import entry could not be saved.") }
         }
     }
     private var sampledColorTool = Tool.Pencil

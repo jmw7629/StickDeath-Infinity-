@@ -255,3 +255,15 @@ Video frame opens Android Files and copies the selected content URI into importe
 The canonical image import worker provides revision/layer checks, bounded backup preflight, cooperative 30-second deadline, cancellation and one undo command; device codecs/provider reads can remain inside a platform call until they return. The result is a project-owned still independent of the video URI, automatically selected for Move. Private staging is removed after extraction; the serialized importer clears its abandoned staging before its next import. Original videos are never deleted. Full video tracks, trim ranges, audio extraction and rotation/device acceptance remain outstanding; this operation is explicitly labeled as one still-frame import.
 
 API behavior: https://developer.android.com/reference/android/media/MediaMetadataRetriever#getScaledFrameAtTime(long,int,int,int)
+
+### Compressed Files audio import
+
+The audio picker now accepts audio files and routes compressed sources through the same bounded MediaExtractor/MediaCodec PCM decoder as bundled M4A. AAC, MP3, FLAC, Vorbis and Opus are admitted when the device supplies a compatible decoder; RIFF PCM16/24 WAV keeps its original parser. Imports require exactly one audio track, mono/stereo 8–48 kHz PCM16 output and nonempty duration up to 60 seconds. Encoded files and decoded WAV each must fit 4 MiB. Encrypted packets, unsupported codecs, stalls and changing output formats fail without adding a clip.
+
+Only importer-owned staging is created, serialized and cleaned after completion or before the next compressed import following a crash. Provider originals remain untouched, and normalized audio is embedded in the canonical project/undo/backup path. Provider reads use cooperative cancellation and a 30-second deadline; codec decoding has its own 30-second total/5-second stall bounds. Platform calls can return after cancellation. Codec, timing/priming and device acceptance are deferred.
+
+Audio import reports concrete read/decode/project-preparation stages with an indeterminate progress bar. During compressed decoding, the displayed seconds come from the PCM byte count, sample rate and channel count, throttled to twice per second; no estimated completion percentage is fabricated. Cancelling or completing clears the operation status, and callbacks respect cancellation and the captured document. Runtime acceptance remains deferred.
+
+### Device-local library collections
+
+Sound and image browsers offer All, Favorites and Recent imports alongside category/search filters. Each library stores at most 256 favorite catalogue IDs and 50 distinct recent successful imports, newest first; previews and cancelled imports do not count. Clear recent imports preserves favorites and all project media. Unknown catalogue IDs are retained in preference storage but omitted from current results, so a temporary pack change does not erase choices. Corrupt or unsupported preference records are preserved with an error instead of overwritten. These settings stay in app-private preferences and do not contact a server. Restart/filter/limit and concurrent import UI acceptance remain deferred.

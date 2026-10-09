@@ -360,7 +360,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text(if (playing) "Stop scene playback" else "Play scene from selected frame")
                         }
                         AudioClipControls(vm, doc, enabled = !playing && !vm.closing, playbackSeconds = if (playing) previewSeconds else null) {
-                            if (vm.beginAudioImport()) try { audioImporter.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")) }
+                            if (vm.beginAudioImport()) try { audioImporter.launch(arrayOf("audio/*")) }
                             catch (e: Exception) { vm.cancelAudioImport(); vm.report(e.message ?: "Files could not open.") }
                         }
                     }

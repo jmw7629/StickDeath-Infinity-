@@ -13,9 +13,13 @@ import androidx.compose.ui.semantics.contentDescription
     var libraryOpen by remember(doc.id) { mutableStateOf(false) }
     TextButton({ vm.stopAudioPreview(); libraryOpen = !libraryOpen }, enabled = enabled) { Text(if (libraryOpen) "Close sound library" else "Browse sound library") }
     if (libraryOpen) BundledSoundControls(vm, doc, enabled)
-    Text("Import your licensed WAV: uncompressed 16/24-bit PCM, mono/stereo, 8–48 kHz, up to 60 s and 4 MiB each. Project limit: 16 clips / 8 MiB. Audio is stored inside the local project backup.")
-    Button(onImport, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text("Import WAV from Files") }
-    if (vm.importingAudio) TextButton({ vm.cancelAudioImport() }) { Text("Cancel audio operation") }
+    Text("Import audio you have rights to use: PCM WAV or device-supported AAC/M4A, MP3, FLAC, Vorbis or Opus. Mono/stereo, 8–48 kHz, up to 60 s; both the file and decoded PCM must fit 4 MiB. Project limit: 16 clips / 8 MiB. Audio is copied into the local project backup.")
+    Button(onImport, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text("Import audio from Files") }
+    if (vm.importingAudio) {
+        Text(vm.audioImportStage ?: "Preparing audio…")
+        LinearProgressIndicator(Modifier.fillMaxWidth())
+        TextButton({ vm.cancelAudioImport() }) { Text("Cancel audio operation") }
+    }
     Text("Placement is in seconds; tracks 1–4 are independent of drawing layers. Clip preview plays only the selected saved trim, volume and mute. MP4 mixes saved clips over the animation duration. Overlapping clips sum, including on the same track; loud sums are limited to the PCM range. Scene playback mixes saved clips from the selected frame through the end, up to 120 seconds.")
     Text("Track mixer · saved track gain and mute affect clip preview, scene playback and MP4")
     doc.audioTracks.forEachIndexed { index, mix -> key(doc.id, doc.revision, index) {

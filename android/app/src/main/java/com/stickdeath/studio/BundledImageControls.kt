@@ -28,7 +28,8 @@ import kotlinx.coroutines.withContext
     var loaded by remember { mutableStateOf(false) }
     var query by remember { mutableStateOf("") }
     var category by remember { mutableStateOf<String?>(null) }
-    var page by remember(query, category) { mutableIntStateOf(0) }
+    val collections = rememberLibraryCollections("images")
+    var page by remember(query, category, collections.collection) { mutableIntStateOf(0) }
     LaunchedEffect(context) {
         try { images = BundledImages.load(context); loaded = true }
         catch (cancelled: CancellationException) { throw cancelled }
@@ -50,12 +51,24 @@ import kotlinx.coroutines.withContext
             FilterChip(category == name, { category = name }, { Text(name) })
         }
     }
-    val matches = remember(images, query, category) {
+    Row(Modifier.horizontalScroll(rememberScrollState())) {
+        listOf("All", "Favorites", "Recent imports").forEach { name ->
+            FilterChip(collections.collection == name, { collections.collection = name }, { Text(name) }, enabled = name == "All" || collections.ready)
+        }
+    }
+    collections.error?.let { Text(it) }
+    if (collections.collection == "Recent imports") TextButton({ collections.clearRecent() }, enabled = collections.ready && !collections.busy) { Text("Clear recent imports") }
+    val matches = remember(images, query, category, collections.collection, collections.snapshot) {
         val terms = query.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }
-        images.filter { image ->
+        val filtered = images.filter { image ->
             (category == null || category == image.category) && terms.all { term ->
                 (image.title + " " + image.author + " " + image.tags.joinToString(" ")).lowercase().contains(term)
             }
+        }
+        when (collections.collection) {
+            "Favorites" -> filtered.filter { it.id in collections.snapshot.favorites }
+            "Recent imports" -> { val byID = filtered.associateBy { it.id }; collections.snapshot.recent.mapNotNull { byID[it] } }
+            else -> filtered
         }
     }
     val pages = maxOf(1, (matches.size + 11) / 12)
@@ -84,6 +97,9 @@ import kotlinx.coroutines.withContext
             }
         }
         TextButton({ vm.addBundledImage(doc, image) }, enabled = enabled && !vm.importingImage) { Text("Add to project") }
+        TextButton({ collections.toggle(image.id) }, enabled = collections.ready && !collections.busy) {
+            Text(if (image.id in collections.snapshot.favorites) "Remove favorite" else "Favorite")
+        }
         TextButton({ credits = !credits }) { Text(if (credits) "Hide source" else "Source and license") }
         if (credits) Text("Art by ${image.author}\n${image.sourceURL}\nCC0-1.0 · https://creativecommons.org/publicdomain/zero/1.0/")
     } }
