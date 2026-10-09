@@ -215,6 +215,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
 @Composable private fun Editor(vm: StudioViewModel, doc: Document) {
     val audioImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importAudio(it) }
     val imageImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importImage(it) }
+    val videoFrameImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importVideoFrame(it) }
     // Coalesce slider changes, and flush the final choices when leaving Studio.
     LaunchedEffect(vm.tool, vm.width, vm.strokeOpacity, vm.shapeFilled, vm.shapeEqualSides, vm.smoothing, vm.mirrorMode, vm.color, vm.brushFamily, vm.nibAngle) {
         kotlinx.coroutines.delay(250)
@@ -282,6 +283,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                     catch (error: Exception) { vm.cancelImageImport(); vm.report(error.message ?: "Files could not open; no image was added.") }
                 }
             }, enabled = !playing && !vm.closing && !vm.importingImage) { Text("Import image") }
+            TextButton({ panel = "videoFrame" }, enabled = !playing && !vm.closing && !vm.importingImage) { Text("Video frame") }
             TextButton({ panel = "images" }, enabled = !playing && !vm.closing) { Text("Image library") }
             if (vm.importingImage) TextButton({ vm.cancelImageImport() }) { Text("Cancel image import") }
             TextButton({ panel = "brush" }, enabled = !playing && !vm.closing) { Text("Settings") }
@@ -337,10 +339,21 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
+    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "videoFrame" -> "Video frame at playhead"; "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
+                    "videoFrame" -> {
+                        val sourceSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
+                        Text("Extract the nearest video frame at %.3f seconds into the selected animation frame. Move the animation playhead to choose a different source time.".format(sourceSeconds))
+                        Text("Choose your own video in Files: up to 32 MiB and two minutes. The frame becomes project-owned image artwork on the active layer. No video audio or full video track is imported.")
+                        Button({
+                            if (vm.beginImageImport()) try { videoFrameImporter.launch(arrayOf("video/*")) }
+                            catch (error: Exception) { vm.cancelImageImport(); vm.report(error.message ?: "Files could not open.") }
+                        }, enabled = !vm.importingImage && !playing && !vm.closing) { Text("Choose video in Files") }
+                        if (vm.importingImage) TextButton({ vm.cancelImageImport() }) { Text("Cancel frame import") }
+                        if (vm.message.isNotEmpty()) Text(vm.message)
+                    }
                     "images" -> BundledImageControls(vm, doc, enabled = !playing && !vm.closing)
                     "audio" -> {
                         Button({ playing = !playing }, enabled = !vm.closing) {

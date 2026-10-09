@@ -70,11 +70,12 @@ struct StudioImageLibraryView: View {
                                 ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
                             }.padding(.vertical, 8)
                             .accessibilityIdentifier("studio.image-library.pack-list")
-                        }.font(.caption).foregroundColor(.white.opacity(0.8))
-                        if packBusy { ProgressView("Downloading and verifying pictures…").tint(.red) }
-                        if let packNotice { Text(packNotice).font(.caption).foregroundColor(.white.opacity(0.7)) }
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8))
+                        if packBusy { ProgressView("Downloading and verifying pictures…").font(.specialElite(12, relativeTo: .caption)).tint(.red) }
+                        if let packNotice { Text(packNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7)) }
                     }
                     TextField("Search pictures, tags…", text: $query)
+                        .font(.specialElite(16, relativeTo: .body))
                         .textInputAutocapitalization(.never).autocorrectionDisabled()
                         .focused($searchFocused).submitLabel(.search)
                         .onSubmit { searchFocused = false }
@@ -95,26 +96,26 @@ struct StudioImageLibraryView: View {
                     if collection == "Recent" {
                         Button("Clear recent previews") {
                             preferences(catalogue).clearRecent(); recent = []
-                        }.font(.caption).foregroundColor(.red)
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                     }
-                    if let preferenceNotice { Text(preferenceNotice).font(.caption).foregroundColor(.red) }
+                    if let preferenceNotice { Text(preferenceNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red) }
                     Toggle("Include cartoon weapons", isOn: $includeCartoonWeapons)
-                        .font(.caption).tint(.red).foregroundColor(.white.opacity(0.8))
+                        .font(.specialElite(12, relativeTo: .caption)).tint(.red).foregroundColor(.white.opacity(0.8))
                         .accessibilityIdentifier("studio.image-library.weapons")
                     HStack {
-                        Text("\(results.count) matching pictures").font(.caption)
+                        Text("\(results.count) matching pictures").font(.specialElite(12, relativeTo: .caption))
                             .accessibilityIdentifier("studio.image-library.matches")
                         Spacer()
                         Button("Clear filters") {
                             query = ""; category = nil; collection = "All"; includeCartoonWeapons = true; searchFocused = false
-                        }.font(.caption).foregroundColor(.red)
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
                     }.foregroundColor(.white.opacity(0.7))
                     Text("Choose a picture to preview it. Add attaches it to a new image layer.")
-                        .font(.caption).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(.horizontal, 20)
                 if results.isEmpty {
-                    Text("No matching pictures").foregroundColor(.white.opacity(0.7))
+                    Text("No matching pictures").font(.specialElite(16, relativeTo: .body)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.image-library.empty")
                 } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 12) {
@@ -131,7 +132,7 @@ struct StudioImageLibraryView: View {
                                             .background(Color.white.opacity(0.9)).cornerRadius(8)
                                         Text(item.title).font(.specialElite(14)).lineLimit(2)
                                             .frame(maxWidth: .infinity, alignment: .leading)
-                                        Text("Kenney · CC0").font(.caption2).foregroundColor(.white.opacity(0.65))
+                                        Text("Kenney · CC0").font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.65))
                                     }
                                     .foregroundColor(.white).padding(10)
                                     .background(Color.white.opacity(0.06)).cornerRadius(12)
@@ -144,9 +145,14 @@ struct StudioImageLibraryView: View {
                                     preferenceNotice = store.toggleFavorite(item.id) ? nil : "You can keep up to 256 favorites. Remove one before adding another."
                                     favorites = Set(store.favorites)
                                 } label: {
-                                    Label(favorites.contains(item.id) ? "Favorited" : "Favorite",
-                                          systemImage: favorites.contains(item.id) ? "star.fill" : "star")
-                                        .font(.caption).foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 44)
+                                    Label {
+                                        Text(favorites.contains(item.id) ? "Favorited" : "Favorite")
+                                            .font(.specialElite(12, relativeTo: .caption))
+                                    } icon: {
+                                        Image(systemName: favorites.contains(item.id) ? "star.fill" : "star")
+                                            .font(.caption)
+                                    }
+                                    .foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 44)
                                 }.accessibilityIdentifier("studio.image-library.favorite." + item.id)
                                 }
                             }
@@ -159,12 +165,12 @@ struct StudioImageLibraryView: View {
                 .scrollDismissesKeyboard(.interactively)
                 .accessibilityIdentifier("studio.image-library.scroll")
             } else if let failure {
-                Text(failure).foregroundColor(.white).padding()
+                Text(failure).font(.specialElite(16, relativeTo: .body)).foregroundColor(.white).padding()
                     .accessibilityIdentifier("studio.image-library.error")
-                Button("Try again") { self.failure = nil; loadID = UUID() }.tint(.red)
+                Button("Try again") { self.failure = nil; loadID = UUID() }.font(.specialElite(16, relativeTo: .body)).tint(.red)
                 Spacer()
             } else {
-                ProgressView("Loading pictures…").tint(.red).foregroundColor(.white)
+                ProgressView("Loading pictures…").font(.specialElite(16, relativeTo: .body)).tint(.red).foregroundColor(.white)
                 Spacer()
             }
         }
@@ -213,22 +219,22 @@ struct StudioImageLibraryView: View {
     private func packRow(_ item: StudioImagePackCache.Descriptor) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text("\(item.title) · \(item.imageCount) pictures").font(.caption)
+                Text("\(item.title) · \(item.imageCount) pictures").font(.specialElite(12, relativeTo: .caption))
                 Spacer()
                 if packBusy && activePackID == item.id {
-                    Button("Cancel") { cancelPack() }
+                    Button("Cancel") { cancelPack() }.font(.specialElite(12, relativeTo: .caption))
                         .accessibilityIdentifier("studio.image-library.pack.cancel." + item.id)
                 } else if optionalCatalogues[item.id] != nil || packsNeedingRemoval.contains(item.id) {
-                    Button("Remove download") { changePack(item, remove: true) }.disabled(packBusy)
+                    Button("Remove download") { changePack(item, remove: true) }.font(.specialElite(12, relativeTo: .caption)).disabled(packBusy)
                         .accessibilityIdentifier("studio.image-library.pack.remove." + item.id)
                 } else {
-                    Button("Download \((item.archiveBytes + 1023) / 1024) KB") { changePack(item, remove: false) }.disabled(packBusy)
+                    Button("Download \((item.archiveBytes + 1023) / 1024) KB") { changePack(item, remove: false) }.font(.specialElite(12, relativeTo: .caption)).disabled(packBusy)
                         .accessibilityIdentifier("studio.image-library.pack.download." + item.id)
                 }
             }
             if item.mayContainWeapons {
                 Text("Mixed pixel artwork may include cartoon weapons; hidden when that filter is off.")
-                    .font(.caption2).foregroundColor(.white.opacity(0.6))
+                    .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
             }
         }.foregroundColor(.white.opacity(0.8))
     }
@@ -267,7 +273,7 @@ private struct StudioLibraryThumbnail: View {
             if let image {
                 Image(image, scale: 1, label: Text(item.title)).resizable().scaledToFit().padding(8)
             } else if failed {
-                Text("Preview unavailable").font(.caption).foregroundColor(.black)
+                Text("Preview unavailable").font(.specialElite(12, relativeTo: .caption)).foregroundColor(.black)
             } else { ProgressView().tint(.red) }
         }
         .onDisappear {

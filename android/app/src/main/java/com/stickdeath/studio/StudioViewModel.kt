@@ -405,6 +405,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 ?: error("The file provider could not open this image.")
         }
     }
+    fun importVideoFrame(uri: Uri?) {
+        val captured = imageCapture ?: return
+        imageCapture = null
+        if (uri == null) { cancelImageImport(); return }
+        val seconds = captured.frames.takeWhile { it.id != captured.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / captured.fps
+        loadImageIntoProject(captured,
+            resultMessage = "Nearest video frame at %.3fs added as editable artwork. Video audio was not imported. Undo removes it.".format(seconds)) { checkpoint ->
+            VideoFrameImporter.extract(getApplication<Application>(), uri, seconds, checkpoint)
+        }
+    }
     fun addBundledImage(captured: Document, image: BundledImage) {
         if (document != captured || !beginImageImport()) return
         imageCapture = null
@@ -412,7 +422,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             BundledImages.artwork(getApplication<Application>(), image, checkpoint)
         }
     }
-    private fun loadImageIntoProject(captured: Document, credit: AssetCredit? = null, load: (() -> Unit) -> ImageArtwork) {
+    private fun loadImageIntoProject(captured: Document, credit: AssetCredit? = null, resultMessage: String = "Image added. Move or use selection settings to resize, rotate or flip. Undo removes it.", load: (() -> Unit) -> ImageArtwork) {
         val generation = imageGeneration
         imageJob = viewModelScope.launch {
             try {
@@ -443,7 +453,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     candidate
                 }) {
                     selectedStrokeIDs = setOf(id); chooseTool(Tool.Move)
-                    report("Image added. Move or use selection settings to resize, rotate or flip. Undo removes it.")
+                    report(resultMessage)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: OutOfMemoryError) { if (generation == imageGeneration) report("Not enough memory for this image; no image was added.") }

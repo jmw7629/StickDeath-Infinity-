@@ -247,3 +247,11 @@ The export menu writes a separate project asset-credits JSON file; PNG sequence 
 ### Two-sided audio trim
 
 A selected clip exposes both trim edges. The nearer edge wins on short clips. Left trim adjusts timeline start and source offset together while preserving the right edge, source-time fade curve and credits; left extension is bounded by existing source samples and time zero. Right trim keeps the source start fixed. Frame snapping, minimum one-sample duration, cancellation, edge autoscroll and one-command undo apply to both. Precise numeric controls remain available. Touch and device audio acceptance are deferred.
+
+### Rotoscope still at the animation playhead
+
+Video frame opens Android Files and copies the selected content URI into importer-owned staging (32 MiB input, two-minute duration, 8192-pixel edge / 32 megapixel source). The active animation frame's exposure-aware start selects source time. `MediaMetadataRetriever.OPTION_CLOSEST` retrieves a nearby actual decoded frame, bounded to 1024×1024, normalized into the existing 1 MiB image model. It is not an exact decoded presentation-timestamp guarantee.
+
+The canonical image import worker provides revision/layer checks, bounded backup preflight, cooperative 30-second deadline, cancellation and one undo command; device codecs/provider reads can remain inside a platform call until they return. The result is a project-owned still independent of the video URI, automatically selected for Move. Private staging is removed after extraction; the serialized importer clears its abandoned staging before its next import. Original videos are never deleted. Full video tracks, trim ranges, audio extraction and rotation/device acceptance remain outstanding; this operation is explicitly labeled as one still-frame import.
+
+API behavior: https://developer.android.com/reference/android/media/MediaMetadataRetriever#getScaledFrameAtTime(long,int,int,int)
