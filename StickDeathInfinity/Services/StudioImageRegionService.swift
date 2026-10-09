@@ -82,8 +82,13 @@ enum StudioImageRegionService {
     static func select(png: Data, instance: StudioRasterLayerInstance, point: CGPoint,
                        tolerance: Int, contiguous: Bool, mode: Mode, previous: Data?,
                        membershipOperation: MembershipOperation? = nil, canvasSample: CanvasSample? = nil,
+                       outline: [CGPoint]? = nil,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Result? {
         try checkCancellation()
+        if let outline {
+            guard (3...1024).contains(outline.count), membershipOperation == nil, canvasSample == nil,
+                  outline.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { throw Failure.invalid }
+        }
         guard png.count <= 16 * 1024 * 1024,
               let source = CGImageSourceCreateWithData(png as CFData, nil), CGImageSourceGetCount(source) == 1,
               let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -105,7 +110,7 @@ enum StudioImageRegionService {
         }
         guard decoded else { throw Failure.invalid }
         var seed: CGPoint?
-        if membershipOperation == nil {
+        if membershipOperation == nil && outline == nil {
             let value = try sourcePoint(point, instance: instance, width: width, height: height)
             let sx = Int(floor(value.x)), sy = Int(floor(value.y))
             guard sx >= 0, sy >= 0, sx < width, sy < height else { throw Failure.outside }
@@ -152,7 +157,38 @@ enum StudioImageRegionService {
             guard previous.count == count, previous.allSatisfy({ $0 <= 1 }) else { throw Failure.invalid }
             selected = [UInt8](previous)
         }
-        if let membershipOperation {
+        if let outline {
+            // Scan source-pixel centers against the lasso after the exact inverse
+            // crop/rotation/reflection transform. Each row sorts bounded edge
+            // crossings once; avoid a pixel-count × vertex-count hit-test loop.
+            let transform = try sourceToCanvas(instance: instance, width: width, height: height).inverted()
+            let vertices = outline.map { $0.applying(transform) }
+            guard vertices.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else { throw Failure.invalid }
+            for y in 0..<height {
+                try checkCancellation()
+                let scan = Double(y) + 0.5
+                var crossings: [Double] = []
+                for i in vertices.indices {
+                    let a = vertices[i], b = vertices[(i + 1) % vertices.count]
+                    if (a.y > scan) != (b.y > scan) {
+                        let crossing = a.x + (scan - a.y) * (b.x - a.x) / (b.y - a.y)
+                        guard crossing.isFinite else { throw Failure.invalid }
+                        crossings.append(crossing)
+                    }
+                }
+                crossings.sort()
+                guard crossings.count % 2 == 0 else { throw Failure.invalid }
+                for i in stride(from: 0, to: crossings.count, by: 2) {
+                    let start = Int(ceil(min(Double(width), max(0, crossings[i] - 0.5))))
+                    let end = Int(ceil(min(Double(width), max(0, crossings[i + 1] - 0.5))))
+                    if start < end {
+                        for x in start..<end where coverage[y * width + x] > 0 {
+                            selected[y * width + x] = mode == .subtract ? 0 : 1
+                        }
+                    }
+                }
+            }
+        } else if let membershipOperation {
             if membershipOperation == .grow || membershipOperation == .shrink {
                 guard previous != nil, selected.contains(1) else { throw Failure.empty }
             }

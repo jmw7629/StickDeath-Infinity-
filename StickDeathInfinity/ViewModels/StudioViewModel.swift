@@ -136,7 +136,7 @@ final class StudioViewModel: ObservableObject {
                     // Direct transforms renew it only after their own commit.
                     imageMoveTarget?.areaRevision = document.revision
                 } else { imageMoveTarget = nil }
-                if selectedTool == .lasso, areaSelectionTarget == .image {
+                if selectedTool == .lasso, [.image, .imagePixels].contains(areaSelectionTarget) {
                     editor.selectedElementIDs.removeAll()
                 }
                 restoreDrawingToolPreferences()
@@ -1854,9 +1854,9 @@ final class StudioViewModel: ObservableObject {
     }
     @Published var areaSelectionKind: StudioAreaSelectionKind = .freehand { didSet { rememberDrawingToolPreferences() } }
     @Published var areaSelectionSmoothing: Double = 3 { didSet { rememberDrawingToolPreferences() } }
-    enum AreaSelectionTarget: String, CaseIterable { case drawings, image, artwork
+    enum AreaSelectionTarget: String, CaseIterable { case drawings, image, artwork, imagePixels
         var label: String {
-            switch self { case .drawings: return "Drawings"; case .image: return "Image on active layer"; case .artwork: return "Drawings + image" }
+            switch self { case .drawings: return "Drawings"; case .image: return "Image on active layer"; case .artwork: return "Drawings + image"; case .imagePixels: return "Image pixels → Move" }
         }
     }
     private var areaSelectionGeneration = UUID()
@@ -1864,6 +1864,8 @@ final class StudioViewModel: ObservableObject {
         didSet {
             if areaSelectionTarget != oldValue {
                 areaSelectionGeneration = UUID()
+                clearImageRegion()
+                if areaSelectionTarget == .imagePixels { selectionMode = .new }
                 cancelPolygonSelection(); imageMoveTarget = nil; editor.selectedElementIDs.removeAll()
             }
         }
@@ -1965,7 +1967,8 @@ final class StudioViewModel: ObservableObject {
               selectedTool == .lasso || (allowMove && selectedTool == .move),
               activeStrokeID == nil, pendingBrushStroke == nil,
               areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing),
-              areaSelectionTarget != .image || availableAreaImage != nil else { return nil }
+              !wandWorking,
+              ![.image, .imagePixels].contains(areaSelectionTarget) || availableAreaImage != nil else { return nil }
         return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
             selectedIDs: selectedElementIDs, mode: selectionMode, kind: areaSelectionKind,
             smoothing: areaSelectionSmoothing, target: areaSelectionTarget,
@@ -1980,6 +1983,11 @@ final class StudioViewModel: ObservableObject {
             guard beginAreaSelection() == capture else { throw StudioCommandError.staleRevision }
             try checkCancellation()
             let region = try StudioSelectionRegion(points: points, kind: capture.kind, smoothing: capture.smoothing)
+            if capture.target == .imagePixels {
+                guard capture.mode == .new else { throw StudioDocumentError.unavailable("Image-pixel lasso creates one new movable fragment. Choose New selection.") }
+                Task { _ = await finishImagePixelLasso(capture, outline: region.points) }
+                return true
+            }
             if capture.target == .image {
                 guard let image = capture.image else { throw StudioCommandError.staleRevision }
                 let found = region.containsImage(placement: image.placement, angle: image.angle)
@@ -2055,6 +2063,19 @@ final class StudioViewModel: ObservableObject {
             return true
         } catch { message = error.localizedDescription; return false }
     }
+    /// A pixel lasso lifts the masked fragment as one reversible edit, then
+    /// reuses the normal image Move handles. Original source bytes are retained.
+    @discardableResult
+    func finishImagePixelLasso(_ area: AreaSelectionCapture, outline: [CGPoint]) async -> Bool {
+        do {
+            guard area.target == .imagePixels, area.mode == .new, beginAreaSelection() == area else { throw StudioCommandError.staleRevision }
+            let capture = try captureImageRegion()
+            guard await selectImageRegion(capture, at: .zero, outline: outline) else { return false }
+            guard beginAreaSelection() == area else { clearImageRegion(); throw StudioCommandError.staleRevision }
+            guard imageRegionSelection != nil else { message = "No visible image pixels inside this outline."; return false }
+            return applyImageRegion(.lift)
+        } catch { message = error.localizedDescription; return false }
+    }
     /// Completing a nonempty lasso hands the same selected identities to the
     /// canvas transform box. Hand pans the viewport and must not be used here.
     private func activateMoveAfterAreaSelection() {
@@ -2091,7 +2112,7 @@ final class StudioViewModel: ObservableObject {
             // Lasso deliberately hands off to Move. Selection commands must
             // remain available there without allowing new lasso gestures in Move.
             let capturedTool = selectedTool
-            guard areaSelectionTarget != .image, let capture = areaSelectionCapture(allowMove: true), textDraft == nil else { return false }
+            guard ![.image, .imagePixels].contains(areaSelectionTarget), let capture = areaSelectionCapture(allowMove: true), textDraft == nil else { return false }
             let eligible = Set(layers.filter {
                 $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
             }.map(\.id))
@@ -3756,7 +3777,8 @@ final class StudioViewModel: ObservableObject {
         cancelImageRegionWork(); imageRegionSelection = nil; wandPreviewPNG = nil; wandSelectedPixels = 0
     }
     func captureImageRegion() throws -> ImageRegionCapture {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .wand, activeStrokeID == nil,
+        guard isEditing, !isPlaying, !isSaving,
+              selectedTool == .wand || (selectedTool == .lasso && areaSelectionTarget == .imagePixels), activeStrokeID == nil,
               pendingBrushStroke == nil, textDraft == nil, selectedElementIDs.isEmpty,
               let instance = currentFrame.rasterInstance(on: activeLayerID), instance.placement != nil,
               let sourceID = currentFrame.rasterAssetID(on: activeLayerID), originalImageSource(sourceID) != nil,
@@ -3771,7 +3793,7 @@ final class StudioViewModel: ObservableObject {
     }
     @discardableResult
     func selectImageRegion(_ capture: ImageRegionCapture, at point: CGPoint,
-                           membershipOperation: StudioImageRegionService.MembershipOperation? = nil) async -> Bool {
+                           membershipOperation: StudioImageRegionService.MembershipOperation? = nil, outline: [CGPoint]? = nil) async -> Bool {
         guard imageRegionWorker == nil else {
             message = "The previous Wand selection is still finishing. Wait for it to finish before selecting again."
             return false
@@ -3790,14 +3812,15 @@ final class StudioViewModel: ObservableObject {
             guard try captureImageRegion() == capture, let png = rasterData(capture.sourceID),
                   wandTolerance.isFinite, (0...128).contains(wandTolerance) else { throw StudioCommandError.staleRevision }
             let previous = imageRegionSelection?.capture == capture ? imageRegionSelection?.result.membership : nil
-            let mode = wandMode, tolerance = Int(wandTolerance.rounded()), contiguous = wandContiguous
+            let mode: StudioImageRegionService.Mode = outline == nil ? wandMode : .newSelection
+            let tolerance = Int(wandTolerance.rounded()), contiguous = wandContiguous
             imageRegionWorkerID = owner
             wandWorking = true
             // Share Fill's canonical composited snapshot, without issuing a
             // Fill command or changing the document. Region edits retain only
             // the active image's original pixels and source-space membership.
             let sample: StudioImageRegionService.CanvasSample?
-            if wandSampleVisibleCanvas && membershipOperation == nil {
+            if wandSampleVisibleCanvas && membershipOperation == nil && outline == nil {
                 let rendered = try StudioFillService.capture(document: document,
                     frameID: capture.frameID, layerID: capture.layerID, point: point,
                     color: "#000000", opacity: 1,
@@ -3809,7 +3832,7 @@ final class StudioViewModel: ObservableObject {
             let worker = Task.detached(priority: .userInitiated) {
                 try StudioImageRegionService.select(png: png, instance: capture.instance, point: point,
                     tolerance: tolerance, contiguous: contiguous, mode: mode, previous: previous,
-                    membershipOperation: membershipOperation, canvasSample: sample)
+                    membershipOperation: membershipOperation, canvasSample: sample, outline: outline)
             }
             imageRegionWorker = worker; imageRegionWorkerID = owner
             let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })

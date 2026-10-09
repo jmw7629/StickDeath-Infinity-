@@ -1806,6 +1806,23 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(opened && cold.currentFrame == pasted && render(cold).bytes == pixels &&
                 cold.originalImageSource(asset)?.originalData == original, "Linked paste cold source or pixels changed")
         }
+        try await test("image lasso outlines share canonical region masks and reversible fragment bytes") {
+            let instance = StudioRasterLayerInstance(layerID: "lasso-layer", placement: .init(x: 0, y: 40, width: 160, height: 80))
+            let left = [CGPoint(x: 0, y: 40), CGPoint(x: 80, y: 40), CGPoint(x: 80, y: 120), CGPoint(x: 0, y: 120)]
+            let right = left.map { CGPoint(x: $0.x + 80, y: $0.y) }
+            let selected = try StudioImageRegionService.select(png: image.normalizedPNG, instance: instance, point: .zero,
+                tolerance: 0, contiguous: false, mode: .newSelection, previous: nil, outline: left)!
+            try require(selected.selectedPixels == 1600, "Lasso source coverage differs from outlined half")
+            let both = try StudioImageRegionService.select(png: image.normalizedPNG, instance: instance, point: .zero,
+                tolerance: 0, contiguous: false, mode: .add, previous: selected.membership, outline: right)!
+            try require(both.selectedPixels == 3200, "Lasso Add lost source pixels")
+            let remainder = try StudioImageRegionService.select(png: image.normalizedPNG, instance: instance, point: .zero,
+                tolerance: 0, contiguous: false, mode: .subtract, previous: both.membership, outline: left)!
+            try require(remainder.selectedPixels == 1600, "Lasso Subtract did not preserve opposite half")
+            let fragment = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithData(selected.fragmentPNG as CFData, nil)!, 0, nil)!
+            try pixel(pixels(fragment).pixel(10, 20), [255,0,0,255])
+            try pixel(pixels(fragment).pixel(60, 20), [0,0,0,0])
+        }
         try await test("image Wand source regions Add Subtract transparent bounds and exact transform inverse") {
             let instance = StudioRasterLayerInstance(layerID: "wand-layer", placement: .init(x: 0, y: 40, width: 160, height: 80))
             let red = try StudioImageRegionService.select(png: image.normalizedPNG, instance: instance, point: CGPoint(x: 30, y: 80),
@@ -1919,6 +1936,28 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(opened && render(cold).bytes == pasted.bytes && cold.currentFrame.referencedRasterAssetIDs == [sourceID] && cold.currentFrame.rasterLayerInstances.count == 2 &&
                 cold.currentFrame.rasterLayerInstances.allSatisfy({ $0.regionMask != nil }),
                 "Wand cold reopen lost fragment/remainder composition")
+        }
+        try await test("pixel lasso lifts a reversible fragment and automatically hands off to Move") {
+            let (vm, store) = try await project(root), sourceID = try attach(image, to: vm)
+            vm.selectLayer(vm.currentFrame.rasterLayerID!); vm.selectedTool = .lasso; vm.areaSelectionTarget = .imagePixels
+            await vm.flush()
+            let before = vm.currentFrame, count = vm.layers.count, original = vm.originalImageSource(sourceID)?.originalData
+            let beforePixels = try render(vm).bytes
+            let area = vm.beginAreaSelection()!
+            let outline = [CGPoint(x: 0, y: 40), CGPoint(x: 80, y: 40), CGPoint(x: 80, y: 120), CGPoint(x: 0, y: 120)]
+            let selected = await vm.finishImagePixelLasso(area, outline: outline)
+            try require(selected && vm.selectedTool == .move && vm.currentImageMoveCapture() != nil,
+                "Pixel lasso did not hand off to image Move")
+            try require(vm.layers.count == count + 1 && vm.originalImageSource(sourceID)?.originalData == original
+                && render(vm).bytes == beforePixels, "Lift changed original pixels or source bytes")
+            let lifted = vm.currentFrame
+            vm.undo(); try require(vm.currentFrame == before && vm.layers.count == count, "Pixel lasso Undo did not restore unsplit image")
+            vm.redo(); try require(vm.currentFrame == lifted, "Pixel lasso Redo changed masks")
+            let saved = await vm.save(); try require(saved, "Pixel lasso save failed")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && cold.currentFrame == lifted && render(cold).bytes == beforePixels
+                && cold.originalImageSource(sourceID)?.originalData == original, "Pixel lasso cold reopen lost originals/masks")
         }
         try await test("real image Wand Move preserves blue sibling pixels source geometry and atomic cancellation") {
             let (vm, _) = try await project(root), sourceID = try attach(image, to: vm), layer = vm.currentFrame.rasterLayerID!

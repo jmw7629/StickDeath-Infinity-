@@ -826,6 +826,7 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityAddTraits(vm.areaSelectionKind == kind ? .isSelected : [])
                     }
                 }
+                if vm.areaSelectionTarget != .imagePixels {
                 HStack(spacing: 4) {
                     ForEach(StudioViewModel.SelectionMode.allCases, id: \.self) { mode in
                         Button(mode.label) { vm.selectionMode = mode }
@@ -836,7 +837,8 @@ struct FloatingToolSettingsPanel: View {
                             .accessibilityAddTraits(vm.selectionMode == mode ? .isSelected : [])
                     }
                 }
-                if vm.areaSelectionTarget != .image {
+                }
+                if vm.areaSelectionTarget != .image && vm.areaSelectionTarget != .imagePixels {
                 HStack(spacing: 8) {
                     Button("Select all") { _ = vm.selectVisibleArtwork() }
                         .accessibilityIdentifier("studio.selection.all")
@@ -869,6 +871,13 @@ struct FloatingToolSettingsPanel: View {
                     Text("Move transforms the selected drawings and image together. Copy and Cut preserve the group; Cut requires unlocked layers.")
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 }
+                } else if vm.areaSelectionTarget == .imagePixels {
+                    if vm.wandWorking {
+                        ProgressView("Selecting image pixels…").font(.specialElite(11))
+                        Button("Cancel selection") { vm.clearImageRegion() }
+                    }
+                    Text("Creates a separate masked image layer and switches to Move. Undo restores the unsplit image. Requires a normal, fully opaque, unlocked image layer without glow or drawings; up to 4 megapixels.")
+                        .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 } else {
                     Button("Deselect image") { vm.deselectAreaImage() }
                         .disabled(vm.selectedAreaImageCorners == nil)
@@ -917,6 +926,7 @@ struct FloatingToolSettingsPanel: View {
     
     private var areaSelectionGuidance: String {
         switch vm.areaSelectionTarget {
+        case .imagePixels: return "Outline part of the active image. Selected source pixels become a movable fragment with resize and rotation handles; unselected pixels stay in place."
         case .drawings: return "Enclose whole drawings. Move activates automatically: drag inside the selection box or use its resize and rotation handles. Lasso includes editable and historical text."
         case .image: return "Enclose the whole image on the active visible, unlocked layer. Move activates automatically with image transform handles. Choose Drawings + image to include drawings."
         case .artwork: return "Enclose whole drawings and the image on its active visible, unlocked layer. Move activates automatically to transform the group. Hidden or locked artwork is excluded."
@@ -924,6 +934,7 @@ struct FloatingToolSettingsPanel: View {
     }
     private var areaSelectionCount: String {
         switch vm.areaSelectionTarget {
+        case .imagePixels: return vm.wandWorking ? "Preparing movable pixels" : "New pixel selection"
         case .drawings: return "\(vm.selectedElementIDs.count) drawings selected"
         case .image: return "\(vm.selectedAreaImageCorners == nil ? 0 : 1) image selected"
         case .artwork: return "\(vm.selectedArtworkCount) artwork items selected · \(vm.selectedElementIDs.count) drawings, \(vm.selectedAreaImageCorners == nil ? 0 : 1) image"

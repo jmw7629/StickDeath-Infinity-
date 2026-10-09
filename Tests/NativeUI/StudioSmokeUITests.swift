@@ -6129,6 +6129,61 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testPixelLassoAutomaticMovePartialDeleteUndoAndColdReopen() throws {
+        executionTimeAllowance = 240
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas); let frame = canvas.frame
+        let blank = try pixels(canvas.screenshot().image)
+        try importLicensedImageForExport(app, canvas: canvas)
+        let original = try pixels(canvas.screenshot().image)
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5) && imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        try selectToolbarTool("lasso", app: app)
+        try fillPreferenceControl("studio.selection.target", app: app).tap()
+        let target = app.buttons["Image pixels → Move"]
+        XCTAssertTrue(target.waitForExistence(timeout: 5) && target.isHittable); target.tap()
+        try fillPreferenceControl("studio.selection.kind.rectangle", app: app).tap()
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        canvas.coordinate(withNormalizedOffset: .init(dx: 0.05, dy: 0.05)).press(forDuration: 0.1,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: .init(dx: 0.5, dy: 0.95)),
+            withVelocity: .slow, thenHoldForDuration: 0.1)
+        let move = app.buttons["studio.tool.move"]
+        let handoff = XCTNSPredicateExpectation(predicate: NSPredicate(format: "isSelected == true"), object: move)
+        XCTAssertEqual(XCTWaiter.wait(for: [handoff], timeout: 10), .completed,
+                       "Pixel lasso did not activate Move")
+        XCTAssertFalse(app.buttons["studio.tool-settings.close"].exists)
+        capture(app, name: "pixel-lasso-automatic-move-handles")
+        let deletion = app.buttons["studio.delete-selection"]
+        XCTAssertEqual(deletion.label, "Delete selected image")
+        XCTAssertTrue(deletion.isEnabled && deletion.isHittable); deletion.tap()
+        let confirm = app.buttons["Delete image"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5)); confirm.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let remaining = try pixels(canvas.screenshot().image)
+        XCTAssertGreaterThan(try changedPixelCount(original, remaining), 100, "Pixel lasso did not remove its selected area")
+        XCTAssertGreaterThan(try changedPixelCount(blank, remaining), 100, "Pixel lasso removed the whole image instead of its outlined area")
+        capture(app, name: "pixel-lasso-partial-delete")
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
+            "Undo of fragment lift changed the unsplit original")
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(restored.screenshot().image)), 4)
+        capture(reopened, name: "pixel-lasso-cold-reopened-original")
+    }
+
+    @MainActor
     func testActiveLayerImageMarqueeDeleteUndoAndColdReopen() throws {
         // Measured public CI completed cold-image capture at180.54s after active import/selection/history progress.
         executionTimeAllowance = 240

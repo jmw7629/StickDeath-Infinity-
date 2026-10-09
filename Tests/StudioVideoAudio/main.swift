@@ -14,6 +14,11 @@ private actor ChunkReceipt {
     }
     func snapshot() -> (Int64, Int64) { (frames, total) }
 }
+private actor PreparedAudioReceipt {
+    private var bytes: Data?
+    func record(_ value: Data) { bytes = value }
+    func snapshot() -> Data? { bytes }
+}
 @main @MainActor struct VideoAudioTests {
     static func idle(_ session: StudioAudioPreviewSession) async throws {
         for _ in 0..<14_000 {
@@ -153,8 +158,11 @@ private actor ChunkReceipt {
         let session = StudioAudioPreviewSession(scratchParent: scratch)
         let mapping = StudioVideoFrameImportService.Mapping(sourceStartSeconds: 1, sourceEndSeconds: 2,
             projectStartSeconds: 0.25, speed: 2)
+        let preparedReceipt = PreparedAudioReceipt()
         try require(session.importFile(movie, prepare: { progress in
-            try await service.extract(from: movie, mapping: mapping, scratchParent: scratch, progress: progress).audio
+            let audio = try await service.extract(from: movie, mapping: mapping, scratchParent: scratch, progress: progress).audio
+            await preparedReceipt.record(audio.originalData)
+            return audio
         }, stillCurrent: { vm.document.id == projectID && vm.document.revision == revision }, attach: {
             try vm.attachImportedAudio($0, expectedProjectID: projectID, expectedRevision: revision,
                 frameID: frameID, trackNumber: 2)
@@ -169,6 +177,9 @@ private actor ChunkReceipt {
         try require(vm.document.revision == revision + 1 && session.lastImportedClipID == clip.id,
             "Movie import was not one canonical edit")
         try require((session.measurements[assetID]?.peaks.max() ?? 0) > 0.4, "Prepared import lost measured waveform")
+        guard let preparedBytes = await preparedReceipt.snapshot() else { throw Failure(message: "Missing prepared-audio receipt") }
+        print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode matches=\(bytes == fast.audio.originalData) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
+        try require(bytes == preparedBytes, "Attachment changed the actual prepared movie PCM")
         try require(bytes == fast.audio.originalData, "Prepared import changed selected movie PCM")
         try requireAsync(await vm.save(), "Movie project save failed")
         let saved = try storage.loadAnimation(id: projectID)!
