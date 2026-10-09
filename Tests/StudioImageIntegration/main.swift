@@ -1937,6 +1937,55 @@ private func rejects(_ action: () throws -> Void) throws {
                 cold.currentFrame.rasterLayerInstances.allSatisfy({ $0.regionMask != nil }),
                 "Wand cold reopen lost fragment/remainder composition")
         }
+        try await test("selected image nudge and rotated alignment preserve source Undo and cold reopen") {
+            let (vm, store) = try await project(root), sourceID = try attach(image, to: vm)
+            vm.selectLayer(vm.currentFrame.rasterLayerID!); vm.selectedTool = .move
+            try require(vm.placeImage(vm.prepareImagePlacement()!,
+                at: .init(x: 55, y: 65, width: 50, height: 30), rotationDegrees: 25), "Prepare rotated image")
+            try require(vm.setImageCanvasMove(true), "Explicit image selection")
+            await vm.flush()
+            let before = vm.currentFrame, original = vm.originalImageSource(sourceID)?.originalData
+            try require(vm.commandScreenContext.selectedImageCount == 1, "Image selection context missing")
+            try require(vm.positionSelected(dx: 10), "Image nudge rejected")
+            let moved = vm.currentFrame
+            try require(abs(vm.currentImageMoveCapture()!.placement.original.x - 65) < 0.00001,
+                        "Nudge did not move the selected image by canvas pixels")
+            vm.undo(); try require(vm.currentFrame == before, "Nudge Undo changed source")
+            vm.redo(); try require(vm.currentFrame == moved, "Nudge Redo changed placement")
+            try require(vm.setImageCanvasMove(true), "Reselect after history")
+            for alignment in StudioViewModel.SelectionAlignment.allCases {
+                let previous = vm.currentFrame
+                try require(vm.positionSelected(alignment: alignment), "Image alignment rejected")
+                let capture = vm.currentImageMoveCapture()!
+                let bounds = StudioImageRotationGeometry(placement: capture.placement.original,
+                    degrees: capture.placement.rotationDegrees).bounds
+                let actual: Double, expected: Double
+                switch alignment {
+                case .left: actual = bounds.minX; expected = 0
+                case .center: actual = bounds.midX; expected = Double(vm.canvasWidth) / 2
+                case .right: actual = bounds.maxX; expected = Double(vm.canvasWidth)
+                case .top: actual = bounds.minY; expected = 0
+                case .middle: actual = bounds.midY; expected = Double(vm.canvasHeight) / 2
+                case .bottom: actual = bounds.maxY; expected = Double(vm.canvasHeight)
+                }
+                try require(abs(actual - expected) < 0.00001 && capture.placement.rotationDegrees == 25,
+                            "Alignment ignored rotated image bounds")
+                let aligned = vm.currentFrame
+                vm.undo(); try require(vm.currentFrame == previous, "Alignment was not one Undo step")
+                vm.redo(); try require(vm.currentFrame == aligned, "Alignment Redo changed placement")
+                try require(vm.setImageCanvasMove(true), "Reselect aligned image")
+            }
+            let unchanged = vm.document
+            try require(!vm.positionSelected(dx: 10, checkCancellation: { throw CancellationError() })
+                && vm.document == unchanged, "Cancelled image nudge edited the project")
+            try require(!vm.positionSelected(dx: .nan) && vm.document == unchanged, "Invalid image nudge edited the project")
+            let pixels = try render(vm).bytes, finalFrame = vm.currentFrame
+            let saved = await vm.save(); try require(saved, "Image alignment save failed")
+            let cold = StudioViewModel(storage: store)
+            let opened = await cold.openProject(try store.loadAnimation(id: vm.document.id)!.metadata)
+            try require(opened && cold.currentFrame == finalFrame && render(cold).bytes == pixels
+                && cold.originalImageSource(sourceID)?.originalData == original, "Cold image alignment lost content")
+        }
         try await test("pixel lasso lifts a reversible fragment and automatically hands off to Move") {
             let (vm, store) = try await project(root), sourceID = try attach(image, to: vm)
             vm.selectLayer(vm.currentFrame.rasterLayerID!); vm.selectedTool = .lasso; vm.areaSelectionTarget = .imagePixels
@@ -1948,6 +1997,8 @@ private func rejects(_ action: () throws -> Void) throws {
             let selected = await vm.finishImagePixelLasso(area, outline: outline)
             try require(selected && vm.selectedTool == .move && vm.currentImageMoveCapture() != nil,
                 "Pixel lasso did not hand off to image Move")
+            try require(vm.commandScreenContext.selectedImageCount == 1,
+                        "Spatter context lost the selected image fragment")
             try require(vm.layers.count == count + 1 && vm.originalImageSource(sourceID)?.originalData == original
                 && render(vm).bytes == beforePixels, "Lift changed original pixels or source bytes")
             let lifted = vm.currentFrame

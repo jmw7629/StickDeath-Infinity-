@@ -329,6 +329,7 @@ struct AdminUsersContent: View {
     @State private var pendingAction: AdminPendingAccountAction?
     @State private var users: [AdminDirectoryUser] = []
     @State private var search = ""
+    @State private var appliedSearch = ""
     @State private var reason = ""
     @State private var page = 0
     @State private var more = true
@@ -340,7 +341,12 @@ struct AdminUsersContent: View {
         VStack(alignment: .leading, spacing: 12) {
             Button("Review account appeals") { showingAppeals = true }
             TextField("Search username or account ID", text: $search).textFieldStyle(.roundedBorder)
-            Button("Search") { Task { await load(reset: true) } }.disabled(busy)
+            Button("Search") { Task { await load(reset: true) } }
+                .disabled(busy || search.trimmingCharacters(in: .whitespacesAndNewlines).count > 100)
+            if search.trimmingCharacters(in: .whitespacesAndNewlines) != appliedSearch {
+                Text("Press Search to apply the edited query. Load more continues the current results.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             TextField("Reason for account action", text: $reason, axis: .vertical).lineLimit(2...4)
             if let error { Text(error).foregroundColor(.red) }
             if busy { ProgressView() }
@@ -375,7 +381,7 @@ struct AdminUsersContent: View {
         }
         .task(id: "\(auth.userId ?? "none"):\(phase == .active):\(auth.isAuthenticated)") {
             generation = UUID(); users = []; page = 0; more = true; busy = false
-            historyUser = nil; pendingAction = nil; reason = ""; error = nil
+            historyUser = nil; pendingAction = nil; reason = ""; error = nil; appliedSearch = ""
             if phase == .active && auth.isAuthenticated { await load(reset: true) }
         }
         .sheet(item: $historyUser) { user in AdminUserHistoryView(user: user) }
@@ -391,33 +397,40 @@ struct AdminUsersContent: View {
         } message: { pending in
             Text("Account: \(pending.user.id.uuidString)\nReason: \(pending.reason)\n\(pending.impact)")
         }
-        .onDisappear { generation = UUID(); users = []; reason = "" }
+        .onDisappear { generation = UUID(); users = []; reason = ""; appliedSearch = ""; pendingAction = nil; historyUser = nil }
     }
-    @MainActor private func load(reset: Bool) async {
+    @MainActor private func load(reset: Bool, submittedQuery: String? = nil) async {
         guard !busy, auth.isAuthenticated, phase == .active else { return }
-        let epoch = generation; busy = true; defer { if epoch == generation { busy = false } }
-        if reset { users = []; page = 0; more = true }
+        if reset {
+            let query = (submittedQuery ?? search).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard query.count <= 100 else { error = "Use at most 100 characters for directory search."; return }
+            generation = UUID(); pendingAction = nil; historyUser = nil
+            appliedSearch = query; users = []; page = 0; more = true
+        }
+        guard page < 200, more else { return }
+        let epoch = generation, account = auth.userId
+        busy = true; defer { if epoch == generation { busy = false } }
         do {
-            let response: AdminDirectoryResponse = try await client.rpc("sdi_users_action", params: AdminUserRequest(action: "list", query: search, page: page)).execute().value
-            guard !Task.isCancelled, epoch == generation else { return }
-            if let problem = response.error { users = []; error = problem; return }
-            guard let items = response.users, let hasMore = response.has_more else { error = "Invalid directory response."; return }
+            let response: AdminDirectoryResponse = try await client.rpc("sdi_users_action", params: AdminUserRequest(action: "list", query: appliedSearch, page: page)).execute().value
+            guard !Task.isCancelled, epoch == generation, account == auth.userId, auth.isAuthenticated, phase == .active else { return }
+            if let problem = response.error { users = []; more = false; error = problem; return }
+            guard let items = response.users, items.count <= 50, let hasMore = response.has_more else { users = []; more = false; error = "Invalid directory response."; return }
             for item in items { if let index = users.firstIndex(where: {$0.id == item.id}) { users[index] = item } else { users.append(item) } }
             page += 1; more = hasMore && page < 200; error = nil
-        } catch { if epoch == generation { users = []; self.error = "Directory unavailable. Check your admin session and MFA." } }
+        } catch { if epoch == generation, account == auth.userId, phase == .active { users = []; more = false; self.error = "Directory unavailable. Check your admin session and MFA." } }
     }
     @MainActor private func apply(_ pending: AdminPendingAccountAction) async {
         guard !busy, auth.isAuthenticated, phase == .active, pending.generation == generation else { return }
         pendingAction = nil
-        let epoch = generation; busy = true
+        let epoch = generation, account = auth.userId; busy = true
         defer { if epoch == generation { busy = false } }
         do {
             let response: AdminDirectoryResponse = try await client.rpc("sdi_users_action", params: AdminUserRequest(action: pending.action, subject: pending.user.id, reason: pending.reason)).execute().value
-            guard !Task.isCancelled, epoch == generation else { return }
+            guard !Task.isCancelled, epoch == generation, account == auth.userId, auth.isAuthenticated, phase == .active else { return }
             if let problem = response.error { error = problem; busy = false; return }
             guard response.status == "confirmed" else { error = "Action was not confirmed."; busy = false; return }
-            busy = false; reason = ""; await load(reset: true)
-        } catch { if epoch == generation { self.error = "Action was not confirmed. Refresh before retrying." } }
+            busy = false; reason = ""; await load(reset: true, submittedQuery: appliedSearch)
+        } catch { if epoch == generation, account == auth.userId, phase == .active { self.error = "Action was not confirmed. Refresh before retrying." } }
     }
 }
 private struct AdminPendingAccountAction {

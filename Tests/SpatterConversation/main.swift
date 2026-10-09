@@ -107,7 +107,7 @@ private final class NetworkTrap: URLProtocol {
                     ("How do I make a phone call?", ["have been removed"], ["Export panel"]),
                     ("Can I call another user?", ["have been removed"], ["Export panel"]),
                     ("How do I start a call?", ["have been removed"], ["Export panel"]),
-                    ("How do I rename the project I call Sunset?", ["Rename project"], ["have been removed"]),
+                    ("How do I rename the project I call Sunset?", ["Project Settings", "Apply Changes", "Undo restores the previous name"], ["have been removed"]),
                     ("How do I export the project I call Sunset from my phone?", ["Export panel"], ["have been removed"]),
                     (String(repeating: "drawing ", count: 80) + "then start video calling", ["have been removed"], ["Export panel"]),
                     ("How do I add a canvas background?", ["Open Background Library", "16 locally generated", "current frame only", "without replacing existing managed images", "Undo"], ["Open Magic Cut"]),
@@ -134,7 +134,9 @@ private final class NetworkTrap: URLProtocol {
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
                 let before = studio.document
                 for (question, facts) in [
-                    ("How do I select an image with Lasso?", ["Image on active layer", "enclose the whole image", "Choose Move"]),
+                    ("How do I select an image with Lasso?", ["Image on active layer", "enclose the whole image", "switches to Move automatically"]),
+                    ("How do I lasso part of an image?", ["Image pixels → Move", "new selected layer", "original source", "one Undo step", "four million"]),
+                    ("How do I align an image?", ["Nudge and Align", "rotated bounds", "inside the canvas"]),
                     ("How do I rotate a picture?", ["red canvas handle", "angle", "one Undo step"]),
                     ("How do I cut an image?", ["Cut image in Move", "selected active-layer image", "one Undo step"]),
                     ("How do I copy and paste an image?", ["Copy selected image", "crop, flips and angle", "never replaces an existing image"]),
@@ -243,8 +245,11 @@ private final class NetworkTrap: URLProtocol {
                     try await idle(chat)
                     let answer = chat.messages.last!.content
                     try require(answer.contains("Creative reference") && answer.contains(expected) &&
-                        answer.contains("not evidence of an automatic tool"), "Reviewed creative content lost or misframed")
+                        answer.contains("not evidence of an automatic tool"), "Reviewed creative content lost or misframed: \(question)")
                 }
+                let controlAnswer = SpatterAIViewModel.localGuidance(for: "How do I mute a track for audio choreography?", context: .general)
+                try require(controlAnswer.contains("track speaker buttons") && !controlAnswer.contains("Creative reference"),
+                            "Creative vocabulary bypassed actual audio controls")
                 for question in ["Enable automatic ragdoll simulation for better anticipation",
                                  "Enable automatic camera movement", "Activate the automatic lighting tool",
                                  "Enable automatic secondary motion"] {

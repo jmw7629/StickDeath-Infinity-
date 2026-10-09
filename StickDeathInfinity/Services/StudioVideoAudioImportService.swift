@@ -174,9 +174,16 @@ actor StudioVideoAudioImportService {
 #if SDI_MOVIE_AUDIO_DIAGNOSTICS
                     print("MOVIE_AUDIO buffer frames=\(frames) pts=\(time.value)/\(time.timescale) start=\(startFrame) end=\(endFrame) limit=\(outputFrames)")
 #endif
-                    guard startFrame >= endFrame, startFrame <= outputFrames,
-                          frames <= outputFrames - startFrame + 1 else { throw Self.diagnosticDecodeFailure(line: #line) }
+                    guard startFrame >= endFrame, startFrame < outputFrames else { throw Self.diagnosticDecodeFailure(line: #line) }
+                    // AVFoundation can return a final PCM buffer extending past
+                    // the requested range (observed two samples after varispeed).
+                    // Copy its in-range prefix, never extend the chosen clip or
+                    // allocate for padding. A subsequent out-of-range buffer is
+                    // still rejected, as are overlapping timestamps above.
                     let count = min(frames, outputFrames - startFrame)
+#if SDI_MOVIE_AUDIO_DIAGNOSTICS
+                    if count < frames { print("MOVIE_AUDIO trimmedTailFrames=\(frames - count)") }
+#endif
                     guard pcm.withUnsafeMutableBytes({ bytes in
                         CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: count * bytesPerFrame,
                             destination: bytes.baseAddress!.advanced(by: startFrame * bytesPerFrame))

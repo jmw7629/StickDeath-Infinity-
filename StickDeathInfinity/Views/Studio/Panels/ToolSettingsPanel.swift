@@ -667,6 +667,7 @@ struct FloatingToolSettingsPanel: View {
                 Text("Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.lock-scope")
+                }
                 Divider().background(Color.white.opacity(0.08))
                 Text("POSITION").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Picker("Nudge distance", selection: $vm.selectionNudgeDistance) {
@@ -682,9 +683,11 @@ struct FloatingToolSettingsPanel: View {
                             Button(alignment.rawValue) { _ = vm.positionSelected(alignment: alignment) }
                         }
                     }.accessibilityIdentifier("studio.selection.align")
-                }.font(.specialElite(14)).frame(minHeight: 44).disabled(vm.beginSelectionHandle() == nil)
-                Text("Nudge uses canvas pixels. Align places the selected group against the canvas edges or center. Each action is one Undo step.")
+                }.font(.specialElite(14)).frame(minHeight: 44)
+                    .disabled(vm.beginSelectionHandle() == nil && vm.currentImageMoveCapture() == nil)
+                Text("Nudge uses canvas pixels. Align places selected artwork against the canvas edges or center. Images remain inside the canvas, including their rotated bounds. Each action is one Undo step.")
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                if !vm.isMovingImageOnCanvas {
                 Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 if let explanation = vm.selectionTransformExplanation {
                     Text(explanation).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)

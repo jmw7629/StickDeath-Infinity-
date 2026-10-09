@@ -563,6 +563,7 @@ final class StudioViewModel: ObservableObject {
         let canRedo: Bool
         var wand: Wand? = nil
         var audioMix: [AudioMixTrack]? = nil
+        var selectedImageCount: Int = 0
     }
 
     var commandScreenContext: CommandScreenContext {
@@ -592,7 +593,12 @@ final class StudioViewModel: ObservableObject {
             audioMix: (1...4).map { track in
                 .init(track: track, volume: document.audioTrackVolume(track), muted: document.isAudioTrackMuted(track),
                       clipCount: document.audioClips.filter { $0.track == track }.count)
-            })
+            }, selectedImageCount: imageMoveTarget.map { target in
+                target.projectID == document.id && target.frameID == currentFrame.id &&
+                target.layerID == activeLayerID &&
+                (target.areaRevision == nil || target.areaRevision == document.revision) &&
+                currentFrame.rasterAssetID(on: target.layerID) == target.assetID
+            } == true ? 1 : 0)
     }
 
     /// The returned receipt describes an in-memory edit, never a successful save,
@@ -1688,6 +1694,26 @@ final class StudioViewModel: ObservableObject {
     func positionSelected(dx: Double = 0, dy: Double = 0, alignment: SelectionAlignment? = nil,
                           checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
+            if selectedElementIDs.isEmpty, let image = currentImageMoveCapture() {
+                let bounds = StudioImageRotationGeometry(placement: image.placement.original,
+                    degrees: image.placement.rotationDegrees).bounds
+                var x = dx, y = dy
+                if let alignment {
+                    switch alignment {
+                    case .left: x = -bounds.minX
+                    case .center: x = Double(canvasWidth) / 2 - bounds.midX
+                    case .right: x = Double(canvasWidth) - bounds.maxX
+                    case .top: y = -bounds.minY
+                    case .middle: y = Double(canvasHeight) / 2 - bounds.midY
+                    case .bottom: y = Double(canvasHeight) - bounds.maxY
+                    }
+                }
+                try checkCancellation()
+                guard x.isFinite, y.isFinite else { throw StudioCommandError.invalidSettings }
+                if x == 0 && y == 0 { return true }
+                return finishImageMove(image, delta: CGSize(width: x, height: y),
+                                       checkCancellation: checkCancellation)
+            }
             guard let capture = beginSelectionHandle() else { throw StudioCommandError.staleRevision }
             var x = dx, y = dy
             if let alignment {
