@@ -145,10 +145,10 @@ class Harness(unittest.TestCase):
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (53, 10140))
+        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (54, 10380))
         self.assertEqual([c for c in tests[0] if c.startswith('-only-testing:')],
-                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n for n in budget['testNames']])
-        self.assertIn((True, 10140), self.waits)
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n + '()' for n in budget['testNames']])
+        self.assertIn((True, 10380), self.waits)
         self.assertEqual(budget['sourceCommit'], '1' * 40)
 
     def test_recorder_rejects_wrong_prepared_source_before_test_or_recording(self):
@@ -169,7 +169,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(sum(c[0] == 'seed-video' for c in self.calls), 1)
         actual = next(c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building'))
         self.assertEqual([v for v in actual if v.startswith('-only-testing:')],
-                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n for n in names[shard::2]])
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n + '()' for n in names[shard::2]])
 
     def test_fixture_plan_binds_actual_consumers_and_fails_closed_on_helper_changes(self):
         import re
@@ -237,7 +237,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
         self.assertEqual(report['uiTestExitCode'], 0)
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 13 * (240 - 180) + 300)
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 14 * (240 - 180) + 300)
         self.assertFalse((self.out / 'image-fixture.json').exists())
 
     def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
@@ -263,7 +263,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(report['recordingExitCode'], 0)
         self.assertIsNone(report['recordingError'])
         budget = json.loads((self.out / 'ui-test-budget.json').read_text())
-        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 13 * (240 - 180) + 300))
+        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 14 * (240 - 180) + 300))
         self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
         tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
         self.assertEqual(len(tests), 1)

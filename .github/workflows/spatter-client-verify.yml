@@ -2102,7 +2102,7 @@ jobs:
           - shard: 0
             timeout: 217
           - shard: 1
-            timeout: 194
+            timeout: 198
     env:
       SDI_NATIVE_SHARD_INDEX: ${{ matrix.shard }}
     # Sorted alternating partitions preserve all 107 native cases (54/53).
