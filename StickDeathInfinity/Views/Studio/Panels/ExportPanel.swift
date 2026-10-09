@@ -11,6 +11,11 @@ struct ExportPanel: View {
     @StateObject private var movie = StudioMoviePanelState()
     @StateObject private var gif = StudioGIFPanelState()
     @State private var background: StudioExportService.Background = .white
+    @State private var frameScope = "All"
+    @State private var firstFrame = 1
+    @State private var lastFrame = 1
+    @State private var sheetColumns = 0
+    @State private var cellPadding = 0
     @State private var shareRequest: StudioExportShareRequest?
 
     private var supportedFormat: StudioExportService.Format? {
@@ -56,7 +61,7 @@ struct ExportPanel: View {
                             sectionLabel("IMAGE QUALITY")
                             Text("Original canvas · \(document.width) × \(document.height)")
                                 .font(.specialElite(12))
-                            Text("Lossless PNG · \(document.frames.count) frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid and onion skin are not included.")
+                            Text("Lossless PNG · \(document.frames.count) project frames · \(document.fps) fps; frame exposures are included in the timing manifest. Audio, editor grid and onion skin are not included.")
                                 .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
                             sectionLabel("BACKGROUND")
@@ -69,6 +74,34 @@ struct ExportPanel: View {
                             .accessibilityIdentifier("studio.export.background")
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        sectionLabel("FRAMES")
+                        Picker("Export frames", selection: $frameScope) {
+                            ForEach(["All", "Current", "Range"], id: \.self) { Text($0).tag($0) }
+                        }.pickerStyle(.segmented)
+                            .accessibilityIdentifier("studio.export.frame-scope")
+                        if frameScope == "Range" {
+                            Stepper("First frame: \(firstFrame)", value: $firstFrame, in: 1...max(1, vm.document.frames.count))
+                            Stepper("Last frame: \(lastFrame)", value: $lastFrame, in: firstFrame...max(firstFrame, vm.document.frames.count))
+                                .onChange(of: firstFrame) { value in lastFrame = max(lastFrame, value) }
+                        }
+                        Text("Frames keep their exposure durations. Export playback begins at zero; the manifest retains original frame indices.")
+                            .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+                    }.font(.specialElite(12)).disabled(session.isRunning || session.isSharing)
+                    if supportedFormat == .spritesheet {
+                        VStack(alignment: .leading, spacing: 8) {
+                            sectionLabel("ATLAS LAYOUT")
+                            Stepper(sheetColumns == 0 ? "Columns: Automatic" : "Columns: \(sheetColumns)",
+                                value: $sheetColumns, in: 0...max(1, vm.document.frames.count))
+                                .accessibilityIdentifier("studio.export.sheet-columns")
+                            Stepper("Padding per frame edge: \(cellPadding) px", value: $cellPadding, in: 0...32)
+                                .accessibilityIdentifier("studio.export.sheet-padding")
+                            Text("Padding uses the export background. Manifest rectangles exclude padding; frame size and timing stay unchanged. Sheet limits still apply.")
+                                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+                        }
+                        .font(.specialElite(12))
+                        .disabled(session.isRunning || session.isSharing)
                     }
                     if supportedFormat == nil {
                         Text("\(vm.exportFormat.rawValue) export is not available yet. Choose PNG or Spritesheet to render actual image files.")
@@ -208,9 +241,19 @@ struct ExportPanel: View {
         let document = vm.document
         // Capture value-type document and immutable original bytes together on
         // MainActor before export yields. Later edits cannot change this export.
+        let frameIDs: Set<String>?
+        switch frameScope {
+        case "Current": frameIDs = [document.activeFrameID]
+        case "Range":
+            let lower = min(max(1, firstFrame), document.frames.count) - 1
+            let upper = min(max(firstFrame, lastFrame), document.frames.count) - 1
+            frameIDs = Set(document.frames[lower...upper].map(\.id))
+        default: frameIDs = nil
+        }
+        let selectedFrames = document.frames.filter { frameIDs?.contains($0.id) ?? true }
         var rasters: [String: Data] = [:]
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
-        let visibleIDs = Set(document.frames.flatMap { frame in
+        let visibleIDs = Set(selectedFrames.flatMap { frame in
             frame.visibleRasterInstances(in: document.layers).compactMap { frame.rasterAssetID(on: $0.layerID) }
         })
         do {
@@ -225,7 +268,9 @@ struct ExportPanel: View {
             session.preparationFailed(error)
             return
         }
-        session.start(document: document, format: format, background: background, rasters: rasters, imageCredits: imageCredits)
+        session.start(document: document, format: format, background: background, rasters: rasters, imageCredits: imageCredits,
+            sheetColumns: format == .spritesheet && sheetColumns > 0 ? min(sheetColumns, selectedFrames.count) : nil,
+            cellPadding: format == .spritesheet ? cellPadding : 0, frameIDs: frameIDs)
     }
 
     private func shareExport() {
@@ -256,15 +301,17 @@ final class StudioExportSession: ObservableObject {
 
     func start(document: StudioDocument, format: StudioExportService.Format,
                background: StudioExportService.Background, rasters: [String: Data],
-               imageCredits: [String: StudioExportService.ImageCredit] = [:]) {
+               imageCredits: [String: StudioExportService.ImageCredit] = [:],
+               sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil) {
         guard !isRunning, !isSharing, !isClosed else { return }
         errorMessage = nil; notice = nil
         guard removeOutput() else { return }
-        isRunning = true; completedFrames = 0; totalFrames = document.frames.count
+        isRunning = true; completedFrames = 0; totalFrames = frameIDs?.count ?? document.frames.count
         task = Task { [self] in
             do {
                 let result = try await StudioExportService().export(document: document, format: format,
-                    outputParent: FileManager.default.temporaryDirectory, background: background, imageCredits: imageCredits,
+                    outputParent: FileManager.default.temporaryDirectory, background: background,
+                    sheetColumns: sheetColumns, cellPadding: cellPadding, frameIDs: frameIDs, imageCredits: imageCredits,
                     rasterData: { rasters[$0] }, progress: { [self] completed, total in
                         completedFrames = completed; totalFrames = total
                     })

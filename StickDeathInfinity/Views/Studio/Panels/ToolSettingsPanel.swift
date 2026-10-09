@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 
 // ═══════════════════════════════════════════════════════════════════
 // Floating Tool Settings Panel — positioned over canvas
@@ -1183,11 +1184,125 @@ private struct StudioImageCropControls: View {
     @Binding var width: String
     @Binding var height: String
     let dismiss: () -> Void
+    @State private var presetError: String?
+    @State private var preview: CGImage?
+    @State private var dragOrigin: StudioImageCrop?
+    @State private var dragSize: CGSize?
+    @State private var dragCorner: Int?
+    @GestureState private var dragging = false
 
     private var proposed: StudioImageCrop? {
         guard let x = Double(x), let y = Double(y), let width = Double(width), let height = Double(height) else { return nil }
         let crop = StudioImageCrop(x: x / 100, y: y / 100, width: width / 100, height: height / 100)
         return (try? crop.validate()) != nil ? crop : nil
+    }
+    private func loadPreview() {
+        preview = nil
+        guard let data = vm.rasterData(capture.assetID), data.count <= 32 * 1024 * 1024,
+              let source = CGImageSourceCreateWithData(data as CFData,
+                  [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                  kCGImageSourceCreateThumbnailFromImageAlways: true,
+                  kCGImageSourceCreateThumbnailWithTransform: true,
+                  kCGImageSourceThumbnailMaxPixelSize: 640,
+                  kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary), image.width <= 640, image.height <= 640 else { return }
+        preview = image
+    }
+    private func previewBounds(_ image: CGImage, size: CGSize) -> CGRect {
+        let ratio = min(size.width / CGFloat(image.width), size.height / CGFloat(image.height))
+        let fitted = CGSize(width: CGFloat(image.width) * ratio, height: CGFloat(image.height) * ratio)
+        return CGRect(x: (size.width - fitted.width) / 2, y: (size.height - fitted.height) / 2,
+            width: fitted.width, height: fitted.height)
+    }
+    private func moveDraft(_ crop: StudioImageCrop, dx: Double, dy: Double) {
+        guard vm.prepareImagePlacement() == capture, let moved = try? crop.translated(dx: dx, dy: dy) else { return }
+        focused = nil; presetError = nil
+        x = String(moved.x * 100); y = String(moved.y * 100)
+    }
+    private func corners(_ rect: CGRect) -> [CGPoint] {
+        [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+         CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)]
+    }
+    private func resizeDraft(_ crop: StudioImageCrop, corner: Int, dx: Double, dy: Double) {
+        guard vm.prepareImagePlacement() == capture,
+              let resized = try? crop.resized(left: corner % 2 == 0, top: corner < 2, dx: dx, dy: dy) else { return }
+        focused = nil; presetError = nil
+        x = String(resized.x * 100); y = String(resized.y * 100)
+        width = String(resized.width * 100); height = String(resized.height * 100)
+    }
+    private func nudge(_ dx: Double, _ dy: Double) {
+        if let crop = proposed { moveDraft(crop, dx: dx, dy: dy) }
+    }
+    @ViewBuilder private var cropPreview: some View {
+        if let preview {
+            GeometryReader { geometry in
+            Canvas { context, size in
+                let bounds = previewBounds(preview, size: size)
+                context.draw(Image(decorative: preview, scale: 1), in: bounds)
+                if let crop = proposed {
+                    let rect = CGRect(x: bounds.minX + bounds.width * crop.x, y: bounds.minY + bounds.height * crop.y,
+                        width: bounds.width * crop.width, height: bounds.height * crop.height)
+                    var outside = Path(bounds); outside.addRect(rect)
+                    context.fill(outside, with: .color(.black.opacity(0.6)), style: FillStyle(eoFill: true))
+                    context.stroke(Path(rect), with: .color(.red), lineWidth: 2)
+                    for point in corners(rect) {
+                        let handle = Path(CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8))
+                        context.fill(handle, with: .color(.white))
+                        context.stroke(handle, with: .color(.red), lineWidth: 1)
+                    }
+                }
+            }.contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 4)
+                    .updating($dragging) { _, value, _ in value = true }
+                    .onChanged { value in
+                        guard vm.prepareImagePlacement() == capture, let crop = proposed else { return }
+                        let bounds = previewBounds(preview, size: geometry.size)
+                        guard bounds.width > 0, bounds.height > 0 else { return }
+                        if dragOrigin == nil {
+                            let rect = CGRect(x: bounds.minX + bounds.width * crop.x, y: bounds.minY + bounds.height * crop.y,
+                                width: bounds.width * crop.width, height: bounds.height * crop.height)
+                            let nearest = corners(rect).enumerated().filter {
+                                hypot($0.element.x - value.startLocation.x, $0.element.y - value.startLocation.y) <= 22
+                            }.min {
+                                hypot($0.element.x - value.startLocation.x, $0.element.y - value.startLocation.y) <
+                                hypot($1.element.x - value.startLocation.x, $1.element.y - value.startLocation.y)
+                            }?.offset
+                            guard nearest != nil || rect.contains(value.startLocation) else { return }
+                            dragOrigin = crop; dragSize = geometry.size; dragCorner = nearest
+                        }
+                        guard let origin = dragOrigin, dragSize == geometry.size else { return }
+                        let dx = Double(value.translation.width / bounds.width), dy = Double(value.translation.height / bounds.height)
+                        if let corner = dragCorner { resizeDraft(origin, corner: corner, dx: dx, dy: dy) }
+                        else { moveDraft(origin, dx: dx, dy: dy) }
+                    }
+                    .onEnded { _ in dragOrigin = nil; dragSize = nil; dragCorner = nil })
+            }.frame(height: 180).background(Color.gray.opacity(0.18))
+                .onChange(of: dragging) { active in if !active { dragOrigin = nil; dragSize = nil; dragCorner = nil } }
+                .accessibilityAction(named: "Move crop left") { nudge(-0.01, 0) }
+                .accessibilityAction(named: "Move crop right") { nudge(0.01, 0) }
+                .accessibilityAction(named: "Move crop up") { nudge(0, -0.01) }
+                .accessibilityAction(named: "Move crop down") { nudge(0, 0.01) }
+                .accessibilityLabel("Original image crop preview. Drag inside the red outline to move, or drag a corner to resize the draft crop before rotation or flips.")
+                .accessibilityIdentifier("studio.image-crop.preview")
+        } else {
+            Text("Image preview unavailable. Crop values remain editable.")
+                .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+        }
+    }
+    private func preset(_ aspect: Double) {
+        guard vm.prepareImagePlacement() == capture,
+              let source = vm.originalImageSource(capture.assetID), let current = proposed else {
+            presetError = "Enter a valid crop or restore Full image before choosing a ratio."
+            return
+        }
+        do {
+            let crop = try current.fitting(aspect: aspect, sourceWidth: source.normalizedWidth, sourceHeight: source.normalizedHeight)
+            focused = nil
+            x = String(crop.x * 100); y = String(crop.y * 100)
+            width = String(crop.width * 100); height = String(crop.height * 100)
+            presetError = nil
+        } catch { presetError = "This ratio would make the crop smaller than 1%. Restore Full image or use a wider ratio." }
     }
     private func field(_ name: String, _ value: Binding<String>, _ key: StudioImagePlacementField) -> some View {
         HStack {
@@ -1201,11 +1316,24 @@ private struct StudioImageCropControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("CROP ORIGINAL IMAGE").font(.specialElite(12)).foregroundColor(.white)
+            cropPreview
+            Menu("Aspect ratio") {
+                Button("Square · 1:1") { preset(1) }
+                Button("Landscape · 4:3") { preset(4.0 / 3) }
+                Button("Portrait · 3:4") { preset(3.0 / 4) }
+                Button("Widescreen · 16:9") { preset(16.0 / 9) }
+                Button("Vertical · 9:16") { preset(9.0 / 16) }
+            }.font(.specialElite(12)).frame(minHeight: 44)
+                .disabled(vm.prepareImagePlacement() != capture)
+                .accessibilityIdentifier("studio.image-crop.aspect")
+            Text("Ratios center inside the entered crop. Drag inside the preview outline to reposition it. Drag a corner to resize freely; this can change the preset ratio. Apply commits these draft values.")
+                .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            if let presetError { Text(presetError).font(.specialElite(11)).foregroundColor(.orange) }
             field("Left", $x, .x); field("Top", $y, .y)
             field("Width", $width, .width); field("Height", $height, .height)
             Text("Percentages refer to the upright original before flips and rotation. Apply keeps the image centered and preserves proportions. Originals remain available for Undo or restoring the full image.")
                 .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
-            Button("Full image") { x = "0"; y = "0"; width = "100"; height = "100" }
+            Button("Full image") { presetError = nil; x = "0"; y = "0"; width = "100"; height = "100" }
                 .frame(minHeight: 44).accessibilityIdentifier("studio.image-crop.full")
             if proposed == nil { Text("Keep the crop inside 100%, at least 1% wide and high.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.orange) }
             HStack {
@@ -1221,5 +1349,7 @@ private struct StudioImageCropControls: View {
                 Text("Studio changed. Cancel and open Crop image again.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.orange)
             }
         }
+        .task(id: capture.assetID) { loadPreview() }
+        .onDisappear { preview = nil }
     }
 }

@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +50,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
+    val context = LocalContext.current
     val moviePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("video/mp4")) { vm.finishExport(it) }
     val gifPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/gif")) { vm.finishExport(it) }
     val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { vm.finishExport(it) }
@@ -59,14 +61,17 @@ class MainActivity : ComponentActivity() {
         if (artifact != null && !vm.exportPickerRequested) {
             vm.markExportPickerRequested()
             try {
-                when (artifact.kind) {
+                if (artifact.share) {
+                    context.startActivity(ShareExports.chooser(context, artifact))
+                    vm.shareSheetOpened(artifact)
+                } else when (artifact.kind) {
                     ExportKind.MP4 -> moviePicker.launch(artifact.name)
                     ExportKind.GIF -> gifPicker.launch(artifact.name)
                     ExportKind.PNG -> pngPicker.launch(artifact.name)
                     ExportKind.PROJECT, ExportKind.CREDITS -> projectPicker.launch(artifact.name)
                     else -> zipPicker.launch(artifact.name)
                 }
-            } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No document picker is available.") }
+            } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No compatible export or sharing app is available.") }
         }
     }
     val document = vm.document
@@ -399,6 +404,11 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Button({ vm.prepareExport(ExportKind.SEQUENCE); panel = null }) { Text("PNG sequence ZIP") }
                         Button({ vm.prepareExport(ExportKind.SPRITESHEET); panel = null }) { Text("Spritesheet PNG + timing ZIP") }
                         Text("Spritesheets preserve every frame at original size, up to 8 megapixels and an 8192-pixel edge. Larger projects can use PNG sequence.")
+                        Text("Share a freshly rendered file with an installed app. No automatic channel upload or publication occurs. Share copies are bounded and become eligible for cleanup after 24 hours.")
+                        Button({ vm.prepareExport(ExportKind.MP4, share = true); panel = null }) { Text("Share MP4…") }
+                        Button({ vm.prepareExport(ExportKind.GIF, share = true); panel = null }) { Text("Share GIF…") }
+                        Button({ vm.prepareExport(ExportKind.PNG, share = true); panel = null }) { Text("Share current PNG…") }
+                        Button({ vm.prepareExport(ExportKind.CREDITS, share = true); panel = null }) { Text("Share asset credits…") }
                     }
                     "brush" -> {
                         if (vm.tool == Tool.Text) {

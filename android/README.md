@@ -277,3 +277,11 @@ This replaces the old fixed top tool row; it does not add a second tool rail or 
 ### Compact-height editor
 
 On windows below 480 dp tall, frame thumbnails default off while selectable frame/exposure chips remain visible. The lower controls let creators restore or hide thumbnails without changing frames or history. Project titles and the status line have bounded wrapping so long names/errors cannot consume the canvas; tapping status opens the complete current notice and project details in the existing dismissible sheet. Manual thumbnail choice survives activity recreation. Landscape, multi-window and large-text acceptance are deferred.
+
+### Native rendered-file sharing
+
+Export now offers Android Sharesheet actions for freshly rendered MP4, GIF, PNG and asset-credit JSON. The same renderer/mixer is used as Files export. A non-exported FileProvider exposes only `cache/studio-share/`, with per-file temporary read grants and explicit MIME/ClipData; project storage and importer staging are outside that root. No broad storage permission, write grant, hard-coded social integration or automatic upload is added. The app reports only that the chooser opened, never that another app posted successfully.
+
+Each share receives a uniquely owned, correctly named file. Up to eight retained copies and 256 MiB combined are admitted. Copies older than 24 hours are removed on a later share; unexpired copies are retained for receiving apps. Android may evict cache earlier. If capacity is full, Files export stays available. Cancel/failure before handoff cleans the new copy; a completed chooser handoff retains it even after activity stop. Copies are not users' editable originals. Receiver-app, permission, cancellation and cache-lifetime acceptance is deferred.
+
+Uses Android's documented content-URI file-sharing approach: https://developer.android.com/training/secure-file-sharing

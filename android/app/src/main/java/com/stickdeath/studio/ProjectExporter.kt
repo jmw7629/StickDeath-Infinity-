@@ -13,7 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS }
-data class ExportArtifact(val file: File, val kind: ExportKind, val name: String)
+data class ExportArtifact(val file: File, val kind: ExportKind, val name: String, val share: Boolean = false)
 
 /** Encodes one bitmap at a time into a bounded, privately owned staging file. */
 object ProjectExporter {

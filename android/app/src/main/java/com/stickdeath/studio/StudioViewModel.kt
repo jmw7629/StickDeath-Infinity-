@@ -824,7 +824,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     private val mutableExportProgress = MutableStateFlow<ExportProgress?>(null)
     val exportProgress = mutableExportProgress.asStateFlow()
     private var exportJob: Job? = null
-    fun prepareExport(kind: ExportKind) {
+    fun prepareExport(kind: ExportKind, share: Boolean = false) {
         val snapshot = document ?: return
         if (exporting || exportArtifact != null || closing) return
         exporting = true; message = "Preparing export of revision ${snapshot.revision}…"
@@ -841,17 +841,32 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     }
                 }
+                if (share) {
+                    val rendered = requireNotNull(owned)
+                    withContext(Dispatchers.IO) {
+                        val coroutine = currentCoroutineContext()
+                        val shared = ShareExports.stage(getApplication(), rendered) { coroutine.ensureActive() }
+                        // Track ownership before returning across the cancellable dispatcher boundary.
+                        owned = shared
+                        rendered.file.delete()
+                    }
+                }
                 exportArtifact = owned; exportPickerRequested = false; delivered = true
-                message = "Choose where to save the export."
+                message = if (share) "Choose an installed app to share this rendered file." else "Choose where to save the export."
             } catch (_: CancellationException) { message = "Export cancelled." }
             catch (e: Exception) { message = e.message ?: "Could not prepare export." }
-            finally { if (!delivered) owned?.file?.delete(); mutableExportProgress.value = null; exporting = false; exportJob = null }
+            finally { if (!delivered) owned?.let { ShareExports.discard(it) }; mutableExportProgress.value = null; exporting = false; exportJob = null }
         }
+    }
+    fun shareSheetOpened(artifact: ExportArtifact) {
+        if (exportArtifact != artifact || !artifact.share) return
+        exportArtifact = null; exportPickerRequested = false
+        message = "Share chooser opened. SDI cannot confirm whether another app posts or sends the file."
     }
     fun markExportPickerRequested() { exportPickerRequested = true }
     fun cancelExport() {
         if (exporting) exportJob?.cancel()
-        else { exportArtifact?.file?.delete(); exportArtifact = null; exportPickerRequested = false; message = "Export cancelled." }
+        else { exportArtifact?.let { ShareExports.discard(it) }; exportArtifact = null; exportPickerRequested = false; message = "Export cancelled." }
     }
     fun finishExport(uri: Uri?) {
         val artifact = exportArtifact ?: return
@@ -901,13 +916,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } finally {
                 // Only our staging file is owned. Never delete an arbitrary provider URI:
                 // the user may have chosen to replace an existing document.
-                artifact.file.delete(); mutableExportProgress.value = null; exporting = false; exportPickerRequested = false; exportJob = null
+                ShareExports.discard(artifact); mutableExportProgress.value = null; exporting = false; exportPickerRequested = false; exportJob = null
             }
         }
     }
     override fun onCleared() {
         cancelAudioImport(); stopAudioPreview()
-        imageJob?.cancel(); colorSampleJob?.cancel(); exportJob?.cancel(); exportArtifact?.file?.delete(); super.onCleared()
+        imageJob?.cancel(); colorSampleJob?.cancel(); exportJob?.cancel(); exportArtifact?.let { ShareExports.discard(it) }; super.onCleared()
     }
     private val undo = mutableStateListOf<Document>()
     private val redo = mutableStateListOf<Document>()

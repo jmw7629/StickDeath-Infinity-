@@ -899,6 +899,41 @@ struct StudioImageCrop: Codable, Equatable, Sendable {
     let width: Double
     let height: Double
     static let full = Self(x: 0, y: 0, width: 1, height: 1)
+    /// Resize one corner while preserving its opposite corner and minimum source coverage.
+    func resized(left: Bool, top: Bool, dx: Double, dy: Double) throws -> Self {
+        try validate()
+        guard dx.isFinite, dy.isFinite else { throw Failure.invalid }
+        let right = x + width, bottom = y + height
+        let nextX = left ? min(max(0, x + dx), right - 0.01) : x
+        let nextY = top ? min(max(0, y + dy), bottom - 0.01) : y
+        let nextRight = left ? right : min(max(x + 0.01, right + dx), 1)
+        let nextBottom = top ? bottom : min(max(y + 0.01, bottom + dy), 1)
+        let result = Self(x: nextX, y: nextY, width: max(0.01, nextRight - nextX), height: max(0.01, nextBottom - nextY))
+        try result.validate()
+        return result
+    }
+    func translated(dx: Double, dy: Double) throws -> Self {
+        try validate()
+        guard dx.isFinite, dy.isFinite else { throw Failure.invalid }
+        let result = Self(x: min(max(0, x + dx), max(0, 1 - width)),
+            y: min(max(0, y + dy), max(0, 1 - height)), width: width, height: height)
+        try result.validate()
+        return result
+    }
+    /// Largest centered rectangle inside this crop, measured in upright source pixels.
+    /// No original bytes, placement or document state are changed by preparing a preset.
+    func fitting(aspect: Double, sourceWidth: Int, sourceHeight: Int) throws -> Self {
+        try validate()
+        guard aspect.isFinite, aspect > 0, sourceWidth > 0, sourceHeight > 0 else { throw Failure.invalid }
+        let normalizedAspect = aspect * Double(sourceHeight) / Double(sourceWidth)
+        guard normalizedAspect.isFinite, normalizedAspect > 0 else { throw Failure.invalid }
+        var w = width, h = height
+        if w / h > normalizedAspect { w = h * normalizedAspect }
+        else { h = w / normalizedAspect }
+        let result = Self(x: x + (width - w) / 2, y: y + (height - h) / 2, width: w, height: h)
+        try result.validate()
+        return result
+    }
     enum Failure: LocalizedError {
         case invalid
         var errorDescription: String? { "Choose a crop inside the original image, at least 1% wide and high." }

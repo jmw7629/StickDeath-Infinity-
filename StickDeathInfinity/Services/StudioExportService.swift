@@ -21,6 +21,7 @@ final class StudioExportService {
         let height: Int
         var startTick: Int? = nil
         var durationTicks: Int? = nil
+        var sourceFrameIndex: Int? = nil
     }
     /// Metadata only. The panel validates the preserved original's digest
     /// before constructing this value; no original bytes enter the manifest.
@@ -76,6 +77,8 @@ final class StudioExportService {
         let editorGuidesIncluded: Bool
         let frames: [FrameRecord]
         var imageCredits: [ImageCredit]? = nil
+        var sheetColumns: Int? = nil
+        var cellPadding: Int? = nil
     }
     struct Output {
         let directory: URL
@@ -145,8 +148,9 @@ final class StudioExportService {
     /// outputParent must be an existing app-owned cache/temporary directory.
     /// Pass immutable project-managed raster bytes, never a URL from picker state.
     /// Progress counts rendered frames; only the returned Output means success.
-    func export(document: StudioDocument, format: Format, outputParent: URL,
+    func export(document original: StudioDocument, format: Format, outputParent: URL,
                 background: Background = .white,
+                sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil,
                 imageCredits: [String: ImageCredit] = [:],
                 rasterData: (String) throws -> Data? = { _ in nil },
                 progress: (Int, Int) -> Void = { _, _ in }) async throws -> Output {
@@ -154,7 +158,20 @@ final class StudioExportService {
         guard !Self.exportInProgress else { throw ExportError.alreadyExporting }
         Self.exportInProgress = true
         defer { Self.exportInProgress = false }
+        try original.validate()
+        var document = original
+        let originalIndices = Dictionary(uniqueKeysWithValues: original.frames.enumerated().map { ($0.element.id, $0.offset) })
+        if let frameIDs {
+            guard !frameIDs.isEmpty, frameIDs.isSubset(of: Set(originalIndices.keys)) else { throw ExportError.limitExceeded }
+            document.frames = original.frames.filter { frameIDs.contains($0.id) }
+            document.activeFrameID = document.frames[0].id
+        }
         try validate(document)
+        guard (0...32).contains(cellPadding),
+              sheetColumns.map({ (1...document.frames.count).contains($0) }) ?? true,
+              format == .spritesheet || (sheetColumns == nil && cellPadding == 0) else {
+            throw ExportError.limitExceeded
+        }
         guard imageCredits.count <= Self.maximumFrames else { throw ExportError.limitExceeded }
         var sources: [String: Data] = [:]
         let sourceIDs = Self.visibleRasterAssetIDs(document: document)
@@ -167,9 +184,10 @@ final class StudioExportService {
             capturedBytes += bytes.count; sources[id] = bytes
         }
         try validateRasterSources(document: document, sources: sources)
-        let columns = format == .spritesheet ? Int(ceil(sqrt(Double(document.frames.count)))) : 1
+        let columns = format == .spritesheet ? (sheetColumns ?? Int(ceil(sqrt(Double(document.frames.count))))) : 1
         let rows = format == .spritesheet ? (document.frames.count + columns - 1) / columns : 1
-        let width = document.width * columns, height = document.height * rows
+        let cellWidth = document.width + 2 * cellPadding, cellHeight = document.height + 2 * cellPadding
+        let width = cellWidth * columns, height = cellHeight * rows
         if format == .spritesheet {
             guard width <= 8192, height <= 8192, width * height <= Self.maximumSheetPixels else { throw ExportError.limitExceeded }
         }
@@ -200,8 +218,8 @@ final class StudioExportService {
             for (index, frame) in document.frames.enumerated() {
                 try Task.checkCancellation()
                 let name = format == .pngSequence ? String(format: "frame_%06d.png", index) : "spritesheet.png"
-                let x = format == .spritesheet ? (index % columns) * document.width : 0
-                let y = format == .spritesheet ? (index / columns) * document.height : 0
+                let x = format == .spritesheet ? (index % columns) * cellWidth + cellPadding : 0
+                let y = format == .spritesheet ? (index / columns) * cellHeight + cellPadding : 0
                 try autoreleasepool {
                     let image = try render(frame, document: document, background: background, raster: nil, rasterDataByID: sources)
                     if let sheet {
@@ -215,7 +233,8 @@ final class StudioExportService {
                 records.append(FrameRecord(index: index, id: frame.id, filename: name, x: x, y: y,
                     width: document.width, height: document.height,
                     startTick: document.schemaVersion >= 21 ? document.startTick(ofFrame: index) : nil,
-                    durationTicks: document.schemaVersion >= 21 ? frame.durationTicks : nil))
+                    durationTicks: document.schemaVersion >= 21 ? frame.durationTicks : nil,
+                    sourceFrameIndex: frameIDs == nil ? nil : originalIndices[frame.id]))
                 if format == .pngSequence { filenames.append(name) }
                 progress(index + 1, document.frames.count)
                 // The UI can cancel between frames; completed render resources
@@ -232,11 +251,13 @@ final class StudioExportService {
                 filenames = ["spritesheet.png"]
             }
             let renderedCredits = try Self.renderedImageCredits(document: document, creditsByRasterID: imageCredits)
-            let manifest = Manifest(version: renderedCredits.isEmpty ? (document.schemaVersion >= 21 ? 2 : 1) : 3, projectID: document.id, documentRevision: document.revision,
+            let customLayout = format == .spritesheet && (sheetColumns != nil || cellPadding != 0)
+            let manifest = Manifest(version: frameIDs != nil ? 5 : customLayout ? 4 : renderedCredits.isEmpty ? (document.schemaVersion >= 21 ? 2 : 1) : 3, projectID: document.id, documentRevision: document.revision,
                 format: format, background: background, fps: document.fps,
                 canvasWidth: document.width, canvasHeight: document.height,
                 imageWidth: width, imageHeight: height, audioIncluded: false,
-                editorGuidesIncluded: false, frames: records, imageCredits: renderedCredits.isEmpty ? nil : renderedCredits)
+                editorGuidesIncluded: false, frames: records, imageCredits: renderedCredits.isEmpty ? nil : renderedCredits,
+                sheetColumns: customLayout ? columns : nil, cellPadding: customLayout ? cellPadding : nil)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let manifestBytes = try encoder.encode(manifest)
             guard manifestBytes.count <= 8 * 1024 * 1024,

@@ -335,6 +335,32 @@ private final class NetworkTrap: URLProtocol {
             try require(editor.currentFrame.rasterCrop == crop && editor.document.schemaVersion == 22, "Crop clipboard recovery lost metadata")
             try require(editor.deleteImage(editor.prepareImagePlacement()!) && editor.currentFrame.rasterCrop == nil, "Image delete left crop metadata")
         }
+        try await test("aspect presets use upright pixel dimensions and stay centered inside the draft crop") {
+            let square = try StudioImageCrop.full.fitting(aspect: 1, sourceWidth: 400, sourceHeight: 200)
+            try require(square == StudioImageCrop(x: 0.25, y: 0, width: 0.5, height: 1), "Wide source square crop is incorrect")
+            let draft = StudioImageCrop(x: 0.1, y: 0.2, width: 0.8, height: 0.6)
+            let portrait = try draft.fitting(aspect: 9.0 / 16, sourceWidth: 400, sourceHeight: 200)
+            try require(abs(portrait.width * 400 / (portrait.height * 200) - 9.0 / 16) < 0.000001
+                && abs(portrait.x + portrait.width / 2 - 0.5) < 0.000001
+                && portrait.y == draft.y && portrait.height == draft.height, "Preset changed center or pixel aspect")
+            let resized = try draft.resized(left: true, top: true, dx: 0.1, dy: 0.1)
+            try require(abs(resized.x - 0.2) < 0.000001 && abs(resized.y - 0.3) < 0.000001
+                && abs(resized.x + resized.width - 0.9) < 0.000001
+                && abs(resized.y + resized.height - 0.8) < 0.000001, "Corner resize moved opposite anchor")
+            let minimum = try draft.resized(left: false, top: false, dx: -20, dy: -20)
+            try require(abs(minimum.width - 0.01) < 0.000001 && abs(minimum.height - 0.01) < 0.000001,
+                "Corner crossed opposite edge")
+            let moved = try draft.translated(dx: 20, dy: -20)
+            try require(abs(moved.x - 0.2) < 0.000001 && moved.y == 0
+                && moved.width == draft.width && moved.height == draft.height, "Crop drag changed size or escaped source")
+            let fullMoved = try StudioImageCrop.full.translated(dx: 1, dy: 1)
+            try require(fullMoved == .full, "Full crop moved outside source")
+            for aspect in [Double.nan, 0, -1, 0.00000001] {
+                do { _ = try draft.fitting(aspect: aspect, sourceWidth: 400, sourceHeight: 200)
+                    throw Failure(message: "Invalid preset admitted")
+                } catch StudioImageCrop.Failure.invalid { }
+            }
+        }
         try await test("crop rejects invalid, cancelled, stale and locked changes without replacing originals") {
             let (editor, _, capture) = try await imageMoveFixture(), before = editor.document
             for crop in [StudioImageCrop(x: -0.1, y: 0, width: 1, height: 1), .init(x: 0, y: 0, width: 0, height: 1),

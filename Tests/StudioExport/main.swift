@@ -135,6 +135,52 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try pixel(image.pixel(32, 48), [0, 255, 0, 255]); try pixel(image.pixel(96, 48), [255, 255, 255, 255])
             try require(output.manifest.frames.map(\.x) == [0, 64, 0] && output.manifest.frames.map(\.y) == [0, 0, 32], "Sheet rect metadata does not match row-major order")
         }
+        await test("selected frame exports retain source indices and rebase exposure timing") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 7; doc.frames[1].holdTicks = 3; doc.frames[2].holdTicks = 5
+            let original = doc
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let folder = try parent(root, "subset-" + format.rawValue)
+                let output = try await service.export(document: doc, format: format, outputParent: folder,
+                    frameIDs: [doc.frames[1].id, doc.frames[2].id])
+                let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(manifest.version == 5 && manifest.frames.map(\.sourceFrameIndex) == [1, 2]
+                    && manifest.frames.map(\.startTick) == [0, 3] && manifest.frames.map(\.durationTicks) == [3, 5],
+                    "Selected frame timing/source mapping lost")
+                try require(manifest.frames.map(\.id) == [doc.frames[1].id, doc.frames[2].id]
+                    && doc == original, "Subset export reordered or mutated project")
+                try pixel(decode(output.imageURLs[0]).pixel(32, 16), [0, 0, 255, 255])
+                try await rejects { _ = try await service.export(document: doc, format: format,
+                    outputParent: folder, frameIDs: []) }
+                try await rejects { _ = try await service.export(document: doc, format: format,
+                    outputParent: folder, frameIDs: ["missing"]) }
+            }
+        }
+        await test("custom atlas columns and padding preserve frame pixels and timing rectangles") {
+            let folder = try parent(root, "padded-sheet"); let doc = try document()
+            let output = try await service.export(document: doc, format: .spritesheet, outputParent: folder,
+                background: .transparent, sheetColumns: 3, cellPadding: 4)
+            let image = try decode(output.imageURLs[0])
+            let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(image.width == 216 && image.height == 40, "Padded sheet dimensions are incorrect")
+            try require(manifest.version == 4 && manifest.sheetColumns == 3 && manifest.cellPadding == 4,
+                "Layout metadata was not retained")
+            try require(manifest.frames.map(\.x) == [4, 76, 148] && manifest.frames.map(\.y) == [4, 4, 4]
+                && manifest.frames.allSatisfy { $0.width == 64 && $0.height == 32 }, "Atlas rects include padding or lose frame dimensions")
+            try pixel(image.pixel(0, 0), [0, 0, 0, 0])
+            try pixel(image.pixel(71, 20), [0, 0, 0, 0])
+            try pixel(image.pixel(36, 20), [255, 0, 0, 255])
+            try pixel(image.pixel(108, 20), [0, 0, 255, 255])
+            try pixel(image.pixel(180, 20), [0, 255, 0, 255])
+            for columns in [0, 4] {
+                try await rejects { _ = try await service.export(document: doc, format: .spritesheet,
+                    outputParent: folder, sheetColumns: columns) }
+            }
+            try await rejects { _ = try await service.export(document: doc, format: .spritesheet,
+                outputParent: folder, cellPadding: 33) }
+            try await rejects { _ = try await service.export(document: doc, format: .pngSequence,
+                outputParent: folder, cellPadding: 1) }
+        }
         await test("transparent alpha and white background produce different actual PNG pixels") {
             let folder = try parent(root, "background"); var doc = try document(colors: ["#FF0000"])
             doc.frames[0].elements.removeAll()
