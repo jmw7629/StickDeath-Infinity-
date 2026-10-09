@@ -130,7 +130,9 @@ final class StudioViewModel: ObservableObject {
                     if fillImageLayerID != nil { imageMoveTarget?.areaRevision = document.revision }
                 } else if oldValue == .lasso, selectedTool == .move, areaSelectionTarget != .drawings,
                    validAreaImageSelection != nil {
-                    imageMoveTarget?.areaRevision = nil
+                    // Preserve the lasso revision across automatic Move handoff.
+                    // Direct transforms renew it only after their own commit.
+                    imageMoveTarget?.areaRevision = document.revision
                 } else { imageMoveTarget = nil }
                 if selectedTool == .lasso, areaSelectionTarget == .image {
                     editor.selectedElementIDs.removeAll()
@@ -2166,6 +2168,7 @@ final class StudioViewModel: ObservableObject {
     }
     func currentImageMoveCapture() -> ImageMoveCapture? {
         guard isMovingImageOnCanvas || (selectedTool == .move && isSelectingMixedArtwork && selectedElementIDs.isEmpty), let target = imageMoveTarget,
+              target.areaRevision == nil || target.areaRevision == document.revision,
               let placement = prepareImagePlacement(), placement.layerID == target.layerID else { return nil }
         return .init(placement: placement, selectionID: target.selectionID)
     }
@@ -2362,6 +2365,11 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
                 })
+            if let target = imageMoveTarget, target.areaRevision == capture.revision,
+               target.projectID == capture.projectID, target.frameID == capture.frameID,
+               target.assetID == capture.assetID, target.layerID == capture.layerID {
+                imageMoveTarget?.areaRevision = document.revision
+            }
             return true
         } catch { message = error.localizedDescription; return false }
     }

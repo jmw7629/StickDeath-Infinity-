@@ -796,7 +796,8 @@ struct FloatingToolSettingsPanel: View {
                     ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
                         Text(target.label).tag(target)
                     }
-                }.accessibilityIdentifier("studio.selection.target")
+                }.font(.specialElite(12)).frame(minHeight: 44)
+                    .accessibilityIdentifier("studio.selection.target")
                 Text(areaSelectionGuidance)
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text(areaSelectionCount)

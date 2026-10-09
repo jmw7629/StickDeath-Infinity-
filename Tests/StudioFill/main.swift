@@ -771,10 +771,10 @@ private struct Failure: Error { let message: String }
         vm.selectedTool = .lasso; vm.areaSelectionTarget = .image; vm.areaSelectionKind = .rectangle
         await vm.flush()
         guard let area = vm.beginAreaSelection() else { throw Failure(message:"Lasso image fixture unavailable") }
-        try require(vm.finishAreaSelection(area,points:[CGPoint(x:0,y:0),CGPoint(x:128,y:128)]) && vm.selectedAreaImageCorners != nil,
+        try require(vm.finishAreaSelection(area,points:[CGPoint(x:0,y:0),CGPoint(x:128,y:128)]) && vm.selectedTool == .move && vm.currentImageMoveCapture() != nil,
             "Real Lasso image selection failed")
         try require(vm.renameProject("Unrelated revision",expectedProjectID:vm.document.id,expectedRevision:vm.document.revision),"Unrelated document edit")
-        try require(vm.selectedAreaImageCorners == nil,"Unrelated edit did not stale Lasso selection")
+        try require(vm.currentImageMoveCapture() == nil && vm.fillImageLayerID == nil,"Unrelated edit did not stale Lasso selection")
         let revised = vm.document, canUndo = vm.canUndo, canRedo = vm.canRedo
         vm.selectedTool = .fill; await vm.flush()
         try require(vm.hasFillImageTarget && StudioFillContext.current(vm) == nil && vm.document == revised && vm.canUndo == canUndo && vm.canRedo == canRedo,

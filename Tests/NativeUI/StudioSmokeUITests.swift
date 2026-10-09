@@ -3715,7 +3715,11 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(scroll.waitForExistence(timeout: 5), "Fill controls need the existing popup scroll viewport")
         for _ in 0..<6 {
             let bounds = scroll.frame.intersection(app.frame)
-            let viewport = bounds.insetBy(dx: 0, dy: min(12, bounds.height * 0.05))
+            // Sliders need room for their thumb. A menu/button at the first
+            // scroll row is fully actionable at the actual viewport edge;
+            // scrolling cannot manufacture an inset above the first row.
+            let margin = control.elementType == .slider ? min(12, bounds.height * 0.05) : 0
+            let viewport = bounds.insetBy(dx: 0, dy: margin)
             guard viewport.width > 0, viewport.height > 0, control.exists else { break }
             let target = control.frame
             // XCTest can report a clipped slider as hittable. Its entire thumb
@@ -3756,7 +3760,7 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
-    func testRectangleAndPolygonSelectionDeleteUndoAndColdReopen() throws {
+    func testLassoAutomaticMovePolygonDeleteUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
         let name = try createProjectIfLibraryIsShown(app)
@@ -3776,6 +3780,10 @@ final class StudioSmokeUITests: XCTestCase {
         let both = try pixels(canvas.screenshot().image)
         XCTAssertGreaterThan(exportInkMask(both).count,exportInkMask(rightOnly).count+12)
         try selectToolbarTool("lasso",app:app)
+        let target = try fillPreferenceControl("studio.selection.target", app: app)
+        target.tap()
+        let drawings = app.buttons["Drawings"].firstMatch
+        XCTAssertTrue(drawings.waitForExistence(timeout: 5)); drawings.tap()
         let rectangle = app.buttons["studio.selection.kind.rectangle"]
         XCTAssertTrue(rectangle.waitForExistence(timeout:5) && rectangle.isHittable); rectangle.tap()
         XCTAssertFalse(app.buttons["studio.lasso.delete"].isEnabled,"Area Delete requires explicit selection")
@@ -3786,7 +3794,7 @@ final class StudioSmokeUITests: XCTestCase {
         try selectToolbarTool("lasso",app:app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Rectangle must select only the enclosed drawing")
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Selection must not edit the document")
-        app.buttons["studio.lasso.deselect"].tap()
+        try fillPreferenceControl("studio.lasso.deselect", app: app).tap()
         let polygon = app.buttons["studio.selection.kind.polygon"]
         XCTAssertTrue(polygon.isHittable); polygon.tap()
         app.buttons["studio.tool-settings.close"].tap()
@@ -3818,7 +3826,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Polygon must enclose the same single drawing")
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Polygon selection must remain transient")
         capture(app,name:"polygon-selection-finished-with-canonical-drawing")
-        let delete = app.buttons["studio.lasso.delete"]
+        let delete = try fillPreferenceControl("studio.lasso.delete", app: app)
         XCTAssertTrue(delete.isEnabled && delete.isHittable); delete.tap()
         app.buttons["studio.tool-settings.close"].tap()
         try waitForStableCanvas(canvas,expected:frame)
