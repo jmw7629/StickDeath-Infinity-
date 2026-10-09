@@ -37,7 +37,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xffff343f))) {
+            MaterialTheme(colorScheme = darkColorScheme(primary = Color(0xffff343f)), typography = studioTypography) {
                 Surface(Modifier.fillMaxSize()) { StudioApp(studio) }
             }
         }
@@ -336,7 +336,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text("Lasso encloses whole unlocked drawings. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
                             FilterChip(vm.selectionPreservesAspect,
-                                { vm.setSelectionPreservesAspect(!vm.selectionPreservesAspect) },
+                                { vm.chooseSelectionAspectLock(!vm.selectionPreservesAspect) },
                                 { Text("Keep proportions") })
                             Text(if (vm.selectionPreservesAspect) "Corner handles scale both axes together." else "Corner handles resize width and height independently. Stroke thickness follows the geometric mean of both scales.")
                             Row {

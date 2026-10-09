@@ -407,6 +407,8 @@ struct FloatingToolSettingsPanel: View {
                     Toggle("Italic", isOn: $vm.textStyle.italic).accessibilityIdentifier("studio.text.italic")
                 }.font(.specialElite(10))
                 ColorPicker("Text color", selection: $vm.textPickerColor, supportsOpacity: true)
+                    .font(.specialElite(12))
+                    .frame(minHeight: 44)
                     .accessibilityIdentifier("studio.text.color")
                 SettingsSlider(label: "Box Width", value: $vm.textStyle.boxWidth, range: 16...4096, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Box Height", value: $vm.textStyle.boxHeight, range: 16...4096, unit: "px", accent: accentColor)

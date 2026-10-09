@@ -165,7 +165,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun fitViewport() = viewport(1f, 0f, 0f)
     var selectionPreservesAspect by mutableStateOf(true); private set
-    fun setSelectionPreservesAspect(enabled: Boolean) {
+    fun chooseSelectionAspectLock(enabled: Boolean) {
         selectionPreservesAspect = enabled
         preferences.edit().putBoolean("selection.preserveAspect", enabled).apply()
     }
@@ -351,10 +351,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             }
         } catch (e: Exception) { report(e.message ?: "Artwork could not be flipped.") }
     }
-    private fun finishSelection() {
+    private fun finishSelection(freeResize: Boolean = false) {
         if (selectedStrokeIDs.isNotEmpty()) {
             selectionMode = SelectionMode.Replace
             chooseTool(Tool.Move)
+            // A completed lasso is immediately reshappable, matching native Studio.
+            // This is transient; selecting a region does not write document history.
+            if (freeResize) selectionPreservesAspect = false
             message = "Drag the selection to move; use corners to resize or the top handle to rotate."
         } else message = "No artwork selected. Enclose whole visible, unlocked drawings."
     }
@@ -375,7 +378,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 SelectionMode.Add -> prior + found
                 SelectionMode.Subtract -> prior - found
             }.intersect(eligible)
-            finishSelection()
+            finishSelection(freeResize = true)
         } catch (e: Exception) { report(e.message ?: "Selection unavailable.") }
     }
     fun positionSelection(dx: Float = 0f, dy: Float = 0f, alignment: ArtworkAlignment? = null) {

@@ -1954,7 +1954,11 @@ final class StudioViewModel: ObservableObject {
         return true
     }
     func beginAreaSelection() -> AreaSelectionCapture? {
-        guard isEditing, !isPlaying, !isSaving, selectedTool == .lasso,
+        areaSelectionCapture(allowMove: false)
+    }
+    private func areaSelectionCapture(allowMove: Bool) -> AreaSelectionCapture? {
+        guard isEditing, !isPlaying, !isSaving,
+              selectedTool == .lasso || (allowMove && selectedTool == .move),
               activeStrokeID == nil, pendingBrushStroke == nil,
               areaSelectionSmoothing.isFinite, (0...10).contains(areaSelectionSmoothing),
               areaSelectionTarget != .image || availableAreaImage != nil else { return nil }
@@ -2080,7 +2084,10 @@ final class StudioViewModel: ObservableObject {
     func selectVisibleArtwork(inverting: Bool = false,
                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
-            guard areaSelectionTarget != .image, let capture = beginAreaSelection(), textDraft == nil else { return false }
+            // Lasso deliberately hands off to Move. Selection commands must
+            // remain available there without allowing new lasso gestures in Move.
+            let capturedTool = selectedTool
+            guard areaSelectionTarget != .image, let capture = areaSelectionCapture(allowMove: true), textDraft == nil else { return false }
             let eligible = Set(layers.filter {
                 $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
             }.map(\.id))
@@ -2095,7 +2102,7 @@ final class StudioViewModel: ObservableObject {
                 ids.insert(element.id)
             }
             try checkCancellation()
-            guard beginAreaSelection() == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
+            guard selectedTool == capturedTool, areaSelectionCapture(allowMove: true) == capture, textDraft == nil else { throw StudioCommandError.staleRevision }
             editor.selectedElementIDs = inverting ? ids.subtracting(capture.selectedIDs) : ids
             if capture.target == .artwork {
                 if let image = capture.image, !inverting || capture.imageSelectionID == nil {
