@@ -1,0 +1,20 @@
+# Selection Forward and Back
+
+The existing Move popup now moves explicitly selected drawn elements one unselected neighbor forward or backward within their own layers. It retains selected-element order, canonical layer stacking, IDs, original geometry and imported-image placement. There is no new toolbar or layout change. Copy/Flip/Lock and other incomplete selection tools remain explicit.
+
+UI actions and typed Spatter-compatible commands use the same validated, reversible document operation. Empty, duplicate, missing, stale, hidden, transparent or locked selections fail without mutation. The operation checks cancellation throughout and commits one document/history change. An already-at-edge selection is a no-op with no revision or undo entry. Movement never crosses layer boundaries.
+
+Eight actual production groups pass on the development Mac, using the real model/view model, SwiftUI compositor, device store and decoded PNG. They verify overlap pixels, one-step Undo/Redo, stable multi-selection ordering, independent layers, no-op/history behavior, lock and invalid input rejection, every cancellation point, strict wire/batch rollback, production save/cold reopen and exported pixels. Original compiler diagnostics are preserved; optional legacy layer IDs are rejected rather than reassigned and element IDs remain immutable.
+
+A twenty-second native journey is defined to draw intersecting red/blue strokes, use the actual Forward/Back buttons, compare changed overlap pixels, Undo/Redo, save, terminate and reopen. It has not run. After preserving the empty-selection canvas correction from d0804aa, this updated source passed all eight ordering groups, eleven Move groups, the 127-source iOS SDK check and 22 UI definitions with unchanged inputs. The earlier audio-mix, Move, document and command regression groups passed on the preserved pre-correction candidate; that broader run is historical evidence, not a rerun of this updated source. These checks do not prove native runtime execution. Keep this private slice separate until the current Move21 native run finishes and its evidence is preserved. Physical devices, independent review and other selection actions remain outstanding.
+
+Successful Forward/Back actions and at-edge no-ops preserve the existing status and canvas geometry. A new production regression failed against the immutable prior code when its success banner was inserted. Native assertions now check unchanged canvas bounds immediately after both buttons, before save can clear a banner. Updated after-correction verification is recorded in the private check receipts; no native22 result is claimed here.
+
+The final corrected source passes all71 production/regression checks:8 ordering,11 Move,26 audio-mix,10 document journeys and16 command cases. The127-source iOS SDK check and22 UI definitions also pass; all compiled inputs remain unchanged. The last published d0804aa app and all21 native journeys pass together in run34750659511. Its actual1123.986-second UI run leaves736.014 seconds in the unchanged1860-second suite allowance, sufficient for the added single180-second-bounded journey. The new22-journey run remains pending for this source.
+
+
+## First native execution and selector correction
+
+On d706c754f596b9800e96f22b942ad8d032c61e77, the actual Xcode app and every production stage passed. All21 established native journeys passed. The new ordering journey failed at its brush-library lookup before drawing or executing Forward/Back. The original UI hierarchy shows the existing visible `studio.brush-library` control, while the new test asked for `studio.brush.library`; its Round lookup also used a dot instead of the established hyphen.
+
+The correction uses the same two production identifiers as the already passing brush and fill journeys. No application code, expected pixels, history/reopen checks, geometry assertions or timeout limits change. The complete original22-test failed result, raw logs, xcresult and recording are preserved. Ordering runtime and a fully green22-test suite remain pending the corrected exact-source run.

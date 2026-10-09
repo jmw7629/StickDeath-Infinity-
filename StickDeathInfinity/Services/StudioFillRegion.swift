@@ -1,0 +1,204 @@
+import Foundation
+
+/// Bounded pixel-region computation only. The native integration must supply
+/// captured canonical artwork, recheck editor ownership and commit the result
+/// transactionally. This service performs no file or document mutations.
+enum StudioFillRegion {
+    static let maximumPixels = 4_194_304
+    static let maximumSpans = 262_144
+
+    struct Settings: Equatable, Sendable {
+        var tolerance = 32
+        var contiguous = true
+        var expand = 0
+        var gapClose = 0
+        var antiAlias = true
+    }
+    struct Span: Equatable, Sendable {
+        let row: Int
+        let start: Int
+        let end: Int // exclusive
+        let alpha: UInt8
+    }
+    struct Mask: Equatable, Sendable {
+        let width: Int
+        let height: Int
+        let spans: [Span]
+        let coveredPixels: Int
+    }
+    enum Failure: LocalizedError, Equatable {
+        case invalidImage, invalidSettings, outsideCanvas, outsideSelection, emptyRegion, spanLimit
+        var errorDescription: String? {
+            switch self {
+            case .invalidImage: return "Fill needs a complete image within the supported canvas pixel limit."
+            case .invalidSettings: return "These fill settings are outside the supported range."
+            case .outsideCanvas: return "Tap inside the canvas to fill a region."
+            case .outsideSelection: return "Tap within the selected artwork to fill its coverage."
+            case .emptyRegion: return "These settings leave no fillable pixels at this point."
+            case .spanLimit: return "This fill region is too complex. Nothing has been changed."
+            }
+        }
+    }
+
+    /// RGBA rows have a top-left origin and four bytes per pixel. Tolerance is
+    /// the maximum difference in any of the four supplied channels, 0...128.
+    /// Matching does not chase a gradually changing color across the image.
+    static func compute(rgba: Data, width: Int, height: Int, x: Int, y: Int,
+                        settings: Settings, selectionCoverage: Data? = nil,
+                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Mask {
+        try checkCancellation()
+        guard width > 0, height > 0, width <= 4096, height <= 4096,
+              width <= maximumPixels / height, rgba.count == width * height * 4 else { throw Failure.invalidImage }
+        guard (0...128).contains(settings.tolerance), (-5...5).contains(settings.expand),
+              (0...5).contains(settings.gapClose) else { throw Failure.invalidSettings }
+        guard x >= 0, y >= 0, x < width, y < height else { throw Failure.outsideCanvas }
+        let count = width * height, seed = y * width + x, bytes = [UInt8](rgba)
+        if let selectionCoverage, selectionCoverage.count != count { throw Failure.invalidImage }
+        let coverage = selectionCoverage.map { [UInt8]($0) }
+        if let coverage, coverage[seed] == 0 { throw Failure.outsideSelection }
+        let seedOffset = seed * 4
+        let red = Int(bytes[seedOffset]), green = Int(bytes[seedOffset + 1])
+        let blue = Int(bytes[seedOffset + 2]), alpha = Int(bytes[seedOffset + 3])
+        let tolerance = settings.tolerance
+        var matches = [UInt8](repeating: 0, count: count)
+        for row in 0..<height {
+            try checkCancellation()
+            for column in 0..<width {
+                let index = row * width + column
+                // The selection is a traversal boundary, not just a final
+                // crop: contiguous fill must not cross unselected pixels.
+                if let coverage, coverage[index] == 0 { continue }
+                let offset = index * 4
+                if abs(Int(bytes[offset]) - red) <= tolerance &&
+                   abs(Int(bytes[offset + 1]) - green) <= tolerance &&
+                   abs(Int(bytes[offset + 2]) - blue) <= tolerance &&
+                   abs(Int(bytes[offset + 3]) - alpha) <= tolerance {
+                    matches[index] = 255
+                }
+            }
+        }
+        // Closing the nonmatching barrier seals small gaps without changing
+        // original artwork. Retain every original barrier pixel at image edges.
+        if settings.contiguous && settings.gapClose > 0 {
+            let barriers = matches.map { 255 - $0 }
+            let dilated = try morphology(barriers, width, height, settings.gapClose, erode: false, checkCancellation)
+            let closed = try morphology(dilated, width, height, settings.gapClose, erode: true, checkCancellation)
+            for index in matches.indices {
+                if index % 4096 == 0 { try checkCancellation() }
+                if barriers[index] > 0 || closed[index] > 0 { matches[index] = 0 }
+            }
+        }
+        guard matches[seed] > 0 else { throw Failure.emptyRegion }
+        var selected = matches
+        if settings.contiguous {
+            selected = [UInt8](repeating: 0, count: count)
+            var queue: [Int32] = [Int32(seed)]
+            selected[seed] = 255
+            var cursor = 0
+            while cursor < queue.count {
+                if cursor % 4096 == 0 { try checkCancellation() }
+                let index = Int(queue[cursor]); cursor += 1
+                func include(_ neighbour: Int) {
+                    if matches[neighbour] > 0 && selected[neighbour] == 0 {
+                        selected[neighbour] = 255; queue.append(Int32(neighbour))
+                    }
+                }
+                let column = index % width
+                if column > 0 { include(index - 1) }
+                if column + 1 < width { include(index + 1) }
+                if index >= width { include(index - width) }
+                if index < count - width { include(index + width) }
+            }
+        }
+        if settings.expand != 0 {
+            selected = try morphology(selected, width, height, abs(settings.expand), erode: settings.expand < 0, checkCancellation)
+        }
+        if settings.antiAlias {
+            // Keep integer sums until the final division: averaging each axis
+            // separately would round twice and change boundary coverage.
+            let hard = selected
+            var columns = [Int](repeating: 0, count: width)
+            for row in 0..<min(height, 2) {
+                for column in 0..<width { columns[column] += Int(hard[row * width + column]) }
+            }
+            for row in 0..<height {
+                try checkCancellation()
+                let verticalSamples = 1 + (row > 0 ? 1 : 0) + (row + 1 < height ? 1 : 0)
+                var total = columns[0] + (width > 1 ? columns[1] : 0)
+                for column in 0..<width {
+                    let samples = verticalSamples * (1 + (column > 0 ? 1 : 0) + (column + 1 < width ? 1 : 0))
+                    selected[row * width + column] = UInt8((total + samples / 2) / samples)
+                    if column > 0 { total -= columns[column - 1] }
+                    if column + 2 < width { total += columns[column + 2] }
+                }
+                let leaving = row - 1, entering = row + 2
+                for column in 0..<width {
+                    if leaving >= 0 { columns[column] -= Int(hard[leaving * width + column]) }
+                    if entering < height { columns[column] += Int(hard[entering * width + column]) }
+                }
+            }
+        }
+        if let coverage {
+            // Expansion and edge smoothing can reach beyond the original
+            // region. Restore the captured boundary, retaining fractional
+            // artwork alpha rather than substituting a bounding rectangle.
+            for index in selected.indices {
+                if index % 4096 == 0 { try checkCancellation() }
+                selected[index] = UInt8((Int(selected[index]) * Int(coverage[index]) + 127) / 255)
+            }
+        }
+        var spans: [Span] = [], covered = 0
+        for row in 0..<height {
+            try checkCancellation()
+            var column = 0
+            while column < width {
+                let alpha = selected[row * width + column], start = column
+                column += 1
+                while column < width && selected[row * width + column] == alpha { column += 1 }
+                if alpha != 0 {
+                    guard spans.count < maximumSpans else { throw Failure.spanLimit }
+                    spans.append(.init(row: row, start: start, end: column, alpha: alpha))
+                    covered += column - start
+                }
+            }
+        }
+        try checkCancellation()
+        guard covered > 0 else { throw Failure.emptyRegion }
+        return .init(width: width, height: height, spans: spans, coveredPixels: covered)
+    }
+
+    /// Separable square morphology in O(width*height), independent of radius.
+    /// Outside-canvas pixels are empty: shrinking retreats from canvas edges.
+    private static func morphology(_ input: [UInt8], _ width: Int, _ height: Int,
+                                   _ radius: Int, erode: Bool, _ check: () throws -> Void) throws -> [UInt8] {
+        var horizontal = [UInt8](repeating: 0, count: input.count)
+        let window = radius * 2 + 1
+        for row in 0..<height {
+            try check()
+            var active = 0
+            for column in 0..<min(width,radius+1) { if input[row * width + column] > 0 { active += 1 } }
+            for column in 0..<width {
+                horizontal[row * width + column] = (erode ? active == window : active > 0) ? 255 : 0
+                let leaving = column - radius, entering = column + radius + 1
+                if leaving >= 0 && input[row * width + leaving] > 0 { active -= 1 }
+                if entering < width && input[row * width + entering] > 0 { active += 1 }
+            }
+        }
+        var output = [UInt8](repeating: 0, count: input.count)
+        var counts = [Int](repeating: 0, count: width)
+        for row in 0..<min(height,radius+1) {
+            try check()
+            for column in 0..<width { if horizontal[row * width + column] > 0 { counts[column] += 1 } }
+        }
+        for row in 0..<height {
+            try check()
+            let leaving = row - radius, entering = row + radius + 1
+            for column in 0..<width {
+                output[row * width + column] = (erode ? counts[column] == window : counts[column] > 0) ? 255 : 0
+                if leaving >= 0 && horizontal[leaving * width + column] > 0 { counts[column] -= 1 }
+                if entering < height && horizontal[entering * width + column] > 0 { counts[column] += 1 }
+            }
+        }
+        return output
+    }
+}

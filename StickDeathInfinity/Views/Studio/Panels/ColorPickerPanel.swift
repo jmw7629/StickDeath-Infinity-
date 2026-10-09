@@ -2,7 +2,18 @@ import SwiftUI
 
 struct ColorPickerPanel: View {
     @ObservedObject var vm: StudioViewModel
+    enum Target: Equatable { case drawing, gradientEnd }
+    var target: Target = .drawing
     @State private var selectedPaletteIndex: Int = 0
+    @State private var customHex = ""
+    @FocusState private var customHexFocused: Bool
+    private var selectedColor: Color { target == .drawing ? vm.strokeColor : vm.brushGradientEndColor }
+    private var selectedHex: String { target == .drawing ? vm.strokeColorHex : vm.brushGradientEndColorHex }
+    private func setColor(_ color: Color) {
+        if target == .drawing { vm.strokeColor = color }
+        else { vm.brushGradientEndColor = color; vm.rememberRecentColor(vm.brushGradientEndColorHex) }
+    }
+    private var validCustomHex: String? { StudioViewModel.normalizedColorHex(customHex) }
 
     static let palettes: [(name: String, colors: [String])] = [
         ("Basic", ["#5AC8FA","#7EC8D9","#C4C9A8","#F39C12","#E67E22","#FFFFFF","#000000"]),
@@ -29,41 +40,68 @@ struct ColorPickerPanel: View {
                 .frame(width: 36, height: 4)
                 .padding(.top, 8)
 
-            PanelHeader(title: "Color", icon: "🎨", onClose: { vm.activePanel = .none })
+            PanelHeader(title: target == .drawing ? "Color" : "Gradient end color", icon: "🎨", onClose: { customHexFocused = false; vm.activePanel = target == .drawing ? .none : .toolSettings })
 
+            ScrollView {
+            VStack(spacing: 0) {
             // Current color preview
             HStack(spacing: 12) {
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(vm.strokeColor)
+                    .fill(selectedColor)
                     .frame(width: 48, height: 48)
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .stroke(Color.white.opacity(0.2), lineWidth: 1)
                     )
 
-                Text(vm.strokeColorHex.uppercased())
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                Text(selectedHex.uppercased())
+                    .font(.specialElite(13))
                     .foregroundColor(.white.opacity(0.7))
+                    .accessibilityIdentifier("studio.color.current")
 
                 Spacer()
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
 
+            Group {
+                HStack(spacing: 10) {
+                    Text("Custom hex").font(.specialElite(11))
+                    TextField("RRGGBB", text: $customHex)
+                        .font(.specialElite(13))
+                        .textInputAutocapitalization(.characters).autocorrectionDisabled()
+                        .keyboardType(.asciiCapable).focused($customHexFocused)
+                        .accessibilityLabel(target == .drawing ? "Custom drawing color hex" : "Custom gradient end color hex")
+                        .accessibilityIdentifier("studio.color.hex")
+                    Button("Apply") {
+                        guard let hex = validCustomHex else { return }
+                        guard vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) else { return }
+                        customHex = ""; customHexFocused = false
+                    }
+                    .disabled(validCustomHex == nil)
+                    .accessibilityIdentifier("studio.color.hex.apply")
+                }
+                .foregroundColor(.white).padding(10)
+                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 16).padding(.bottom, 12)
+            }
+
             // Preset colors grid
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 7), spacing: 6) {
                 ForEach(Self.presetColors, id: \.self) { hex in
                     Button(action: {
-                        vm.strokeColor = Color(hex: hex)
+                        setColor(Color(hex: hex))
                     }) {
                         Circle()
                             .fill(Color(hex: hex))
                             .frame(width: 32, height: 32)
                             .overlay(
                                 Circle()
-                                    .stroke(vm.strokeColorHex == hex ? Color.white : Color.white.opacity(0.1), lineWidth: vm.strokeColorHex == hex ? 2 : 1)
+                                    .stroke(selectedHex == hex ? Color.white : Color.white.opacity(0.1), lineWidth: selectedHex == hex ? 2 : 1)
                             )
                     }
+                    .accessibilityLabel("Color " + hex)
+                    .accessibilityIdentifier("studio.color.preset." + hex)
                 }
             }
             .padding(.horizontal, 16)
@@ -75,7 +113,7 @@ struct ColorPickerPanel: View {
                     ForEach(Array(Self.palettes.enumerated()), id: \.offset) { index, palette in
                         Button(action: { selectedPaletteIndex = index }) {
                             Text(palette.name)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .font(.specialElite(9))
                                 .foregroundColor(selectedPaletteIndex == index ? Color(hex: "DC2626") : .white.opacity(0.4))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
@@ -94,7 +132,7 @@ struct ColorPickerPanel: View {
             HStack(spacing: 8) {
                 ForEach(Self.palettes[selectedPaletteIndex].colors, id: \.self) { hex in
                     Button(action: {
-                        vm.strokeColor = Color(hex: hex)
+                        setColor(Color(hex: hex))
                     }) {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(Color(hex: hex))
@@ -108,6 +146,26 @@ struct ColorPickerPanel: View {
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 20)
+            if !vm.recentColorHexes.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("RECENT COLORS").font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(vm.recentColorHexes, id: \.self) { hex in
+                                Button { _ = vm.applyCustomColorHex(hex, gradientEnd: target == .gradientEnd) } label: {
+                                    Circle().fill(Color(hex: hex)).frame(width: 30, height: 30)
+                                        .overlay(Circle().stroke(.white.opacity(0.4), lineWidth: 1))
+                                        .frame(width: 44, height: 44)
+                                }
+                                .accessibilityLabel("Recent color " + hex)
+                                .accessibilityIdentifier("studio.color.recent." + hex)
+                            }
+                        }
+                    }
+                }.padding(.horizontal, 16).padding(.bottom, 16)
+            }
+            }
+            }.accessibilityIdentifier("studio.color.scroll")
         }
         .background(Color(hex: "1a1a24"))
         .cornerRadius(16, corners: [.topLeft, .topRight])

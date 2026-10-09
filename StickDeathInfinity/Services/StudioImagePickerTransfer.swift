@@ -4,13 +4,15 @@ import Foundation
 /// inside the callback, so the bounded copy must finish before that callback
 /// returns. The returned handle is not a decoded image or a document edit.
 enum StudioImagePickerTransfer {
+    enum Media { case stillImage, video }
     enum Failure: LocalizedError {
-        case unsupportedRepresentation, unavailable, timedOut, invalidDeadline
+        case unsupportedRepresentation, unsupportedVideoRepresentation, unavailable, timedOut, invalidDeadline
         var errorDescription: String? {
             switch self {
             case .unsupportedRepresentation: return "Choose a still JPEG, PNG or HEIF image. This photo representation is not supported."
-            case .unavailable: return "The photo provider could not supply the selected file. Try again when it is available."
-            case .timedOut: return "The photo transfer timed out. No image was added. Try again when the photo is downloaded."
+            case .unsupportedVideoRepresentation: return "Choose an MP4 or MOV video. This video representation is not supported."
+            case .unavailable: return "The Photos provider could not supply the selected file. Try again when it is available."
+            case .timedOut: return "The Photos transfer timed out. Nothing was added. Try again when the selected media is downloaded."
             case .invalidDeadline: return "The photo transfer could not start."
             }
         }
@@ -18,12 +20,15 @@ enum StudioImagePickerTransfer {
 
     /// Registered order preserves the provider's preferred supported format;
     /// requesting generic image/data can cause undocumented transcoding.
-    static func preferredType(in provider: NSItemProvider) -> String? {
-        let supported: Set<String> = ["public.jpeg", "public.png", "public.heic", "public.heif"]
+    static func preferredType(in provider: NSItemProvider, media: Media = .stillImage) -> String? {
+        let supported: Set<String> = media == .video
+            ? ["public.mpeg-4", "com.apple.quicktime-movie"]
+            : ["public.jpeg", "public.png", "public.heic", "public.heif"]
         return provider.registeredTypeIdentifiers.first { supported.contains($0) }
     }
 
     static func load(from provider: NSItemProvider,
+                     media: Media = .stillImage,
                      scratchParent: URL = FileManager.default.temporaryDirectory,
                      timeoutSeconds: TimeInterval = 120,
                      cleanupFailure: @escaping @Sendable (Error) -> Void = { _ in
@@ -33,8 +38,14 @@ enum StudioImagePickerTransfer {
         guard timeoutSeconds.isFinite, timeoutSeconds > 0, timeoutSeconds <= 120 else {
             throw Failure.invalidDeadline
         }
-        guard let type = preferredType(in: provider) else { throw Failure.unsupportedRepresentation }
-        let name = provider.suggestedName ?? "Imported photo"
+        guard let type = preferredType(in: provider, media: media) else {
+            throw media == .video ? Failure.unsupportedVideoRepresentation : Failure.unsupportedRepresentation
+        }
+        let name = provider.suggestedName ?? (media == .video ? "Imported video" : "Imported photo")
+        // Provider temporary filenames need not carry an extension. Select a
+        // suffix from the explicitly requested type; the decoder still checks
+        // the actual container/track bytes before presenting a frame.
+        let suffix: String? = media == .video ? (type == "public.mpeg-4" ? "mp4" : "mov") : nil
         let state = CallbackState(cleanupFailure: cleanupFailure)
         let owned: StudioImageProviderFile = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
@@ -48,7 +59,7 @@ enum StudioImagePickerTransfer {
                         // This synchronous bounded copy is intentionally inside
                         // the provider callback. ImageIO decoding happens later.
                         let copy = try StudioImageProviderFile.materialize(from: url,
-                            suggestedName: name, scratchParent: scratchParent,
+                            suggestedName: name, fileExtension: suffix, scratchParent: scratchParent,
                             isCancelled: { state.isCancelled },
                             abandonedCleanupFailure: cleanupFailure)
                         state.finish(.success(copy))

@@ -114,6 +114,17 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try require(manifest.projectID == doc.id && manifest.documentRevision == 7 && manifest.fps == 24 && manifest.frames.map(\.id) == doc.frames.map(\.id), "Timing/identity/order metadata lost")
             try require(!manifest.audioIncluded && !manifest.editorGuidesIncluded && progress == [1, 2, 3] && doc == original, "Export changed document or claimed unsupported media")
         }
+        await test("held cels retain timing in PNG sequence and spritesheet manifests") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: doc, format: format, outputParent: parent(root, "holds-" + format.rawValue))
+                let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(manifest.version == 2 && manifest.frames.map(\.startTick) == [0, 3, 9]
+                    && manifest.frames.map(\.durationTicks) == [3, 6, 1], "Image export lost canonical exposures")
+                _ = try decode(output.imageURLs[0])
+            }
+        }
         await test("spritesheet real decoded row-major cells and manifest rectangles") {
             let folder = try parent(root, "sheet"); let doc = try document()
             let output = try await service.export(document: doc, format: .spritesheet, outputParent: folder)
@@ -123,6 +134,52 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try pixel(image.pixel(32, 16), [255, 0, 0, 255]); try pixel(image.pixel(96, 16), [0, 0, 255, 255])
             try pixel(image.pixel(32, 48), [0, 255, 0, 255]); try pixel(image.pixel(96, 48), [255, 255, 255, 255])
             try require(output.manifest.frames.map(\.x) == [0, 64, 0] && output.manifest.frames.map(\.y) == [0, 0, 32], "Sheet rect metadata does not match row-major order")
+        }
+        await test("selected frame exports retain source indices and rebase exposure timing") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 7; doc.frames[1].holdTicks = 3; doc.frames[2].holdTicks = 5
+            let original = doc
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let folder = try parent(root, "subset-" + format.rawValue)
+                let output = try await service.export(document: doc, format: format, outputParent: folder,
+                    frameIDs: [doc.frames[1].id, doc.frames[2].id])
+                let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(manifest.version == 5 && manifest.frames.map(\.sourceFrameIndex) == [1, 2]
+                    && manifest.frames.map(\.startTick) == [0, 3] && manifest.frames.map(\.durationTicks) == [3, 5],
+                    "Selected frame timing/source mapping lost")
+                try require(manifest.frames.map(\.id) == [doc.frames[1].id, doc.frames[2].id]
+                    && doc == original, "Subset export reordered or mutated project")
+                try pixel(decode(output.imageURLs[0]).pixel(32, 16), [0, 0, 255, 255])
+                try await rejects { _ = try await service.export(document: doc, format: format,
+                    outputParent: folder, frameIDs: []) }
+                try await rejects { _ = try await service.export(document: doc, format: format,
+                    outputParent: folder, frameIDs: ["missing"]) }
+            }
+        }
+        await test("custom atlas columns and padding preserve frame pixels and timing rectangles") {
+            let folder = try parent(root, "padded-sheet"); let doc = try document()
+            let output = try await service.export(document: doc, format: .spritesheet, outputParent: folder,
+                background: .transparent, sheetColumns: 3, cellPadding: 4)
+            let image = try decode(output.imageURLs[0])
+            let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(image.width == 216 && image.height == 40, "Padded sheet dimensions are incorrect")
+            try require(manifest.version == 4 && manifest.sheetColumns == 3 && manifest.cellPadding == 4,
+                "Layout metadata was not retained")
+            try require(manifest.frames.map(\.x) == [4, 76, 148] && manifest.frames.map(\.y) == [4, 4, 4]
+                && manifest.frames.allSatisfy { $0.width == 64 && $0.height == 32 }, "Atlas rects include padding or lose frame dimensions")
+            try pixel(image.pixel(0, 0), [0, 0, 0, 0])
+            try pixel(image.pixel(71, 20), [0, 0, 0, 0])
+            try pixel(image.pixel(36, 20), [255, 0, 0, 255])
+            try pixel(image.pixel(108, 20), [0, 0, 255, 255])
+            try pixel(image.pixel(180, 20), [0, 255, 0, 255])
+            for columns in [0, 4] {
+                try await rejects { _ = try await service.export(document: doc, format: .spritesheet,
+                    outputParent: folder, sheetColumns: columns) }
+            }
+            try await rejects { _ = try await service.export(document: doc, format: .spritesheet,
+                outputParent: folder, cellPadding: 33) }
+            try await rejects { _ = try await service.export(document: doc, format: .pngSequence,
+                outputParent: folder, cellPadding: 1) }
         }
         await test("transparent alpha and white background produce different actual PNG pixels") {
             let folder = try parent(root, "background"); var doc = try document(colors: ["#FF0000"])
@@ -178,6 +235,30 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             }
             try require(try Data(contentsOf: folder.appendingPathComponent("original.png")) == original, "Original asymmetric asset changed")
         }
+        await test("normalized crop exports only the chosen source quadrant before rotation and flips") {
+            let folder = try parent(root, "crop-quadrants"), original = try asymmetricPNG()
+            var doc = try document(colors: ["#FF0000"], width: 64, height: 64)
+            doc.schemaVersion = 22; doc.frames[0].elements = []
+            doc.frames[0].rasterAssetID = "crop"; doc.frames[0].rasterLayerID = doc.activeLayerID
+            doc.frames[0].rasterPlacement = .init(x: 16, y: 16, width: 32, height: 32)
+            do {
+                _ = try StudioFrameRenderer.prepareRaster(frame: doc.frames[0], layers: doc.layers, data: original, maximumDimension: Int.max)
+                throw Failure(message: "Unbounded crop resolution accepted")
+            } catch StudioRasterImage.Failure.limit { }
+            for (x,y,expected) in [(0.0,0.0,[255,0,0,255]), (0.5,0.0,[0,0,255,255]),
+                                   (0.0,0.5,[255,255,0,255]), (0.5,0.5,[0,255,0,255])] as [(Double,Double,[UInt8])] {
+                doc.frames[0].rasterCrop = .init(x: x, y: y, width: 0.5, height: 0.5)
+                for turns in [nil,1,2,3] as [Int?] {
+                    doc.frames[0].rasterQuarterTurns = turns
+                    doc.frames[0].rasterReflection = .init(horizontal: true, vertical: false)
+                    let output = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                        background: .transparent, rasterData: { _ in original })
+                    let image = try decode(output.imageURLs[0])
+                    try pixel(image.pixel(32,32),expected); try pixel(image.pixel(20,20),expected)
+                    try pixel(image.pixel(8,8),[0,0,0,0])
+                }
+            }
+        }
         await test("hidden and zero-opacity layers omit unavailable raster and unsupported operations") {
             let folder = try parent(root, "hidden-content"); var doc = try document(colors: ["#FF0000"])
             var hidden = CanvasLayer(id: "hidden", name: "Hidden original", visible: false)
@@ -195,21 +276,59 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder) }
             try require(try fm.contentsOfDirectory(atPath: folder.path).count == 2, "Visible missing raster published or left partial output")
         }
-        await test("missing or corrupt raster removes all partial files and preserves prior exports") {
+        await test("missing or corrupt raster fails preflight without output and preserves prior exports") {
             let folder = try parent(root, "failed-asset"); var doc = try document(colors: ["#FF0000", "#0000FF"])
             doc.frames[1].rasterAssetID = "missing"; doc.frames[1].rasterLayerID = doc.activeLayerID
             let sentinel = folder.appendingPathComponent("keep.txt"); try Data("keep".utf8).write(to: sentinel)
-            var sawPartialFrame = false
-            try await rejects {
-                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, progress: { done, _ in
-                    if done == 1 {
-                        sawPartialFrame = (try? fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil).contains { fm.fileExists(atPath: $0.appendingPathComponent("frame_000000.png").path) }) == true
-                    }
-                })
-            }
-            try require(sawPartialFrame && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"], "Partial output remained or earlier file was removed")
-            try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, rasterData: { _ in Data("corrupt".utf8) }) }
-            try require(try Data(contentsOf: sentinel) == Data("keep".utf8), "Earlier file changed")
+            var progress: [Int] = []
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    progress: { done, _ in progress.append(done) })
+                throw Failure(message: "Missing raster returned an export")
+            } catch StudioExportService.ExportError.missingRaster { }
+            try require(progress.isEmpty && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Missing-source preflight rendered output or changed a prior export")
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    rasterData: { _ in Data("corrupt".utf8) }, progress: { done, _ in progress.append(done) })
+                throw Failure(message: "Corrupt raster returned an export")
+            } catch StudioExportService.ExportError.invalidRaster { }
+            try require(progress.isEmpty && fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Corrupt-source preflight rendered output or changed a prior export")
+        }
+        await test("real PNG write failure after one written frame removes only owned partial output") {
+            let folder = try parent(root, "failed-write"), doc = try document(colors: ["#FF0000", "#0000FF"])
+            let sentinel = folder.appendingPathComponent("keep.txt"); try Data("keep".utf8).write(to: sentinel)
+            var progress: [Int] = [], injected = false, firstFrame: URL?, setupError: String?
+            do {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    progress: { done, _ in
+                        progress.append(done)
+                        guard done == 1 else { return }
+                        do {
+                            let staging = try fm.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+                                .filter { $0.lastPathComponent.hasPrefix(".sdi-export-") && $0.pathExtension == "partial" }
+                            guard staging.count == 1 else { throw Failure(message: "Expected one owned staging directory") }
+                            let written = staging[0].appendingPathComponent("frame_000000.png")
+                            try pixel(decode(written).pixel(32, 16), [255, 0, 0, 255])
+                            firstFrame = written
+                            // Obstruct only this test export's next output path.
+                            // The nonempty directory cannot be replaced by a PNG file.
+                            let blocker = staging[0].appendingPathComponent("frame_000001.png", isDirectory: true)
+                            try fm.createDirectory(at: blocker, withIntermediateDirectories: false)
+                            try Data("owned fixture".utf8).write(to: blocker.appendingPathComponent("blocker.txt"))
+                            injected = true
+                        } catch { setupError = String(describing: error) }
+                    })
+                throw Failure(message: "Obstructed PNG write returned success")
+            } catch StudioExportService.ExportError.encodeFailed { }
+            try require(setupError == nil && injected && firstFrame != nil && progress == [1],
+                        "Write-failure fixture did not observe one real PNG: \(setupError ?? "none")")
+            try require(fm.contentsOfDirectory(atPath: folder.path) == ["keep.txt"] &&
+                        !fm.fileExists(atPath: firstFrame!.path) && Data(contentsOf: sentinel) == Data("keep".utf8),
+                        "Write failure left owned partial files or damaged an earlier export")
         }
         await test("Task cancellation after a real written frame removes owned partial output") {
             let folder = try parent(root, "cancel"); let doc = try document(); var progress: [Int] = []
@@ -259,6 +378,160 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
             try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Followed output directory symlink")
             let output = try await service.export(document: doc, format: .pngSequence, outputParent: folder)
             try require(output.directory.deletingLastPathComponent() == folder && output.directory.lastPathComponent.hasPrefix("SDI-"), "Title escaped output directory")
+        }
+        // Read actual licensed production artwork, verify catalogue hashes and
+        // rights, then use the real decoder, VM attachment and snapshot store.
+        let imageCatalogueURL = URL(fileURLWithPath: fm.currentDirectoryPath)
+            .appendingPathComponent("StickDeathInfinity/Resources/StudioImages")
+        let imageCatalogue = try StudioImageCatalogue(directory: imageCatalogueURL)
+        guard let creditedItem = imageCatalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }) else {
+            throw Failure(message: "Actual bundled licensed Pencil image missing")
+        }
+        let licensedOriginal = try imageCatalogue.checkedPNG(creditedItem)
+        let licensedRights = try imageCatalogue.attribution(for: creditedItem)
+        let licensedCredit = try StudioExportService.ImageCredit(attribution: licensedRights)
+        func creditedProject(_ name: String, includeRights: Bool = true) async throws -> (StudioViewModel, String, URL) {
+            let folder = try parent(root, name)
+            let file = folder.appendingPathComponent("verified-original.png")
+            try licensedOriginal.write(to: file, options: .withoutOverwriting)
+            var imported = try await StudioImageImportService().importImage(from: file, name: creditedItem.title, scratchParent: folder)
+            if includeRights { imported.catalogueAttribution = licensedRights }
+            let documents = folder.appendingPathComponent("Documents")
+            let store = DeviceStorageManager(documentsDirectory: documents)
+            let editor = StudioViewModel(storage: store)
+            let created = await editor.createProject(name: name, width: 160, height: 160, fps: 12)
+            try require(created, "Real credited project creation failed")
+            let asset = try editor.attachImportedImage(imported, expectedProjectID: editor.document.id,
+                expectedRevision: editor.document.revision, frameID: editor.document.activeFrameID, layerID: editor.document.activeLayerID)
+            editor.duplicateFrame()
+            try require(editor.document.frames.count == 2 && editor.document.frames.allSatisfy { $0.rasterAssetID == asset },
+                "Real duplicate did not preserve shared managed asset")
+            let saved = await editor.save()
+            try require(saved, "Actual credited project save failed")
+            let coldStore = DeviceStorageManager(documentsDirectory: documents)
+            guard let snapshot = try coldStore.loadAnimation(id: editor.document.id) else { throw Failure(message: "Saved credited project missing") }
+            let reopened = StudioViewModel(storage: coldStore)
+            let opened = await reopened.openProject(snapshot.metadata)
+            try require(opened, "Actual cold reopen failed")
+            let source = reopened.originalImageSource(asset)
+            try require(source?.originalData == licensedOriginal && source?.catalogueAttribution == (includeRights ? licensedRights : nil),
+                "Real persistence lost original image bytes or rights")
+            try source?.validate()
+            return (reopened, asset, folder)
+        }
+        func sourceCredits(_ editor: StudioViewModel, asset: String) throws -> [String: StudioExportService.ImageCredit] {
+            guard let source = editor.originalImageSource(asset), let attribution = source.catalogueAttribution else { return [:] }
+            try source.validate()
+            return [asset: try StudioExportService.ImageCredit(attribution: attribution)]
+        }
+        await test("real licensed import save cold reopen exports exact deduplicated credits in both image formats") {
+            let (editor, asset, folder) = try await creditedProject("licensed-credit-roundtrip")
+            let originalLayer = editor.currentFrame.rasterLayerID!
+            editor.duplicateLayer(originalLayer); editor.toggleLayerVisibility(originalLayer)
+            try require(editor.frames.allSatisfy { $0.rasterLayerInstances.count == 2 }, "Actual linked copies missing")
+            let credits = try sourceCredits(editor, asset: asset)
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                    background: .transparent, imageCredits: credits, rasterData: { editor.rasterData($0) })
+                let manifestBytes = try Data(contentsOf: output.manifestURL)
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: manifestBytes)
+                try require(decoded.version == 3 && decoded.imageCredits == [licensedCredit],
+                    "Manifest must preserve all eight actual rights fields once despite duplicate frames")
+                try require(decoded.frames.count == 2 && decoded.frames.map(\.id) == editor.document.frames.map(\.id),
+                    "Credits changed real frame identities")
+                let object = try JSONSerialization.jsonObject(with: manifestBytes) as! [String: Any]
+                let serializedCredits = object["imageCredits"] as? [[String: String]]
+                try require(serializedCredits == [licensedRights], "Serialized sidecar rights differ from verified source metadata")
+                let raster = try decode(output.imageURLs[0])
+                let alpha = stride(from: 3, to: raster.bytes.count, by: 4).map { raster.bytes[$0] }
+                try require(alpha.contains(0) && alpha.contains(where: { $0 > 0 }), "Actual licensed image pixels missing")
+                try require(!String(decoding: manifestBytes, as: UTF8.self).contains("originalData"), "Manifest exposed embedded original bytes")
+            }
+        }
+        await test("hidden and zero-opacity licensed images neither render nor appear in exported credits") {
+            let (editor, asset, folder) = try await creditedProject("licensed-credit-visibility")
+            guard let layer = editor.document.frames[0].rasterLayerID else { throw Failure(message: "Imported image layer missing") }
+            let credits = try sourceCredits(editor, asset: asset)
+            for mode in ["hidden", "transparent"] {
+                if mode == "hidden" { editor.toggleLayerVisibility(layer) }
+                else { editor.toggleLayerVisibility(layer); editor.setLayerOpacity(layer, opacity: 0) }
+                for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                    let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                        background: .transparent, imageCredits: credits,
+                        rasterData: { _ in throw Failure(message: "Invisible licensed raster was requested") })
+                    let manifest = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                    try require(manifest.imageCredits == nil && manifest.version != 3, "Invisible asset received a rendered credit")
+                    let raster = try decode(output.imageURLs[0])
+                    try require(stride(from: 3, to: raster.bytes.count, by: 4).allSatisfy { raster.bytes[$0] == 0 },
+                        "Invisible licensed image still rendered")
+                }
+            }
+        }
+        await test("personal Files import does not invent catalogue rights or claim manifest v3") {
+            let (editor, asset, folder) = try await creditedProject("personal-no-credit", includeRights: false)
+            try require(try sourceCredits(editor, asset: asset).isEmpty, "Personal source acquired invented rights")
+            for format in [StudioExportService.Format.pngSequence, .spritesheet] {
+                let output = try await service.export(document: editor.document, format: format, outputParent: folder,
+                    imageCredits: try sourceCredits(editor, asset: asset), rasterData: { editor.rasterData($0) })
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: output.manifestURL))
+                try require(decoded.imageCredits == nil && decoded.version != 3, "Personal import assigned fabricated catalogue credits")
+                _ = try decode(output.imageURLs[0])
+            }
+        }
+        await test("invalid and oversized image credit metadata fail without published or partial exports") {
+            let folder = try parent(root, "bad-image-credits")
+            var doc = try document(colors: ["#FF0000"])
+            doc.frames[0].elements.removeAll(); doc.frames[0].rasterAssetID = "licensed"; doc.frames[0].rasterLayerID = doc.activeLayerID
+            for (key, invalid) in [("author", String(repeating: "a", count: 601)), ("license", "unverified"),
+                                   ("sourceURL", "http://kenney.nl/assets/example"), ("originalSHA256", "wrong"),
+                                   ("attribution", "hidden\ncontrol"), ("author", "a" + String(repeating: "\u{0301}", count: 1200))] {
+                var bad = licensedRights; bad[key] = invalid
+                try await rejects { _ = try StudioExportService.ImageCredit(attribution: bad) }
+                // Decodable must not bypass export-time validation of an actual
+                // rendered credit, even when init(attribution:) was not called.
+                let forged = try JSONDecoder().decode(StudioExportService.ImageCredit.self, from: JSONSerialization.data(withJSONObject: bad))
+                try await rejects {
+                    _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                        imageCredits: ["licensed": forged], rasterData: { _ in licensedOriginal })
+                }
+                try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Invalid credit left partial/published output")
+            }
+            var extra = licensedRights; extra["privateUserEmail"] = "private@example.invalid"
+            try await rejects { _ = try StudioExportService.ImageCredit(attribution: extra) }
+            var missing = licensedRights; missing.removeValue(forKey: "author")
+            try await rejects { _ = try StudioExportService.ImageCredit(attribution: missing) }
+            var conflicting = licensedRights; conflicting["author"] = "Different claimed author"
+            let conflictingCredit = try StudioExportService.ImageCredit(attribution: conflicting)
+            let duplicate = AnimationFrame(id: "other-credit-frame", elements: [], rasterAssetID: "other-licensed", rasterLayerID: doc.activeLayerID)
+            doc.frames.append(duplicate)
+            try await rejects {
+                _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder,
+                    imageCredits: ["licensed": licensedCredit, "other-licensed": conflictingCredit], rasterData: { _ in licensedOriginal })
+            }
+            try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Conflicting rights published or left partial output")
+            let oversized = Dictionary(uniqueKeysWithValues: (0...StudioExportService.maximumFrames).map { ("asset-\($0)", licensedCredit) })
+            try await rejects {
+                _ = try await service.export(document: doc, format: .spritesheet, outputParent: folder,
+                    imageCredits: oversized, rasterData: { _ in licensedOriginal })
+            }
+            try require(try fm.contentsOfDirectory(atPath: folder.path).isEmpty, "Oversized credits created output")
+        }
+        await test("legacy manifest versions decode with absent image credits") {
+            let folder = try parent(root, "legacy-credit-decoding")
+            let output = try await service.export(document: document(), format: .pngSequence, outputParent: folder)
+            var object = try JSONSerialization.jsonObject(with: Data(contentsOf: output.manifestURL)) as! [String: Any]
+            object.removeValue(forKey: "imageCredits")
+            for version in [1, 2] {
+                object["version"] = version
+                if version == 1 {
+                    object["frames"] = (object["frames"] as! [[String: Any]]).map { frame in
+                        var older = frame; older.removeValue(forKey: "startTick"); older.removeValue(forKey: "durationTicks"); return older
+                    }
+                }
+                let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: JSONSerialization.data(withJSONObject: object))
+                try require(decoded.version == version && decoded.imageCredits == nil && decoded.frames.count == 3,
+                    "Optional credits broke historical manifest decoding")
+            }
         }
         print("STUDIO_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         print("GENERATED_EXPORT_FIXTURES=\(root.path)")

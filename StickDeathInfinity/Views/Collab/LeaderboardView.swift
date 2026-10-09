@@ -1,106 +1,102 @@
 import SwiftUI
+import Supabase
 
+/// Server-filtered records only. No persistent or offline leaderboard cache.
+@MainActor
 struct LeaderboardView: View {
-    @Environment(\.dismiss) private var dismiss
-    
-    struct Leader: Identifiable {
-        let id = UUID()
-        let rank: Int
-        let name: String
-        let avatar: String
-        let xp: Int
-        let wins: Int
-        let streak: Int
-    }
-    
-    let leaders: [Leader] = [
-        Leader(rank: 1, name: "PixelFury", avatar: "🔥", xp: 12450, wins: 89, streak: 14),
-        Leader(rank: 2, name: "NeonBlade", avatar: "⚡", xp: 11200, wins: 76, streak: 8),
-        Leader(rank: 3, name: "AnimKing", avatar: "👑", xp: 10800, wins: 72, streak: 12),
-        Leader(rank: 4, name: "StickNinja99", avatar: "🥷", xp: 9600, wins: 65, streak: 5),
-        Leader(rank: 5, name: "xDeathArtist", avatar: "💀", xp: 8900, wins: 58, streak: 3),
-        Leader(rank: 6, name: "J_Willy_Style", avatar: "👑", xp: 8400, wins: 52, streak: 7),
-        Leader(rank: 7, name: "DeathDraw", avatar: "✏️", xp: 7200, wins: 45, streak: 2),
-        Leader(rank: 8, name: "StickMaster", avatar: "💀", xp: 6800, wins: 41, streak: 1),
-    ]
-    
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var leaders: [WarLeader] = []
+    @State private var busy = false
+    @State private var loaded = false
+    @State private var message: String?
+    @State private var requestID = UUID()
+    @State private var refreshedAt: Date?
+    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active)" }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Button(action: { dismiss() }) {
-                    Image(systemName: "chevron.left")
-                        .foregroundColor(.secondary)
-                        .font(.title3)
-                }
-                Text("🏆 Leaderboard")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.white)
-                Spacer()
-            }
-            .padding()
-            .background(Color(hex: "0A0A14"))
-            
-            // Top 3 podium
-            HStack(alignment: .bottom, spacing: 12) {
-                // 2nd place
-                podiumColumn(leader: leaders[1], medal: "🥈", height: 90)
-                // 1st place
-                podiumColumn(leader: leaders[0], medal: "🥇", height: 110)
-                // 3rd place
-                podiumColumn(leader: leaders[2], medal: "🥉", height: 70)
-            }
-            .padding(.vertical, 20)
-            .padding(.horizontal)
-            
-            // Rest of leaderboard
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(Array(leaders.dropFirst(3))) { leader in
-                        HStack(spacing: 10) {
-                            Text("#\(leader.rank)")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundColor(.secondary)
-                                .frame(width: 24)
-                            Text(leader.avatar)
-                                .font(.system(size: 20))
-                            VStack(alignment: .leading) {
-                                Text(leader.name)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.white)
-                                Text("\(leader.xp.formatted()) XP · \(leader.wins) wins · 🔥 \(leader.streak)")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("War Room leaderboard").font(.specialElite(24))
+                Text("Up to 100 creators who choose to show their records. Ranked by finalized wins; equal wins share a rank. Removed matches do not count.")
+                    .font(.callout).foregroundStyle(Color.sdTextSecondary)
+                Text("Manage your visibility in Profile → Records & badges.").font(.caption)
+                if !auth.isAuthenticated { Label("Sign in to view records", systemImage: "lock") }
+                else {
+                    Button("Refresh records") { Task { await load() } }.disabled(busy)
+                    if busy { ProgressView() }
+                    if let message { Text(message).foregroundStyle(Color.sdRed) }
+                    if loaded && leaders.isEmpty { Text("No public finalized records yet.") }
+                    ForEach(leaders) { leader in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("#\(leader.rank)").font(.specialElite(22)).foregroundStyle(Color.sdRed)
+                                .frame(minWidth: 44, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text(leader.name).font(.specialElite(18))
+                                Text("\(leader.wins) wins · \(leader.losses) losses · \(leader.ties) ties").font(.callout)
+                                ForEach(leader.badges ?? []) { badge in
+                                    Label(badge.title, systemImage: "seal").font(.caption)
+                                }
                             }
-                            Spacer()
-                        }
-                        .padding(.vertical, 10)
-                        Divider().background(Color.white.opacity(0.03))
+                            Spacer(minLength: 0)
+                        }.padding().frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    if let refreshedAt {
+                        Text("Updated \(refreshedAt.formatted(date: .omitted, time: .shortened))").font(.caption)
                     }
                 }
-                .padding(.horizontal)
+            }.padding()
+        }.background(Color.sdBackground.ignoresSafeArea()).foregroundStyle(Color.sdTextPrimary)
+            .navigationTitle("Leaderboard").navigationBarTitleDisplayMode(.inline)
+            .toolbar(.visible, for: .navigationBar)
+            .task(id: identity) {
+                clear()
+                if phase == .active && auth.isAuthenticated { await load() }
             }
-        }
-        .background(Color(hex: "0A0A14"))
-        .navigationBarHidden(true)
+            .refreshable { await load() }
+            .onDisappear { clear() }
+            .accessibilityIdentifier("warRoom.leaderboard")
     }
-    
-    @ViewBuilder
-    func podiumColumn(leader: Leader, medal: String, height: CGFloat) -> some View {
-        VStack(spacing: 4) {
-            Text(medal).font(.system(size: 24))
-            Text(leader.avatar).font(.system(size: 28))
-            Text(leader.name)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.white)
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(LinearGradient(colors: [.red, .red.opacity(0.3)], startPoint: .bottom, endPoint: .top))
-                    .frame(height: height)
-                Text("\(leader.xp.formatted()) XP")
-                    .font(.system(size: 12, weight: .heavy))
-                    .foregroundColor(.white)
+
+    private func clear() {
+        requestID = UUID(); leaders = []; busy = false; loaded = false; message = nil; refreshedAt = nil
+    }
+    private func load() async {
+        guard !busy, phase == .active, auth.isAuthenticated, let account = auth.userId else { return }
+        let id = UUID(); requestID = id; busy = true
+        // Never retain previous records if their current visibility cannot be confirmed.
+        leaders = []; loaded = false; message = nil; refreshedAt = nil
+        defer { if requestID == id { busy = false } }
+        do {
+            let client = try SupabaseManager.shared.client
+            let response: WarLeaderboardResponse = try await client.rpc("sdi_war_leaderboard").execute().value
+            guard !Task.isCancelled, requestID == id, account == auth.userId, phase == .active else { return }
+            guard response.error == nil, let rows = response.leaders, let date = response.generated_at else {
+                message = response.error ?? "Records unavailable. Try refreshing."; return
             }
+            leaders = rows; refreshedAt = date; loaded = true
+        } catch {
+            if requestID == id { message = "Records could not be refreshed. Check your connection and try again." }
         }
-        .frame(maxWidth: .infinity)
     }
+}
+
+private struct WarLeaderboardResponse: Decodable {
+    let error: String?
+    let leaders: [WarLeader]?
+    let generated_at: Date?
+}
+private struct WarLeader: Decodable, Identifiable {
+    let id: UUID
+    let name: String
+    let rank: Int
+    let wins: Int
+    let losses: Int
+    let ties: Int
+    let badges: [WarLeaderBadge]?
+}
+private struct WarLeaderBadge: Decodable, Identifiable {
+    let id: UUID
+    let title: String
 }

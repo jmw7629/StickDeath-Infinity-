@@ -198,6 +198,36 @@ private actor DecodePause {
                 }
             }, matching: .sourceChanged)
         }
+        try await test("replacement scratch directories and unknown children survive failure cleanup") {
+            for replacement in [false, true] {
+                let isolated = root.appendingPathComponent("ownership-\(replacement)")
+                try fm.createDirectory(at: isolated, withIntermediateDirectories: false)
+                defer { try? fm.removeItem(at: isolated) }
+                let pause = DecodePause()
+                let task = Task {
+                    try await service.importAudio(from: signalURL, scratchParent: isolated) { state in
+                        if state.phase == .reading { await pause.pauseOnce() }
+                    }
+                }
+                for _ in 0..<400 {
+                    if await pause.reached { break }
+                    try await Task.sleep(nanoseconds: 5_000_000)
+                }
+                guard await pause.reached else { task.cancel(); await pause.resume(); throw Failure(message: "copy callback absent") }
+                let directory = try fm.contentsOfDirectory(at: isolated, includingPropertiesForKeys: nil).first!
+                if replacement {
+                    try fm.moveItem(at: directory, to: isolated.appendingPathComponent("original-owned-copy"))
+                    try fm.createDirectory(at: directory, withIntermediateDirectories: false)
+                }
+                let foreign = directory.appendingPathComponent("foreign-original")
+                try Data("MUST SURVIVE".utf8).write(to: foreign, options: .withoutOverwriting)
+                await pause.resume()
+                do { _ = try await task.value; throw Failure(message: "foreign scratch accepted") }
+                catch is StudioAudioImportService.ImportError { }
+                try require(fm.fileExists(atPath: foreign.path), "cleanup erased foreign data")
+                try require(try Data(contentsOf: foreign) == Data("MUST SURVIVE".utf8), "foreign data changed")
+            }
+        }
         try await test("copy cancellation removes partial output and does not alter the original") {
             do {
                 _ = try await service.importAudio(from: signalURL, scratchParent: scratch) { state in

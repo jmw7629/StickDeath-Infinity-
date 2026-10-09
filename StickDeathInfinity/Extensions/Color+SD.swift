@@ -25,6 +25,11 @@ extension Color {
     static let sdRedDeep = Color(hex: "8B0000")
     /// #FF1A1A — Bright red (highlights)
     static let sdRedBright = Color(hex: "FF1A1A")
+    /// #FF6B6B — Readable action text/icons on dark Studio surfaces.
+    /// Keep sdRed for filled controls and selection artwork.
+    static let sdStudioActionText = Color(hex: "FF6B6B")
+    /// #B8B8C2 — Secondary Studio labels, values and instructions.
+    static let sdStudioSecondaryText = Color(hex: "B8B8C2")
     /// Primary gradient (red → darkRed)
     static let sdPrimaryGradient = LinearGradient(
         colors: [Color(hex: "C80000"), Color(hex: "8B0000")],

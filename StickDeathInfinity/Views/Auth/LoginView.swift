@@ -21,7 +21,6 @@ struct LoginView: View {
     @State private var password = ""
     @State private var showPassword = false
     @State private var showError = false
-    @State private var visible = false
 
     var body: some View {
         ZStack {
@@ -35,13 +34,18 @@ struct LoginView: View {
                             .font(.system(size: 24, weight: .bold))
                             .foregroundColor(.white)
                             .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to Welcome")
+                    .accessibilityIdentifier("auth.back")
                     Spacer()
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
                 .overlay(
-                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1),
+                    Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1)
+                        .allowsHitTesting(false),
                     alignment: .bottom
                 )
 
@@ -70,13 +74,24 @@ struct LoginView: View {
                             SocialAuthButton(
                                 icon: "apple.logo",
                                 title: "Continue with Apple",
-                                action: { Task { await authVM.signInWithApple() } }
+                                action: { showError = true; Task { if await authVM.signInWithApple() { onSuccess() } } }
                             )
-                            SocialAuthButton(
-                                icon: "g.circle.fill",
-                                title: "Continue with Google",
-                                action: { Task { await authVM.signInWithGoogle() } }
-                            )
+                            ForEach(AppConfig.OAuthProvider.allCases, id: \.self) { provider in
+                                VStack(spacing: 4) {
+                                    SocialAuthButton(
+                                        icon: provider == .google ? "g.circle.fill" : provider == .github ? "chevron.left.forwardslash.chevron.right" : "square.grid.2x2.fill",
+                                        title: "Continue with \(provider.title)",
+                                        action: {
+                                            showError = true
+                                            Task { if await authVM.signIn(provider: provider) { onSuccess() } }
+                                        }
+                                    )
+                                    .disabled(authVM.isLoading || authVM.providerUnavailableReason(provider) != nil)
+                                    if let reason = authVM.providerUnavailableReason(provider) {
+                                        Text(reason).font(.caption).foregroundColor(.sdTextSecondary)
+                                    }
+                                }
+                            }
                         }
                         .padding(.horizontal, 24)
                         .padding(.bottom, 24)
@@ -150,8 +165,7 @@ struct LoginView: View {
                         Button {
                             showError = true
                             Task {
-                                await authVM.signIn(email: email, password: password)
-                                if authVM.isAuthenticated {
+                                if await authVM.signIn(email: email, password: password) {
                                     onSuccess()
                                 }
                             }
@@ -203,11 +217,7 @@ struct LoginView: View {
                 }
             }
             .frame(maxWidth: 400)
-            .opacity(visible ? 1 : 0)
-            .offset(y: visible ? 0 : 20)
-            .animation(.easeOut(duration: 0.4), value: visible)
         }
-        .onAppear { visible = true }
     }
 }
 

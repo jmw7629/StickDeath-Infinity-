@@ -5,6 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct StudioView: View {
     @StateObject private var vm = StudioViewModel.shared
@@ -13,63 +14,127 @@ struct StudioView: View {
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var spatterExportRequest: (projectID: UUID, revision: Int, accountID: String?)?
     
+    @StateObject private var spatterPictureHandoff = SpatterPictureImportHandoff()
+    @State private var spatterPictureRequest: SpatterPictureImportHandoff.Request?
+    @State private var bottomImageDeletion: StudioViewModel.ImageMoveCapture?
+    @State private var showingBottomImageDeletion = false
+    @State private var menuRequest: StudioViewModel.MenuHandoff?
+    @State private var spatterMovieRequest: StudioMoviePanelState.DirectRequest?
+
     var body: some View {
         Group {
             if vm.isEditing { editorBody }
             else { StudioProjectLibrary(vm: vm) }
         }
-        .task { await vm.loadProjects() }
-        .onChange(of: scenePhase) { phase in
-            if phase != .active { vm.stopPlayback(); Task { await vm.flush() } }
+        .confirmationDialog("Delete this frame's image?", isPresented: $showingBottomImageDeletion,
+            titleVisibility: .visible, presenting: bottomImageDeletion) { capture in
+            Button("Delete image", role: .destructive) { _ = vm.deleteBottomImage(capture) }
+            Button("Cancel", role: .cancel) { }
+        } message: { _ in
+            Text("Only this frame's selected picture will be removed. Its layer and drawings stay. Undo restores the picture.")
         }
-        .onDisappear { vm.stopPlayback(); Task { await vm.flush() } }
+        .task {
+            vm.projectThumbnailSourcesRenderer = { document, sources in
+                try StudioExportService().projectThumbnail(document: document, raster: nil, rasterDataByID: sources)
+            }
+            await vm.loadProjects()
+        }
+        .onChange(of: authVM.userId) { _ in
+            vm.cancelMenuHandoff(); menuRequest = nil
+            // Even switching away and back invalidates the original authority.
+            spatterPictureHandoff.cancel(); spatterPictureRequest = nil
+            bottomImageDeletion = nil; showingBottomImageDeletion = false
+        }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
+        }
+        .onChange(of: vm.document.id) { _ in vm.cancelMenuHandoff(); menuRequest = nil }
+        .onChange(of: vm.isEditing) { editing in if !editing { vm.cancelMenuHandoff(); menuRequest = nil } }
+        .onDisappear { vm.cancelMenuHandoff(); menuRequest = nil; spatterPictureHandoff.cancel(); spatterPictureRequest = nil; bottomImageDeletion = nil; showingBottomImageDeletion = false; vm.stopPlayback(); Task { await vm.flush() } }
     }
 
     private var editorBody: some View {
         ZStack {
             Color(hex: "0D0D12").ignoresSafeArea()
             
-            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } })
+            StudioEditorWorkspace(vm: vm, onDismiss: { Task { await vm.backToProjects() } },
+                onImageDelete: { capture in
+                    bottomImageDeletion = capture; showingBottomImageDeletion = true
+                })
             
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
+            if vm.activePanel == .gradientEndColor { ColorPickerPanel(vm: vm, target: .gradientEnd) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
-            if vm.activePanel == .export { ExportPanel(vm: vm) }
+            if vm.activePanel == .export { ExportPanel(vm: vm, directRequest: spatterMovieRequest, onDirectRequestConsumed: { spatterMovieRequest = nil }) }
             if vm.activePanel == .framesViewer { FramesViewerPanel(vm: vm) }
             if vm.activePanel == .soundLibrary { SoundLibraryPanel(vm: vm) }
             if vm.activePanel == .audioTimeline { AudioTimelinePanel(vm: vm) }
             if vm.activePanel == .stickerEmoji { StickerEmojiPanel(vm: vm) }
             if vm.activePanel == .backgroundLibrary { BackgroundLibraryPanel(vm: vm) }
             if vm.activePanel == .addImage { AddImagePanel(vm: vm) }
+            if vm.activePanel == .rotoscope { RotoscopeSheet(vm: vm) }
         }
-        .sheet(isPresented: showMenuBinding) {
-            StudioMenuSheet(vm: vm)
+        .sheet(isPresented: showMenuBinding, onDismiss: {
+            guard let request = menuRequest else { return }
+            menuRequest = nil
+            _ = vm.consumeMenuHandoff(request, accountID: authVM.userId, isForeground: scenePhase == .active)
+        }) {
+            StudioMenuSheet(vm: vm, onNavigate: { destination in
+                guard let request = vm.prepareMenuHandoff(to: destination, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "Finish the active edit or save before opening another Studio panel."
+                    return
+                }
+                menuRequest = request
+                vm.activePanel = .none
+            })
         }
         .sheet(isPresented: showAIVoiceBinding) {
             AIVoiceMakerSheet(vm: vm)
         }
         .sheet(isPresented: showSpatterBinding, onDismiss: {
+            if let picture = spatterPictureRequest {
+                spatterPictureRequest = nil
+                guard spatterPictureHandoff.consume(picture, in: vm, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "The Studio context changed before picture import opened. Try Add Picture again."
+                    return
+                }
+                vm.activePanel = .addImage
+                return
+            }
             guard let request = spatterExportRequest else { return }
             spatterExportRequest = nil
             guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
                   authVM.userId == request.accountID, vm.document.id == request.projectID,
                   vm.document.revision == request.revision else {
+                spatterMovieRequest = nil
                 vm.message = "The project changed before export opened. Open Export for the current project."
                 return
             }
+            if spatterMovieRequest != nil { vm.exportFormat = .mp4 }
             vm.activePanel = .export
         }) {
-            SpatterAISheet(vm: vm, onExport: {
+            SpatterAISheet(vm: vm, onPictureImport: {
+                guard let request = spatterPictureHandoff.prepare(in: vm, accountID: authVM.userId, isForeground: scenePhase == .active) else {
+                    vm.message = "Finish the active edit or save before opening Add Picture."
+                    return
+                }
+                spatterExportRequest = nil; spatterMovieRequest = nil
+                spatterPictureRequest = request
+                vm.activePanel = .none
+            }, onExport: {
+                spatterMovieRequest = nil
                 spatterExportRequest = (vm.document.id, vm.document.revision, authVM.userId)
+                vm.activePanel = .none
+            }, onMovieExport: { request in
+                spatterMovieRequest = request
+                spatterExportRequest = (request.projectID, request.revision, request.accountID)
                 vm.activePanel = .none
             })
         }
         .sheet(isPresented: showMagicCutBinding) {
             MagicCutSheet(vm: vm)
-        }
-        .sheet(isPresented: showRotoscopeBinding) {
-            RotoscopeSheet(vm: vm)
         }
     }
     
@@ -88,20 +153,20 @@ struct StudioView: View {
     var showMagicCutBinding: Binding<Bool> {
         Binding(get: { vm.activePanel == .magicCut }, set: { if !$0 && vm.activePanel == .magicCut { vm.activePanel = .none } })
     }
-    var showRotoscopeBinding: Binding<Bool> {
-        Binding(get: { vm.activePanel == .rotoscope }, set: { if !$0 && vm.activePanel == .rotoscope { vm.activePanel = .none } })
-    }
 }
 
-// The rail moves to the left only when vertical space is scarce. Portrait and
-// regular-height iPad layouts retain the horizontal floating rail.
+// Toolbar placement is workspace chrome; drawing, history and media stay in the VM.
 struct StudioEditorWorkspace: View {
     @ObservedObject var vm: StudioViewModel
     var onDismiss: () -> Void
+    let onImageDelete: (StudioViewModel.ImageMoveCapture) -> Void
+    @State private var toolbar = StudioToolbarLayout()
+    @State private var dragOrigin: CGRect?
+    @GestureState private var dragTranslation: CGSize = .zero
 
     var body: some View {
         GeometryReader { geometry in
-            let sideRail = geometry.size.width > geometry.size.height && geometry.size.height < 500
+            let compact = geometry.size.width > geometry.size.height && geometry.size.height < 500
             VStack(spacing: 0) {
                 if vm.showToolbar {
                     StudioHeaderBar(vm: vm, onDismiss: onDismiss)
@@ -111,72 +176,71 @@ struct StudioEditorWorkspace: View {
                         .frame(maxWidth: .infinity).background(Color.red.opacity(0.2))
                         .accessibilityIdentifier("studio.status")
                 }
-                if vm.showToolbar && !sideRail {
-                    StudioToolStrip(vm: vm)
-                }
-                HStack(spacing: 0) {
-                    if vm.showToolbar && sideRail {
-                        StudioToolStrip(vm: vm, axis: .vertical)
-                    }
-                    canvasStage
-                }
+                canvasStage(compactHeight: compact)
                 if vm.showToolbar {
                     StudioTimeline(vm: vm)
-                    StudioBottomBar(vm: vm)
+                    StudioBottomBar(vm: vm, onImageDelete: onImageDelete)
                 }
             }
+        }
+        .onChange(of: vm.selectedTool) { _, tool in
+            if vm.activePanel == .toolSettings && !FloatingToolSettingsPanel.hasSettings(tool) { vm.activePanel = .none }
         }
     }
 
-    private var canvasStage: some View {
-        ZStack {
-            StudioCanvasView(vm: vm)
+    private func canvasStage(compactHeight: Bool) -> some View {
+        GeometryReader { geometry in
+            let top: CGFloat = vm.showToolbar ? 0 : min(44, geometry.size.height)
+            let bounds = CGRect(x: 0, y: top, width: geometry.size.width, height: max(0, geometry.size.height - top))
+            let placement = toolbar.placement(in: bounds, compactHeight: compactHeight)
+            let railFrame = dragOrigin.map { toolbar.draggingFrame(from: $0, translation: dragTranslation, in: bounds) } ?? placement.frame
+            let popupFrame = StudioToolbarLayout.settingsFrame(in: bounds, toolbar: placement)
+            let canvasFrame = StudioToolbarLayout.canvasFrame(in: bounds, toolbar: placement)
+            ZStack(alignment: .topLeading) {
+                StudioCanvasView(vm: vm)
+                    .frame(width: canvasFrame.width, height: canvasFrame.height)
+                    .position(x: canvasFrame.midX, y: canvasFrame.midY)
 
-            // Floating tool strip in HIDE mode (centered vertically)
-            if !vm.showToolbar {
-                VStack {
-                    Spacer()
-                    StudioToolStrip(vm: vm)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(hex: "12121A").opacity(0.9))
-                                .shadow(color: .black.opacity(0.4), radius: 8)
-                        )
-                        .padding(.horizontal, 8)
-                    Spacer()
+                StudioToolStrip(vm: vm, axis: placement.vertical ? .vertical : .horizontal,
+                    handleGesture: AnyGesture(DragGesture(minimumDistance: 5, coordinateSpace: .named("studio.toolbar.stage"))
+                        .updating($dragTranslation) { value, state, _ in state = value.translation }
+                        .onChanged { _ in if dragOrigin == nil { dragOrigin = placement.frame } }
+                        .onEnded { value in
+                            let origin = dragOrigin ?? placement.frame
+                            toolbar.finishDrag(release: value.location,
+                                proposedCenter: CGPoint(x: origin.midX + value.translation.width, y: origin.midY + value.translation.height),
+                                in: bounds)
+                            dragOrigin = nil
+                        }),
+                    onDock: { dock in toolbar.choose(dock, in: bounds); dragOrigin = nil })
+                    .frame(width: railFrame.width, height: railFrame.height)
+                    .position(x: railFrame.midX, y: railFrame.midY)
+
+                if vm.activePanel == .toolSettings && FloatingToolSettingsPanel.hasSettings(vm.selectedTool) {
+                    FloatingToolSettingsPanel(vm: vm,
+                        alignToBottom: !placement.vertical && popupFrame.maxY <= placement.frame.minY)
+                        .frame(width: popupFrame.width, height: popupFrame.height)
+                        .position(x: popupFrame.midX, y: popupFrame.midY)
+                        .transition(.opacity)
                 }
-
             }
-
-            // Floating tool settings
-            if vm.activePanel == .toolSettings {
-                FloatingToolSettingsPanel(vm: vm)
-                    .transition(.opacity)
-            }
-
-            // Zoom controls (right side)
-            VStack(spacing: 8) {
-                Spacer()
-                ZoomButton(label: "+") { vm.zoomIn() }
-                ZoomButton(label: "−") { vm.zoomOut() }
-                ZoomButton(label: "FIT") { vm.zoomFit() }
-            }
-            .frame(maxWidth: .infinity, alignment: .trailing)
-            .padding(.trailing, 8)
-            .padding(.bottom, 8)
-        }
-        .overlay(alignment: .topLeading) {
-            if !vm.showToolbar {
-                Button(action: { vm.showToolbar = true }) {
-                    Text("SHOW TOOLS")
-                        .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .padding(10)
-                        .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+            .coordinateSpace(name: "studio.toolbar.stage")
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("studio.toolbar.stage")
+            .onChange(of: geometry.size) { _, _ in dragOrigin = nil }
+            .overlay(alignment: .topLeading) {
+                if !vm.showToolbar {
+                    Button(action: { vm.showToolbar = true }) {
+                        Text("SHOW TOOLS")
+                            .font(.specialElite(10)).fontWeight(.bold)
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color(hex: "1A1A24"), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .accessibilityLabel("Show Studio tools")
+                    .accessibilityIdentifier("studio.show-tools")
+                    .padding(8)
                 }
-                .accessibilityLabel("Show Studio tools")
-                .accessibilityIdentifier("studio.show-tools")
-                .padding(8)
             }
         }
     }
@@ -190,7 +254,7 @@ struct ZoomButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(.system(size: label == "FIT" ? 9 : 16, weight: .bold, design: .monospaced))
+                .font(label == "FIT" ? .specialElite(9) : .system(size: 16, weight: .bold, design: .monospaced))
                 .foregroundColor(.white)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(Color(hex: "1E1E2A")))
@@ -202,6 +266,7 @@ struct ZoomButton: View {
 // MARK: - Studio Bottom Bar
 struct StudioBottomBar: View {
     @ObservedObject var vm: StudioViewModel
+    let onImageDelete: (StudioViewModel.ImageMoveCapture) -> Void
     
     var body: some View {
         HStack(spacing: 0) {
@@ -223,21 +288,27 @@ struct StudioBottomBar: View {
             }
             .accessibilityIdentifier("studio.redo")
             
-            // Copy
-            BottomBarButton(icon: "doc.on.doc", label: "COPY") {
-                vm.copyFrame()
+            // Explicit image/drawing selection determines copy scope. A later
+            // successful copy also selects the corresponding Paste payload.
+            BottomBarButton(icon: "doc.on.doc", label: "COPY", enabled: vm.canCopyBottomSelection) { vm.copyBottomSelection() }
+                .accessibilityIdentifier("studio.copy")
+                .accessibilityLabel(vm.bottomCopyLabel)
+                .accessibilityHint(vm.hasMixedArtworkSelection ? "Copies the selected drawings and image together, preserving their relative positions." : vm.bottomImageSelection != nil
+                    ? "Copies only the selected image. Paste adds a separate image layer."
+                    : vm.selectedElementIDs.isEmpty ? "Copies the current frame. Select artwork to copy only those drawings."
+                    : "Copies only selected artwork. Paste adds it to the active layer.")
+            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) { vm.pasteClipboard() }
+                .accessibilityIdentifier("studio.paste")
+                .accessibilityLabel(vm.bottomPasteLabel)
+                .accessibilityHint(vm.usesImageClipboard ? "Pastes copied images or artwork on new layers in an editable frame. Existing images are not replaced." : "Pastes the most recently copied frame or drawings.")
+            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected || vm.bottomImageSelection != nil) {
+                if let capture = vm.bottomImageSelection {
+                    onImageDelete(capture)
+                } else { vm.deleteSelected() }
             }
-            
-            // Paste
-            BottomBarButton(icon: "doc.on.clipboard", label: "PASTE", enabled: vm.canPaste) {
-                vm.pasteFrame()
-            }
-            
-            // Delete
-            BottomBarButton(icon: "trash", label: "DEL", enabled: vm.canDeleteSelected) {
-                vm.deleteSelected()
-            }
-            
+            .accessibilityIdentifier("studio.delete-selection")
+            .accessibilityLabel(vm.hasMixedArtworkSelection ? "Delete selected drawings and image" : vm.bottomImageSelection == nil ? "Delete selected drawings" : "Delete selected image")
+
             // Layer (with red badge)
             Button(action: {
                 vm.activePanel = vm.activePanel == .layers ? .none : .layers
@@ -247,7 +318,7 @@ struct StudioBottomBar: View {
                         Image(systemName: "square.3.layers.3d")
                             .font(.system(size: 14))
                         Text("LAYER")
-                            .font(.system(size: 7, weight: .bold, design: .monospaced))
+                            .font(.specialElite(7)).fontWeight(.bold)
                     }
                     .foregroundColor(.white.opacity(0.5))
                     
@@ -261,6 +332,8 @@ struct StudioBottomBar: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+            .accessibilityIdentifier("studio.layers.open")
+            .accessibilityLabel("Layers")
         }
         .padding(.vertical, 8)
         .background(Color(hex: "0A0A10"))
@@ -279,7 +352,7 @@ struct BottomBarButton: View {
                 Image(systemName: icon)
                     .font(.system(size: 14))
                 Text(label)
-                    .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    .font(.specialElite(7)).fontWeight(.bold)
             }
             .foregroundColor(enabled ? .white.opacity(0.5) : .white.opacity(0.2))
             .frame(maxWidth: .infinity)
@@ -303,9 +376,9 @@ struct FramesViewerPanel: View {
                 
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                        ForEach(vm.frames.indices, id: \.self) { i in
+                        ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
                             Button(action: {
-                                vm.currentFrameIndex = i
+                                vm.selectFrame(frame.id)
                                 vm.activePanel = .none
                             }) {
                                 VStack(spacing: 4) {
@@ -315,20 +388,23 @@ struct FramesViewerPanel: View {
                                             .frame(height: 80)
                                         
                                         // Render frame elements
-                                        StudioFrameThumbnail(vm: vm, frame: vm.frames[i])
+                                        StudioFrameThumbnail(vm: vm, frame: frame)
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
                                     }
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(vm.currentFrameIndex == i ? Color.red : Color.white.opacity(0.1), lineWidth: vm.currentFrameIndex == i ? 2 : 1)
+                                            .stroke(vm.currentFrame.id == frame.id ? Color.red : Color.white.opacity(0.1), lineWidth: vm.currentFrame.id == frame.id ? 2 : 1)
                                     )
                                     
                                     Text("Frame \(i + 1)")
                                         .font(.system(size: 9, weight: .bold, design: .monospaced))
-                                        .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.5))
+                                        .foregroundColor(vm.currentFrame.id == frame.id ? .red : .white.opacity(0.5))
                                 }
                             }
+                            .accessibilityIdentifier("studio.frames-viewer.frame." + frame.id)
+                            .accessibilityLabel("Frame \(i + 1)")
+                            .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
                         }
                         
                         // Add frame button
@@ -357,78 +433,94 @@ struct FramesViewerPanel: View {
 // MARK: - Background Library Panel
 struct BackgroundLibraryPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var authVM: AuthViewModel
     @State private var selectedCategory = "Gradients"
-    
-    let categories = [
-        ("Gradients", 24), ("Solid", 18), ("Patterns", 12), ("Nature", 8),
-        ("Space", 6), ("Urban", 10), ("Abstract", 15), ("Textures", 9),
-    ]
-    
-    let backgrounds: [(name: String, colors: [String])] = [
-        ("Sunset", ["FF6B35", "F72585"]), ("Ocean", ["0077B6", "00B4D8"]),
-        ("Forest", ["2D6A4F", "40916C"]), ("Neon", ["7209B7", "F72585"]),
-        ("Midnight", ["0D1B2A", "1B263B"]), ("Fire", ["D00000", "FFBA08"]),
-        ("Ice", ["48CAE4", "ADE8F4"]), ("Void", ["0A0A0F", "1A1A24"]),
-    ]
-    
+    @State private var preparation: Task<Void, Never>?
+    @State private var requestID: UUID?
+    @State private var notice: String?
+    private let categories = ["Gradients", "Solid"]
+    private var presets: [StudioImageImportService.BackgroundPreset] { StudioImageImportService.BackgroundPreset.all }
+
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
             VStack(spacing: 0) {
                 PanelHeader(title: "Background Library", icon: "photo.on.rectangle") {
-                    vm.activePanel = .none
+                    cancel(); vm.activePanel = .none
                 }
-                
+                Text("Adds to this frame behind drawings. Original images are never replaced. Undo removes the added background.")
+                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
+                if let notice { Text(notice).font(.caption).foregroundStyle(.red).padding(8)
+                    .accessibilityIdentifier("studio.background.notice") }
+                if requestID != nil {
+                    HStack { ProgressView(); Text("Preparing background…"); Button("Cancel", action: cancel) }
+                        .font(.caption).padding(8)
+                }
                 HStack(spacing: 0) {
-                    // Sidebar categories (pill style with red bg)
                     ScrollView(.vertical, showsIndicators: false) {
                         VStack(spacing: 4) {
-                            ForEach(categories, id: \.0) { cat in
-                                Button(action: { selectedCategory = cat.0 }) {
-                                    Text("\(cat.0) (\(cat.1))")
+                            ForEach(categories, id: \.self) { category in
+                                Button(action: { selectedCategory = category }) {
+                                    Text("\(category) (\(presets.filter { $0.category == category }.count))")
                                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                        .foregroundColor(selectedCategory == cat.0 ? .white : .white.opacity(0.4))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .background(selectedCategory == cat.0 ? Color.red : Color(hex: "1A1A24"))
+                                        .foregroundColor(selectedCategory == category ? .white : .white.opacity(0.4))
+                                        .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                        .background(selectedCategory == category ? Color.red : Color(hex: "1A1A24"))
                                         .cornerRadius(8)
-                                }
+                                }.accessibilityIdentifier("studio.background.category." + category.lowercased())
                             }
-                        }
-                        .padding(8)
-                    }
-                    .frame(width: 120)
-                    .background(Color(hex: "0D0D14"))
-                    
-                    // Background grid
+                        }.padding(8)
+                    }.frame(width: 120).background(Color(hex: "0D0D14"))
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            ForEach(backgrounds, id: \.name) { bg in
-                                Button(action: {
-                                    // Apply background
-                                    vm.activePanel = .none
-                                }) {
+                            ForEach(presets.filter { $0.category == selectedCategory }) { preset in
+                                Button(action: { add(preset) }) {
                                     VStack(spacing: 4) {
                                         RoundedRectangle(cornerRadius: 8)
-                                            .fill(
-                                                LinearGradient(
-                                                    colors: bg.colors.map { Color(hex: $0) },
-                                                    startPoint: .topLeading, endPoint: .bottomTrailing
-                                                )
-                                            )
-                                            .frame(height: 80)
-                                        
-                                        Text(bg.name)
-                                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                            .fill(LinearGradient(colors: [Color(hex: preset.startHex), Color(hex: preset.endHex)],
+                                                startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 80)
+                                        Text(preset.name).font(.system(size: 10, weight: .medium, design: .monospaced))
                                             .foregroundColor(.white.opacity(0.6))
                                     }
-                                }
+                                }.disabled(requestID != nil)
+                                    .accessibilityIdentifier("studio.background.preset." + preset.id)
                             }
-                        }
-                        .padding(12)
+                        }.padding(12)
                     }
                 }
+            }
+        }
+        .onDisappear { cancel() }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { cancel() } }
+        .onChange(of: authVM.userId) { _, _ in cancel() }
+    }
+
+    private func cancel() {
+        requestID = nil; preparation?.cancel(); preparation = nil
+    }
+    private func add(_ preset: StudioImageImportService.BackgroundPreset) {
+        guard requestID == nil else { return }
+        guard vm.isEditing, !vm.isSaving, !vm.isPlaying, vm.activeStrokeID == nil,
+              vm.pendingBrushStroke == nil, vm.textDraft == nil, scenePhase == .active else {
+            notice = "Finish saving, playback and any drawing or text draft before adding a background."; return
+        }
+        let document = vm.document, account = authVM.userId, token = UUID()
+        requestID = token; notice = nil
+        preparation = Task { @MainActor in
+            do {
+                let imported = try await StudioImageImportService.shared.prepareBackground(presetID: preset.id,
+                    width: document.width, height: document.height)
+                try Task.checkCancellation()
+                guard requestID == token, scenePhase == .active, authVM.userId == account,
+                      vm.activePanel == .backgroundLibrary else { return }
+                _ = try vm.attachImportedImage(imported, expectedProjectID: document.id, expectedRevision: document.revision,
+                    frameID: document.activeFrameID, layerID: document.activeLayerID)
+                requestID = nil; preparation = nil; vm.activePanel = .none
+            } catch is CancellationError {
+                if requestID == token { requestID = nil; preparation = nil; notice = "Background cancelled. Nothing was added." }
+            } catch {
+                if requestID == token { requestID = nil; preparation = nil; notice = error.localizedDescription }
             }
         }
     }
@@ -481,27 +573,32 @@ struct AddImageOption: View {
 // MARK: - Studio Menu Sheet
 struct StudioMenuSheet: View {
     @ObservedObject var vm: StudioViewModel
+    let onNavigate: (StudioPanelType) -> Void
+    @State private var showingOnionSettings = false
+    @State private var showingGridSettings = false
     @Environment(\.dismiss) var dismiss
     
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             
+            ScrollView {
             VStack(spacing: 0) {
                 // Drag handle
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.white.opacity(0.2))
-                    .frame(width: 36, height: 4)
-                    .padding(.top, 8)
+                HStack {
+                    Spacer()
+                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.2)).frame(width: 36, height: 4)
+                    Spacer()
+                }.frame(height: 44).overlay(alignment: .trailing) {
+                    Button(action: { dismiss() }) { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                        .accessibilityLabel("Close Studio menu").accessibilityIdentifier("studio.menu.close")
+                }
                 
                 // PROJECT section
                 SectionLabel(text: "PROJECT")
                 
                 MenuSheetRow(icon: "⚙️", label: "Project Settings") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .projectSettings
-                    }
+                    onNavigate(.projectSettings)
                 }
                 
                 Divider().background(Color.white.opacity(0.06)).padding(.horizontal, 16)
@@ -510,60 +607,42 @@ struct StudioMenuSheet: View {
                 SectionLabel(text: "TOOLS")
                 
                 MenuSheetRow(icon: "🎬", label: "Frames Viewer") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .framesViewer
-                    }
+                    onNavigate(.framesViewer)
                 }
                 
-                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin)
-                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled)
+                MenuSheetToggleRow(icon: "🧅", label: "Onion", hasEdit: true, isOn: $vm.showOnionSkin, onEdit: { showingOnionSettings.toggle() })
+                if showingOnionSettings { StudioOnionSettingsControls(vm: vm) }
+                MenuSheetToggleRow(icon: "📐", label: "Grid", hasEdit: true, isOn: $vm.gridEnabled, onEdit: { showingGridSettings.toggle() })
+                if showingGridSettings { StudioGridSettingsControls(vm: vm) }
                 
                 MenuSheetRow(icon: "✨", label: "Magic Cut") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .magicCut
-                    }
+                    onNavigate(.magicCut)
                 }
                 
                 MenuSheetRow(icon: "🖼️", label: "Background Library") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .backgroundLibrary
-                    }
+                    onNavigate(.backgroundLibrary)
                 }
                 
                 MenuSheetRow(icon: "🎬", label: "Rotoscope / Video") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .rotoscope
-                    }
+                    onNavigate(.rotoscope)
                 }
                 
                 MenuSheetRow(icon: "🖼️", label: "Add Picture") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .addImage
-                    }
+                    onNavigate(.addImage)
                 }
                 
-                MenuSheetRow(icon: "🗣️", label: "AI Voice Maker") {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .aiVoice
-                    }
+                MenuSheetRow(icon: "🗣️", label: "Voice Maker") {
+                    onNavigate(.aiVoice)
                 }
                 
                 MenuSheetRow(icon: "🎨", label: "Spatter AI", accent: true) {
-                    dismiss()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                        vm.activePanel = .spatterAI
-                    }
+                    onNavigate(.spatterAI)
                 }
                 .accessibilityIdentifier("studio.spatter.open")
                 
                 Spacer()
             }
+            }.accessibilityIdentifier("studio.menu.scroll")
         }
     }
 }
@@ -572,7 +651,7 @@ struct SectionLabel: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .font(.specialElite(10)).fontWeight(.bold)
             .foregroundColor(.white.opacity(0.3))
             .tracking(2)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -593,7 +672,7 @@ struct MenuSheetRow: View {
             HStack(spacing: 12) {
                 Text(icon).font(.system(size: 18))
                 Text(label)
-                    .font(.system(size: 14, weight: .medium, design: .monospaced))
+                    .font(.specialElite(14))
                     .foregroundColor(accent ? .red : .white)
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -611,20 +690,24 @@ struct MenuSheetToggleRow: View {
     let label: String
     var hasEdit: Bool = false
     @Binding var isOn: Bool
+    var onEdit: (() -> Void)? = nil
     
     var body: some View {
         HStack(spacing: 12) {
             Text(icon).font(.system(size: 18))
             Text(label)
-                .font(.system(size: 14, weight: .medium, design: .monospaced))
+                .font(.specialElite(14))
                 .foregroundColor(.white)
             Spacer()
-            if hasEdit {
-                Text("Edit")
-                    .font(.system(size: 12, weight: .bold))
+            if hasEdit, let onEdit {
+                Button("Edit", action: onEdit)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .accessibilityLabel("Edit " + label)
+                    .accessibilityIdentifier("studio.menu.edit." + label.lowercased())
+                    .font(.specialElite(12)).fontWeight(.bold)
                     .foregroundColor(.red)
             }
-            Toggle("", isOn: $isOn)
+            Toggle(label, isOn: $isOn)
                 .labelsHidden()
                 .tint(.red)
         }
@@ -636,151 +719,143 @@ struct MenuSheetToggleRow: View {
 // MARK: - AI Voice Maker Sheet (Purple theme)
 struct AIVoiceMakerSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @StateObject private var voice = StudioVoiceSession()
     @State private var scriptText = ""
-    @State private var selectedVoice = "Alex"
-    @State private var speed: Double = 1.0
-    @State private var pitch: Double = 1.0
-    @Environment(\.dismiss) var dismiss
-    
-    let voices = [
-        ("Alex", "🎙️"), ("Sarah", "👩"), ("James", "🧔"),
-        ("Luna", "🌙"), ("Max", "💪"), ("Zoe", "✨"),
-        ("Robot", "🤖"), ("Narrator", "📖"),
-    ]
-    
+    @State private var selectedVoice = ""
+    @State private var speed = 1.0
+    @State private var pitch = 1.0
+    @State private var track = 1
+    @State private var target: (project: UUID, revision: Int, frame: String, account: String?)?
+    @State private var error: String?
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
+
+    private var targetIsCurrent: Bool {
+        guard let target else { return false }
+        return scenePhase == .active && vm.isEditing && !vm.isSaving && !vm.isPlaying
+            && vm.document.id == target.project && vm.document.revision == target.revision
+            && vm.document.activeFrameID == target.frame && authVM.userId == target.account
+    }
+    private func invalidate() { voice.cancel(); target = nil; error = nil }
+    private func generate() {
+        guard scenePhase == .active, vm.isEditing, !vm.isSaving else { return }
+        vm.stopPlayback()
+        target = (vm.document.id, vm.document.revision, vm.document.activeFrameID, authVM.userId)
+        error = nil
+        voice.generate(text: scriptText, voiceID: selectedVoice, speed: speed, pitch: pitch)
+    }
+    private func add() {
+        guard targetIsCurrent, let target, let audio = voice.prepared else {
+            error = "The project changed. Generate the voice again before adding it."
+            return
+        }
+        do {
+            _ = try vm.attachImportedAudio(audio.track, expectedProjectID: target.project,
+                expectedRevision: target.revision, frameID: target.frame, trackNumber: track)
+            voice.cancel(); dismiss()
+        } catch { self.error = error.localizedDescription }
+    }
     var body: some View {
         ZStack {
             Color(hex: "1A0A2E").ignoresSafeArea()
-            
             VStack(spacing: 16) {
-                // Header
                 HStack {
-                    Text("🗣️ AI Voice Maker")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(Color(hex: "A78BFA"))
+                    Text("Voice Maker").font(.system(size: 18, weight: .bold, design: .monospaced))
                     Spacer()
-                    Button("Done") { dismiss() }
-                        .foregroundColor(Color(hex: "A78BFA"))
+                    Button("Done") { invalidate(); dismiss() }
                 }
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                
-                // Script / Dialogue label
-                Text("Script / Dialogue")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
-                    .foregroundColor(Color(hex: "A78BFA").opacity(0.6))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                
-                // Text input
-                TextEditor(text: $scriptText)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
-                    .scrollContentBackground(.hidden)
-                    .frame(height: 80)
-                    .padding(12)
-                    .background(Color(hex: "2A1A3E"))
-                    .cornerRadius(12)
-                    .padding(.horizontal, 16)
-                    .overlay(
-                        Group {
-                            if scriptText.isEmpty {
-                                Text("Type your voiceover text here...")
-                                    .font(.system(size: 14))
-                                    .foregroundColor(.white.opacity(0.3))
-                                    .padding(.leading, 28)
-                                    .padding(.top, 24)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            }
+                .foregroundColor(Color(hex: "A78BFA"))
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("On-device system voices · no microphone or cloud AI")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        Text("Script / Dialogue · \(scriptText.count)/1,500")
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                        TextEditor(text: $scriptText)
+                            .font(.system(size: 14)).foregroundColor(.white)
+                            .scrollContentBackground(.hidden).frame(height: 110)
+                            .padding(12).background(Color(hex: "2A1A3E")).cornerRadius(12)
+                            .accessibilityLabel("Voiceover script")
+                            .accessibilityIdentifier("studio.voice.script")
+                        if voice.voices.isEmpty {
+                            Text("No system voices are available on this device.").font(.caption)
+                        } else {
+                            Picker("Installed voice", selection: $selectedVoice) {
+                                Text("Choose a voice").tag("")
+                                ForEach(voice.voices) { item in
+                                    Text("\(item.name) · \(item.language)").tag(item.id)
+                                }
+                            }.tint(Color(hex: "A78BFA"))
                         }
-                    )
-                
-                // Voice selection
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 4), spacing: 8) {
-                    ForEach(voices, id: \.0) { voice in
-                        Button(action: { selectedVoice = voice.0 }) {
-                            VStack(spacing: 4) {
-                                Text(voice.1)
-                                    .font(.system(size: 20))
-                                Text(voice.0)
-                                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        HStack {
+                            Text("Speed")
+                            Slider(value: $speed, in: 0.5...2).tint(Color(hex: "A78BFA"))
+                            Text(String(format: "%.1fx", speed))
+                        }.font(.caption)
+                        HStack {
+                            Text("Pitch")
+                            Slider(value: $pitch, in: 0.5...2).tint(Color(hex: "A78BFA"))
+                            Text(String(format: "%.1fx", pitch))
+                        }.font(.caption)
+                        Picker("Audio track", selection: $track) {
+                            ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
+                        }.tint(Color(hex: "A78BFA"))
+                        Text("Adds at the selected frame. Audio stays in your project and can be trimmed, moved, mixed, exported or undone. Up to 2 minutes / 15 MB per voice clip.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        if voice.isBusy {
+                            HStack {
+                                ProgressView().tint(.white)
+                                Text("Generating voice…")
+                                Spacer()
+                                Button("Cancel") { invalidate() }
                             }
-                            .foregroundColor(selectedVoice == voice.0 ? .white : .white.opacity(0.4))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
-                            .background(selectedVoice == voice.0 ? Color(hex: "7C3AED") : Color(hex: "2A1A3E"))
-                            .cornerRadius(10)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(selectedVoice == voice.0 ? Color(hex: "A78BFA") : Color.clear, lineWidth: 1)
-                            )
+                        } else {
+                            Button(voice.prepared == nil ? "Generate voice" : "Regenerate voice", action: generate)
+                                .disabled(selectedVoice.isEmpty || scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                    || scriptText.count > 1_500 || !vm.isEditing || vm.isSaving)
+                                .accessibilityIdentifier("studio.voice.generate")
+                        }
+                        if let notice = error ?? voice.notice {
+                            Text(notice).font(.caption).accessibilityIdentifier("studio.voice.notice")
                         }
                     }
                 }
-                .padding(.horizontal, 16)
-                
-                // Speed slider
-                HStack {
-                    Text("Speed")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                    Slider(value: $speed, in: 0.5...2.0)
-                        .tint(Color(hex: "A78BFA"))
-                    Text(String(format: "%.1fx", speed))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.horizontal, 16)
-                
-                // Pitch slider
-                HStack {
-                    Text("Pitch")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.5))
-                    Slider(value: $pitch, in: 0.5...2.0)
-                        .tint(Color(hex: "A78BFA"))
-                    Text(String(format: "%.1fx", pitch))
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                }
-                .padding(.horizontal, 16)
-                
-                Spacer()
-                
-                // Action buttons
                 HStack(spacing: 12) {
-                    Button(action: {}) {
-                        Text("Preview")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(Color(hex: "A78BFA"))
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(hex: "2A1A3E"))
-                            .cornerRadius(14)
-                    }
-                    
-                    Button(action: { dismiss() }) {
-                        Text("🎙️ Add to Timeline")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color(hex: "7C3AED"))
-                            .cornerRadius(14)
-                    }
+                    Button(voice.isPlaying ? "Stop preview" : "Preview") { voice.preview() }
+                        .disabled(voice.prepared == nil || !targetIsCurrent)
+                        .accessibilityIdentifier("studio.voice.preview")
+                    Spacer()
+                    Button("Add to Timeline", action: add)
+                        .disabled(voice.prepared == nil || !targetIsCurrent)
+                        .accessibilityIdentifier("studio.voice.add")
                 }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 16)
+                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .buttonStyle(.borderedProminent).tint(Color(hex: "7C3AED"))
             }
+            .foregroundColor(.white).padding(16)
         }
+        .onChange(of: scriptText) { _ in invalidate() }
+        .onChange(of: selectedVoice) { _ in invalidate() }
+        .onChange(of: speed) { _ in invalidate() }
+        .onChange(of: pitch) { _ in invalidate() }
+        .onChange(of: vm.document.id) { _ in invalidate() }
+        .onChange(of: vm.document.revision) { _ in invalidate() }
+        .onChange(of: vm.document.activeFrameID) { _ in invalidate() }
+        .onChange(of: authVM.userId) { _ in invalidate(); scriptText = ""; dismiss() }
+        .onChange(of: scenePhase) { if $0 != .active { invalidate() } }
+        .onDisappear { invalidate() }
     }
 }
 
 // MARK: - Spatter AI Sheet
 struct SpatterAISheet: View {
     @ObservedObject var vm: StudioViewModel
+    let onPictureImport: () -> Void
     let onExport: () -> Void
+    let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
     @State private var showLocalRecipe = false
+    @State private var showingPersonalMemory = false
     @StateObject private var spatterVM = SpatterAIViewModel()
     @EnvironmentObject private var authVM: AuthViewModel
     @State private var prompt = ""
@@ -791,7 +866,7 @@ struct SpatterAISheet: View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
             if showLocalRecipe {
-                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onExport: onExport)
+                SpatterMotionRecipePanel(vm: vm, onBack: { showLocalRecipe = false }, onPictureImport: onPictureImport, onExport: onExport, onMovieExport: onMovieExport)
             } else {
             VStack(spacing: 0) {
                 HStack {
@@ -810,10 +885,14 @@ struct SpatterAISheet: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text(SpatterAIViewModel.capabilityNotice).font(.caption2).foregroundColor(.white.opacity(0.6))
-                    Button("Create local motion…") { showLocalRecipe = true }
+                    Button("Local Studio edits…") { showLocalRecipe = true }
                         .font(.caption).foregroundColor(.red)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.local-motion")
+                    Button("Local memory preferences…") { showingPersonalMemory = true }
+                        .font(.caption).foregroundColor(.red).disabled(spatterVM.isThinking || authVM.state == .loading)
+                        .accessibilityIdentifier("spatter.studio.memory")
+                    if let error = spatterVM.memoryError { Text(error).font(.caption).foregroundColor(.red) }
                     Toggle("Cloud advice", isOn: $spatterVM.useCloud).font(.caption)
                         .disabled(spatterVM.isThinking)
                         .accessibilityIdentifier("spatter.studio.cloud")
@@ -870,12 +949,23 @@ struct SpatterAISheet: View {
             }
             }
         }
-        .onDisappear { spatterVM.endSession() }
-        .onChange(of: authVM.userId) { _ in spatterVM.endSession(); prompt = ""; contextError = nil }
+        .sheet(isPresented: $showingPersonalMemory) { SpatterPersonalMemorySheet(vm: spatterVM) }
+        .onAppear { if authVM.state != .loading { spatterVM.configurePersonalMemory(accountID: authVM.userId) } }
+        .onDisappear { spatterVM.suspendPersonalMemory() }
+        .onChange(of: authVM.userId) { _ in
+            showingPersonalMemory = false; prompt = ""; contextError = nil
+            if authVM.state == .loading { spatterVM.suspendPersonalMemory() }
+            else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
+        }
+        .onChange(of: authVM.state) { _, state in
+            showingPersonalMemory = false; prompt = ""; contextError = nil
+            if state == .loading { spatterVM.suspendPersonalMemory() }
+            else { spatterVM.configurePersonalMemory(accountID: authVM.userId) }
+        }
     }
 
     private func sendMessage() {
-        guard let context = SpatterContext.studio(vm.commandScreenContext), let snapshot = context.studio else {
+        guard let context = SpatterContext.studio(vm.commandScreenContext) else {
             contextError = "This Studio project is no longer open. Your draft has been kept."
             return
         }
@@ -883,7 +973,7 @@ struct SpatterAISheet: View {
         let submitted = prompt
         if spatterVM.submit(submitted, context: context, stillCurrent: { [weak vm] in
             guard let vm else { return false }
-            return vm.isEditing && vm.document.id == snapshot.projectID && vm.document.revision == snapshot.revision
+            return SpatterContext.studio(vm.commandScreenContext) == context
         }) { prompt = "" }
     }
 }
@@ -891,156 +981,172 @@ struct SpatterAISheet: View {
 // MARK: - Magic Cut Sheet
 struct MagicCutSheet: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var allFrames = false
+    @State private var background: Color = .white
+    @State private var tolerance = 8.0
+    @State private var capture: StudioViewModel.ImageCutCapture?
+    @State private var accountID: String?
+    @State private var replacements: [String: Data] = [:]
+    @State private var preview: UIImage?
+    @State private var notice: String?
     @State private var isProcessing = false
-    @Environment(\.dismiss) var dismiss
-    
+    @State private var task: Task<Void, Never>?
+    @State private var token = UUID()
+    @State private var workerOwner: UUID?
+    @State private var confirmAll = false
+
+    private func cancel() {
+        token = UUID(); task?.cancel()
+        // Keep busy ownership until the detached decoder has actually returned.
+        if workerOwner == nil { task = nil; isProcessing = false }
+        replacements = [:]; preview = nil; capture = nil; notice = nil; confirmAll = false
+    }
+    private var current: Bool {
+        guard let capture else { return false }
+        return scenePhase == .active && authVM.userId == accountID
+            && (try? vm.prepareImageCut(allFrames: allFrames)) == capture
+    }
+    private func generate() {
+        guard workerOwner == nil else { return }
+        cancel(); vm.stopPlayback()
+        guard scenePhase == .active else { return }
+        do {
+            let target = try vm.prepareImageCut(allFrames: allFrames)
+            var inputs: [String: Data] = [:]
+            for id in Set(target.assetsByFrame.values) {
+                guard let data = vm.rasterData(id) else { throw StudioRasterImage.Failure.missing }
+                inputs[id] = data
+            }
+            var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+            guard UIColor(background).getRed(&r, green: &g, blue: &b, alpha: &a) else {
+                throw StudioDocumentError.invalid("Choose an RGB background color.")
+            }
+            let red = UInt8((min(1, max(0, r)) * 255).rounded())
+            let green = UInt8((min(1, max(0, g)) * 255).rounded())
+            let blue = UInt8((min(1, max(0, b)) * 255).rounded())
+            let threshold = Int(tolerance.rounded()), request = token
+            let previewID = target.assetsByFrame[vm.currentFrame.id] ?? inputs.keys.sorted().first!
+            capture = target; accountID = authVM.userId; isProcessing = true
+            let immutableInputs = inputs, owner = UUID()
+            workerOwner = owner
+            task = Task {
+                defer {
+                    if workerOwner == owner {
+                        workerOwner = nil; task = nil; isProcessing = false
+                    }
+                }
+                let worker = Task.detached(priority: .userInitiated) {
+                    try await StudioBackgroundCut.removeBatch(from: immutableInputs, red: red,
+                        green: green, blue: blue, tolerance: threshold)
+                }
+                do {
+                    let results = try await withTaskCancellationHandler(operation: { try await worker.value },
+                                                                         onCancel: { worker.cancel() })
+                    try Task.checkCancellation()
+                    guard token == request, current else { if token == request { cancel() }; return }
+                    replacements = results.filter { $0.value.removedPixels > 0 }.mapValues { $0.png }
+                    preview = results[previewID].flatMap { UIImage(data: $0.png) }
+                    let changed = target.assetsByFrame.values.filter { replacements[$0] != nil }.count
+                    notice = changed == 0 ? "No matching edge-connected background found. Nothing changed."
+                        : "Preview ready · \(changed) frame(s). Apply changes all affected frames in one Undo step."
+                } catch {
+                    guard token == request else { return }
+                    replacements = [:]; preview = nil
+                    notice = error is CancellationError ? "Cancelled. The project is unchanged." : error.localizedDescription
+                }
+            }
+        } catch { notice = error.localizedDescription }
+    }
+    private func apply() {
+        guard current, let capture else { cancel(); notice = "The project changed. Preview again."; return }
+        do {
+            let changed = try vm.applyImageCut(capture, replacements: replacements)
+            cancel(); vm.message = "Background removed from \(changed) frame(s). Undo restores the previous images."
+            dismiss()
+        } catch { notice = error.localizedDescription }
+    }
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 20) {
+            VStack(spacing: 16) {
                 HStack {
-                    Text("✨ Magic Cut")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
+                    Text("Magic Cut").font(.system(size: 18, weight: .bold, design: .monospaced))
                     Spacer()
-                    Button("Done") { dismiss() }
+                    Button("Done") { cancel(); dismiss() }
                 }
-                .padding(16)
-                
-                VStack(spacing: 12) {
-                    Image(systemName: "wand.and.stars")
-                        .font(.system(size: 48))
-                        .foregroundColor(.red)
-                    
-                    Text("AI-Powered Background Removal")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    
-                    Text("Automatically removes backgrounds from your frames using AI. Works best with clear stick figure outlines.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Edge-connected color removal").font(.headline)
+                        Text("Removes the chosen color from the imported image's edges. When a frame has different images, select the image layer to cut. Linked copies of that source update together; other images, enclosed areas, drawings and original files stay unchanged. This is color-based removal, not AI subject recognition.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        Picker("Scope", selection: $allFrames) {
+                            Text("Current frame").tag(false)
+                            Text("All imported frames").tag(true)
+                        }.pickerStyle(.segmented)
+                        ColorPicker("Background color", selection: $background, supportsOpacity: false)
+                        HStack {
+                            Text("Tolerance")
+                            Slider(value: $tolerance, in: 0...100, step: 1)
+                            Text("\(Int(tolerance))%").monospacedDigit()
+                        }
+                        Text("Higher tolerance removes a wider color range. Transparent squares below show the removed area. Preview shows the source image before canvas crop or rotation.")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                        if let preview {
+                            ZStack {
+                                Canvas { context, size in
+                                    for y in stride(from: 0.0, to: size.height, by: 12) {
+                                        for x in stride(from: 0.0, to: size.width, by: 12) {
+                                            let alternate = (Int(x / 12) + Int(y / 12)) % 2 == 0
+                                            context.fill(Path(CGRect(x: x, y: y, width: 12, height: 12)),
+                                                with: .color(alternate ? .gray.opacity(0.5) : .white.opacity(0.8)))
+                                        }
+                                    }
+                                }
+                                Image(uiImage: preview).resizable().scaledToFit()
+                            }.frame(height: 200).clipped().accessibilityLabel("Background removal preview")
+                        }
+                        if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.cut.notice") }
+                        Text("Limit: 64 image frames, 16 selected sources / 16 megapixels per batch; 4 megapixels per image. Show and unlock the selected source’s linked layers. All imported frames requires the selected image layer in each frame containing different sources.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                HStack {
                     if isProcessing {
-                        ProgressView()
-                            .tint(.red)
-                            .padding()
-                        Text("Processing frame \(vm.currentFrameIndex + 1)...")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.4))
+                        ProgressView().tint(.red)
+                        Button("Cancel") { cancel() }
+                    } else {
+                        Button("Preview Cut", action: generate).accessibilityIdentifier("studio.cut.preview")
                     }
-                    
-                    Button(action: {
-                        isProcessing = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                            isProcessing = false
-                        }
-                    }) {
-                        Text("Cut Current Frame")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red)
-                            .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    .disabled(isProcessing)
-                    
-                    Button(action: {
-                        isProcessing = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                            isProcessing = false
-                        }
-                    }) {
-                        Text("Cut All Frames (\(vm.frames.count))")
-                            .font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.red)
-                            .frame(maxWidth: .infinity)
-                            .padding()
-                            .background(Color.red.opacity(0.1))
-                            .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    .disabled(isProcessing)
-                }
-                
-                Spacer()
-            }
+                    Spacer()
+                    Button("Apply Cut") { if allFrames { confirmAll = true } else { apply() } }
+                        .disabled(isProcessing || replacements.isEmpty || !current)
+                        .accessibilityIdentifier("studio.cut.apply")
+                }.buttonStyle(.borderedProminent).tint(.red)
+            }.foregroundColor(.white).padding(16)
         }
+        .confirmationDialog("Apply the previewed cut to all affected imported frames?", isPresented: $confirmAll, titleVisibility: .visible) {
+            Button("Apply to previewed frames", action: apply)
+            Button("Cancel", role: .cancel) { }
+        } message: { Text("Original files stay intact. Undo restores every affected frame together.") }
+        .onChange(of: background) { _ in cancel() }
+        .onChange(of: tolerance) { _ in cancel() }
+        .onChange(of: allFrames) { _ in cancel() }
+        .onChange(of: vm.document.id) { _ in cancel() }
+        .onChange(of: vm.document.revision) { _ in cancel() }
+        .onChange(of: vm.document.activeFrameID) { _ in cancel() }
+        .onChange(of: authVM.userId) { _ in cancel(); dismiss() }
+        .onChange(of: scenePhase) { if $0 != .active { cancel() } }
+        .onDisappear { cancel() }
     }
 }
 
 // MARK: - Rotoscope Sheet
 struct RotoscopeSheet: View {
     @ObservedObject var vm: StudioViewModel
-    @State private var showVideoPicker = false
-    @Environment(\.dismiss) var dismiss
-    
-    var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 20) {
-                HStack {
-                    Text("🎬 Rotoscope / Video")
-                        .font(.system(size: 18, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Spacer()
-                    Button("Done") { dismiss() }
-                }
-                .padding(16)
-                
-                VStack(spacing: 16) {
-                    Image(systemName: "film.fill")
-                        .font(.system(size: 48))
-                        .foregroundColor(.red)
-                    
-                    Text("Import a video to trace over")
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    
-                    Text("Import a video and it will be split into frames for you to draw over. Perfect for rotoscoping and reference.")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                    
-                    Button(action: { showVideoPicker = true }) {
-                        HStack {
-                            Image(systemName: "video.fill")
-                            Text("Choose Video")
-                        }
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.red)
-                        .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                    
-                    Button(action: {}) {
-                        HStack {
-                            Image(systemName: "camera.fill")
-                            Text("Record Video")
-                        }
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity)
-                        .padding()
-                        .background(Color.red.opacity(0.1))
-                        .cornerRadius(14)
-                    }
-                    .padding(.horizontal, 32)
-                }
-                
-                Spacer()
-            }
-        }
-    }
+    var body: some View { StudioImageImportPanel(vm: vm, videoFrameMode: true) }
 }
 
 // MARK: - Panel Header (reusable)
@@ -1059,7 +1165,7 @@ struct PanelHeader: View {
                     .foregroundColor(.red)
             }
             Text(title)
-                .font(.system(size: 16, weight: .bold, design: .monospaced))
+                .font(.specialElite(16))
                 .foregroundColor(.white)
             Spacer()
             Button(action: onClose) {
@@ -1074,4 +1180,105 @@ struct PanelHeader: View {
         .padding(.vertical, 12)
         .background(Color(hex: "0D0D14"))
     }
+}
+
+private struct SpatterPersonalMemoryDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
+    init(_ preferences: SpatterPersonalPreferences) throws { data = try preferences.encoded() }
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else { throw SpatterPersonalMemoryStore.Failure.invalid }
+        _ = try SpatterPersonalPreferences.decode(data); self.data = data
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
+}
+
+private struct SpatterPersonalMemorySheet: View {
+    @ObservedObject var vm: SpatterAIViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var draft = SpatterPersonalPreferences()
+    @State private var notice: String?
+    @State private var showingImport = false
+    @State private var showingExport = false
+    @State private var confirmingReset = false
+    @State private var exportDocument: SpatterPersonalMemoryDocument?
+    @State private var capturedAccount: String?
+    @State private var active = false
+
+    private var current: Bool { active && scenePhase == .active && authVM.state != .loading && authVM.userId == capturedAccount }
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Personal preferences · device only") {
+                    Text("Off by default. Save only choices you select here. Spatter does not learn from transcripts, infer emotions or save secrets. These preferences add local guidance hints and are never included automatically in cloud requests.")
+                        .font(.caption)
+                    Text(capturedAccount == nil ? "Guest preferences on this device" : "Preferences for the signed-in account on this device")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Use my local preferences", isOn: $draft.enabled).accessibilityIdentifier("spatter.memory.enabled")
+                    Picker("Guidance", selection: $draft.guidance) {
+                        ForEach(SpatterPersonalPreferences.Guidance.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    }
+                    Picker("Animation focus", selection: $draft.focus) {
+                        ForEach(SpatterPersonalPreferences.Focus.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    }
+                    Button("Save preferences") {
+                        guard current else { return }
+                        if vm.savePersonalPreferences(draft) { notice = "Saved on this device. Cloud advice is unchanged." }
+                    }.accessibilityIdentifier("spatter.memory.save")
+                    Text("Turning off stops using the saved choices. Reset deletes them. Each account and guest has a separate record; signing out never transfers preferences to another account. App-managed preferences are excluded from device backup. Explicitly exported files remain wherever you save them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Section("Inspect and transfer") {
+                    Text((try? String(decoding: vm.personalPreferences.encoded(), as: UTF8.self)) ?? "Preferences unavailable")
+                        .font(.system(.caption, design: .monospaced)).textSelection(.enabled)
+                        .accessibilityIdentifier("spatter.memory.inspect")
+                    Button("Import preference JSON…") { showingImport = true }.accessibilityIdentifier("spatter.memory.import")
+                    Text("Import loads choices into this form only. Review them and explicitly Save to enable them for this account.").font(.caption)
+                    Button("Export saved preferences…") {
+                        guard current else { return }
+                        do { exportDocument = try .init(vm.personalPreferences); showingExport = true }
+                        catch { notice = error.localizedDescription }
+                    }.accessibilityIdentifier("spatter.memory.export")
+                    Button("Reset saved preferences", role: .destructive) { confirmingReset = true }
+                        .accessibilityIdentifier("spatter.memory.reset")
+                }
+                if let message = vm.memoryError ?? notice { Text(message).font(.caption).accessibilityIdentifier("spatter.memory.notice") }
+            }
+            .navigationTitle("Local Memory")
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .disabled(!current)
+            .confirmationDialog("Delete saved preferences for this account on this device?", isPresented: $confirmingReset, titleVisibility: .visible) {
+                Button("Reset preferences", role: .destructive) {
+                    guard current else { return }
+                    if vm.resetPersonalMemory() { draft = .init(); notice = "Saved preferences deleted. Local memory is off." }
+                }
+                Button("Cancel", role: .cancel) { }
+            }
+            .fileImporter(isPresented: $showingImport, allowedContentTypes: [.json], allowsMultipleSelection: false) { result in
+                guard current else { return }
+                do {
+                    guard let url = try result.get().first else { return }
+                    draft = try SpatterPersonalMemoryStore.readImport(url)
+                    notice = "Imported into this form. Review the choices and Save to apply."
+                } catch { notice = "Import did not change saved preferences. " + error.localizedDescription }
+            }
+            .fileExporter(isPresented: $showingExport, document: exportDocument, contentType: .json, defaultFilename: "SDI-local-preferences") { result in
+                exportDocument = nil
+                guard current else { return }
+                switch result {
+                case .success: notice = "Preference JSON exported. No account identity or conversation was included."
+                case .failure: notice = "Export did not complete. Saved preferences are unchanged."
+                }
+            }
+        }
+        .onAppear { capturedAccount = authVM.userId; draft = vm.personalPreferences; active = true }
+        .onDisappear { invalidate() }
+        .onChange(of: authVM.userId) { _, _ in invalidate(); dismiss() }
+        .onChange(of: authVM.state) { _, state in if state == .loading { invalidate(); dismiss() } }
+        .onChange(of: scenePhase) { _, phase in if phase == .background { invalidate(); dismiss() } }
+        .preferredColorScheme(.dark)
+    }
+    private func invalidate() { active = false; draft = .init(); exportDocument = nil; showingImport = false; showingExport = false }
 }

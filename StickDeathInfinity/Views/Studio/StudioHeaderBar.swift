@@ -17,16 +17,18 @@ struct StudioHeaderBar: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .bold))
                     Text(vm.projectName)
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .font(.specialElite(14))
                         .lineLimit(1)
                 }
                 .foregroundColor(.white.opacity(0.8))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("studio.back")
             
             // Info pill
             Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
-                .font(.system(size: 9))
+                .font(.specialElite(9))
                 .foregroundColor(.white.opacity(0.35))
             
             Spacer()
@@ -37,7 +39,7 @@ struct StudioHeaderBar: View {
                     Image(systemName: "keyboard.chevron.compact.down")
                         .font(.system(size: 12))
                     Text("HIDE")
-                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                        .font(.specialElite(7))
                 }
                 .foregroundColor(.white.opacity(0.5))
             }
@@ -48,7 +50,7 @@ struct StudioHeaderBar: View {
                     Image(systemName: "doc.on.doc.fill")
                         .font(.system(size: 10))
                     Text(vm.saveTimeAgo)
-                        .font(.system(size: 9))
+                        .font(.specialElite(9))
                 }
                 .foregroundColor(.white.opacity(0.4))
                 .padding(.horizontal, 8)

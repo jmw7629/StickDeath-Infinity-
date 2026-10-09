@@ -59,8 +59,11 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
 
     /// `attach` is called only with a successfully decoded immutable result and
     /// must perform the VM's exact project/revision transaction, not a URL save.
+    typealias AudioPreparation = (@escaping @Sendable (StudioAudioImportService.Progress) async throws -> Void) async throws -> StudioAudioImportService.ImportedAudio
+
     @discardableResult
-    func importFile(_ url: URL, stillCurrent: @escaping () -> Bool,
+    func importFile(_ url: URL, name: String? = nil, expectedSHA256: String? = nil,
+                    prepare: AudioPreparation? = nil, stillCurrent: @escaping () -> Bool,
                     attach: @escaping (AudioTrack) throws -> String) -> Bool {
         guard !isBusy else { return false }
         guard stillCurrent() else { state = .failed("The project changed. Select the audio file again in the current project."); return false }
@@ -71,13 +74,25 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             guard let self else { return }
             defer { self.isBusy = false; self.task = nil }
             do {
-                let result = try await self.importer.importAudio(from: url, scratchParent: self.scratchParent) { [weak self] value in
-                    try Task.checkCancellation()
-                    await self?.updateProgress(value, generation: id)
+                let result: StudioAudioImportService.ImportedAudio
+                if let prepare {
+                    result = try await prepare { [weak self] value in
+                        try Task.checkCancellation()
+                        await self?.updateProgress(value, generation: id)
+                    }
+                } else {
+                    result = try await self.importer.importAudio(from: url, name: name, scratchParent: self.scratchParent) { [weak self] value in
+                        try Task.checkCancellation()
+                        await self?.updateProgress(value, generation: id)
+                    }
                 }
                 try Task.checkCancellation()
                 guard self.generation == id else { return }
                 guard stillCurrent() else { throw SessionError.staleProject }
+                if let expectedSHA256,
+                   SHA256.hash(data: result.originalData).map({ String(format: "%02x", $0) }).joined() != expectedSHA256 {
+                    throw SessionError.changedResource
+                }
                 // No await between the final lease check and the atomic VM edit.
                 let clipID = try attach(result.track)
                 self.remember(result, for: result.id)
@@ -148,6 +163,55 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         let value = error as NSError
         if value.domain == NSCocoaErrorDomain && value.code == NSUserCancelledError { return }
         state = .failed("Files could not provide this audio. Download it locally and check its access, then try again.")
+    }
+
+    /// Preview or add the exact checked catalogue bytes without blocking UI reads/hashes.
+    /// A nil attach closure means audition only; no project is mutated.
+    @discardableResult
+    func useCatalogueSound(_ sound: StudioSoundCatalogue.Sound, catalogue: StudioSoundCatalogue,
+                           stillCurrent: @escaping () -> Bool,
+                           attach: ((AudioTrack) throws -> String)? = nil) -> Bool {
+        guard !isBusy, stillCurrent() else { return false }
+        stop()
+        let id = UUID(); generation = id
+        isBusy = true; state = attach == nil ? .analyzing : .importing
+        progress = 0; lastImportedClipID = nil
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isBusy = false; self.task = nil }
+            do {
+                let data = try await catalogue.loadResource(sound)
+                try Task.checkCancellation()
+                guard self.generation == id, stillCurrent() else { throw SessionError.staleProject }
+                let result = try await StudioSavedAudioAnalysis.run(data: data, name: sound.title,
+                    importer: self.importer, scratchParent: self.scratchParent) { [weak self] value in
+                        try Task.checkCancellation()
+                        await self?.updateProgress(value, generation: id)
+                    }
+                try Task.checkCancellation()
+                guard self.generation == id else { return }
+                guard stillCurrent() else { throw SessionError.staleProject }
+                guard abs(result.duration - sound.duration) <= 0.001,
+                      result.sampleRate == sound.sampleRate, result.channelCount == sound.channels else {
+                    throw SessionError.changedResource
+                }
+                let track = result.track
+                if let attach {
+                    let clipID = try attach(track)
+                    self.remember(result, for: track.id)
+                    self.lastImportedClipID = clipID; self.progress = 1; self.state = .ready
+                } else {
+                    self.remember(result, for: track.id)
+                    self.progress = 1; self.state = .ready; self.isBusy = false
+                    _ = self.play(clipID: sound.id, track: track, volume: 1)
+                }
+            } catch is CancellationError {
+                if self.generation == id { self.state = .cancelled }
+            } catch {
+                if self.generation == id { self.state = .failed(Self.message(error)) }
+            }
+        }
+        return true
     }
 
     /// Start one actual AVAudioPlayer after analysis of the same immutable asset.
@@ -238,11 +302,12 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         return "Audio could not be imported or analyzed. The project has not changed."
     }
     private enum SessionError: LocalizedError {
-        case staleProject, invalidPlayback
+        case staleProject, invalidPlayback, changedResource
         var errorDescription: String? {
             switch self {
             case .staleProject: return "The project changed while audio was loading. No clip was added; import again in the current project."
             case .invalidPlayback: return "This audio cannot be previewed on this device."
+            case .changedResource: return "The sound file changed while loading. No clip was added."
             }
         }
     }
@@ -269,34 +334,35 @@ private actor StudioSavedAudioAnalysis {
         let values = try scratchParent.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true, values.isSymbolicLink != true else { throw StudioAudioImportService.ImportError.temporaryStorage }
         let parent = scratchParent.resolvingSymlinksInPath().standardizedFileURL
-        let directory = parent.appendingPathComponent(".sdi-audio-analysis-\(UUID().uuidString)", isDirectory: true)
-        guard Darwin.mkdir(directory.path, 0o700) == 0 else { throw StudioAudioImportService.ImportError.temporaryStorage }
+        let scratch = try StudioAudioImportScratch.create(in: parent)
         do {
-            let source = directory.appendingPathComponent("saved.audio")
-            let fd = Darwin.open(source.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o600)
-            guard fd >= 0 else { throw StudioAudioImportService.ImportError.temporaryStorage }
+            let fd = try scratch.createSourceFile()
             let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
             do {
                 var offset = 0
                 while offset < data.count {
                     try Task.checkCancellation()
+                    try scratch.verify()
                     let end = min(offset + 64 * 1024, data.count)
                     try handle.write(contentsOf: data[offset..<end]); offset = end
                     await Task.yield()
                 }
                 try handle.close()
             } catch { try? handle.close(); throw error }
-            let result = try await importer.importAudio(from: source, name: name, scratchParent: parent, progress: progress)
+            try scratch.verify()
+            let result = try await importer.importAudio(from: scratch.sourceURL, name: name, scratchParent: parent) { value in
+                try await progress(value)
+                try scratch.verify()
+            }
             try Task.checkCancellation()
-            do { try FileManager.default.removeItem(at: directory) }
-            catch { throw StudioAudioImportService.ImportError.cleanupFailed(directory: directory) }
+            try scratch.verify()
+            try scratch.cleanup()
             return result
         } catch {
-            if FileManager.default.fileExists(atPath: directory.path) {
-                do { try FileManager.default.removeItem(at: directory) }
-                catch { throw StudioAudioImportService.ImportError.cleanupFailed(directory: directory) }
-            }
-            throw error
+            let operationError = error
+            do { try scratch.cleanup() }
+            catch { throw StudioAudioImportService.ImportError.cleanupFailed(directory: scratch.directoryURL) }
+            throw operationError
         }
     }
 }

@@ -1,338 +1,167 @@
 import SwiftUI
+import AVKit
 import Supabase
 
 struct HomeFeedView: View {
-    @State private var posts: [Post] = []
-    @State private var isLoading = false
-    @State private var loadError: String?
-    @State private var showCreatePost = false
-    @State private var showNotifications = false
-    @State private var notificationCount = 0
-    
+    @ObservedObject private var auth = AuthService.shared
+    @Environment(\.scenePhase) private var phase
+    @State private var posts: [VideoFeedPost] = []
+    @State private var category = "recent"
+    @State private var nextPage = 0
+    @State private var hasMore = true
+    @State private var loading = false
+    @State private var updating = false
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var epoch = UUID()
+    @State private var playback: FeedPlayback?
+    private var identity: String { "\(auth.userId ?? "guest"):\(auth.isAuthenticated):\(phase == .active):\(category)" }
+    private var client: SupabaseClient { get throws { try SupabaseManager.shared.client } }
+
     var body: some View {
-        ZStack {
-            Color(hex: "0A0A0F").ignoresSafeArea()
-            
-            VStack(spacing: 0) {
-                // Header
+        VStack(spacing: 0) {
+            HStack {
+                Text("StickDeath ∞").font(.specialElite(24)).foregroundColor(.sdRed)
+                Spacer()
+                Button { Task { await load(reset: true) } } label: { Image(systemName: "arrow.clockwise") }
+                    .accessibilityLabel("Refresh feed").disabled(loading)
+            }.padding(16)
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack {
-                    Text("StickDeath ∞")
-                        .font(.system(size: 20, weight: .black, design: .monospaced))
-                        .foregroundColor(.red)
-                    
-                    Spacer()
-                    
-                    Button(action: { showNotifications.toggle() }) {
-                        ZStack(alignment: .topTrailing) {
-                            Image(systemName: "bell.fill")
-                                .font(.system(size: 18))
-                                .foregroundColor(.white.opacity(0.6))
-                            if notificationCount > 0 {
-                                Text("\(notificationCount)")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(3)
-                                    .background(Color.red)
-                                    .clipShape(Circle())
-                                    .offset(x: 6, y: -4)
-                            }
-                        }
+                    ForEach(["trending","recent","following","featured"], id: \.self) { filter in
+                        Button(filter.capitalized) { category = filter }
+                            .font(.specialElite(14)).padding(.horizontal, 14).padding(.vertical, 10)
+                            .background(category == filter ? Color.sdRed : Color.sdSurface)
+                            .clipShape(Capsule())
+                            .accessibilityAddTraits(category == filter ? .isSelected : [])
                     }
-                    
-                    Button(action: { showCreatePost = true }) {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 22))
-                            .foregroundColor(.red)
-                    }
-                    .padding(.leading, 12)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                
-                Divider().background(Color.white.opacity(0.06))
-                
-                // Feed
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        if isLoading { ProgressView().tint(.red).padding() }
-                        if let loadError { Text(loadError).font(.callout).foregroundColor(.gray).padding() }
-                        if !isLoading && posts.isEmpty && loadError == nil {
-                            Text("No posts available.").foregroundColor(.gray).padding()
-                        }
-                        ForEach($posts) { $post in
-                            FeedPostCard(post: $post)
-                        }
-                    }
-                }
+                }.padding(.horizontal, 16)
             }
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    if !auth.isAuthenticated { Text("Sign in to view the community feed.").padding() }
+                    if let error { Text(error).foregroundColor(.sdRed).padding() }
+                    if let notice { Text(notice).font(.caption).foregroundColor(.sdTextSecondary) }
+                    ForEach(posts) { post in card(post) }
+                    if loading { ProgressView().padding() }
+                    if auth.isAuthenticated && !loading && posts.isEmpty && error == nil {
+                        Text("No approved videos in this feed yet.").foregroundColor(.sdTextSecondary).padding()
+                    }
+                    if auth.isAuthenticated && hasMore && !loading {
+                        Button(error == nil ? "Load more" : "Retry") { Task { await load(reset: false) } }
+                    }
+                }.padding(16).padding(.bottom, 60)
+            }.refreshable { await load(reset: true) }
         }
-        .sheet(isPresented: $showCreatePost) {
-            CreatePostView(onBack: { showCreatePost = false }) { content, tags, attachAnimation in
-                guard AuthService.shared.isAuthenticated else { throw SocialService.ServiceError.notAuthenticated }
-                guard !attachAnimation else { throw FeedActionError.attachmentUnavailable }
-                let caption = content + (tags.isEmpty ? "" : "\n\n" + tags.map { "#" + $0 }.joined(separator: " "))
-                let post = try await SocialService.shared.createPost(content: caption, mediaURL: nil, projectID: nil)
-                posts.insert(post, at: 0)
-                showCreatePost = false
-            }
+        .foregroundColor(.sdTextPrimary).background(Color.sdBackground.ignoresSafeArea())
+        .task(id: identity) {
+            epoch = UUID(); posts = []; nextPage = 0; hasMore = true; loading = false
+            playback?.player.pause(); playback = nil; error = nil; notice = nil
+            if phase == .active { await load(reset: true) }
         }
-        .task { await loadPosts() }
-        .refreshable { await loadPosts() }
-        .alert("Notifications unavailable", isPresented: $showNotifications) {
-            Button("OK", role: .cancel) { }
-        } message: { Text("Notifications have not been connected. No unread count is being claimed.") }
+        .sheet(item: $playback) { item in
+            VideoPlayer(player: item.player).onAppear { item.player.play() }.onDisappear { item.player.pause() }
+        }
+        .onDisappear { playback?.player.pause(); playback = nil }
     }
-
-    @MainActor private func loadPosts() async {
-        guard !isLoading else { return }
-        guard AuthService.shared.isAuthenticated else {
-            loadError = "Sign in to view the community feed."
-            return
-        }
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            posts = try await SupabaseManager.shared.client.from("posts").select()
-                .order("created_at", ascending: false).limit(50).execute().value
-            loadError = nil
-        } catch {
-            loadError = "The feed could not be loaded. Check your connection and account configuration."
-        }
-    }
-}
-
-private enum FeedActionError: LocalizedError {
-    case attachmentUnavailable
-    var errorDescription: String? { "Select a real rendered Studio file before attaching an animation. Nothing was posted." }
-}
-
-struct FeedPostCard: View {
-    @Binding var post: Post
-    @State private var comments: [Comment] = []
-    @State private var liked: Bool?
-    @State private var isUpdating = false
-    @State private var actionError: String?
-    @State private var showComments = false
-    @State private var newComment = ""
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Author header
-            HStack(spacing: 10) {
-                // Avatar
-                ZStack {
-                    Circle()
-                        .fill(Color(hex: "1A1A24"))
-                        .frame(width: 36, height: 36)
-                    Image(systemName: "person.fill").foregroundColor(.gray)
-                        .font(.system(size: 18))
-                }
-                
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(post.username ?? "Member")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundColor(.white)
-                    Text(post.createdAt ?? "Date unavailable")
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.4))
-                }
-                
-                Spacer()
-                
-                Image(systemName: "ellipsis")
-                    .foregroundColor(.white.opacity(0.3))
-                    .font(.system(size: 14))
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            
-            // Content preview
-            ZStack {
-                RoundedRectangle(cornerRadius: 0)
-                    .fill(Color(hex: "12121A"))
-                    .frame(height: 280)
-                
-                VStack(spacing: 8) {
-                    if let raw = post.mediaURL, let url = URL(string: raw), url.scheme == "https" {
-                        Link(destination: url) {
-                            VStack(spacing: 12) {
-                                Image(systemName: "play.rectangle").font(.system(size: 54))
-                                Text("Open attached media").font(.system(size: 14, weight: .bold, design: .monospaced))
-                            }.foregroundColor(.white)
-                        }
-                    } else {
-                        Image(systemName: "text.alignleft").font(.system(size: 40)).foregroundColor(.gray)
-                        Text(post.content ?? "").font(.system(size: 14, weight: .bold, design: .monospaced))
-                            .foregroundColor(.white).lineLimit(5).padding()
-                    }
-                }
-            }
-            
-            // Action bar
-            HStack(spacing: 20) {
-                // Like
-                Button(action: { Task { await toggleLike() } }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: liked == nil ? "questionmark.circle" : liked == true ? "heart.fill" : "heart")
-                            .foregroundColor(liked == true ? .red : .white.opacity(0.5))
-                        Text("\(post.likeCount)")
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-                    .font(.system(size: 13))
-                }
-                .disabled(isUpdating || liked == nil)
-                .accessibilityLabel(liked == nil ? "Like status unavailable" : liked == true ? "Unlike post" : "Like post")
-                
-                // Comments
-                Button(action: { showComments.toggle(); if showComments { Task { await loadComments() } } }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "bubble.right")
-                        Text("\(post.commentCount)")
-                    }
-                    .font(.system(size: 13))
-                    .foregroundColor(.white.opacity(0.5))
-                }
-                
-                // Share an actual public media URL, when present.
-                if let raw = post.mediaURL, let url = URL(string: raw), url.scheme == "https" {
-                    ShareLink(item: url) {
-                        Image(systemName: "square.and.arrow.up").font(.system(size: 13)).foregroundColor(.white.opacity(0.5))
-                    }
+    private func card(_ post: VideoFeedPost) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Image(systemName: "person.crop.circle.fill").font(.title)
+                VStack(alignment: .leading) {
+                    Text(post.creator_name).font(.specialElite(16))
+                    Text(post.published_at, style: .relative).font(.caption).foregroundColor(.sdTextSecondary)
                 }
                 Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            
-            // Caption
-            if let caption = post.content, !caption.isEmpty {
-                Text(caption)
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(2)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-            }
-            
-            // Comments section
-            if showComments {
-                VStack(spacing: 0) {
-                    ForEach(comments) { comment in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "person.fill").foregroundColor(.gray)
-                                .font(.system(size: 14))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(comment.userID == AuthService.shared.userId ? "You" : "Member")
-                                    .font(.system(size: 10, weight: .bold))
-                                    .foregroundColor(.white)
-                                Text(comment.content)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.white.opacity(0.6))
-                            }
-                            Spacer()
-                            Text(comment.createdAt ?? "")
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.3))
+                Menu {
+                    if post.creator.uuidString.lowercased() != auth.userId?.lowercased() {
+                        Button(post.following ? "Unfollow creator" : "Follow creator") {
+                            Task { await mutate(FeedRequest(action: "follow", target: post.creator, enabled: !post.following)) }
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 6)
-                    }
-                    
-                    // Add comment
-                    HStack(spacing: 8) {
-                        TextField("Add a comment...", text: $newComment)
-                            .font(.system(size: 12))
-                            .foregroundColor(.white)
-                            .padding(8)
-                            .background(Color(hex: "1A1A24"))
-                            .cornerRadius(8)
-                            .disabled(isUpdating)
-                        
-                        Button(action: { Task { await submitComment() } }) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 24))
-                                .foregroundColor(.red)
+                        Button("Block creator", role: .destructive) {
+                            Task { await mutate(FeedRequest(action: "block", target: post.creator)) }
                         }
-                        .disabled(isUpdating)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                }
-                .background(Color(hex: "0D0D14"))
+                    Menu("Report video") {
+                        ForEach(["rights","abuse","unsafe","spam"], id: \.self) { reason in
+                            Button(reason.capitalized) { Task { await mutate(FeedRequest(action: "report", post_id: post.id, reason: reason)) } }
+                        }
+                    }
+                } label: { Image(systemName: "ellipsis").frame(width: 44,height: 44) }
+                    .disabled(updating)
             }
-            
-            if let actionError { Text(actionError).font(.caption).foregroundColor(.red).padding(.horizontal, 16) }
-            if liked == nil {
-                Button("Retry like status") { Task { await loadLikeStatus() } }
-                    .font(.caption)
-                    .disabled(isUpdating)
-                    .padding(.horizontal, 16)
+            Button {
+                guard let url = post.safeURL else { error = "Video address is unavailable."; return }
+                playback?.player.pause(); playback = FeedPlayback(player: AVPlayer(url: url))
+            } label: {
+                VStack(spacing: 14) {
+                    Image(systemName: "play.rectangle.fill").font(.system(size: 56))
+                    Text(post.title).font(.specialElite(18))
+                }.frame(maxWidth: .infinity, minHeight: 190).background(Color.sdBackground)
+            }.accessibilityLabel("Play \(post.title)")
+            if !post.caption.isEmpty { Text(post.caption).font(.callout) }
+            HStack(spacing: 24) {
+                Button {
+                    Task { await mutate(FeedRequest(action: "like", post_id: post.id, enabled: !post.liked)) }
+                } label: {
+                    Label(String(post.likes), systemImage: post.liked ? "heart.fill" : "heart")
+                        .foregroundColor(post.liked ? .sdRed : .sdTextSecondary)
+                }.disabled(updating).accessibilityLabel("\(post.liked ? "Unlike" : "Like") video, \(post.likes) likes")
+                if let url = post.safeURL { ShareLink(item: url) { Label("Share", systemImage: "square.and.arrow.up") } }
+                Spacer()
             }
-            Divider().background(Color.white.opacity(0.04))
-        }
-        .task(id: post.id) { await loadLikeStatus() }
+        }.padding(16).background(Color.sdSurface).clipShape(RoundedRectangle(cornerRadius: 16))
     }
-
-    @MainActor private func loadLikeStatus() async {
-        guard !isUpdating else { return }
-        isUpdating = true
-        defer { isUpdating = false }
+    @MainActor private func load(reset: Bool) async {
+        guard !loading, auth.isAuthenticated, let account = auth.userId else { return }
+        if reset { epoch = UUID(); posts = []; nextPage = 0; hasMore = true }
+        let revision = epoch, page = nextPage
+        loading = true
+        defer { if revision == epoch { loading = false } }
         do {
-            liked = try await SocialService.shared.isPostLiked(postID: post.id)
-            actionError = nil
-        } catch {
-            liked = nil
-            actionError = "Like status could not be loaded. Retry before changing this reaction."
-        }
-    }
-
-    @MainActor private func toggleLike() async {
-        guard !isUpdating, let confirmedLiked = liked else { return }
-        guard AuthService.shared.isAuthenticated else { actionError = "Sign in to like a post."; return }
-        isUpdating = true
-        defer { isUpdating = false }
-        do {
-            if confirmedLiked { try await SocialService.shared.unlikePost(postID: post.id) }
-            else { try await SocialService.shared.likePost(postID: post.id) }
-            let refreshedLike = try await SocialService.shared.isPostLiked(postID: post.id)
-            let refreshedPost: Post = try await SupabaseManager.shared.client.from("posts").select().eq("id", value: post.id).single().execute().value
-            liked = refreshedLike
-            post = refreshedPost
-            actionError = nil
-        } catch {
-            liked = nil
-            actionError = "The reaction could not be confirmed. Retry like status before changing it again."
-        }
-    }
-
-    @MainActor private func loadComments() async {
-        do {
-            comments = try await SocialService.shared.getComments(postID: post.id)
-            actionError = nil
-        } catch { actionError = "Comments could not be loaded." }
-    }
-
-    @MainActor private func submitComment() async {
-        let content = newComment.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !content.isEmpty, content.count <= 500, !isUpdating else { return }
-        guard AuthService.shared.isAuthenticated, AuthService.shared.userId != nil else { actionError = "Sign in to comment."; return }
-        isUpdating = true
-        defer { isUpdating = false }
-        var insertionConfirmed = false
-        do {
-            try await SocialService.shared.addComment(postID: post.id, content: content)
-            insertionConfirmed = true
-            comments = try await SocialService.shared.getComments(postID: post.id)
-            post = try await SupabaseManager.shared.client.from("posts").select().eq("id", value: post.id).single().execute().value
-            newComment = ""
-            actionError = nil
-        } catch {
-            if insertionConfirmed {
-                newComment = ""
-                actionError = "Your comment was saved, but the updated conversation could not be loaded. Refresh to see it; do not resend it."
-            } else {
-                actionError = "The comment could not be confirmed. Your draft is still here. Refresh before trying again."
+            let response: FeedResponse = try await client.rpc("sdi_feed_action", params: FeedRequest(action: "list", category: category, page: page)).execute().value
+            guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
+            if let problem = response.error { error = problem; return }
+            guard let incoming = response.posts, let more = response.has_more else { error = "The feed returned an incomplete response."; return }
+            // Offset ranking may shift during engagement; preserve identity and
+            // avoid duplicate cards. Pull-to-refresh restarts the current ranking.
+            for post in incoming {
+                if let index = posts.firstIndex(where: {$0.id == post.id}) { posts[index] = post }
+                else { posts.append(post) }
             }
-        }
+            nextPage = page + 1; hasMore = more && nextPage < 40; error = nil
+        } catch { if revision == epoch { self.error = "The feed could not be loaded. Check your connection and service configuration." } }
+    }
+    @MainActor private func mutate(_ request: FeedRequest) async {
+        guard !updating, auth.isAuthenticated, let account = auth.userId else { return }
+        let revision = epoch; updating = true; notice = nil
+        defer { updating = false }
+        do {
+            let response: FeedResponse = try await client.rpc("sdi_feed_action", params: request).execute().value
+            guard !Task.isCancelled, revision == epoch, account == auth.userId else { return }
+            if let problem = response.error { error = problem; return }
+            guard response.status == "confirmed" else { error = "The action was not confirmed."; return }
+            if request.action == "report" { notice = "Report recorded for moderation." }
+            await load(reset: true)
+        } catch { if revision == epoch { self.error = "The action was not confirmed. Refresh before retrying." } }
+    }
+}
+private struct FeedPlayback: Identifiable { let id = UUID(); let player: AVPlayer }
+private struct FeedRequest: Encodable {
+    let action: String
+    var post_id: UUID? = nil; var target: UUID? = nil; var enabled = true
+    var category = "recent"; var page = 0; var reason: String? = nil
+}
+private struct FeedResponse: Decodable {
+    let status: String?; let error: String?; let posts: [VideoFeedPost]?; let has_more: Bool?
+}
+private struct VideoFeedPost: Decodable, Identifiable {
+    let id: UUID; let creator: UUID; let creator_name: String; let caption: String
+    let published_at: Date; let allow_export: Bool; let title: String; let url: String
+    let likes: Int; let liked: Bool; let following: Bool
+    var safeURL: URL? {
+        guard let parts = URLComponents(string: url), parts.scheme == "https", parts.host != nil,
+              parts.user == nil, parts.password == nil else { return nil }
+        return parts.url
     }
 }

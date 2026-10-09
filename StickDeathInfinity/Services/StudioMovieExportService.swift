@@ -15,6 +15,7 @@ final class StudioMovieExportService {
         let document: StudioDocument
         let retainedAudioTracks: [AudioTrack]
         let rasterDataByID: [String: Data]
+        var imageCredits: [String: StudioExportService.ImageCredit] = [:]
     }
     enum Phase { case rendering, finalizing, verifying, publishing }
     struct Progress {
@@ -37,6 +38,9 @@ final class StudioMovieExportService {
         let audioIncluded: Bool
         let editorGuidesIncluded: Bool
         let encodedBytes: Int
+        /// Present only for an internal video component, never a completed audio export.
+        var visualComponentProof: StudioMuxCapture.Proof? = nil
+        var imageCredits: [StudioExportService.ImageCredit]? = nil
     }
     /// The caller retains this handle while a share sheet or decoder consumes
     /// its files. URLs alone do not transfer cleanup ownership. Neither service
@@ -62,6 +66,29 @@ final class StudioMovieExportService {
         /// This deliberately still runs when the enclosing Task is cancelled.
         func cleanup() throws { try ownership.cleanup() }
         func cancel() throws { ownership.cancelled = true; try ownership.cleanup() }
+    }
+
+    /// Internal component handle. Its complete capture (including audio) is
+    /// retained; this type is not the ordinary finished movie export receipt.
+    @MainActor final class VisualComponent {
+        let capture: StudioMuxCapture
+        private let output: Output
+        fileprivate init(capture: StudioMuxCapture, output: Output) {
+            self.capture = capture; self.output = output
+        }
+        func checkedSource() throws -> (URL, Manifest) {
+            _ = try output.checkedURLs()
+            guard output.manifest.visualComponentProof == capture.proof else { throw ExportError.outputUnavailable }
+            return (output.movieURL, output.manifest)
+        }
+        func cleanup() throws { try output.cleanup() }
+    }
+
+    func exportVisualComponent(capture: StudioMuxCapture, outputParent: URL,
+                               progress: (Progress) throws -> Void = { _ in }) async throws -> VisualComponent {
+        let output = try await exportCore(snapshot: capture.snapshot, outputParent: outputParent,
+                                          background: .white, componentProof: capture.proof, progress: progress)
+        return VisualComponent(capture: capture, output: output)
     }
 
     /// Captured before publication, then carried across the same-parent rename.
@@ -491,14 +518,22 @@ final class StudioMovieExportService {
     /// Progress is factual intermediate work, not a save/export success receipt.
     func export(snapshot: Snapshot, outputParent: URL, background: Background,
                 progress: (Progress) throws -> Void = { _ in }) async throws -> Output {
+        try await exportCore(snapshot: snapshot, outputParent: outputParent, background: background,
+                             componentProof: nil, progress: progress)
+    }
+
+    private func exportCore(snapshot: Snapshot, outputParent: URL, background: Background,
+                            componentProof: StudioMuxCapture.Proof?, progress: (Progress) throws -> Void) async throws -> Output {
         try Task.checkCancellation()
         guard !Self.movieInProgress else { throw ExportError.alreadyExporting }
         Self.movieInProgress = true
         defer { Self.movieInProgress = false }
         let started = ProcessInfo.processInfo.systemUptime
-        try validate(snapshot, background: background)
+        try validate(snapshot, background: background, componentProof: componentProof)
         try checkpoint(started)
         let document = snapshot.document
+        let imageCredits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
+        guard try JSONEncoder().encode(imageCredits).count <= 128 * 1024 else { throw ExportError.limitExceeded }
         let fm = FileManager.default
         guard outputParent.isFileURL else { throw ExportError.unsafeDestination }
         let parent = outputParent.standardizedFileURL
@@ -565,7 +600,7 @@ final class StudioMovieExportService {
                 try confirmOwnership()
                 try autoreleasepool {
                     try checkpoint(started)
-                    let image = try render(frame, document: document, raster: frame.rasterAssetID.flatMap { snapshot.rasterDataByID[$0] })
+                    let image = try render(frame, document: document, rasterDataByID: snapshot.rasterDataByID)
                     try draw(image, into: buffer)
                     if formatDescription == nil {
                         guard CMVideoFormatDescriptionCreateForImageBuffer(allocator: nil, imageBuffer: buffer,
@@ -575,8 +610,8 @@ final class StudioMovieExportService {
                     // The adaptor supplies the bounded pool. Append an explicit
                     // sample duration: its convenience append(buffer, PTS) API
                     // leaves a one-frame movie's duration to codec inference.
-                    var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: CMTimeScale(document.fps)),
-                        presentationTimeStamp: CMTime(value: Int64(index), timescale: CMTimeScale(document.fps)), decodeTimeStamp: .invalid)
+                    var timing = CMSampleTimingInfo(duration: CMTime(value: Int64(frame.durationTicks), timescale: CMTimeScale(document.fps)),
+                        presentationTimeStamp: CMTime(value: Int64(document.startTick(ofFrame: index)), timescale: CMTimeScale(document.fps)), decodeTimeStamp: .invalid)
                     var sample: CMSampleBuffer?
                     guard CMSampleBufferCreateReadyWithImageBuffer(allocator: nil, imageBuffer: buffer,
                         formatDescription: formatDescription, sampleTiming: &timing, sampleBufferOut: &sample) == noErr,
@@ -595,7 +630,7 @@ final class StudioMovieExportService {
             try checkpoint(started)
             // The end time includes the full last frame, even for one-frame or
             // 1 FPS movies; nothing is duplicated to manufacture that duration.
-            writer!.endSession(atSourceTime: CMTime(value: Int64(document.frames.count), timescale: CMTimeScale(document.fps)))
+            writer!.endSession(atSourceTime: CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps)))
             input.markAsFinished()
             writer!.finishWriting {}
             while writer!.status == .writing {
@@ -614,12 +649,17 @@ final class StudioMovieExportService {
             try await verify(movie, document: document, started: started)
             try confirmOwnership()
             let bytes = try checkOutputSize(movie, requireNonempty: true)
-            let manifest = Manifest(version: 1, projectID: document.id, documentRevision: document.revision,
+            var manifest = Manifest(version: imageCredits.isEmpty ? 1 : 2, projectID: document.id, documentRevision: document.revision,
                 frameIDs: document.frames.map(\.id), fps: document.fps, width: document.width, height: document.height,
-                durationNumerator: document.frames.count, durationDenominator: document.fps, codec: "H.264",
+                durationNumerator: document.totalTimelineTicks, durationDenominator: document.fps, codec: "H.264",
                 background: .white, audioIncluded: false, editorGuidesIncluded: false, encodedBytes: bytes)
+            manifest.visualComponentProof = componentProof
+            manifest.imageCredits = imageCredits.isEmpty ? nil : imageCredits
             let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys, .prettyPrinted]
             let manifestData = try encoder.encode(manifest)
+            guard manifestData.count <= 128 * 1024, manifestData.count <= limits.maximumOutputBytes - bytes else {
+                throw ExportError.limitExceeded
+            }
             try encodingOwnership!.writeManifest(manifestData)
             try progress(Progress(phase: .publishing, completedFrames: document.frames.count, totalFrames: document.frames.count))
             try confirmOwnership()
@@ -659,7 +699,7 @@ final class StudioMovieExportService {
         }
     }
 
-    private func validate(_ snapshot: Snapshot, background: Background) throws {
+    private func validate(_ snapshot: Snapshot, background: Background, componentProof: StudioMuxCapture.Proof?) throws {
         let hard = Limits()
         guard (1...hard.maximumFrames).contains(limits.maximumFrames),
               (1...hard.maximumFramePixels).contains(limits.maximumFramePixels),
@@ -670,14 +710,18 @@ final class StudioMovieExportService {
               limits.readinessTimeout.isFinite, limits.readinessTimeout > 0, limits.readinessTimeout <= 30,
               limits.operationTimeout.isFinite, limits.operationTimeout > 0, limits.operationTimeout <= 300 else { throw ExportError.limitExceeded }
         guard background == .white else { throw ExportError.transparentUnsupported }
-        guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
+        if let componentProof {
+            guard try StudioMuxCapture.proofFor(snapshot) == componentProof else { throw ExportError.unsupportedContent }
+        } else {
+            guard snapshot.document.audioClips.isEmpty, snapshot.retainedAudioTracks.isEmpty else { throw ExportError.audioUnsupported }
+        }
         let document = snapshot.document
         try document.validate()
         guard document.width.isMultiple(of: 2), document.height.isMultiple(of: 2) else { throw ExportError.oddDimensions }
         let pixels = document.width * document.height
         guard document.frames.count <= limits.maximumFrames, pixels <= limits.maximumFramePixels,
               pixels * document.frames.count <= limits.maximumTotalPixels else { throw ExportError.limitExceeded }
-        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text]
+        let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge, .blur, .sharpen, .dodge, .burn]
         let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
         func colorValid(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? value.dropFirst() : value[...]
@@ -692,14 +736,17 @@ final class StudioMovieExportService {
         for frame in document.frames {
             try Task.checkCancellation()
             for element in frame.elements where element.opacity > 0 && element.layerID.map(visibleIDs.contains) == true {
-                guard tools.contains(element.tool), colorValid(element.color) else { throw ExportError.unsupportedContent }
+                guard tools.contains(element.tool), element.tool != .smudge || element.smudge != nil, element.tool != .blur || element.blur != nil, element.tool != .sharpen || element.sharpen != nil,
+                      (element.tool != .dodge && element.tool != .burn) || element.dodgeBurn != nil, colorValid(element.color) else { throw ExportError.unsupportedContent }
+                guard element.tool != .fill || element.fillMask != nil else { throw ExportError.unsupportedContent }
                 if element.tool == .text {
-                    guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent }
+                    if let text = element.text { try text.validate(element: element) }
+                    else { guard let text = element.fillColor, !text.isEmpty, text.utf8.count <= 4096 else { throw ExportError.unsupportedContent } }
                 }
             }
         }
-        let references = Set(document.frames.compactMap(\.rasterAssetID))
-        guard snapshot.rasterDataByID.count <= limits.maximumFrames else { throw ExportError.limitExceeded }
+        let references = document.referencedRasterAssetIDs
+        guard snapshot.rasterDataByID.count <= limits.maximumFrames, references.count <= limits.maximumFrames else { throw ExportError.limitExceeded }
         var bytes = 0
         for (id, data) in snapshot.rasterDataByID {
             guard !id.isEmpty, id.utf8.count <= 1024, data.count <= limits.maximumRasterBytes - bytes else { throw ExportError.limitExceeded }
@@ -707,7 +754,8 @@ final class StudioMovieExportService {
         }
         // Even a hidden referenced raster must exist and decode; exporting must
         // never turn a lost original into an apparently successful empty layer.
-        for id in references {
+        var totalRasterPixels = 0
+        for id in references.sorted() {
             try Task.checkCancellation()
             guard let data = snapshot.rasterDataByID[id] else { throw ExportError.missingRaster }
             try autoreleasepool {
@@ -717,7 +765,9 @@ final class StudioMovieExportService {
                       let width = properties[kCGImagePropertyPixelWidth] as? Int,
                       let height = properties[kCGImagePropertyPixelHeight] as? Int,
                       width > 0, height > 0, width <= 8192, height <= 8192 else { throw ExportError.invalidRaster }
-                guard width * height <= limits.maximumRasterPixels else { throw ExportError.limitExceeded }
+                guard width * height <= limits.maximumRasterPixels,
+                      width * height <= 32 * 1024 * 1024 - totalRasterPixels else { throw ExportError.limitExceeded }
+                totalRasterPixels += width * height
                 guard CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary) != nil,
                       CGImageSourceGetStatus(source) == .statusComplete,
                       CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete,
@@ -726,14 +776,16 @@ final class StudioMovieExportService {
         }
     }
 
-    private func render(_ frame: AnimationFrame, document: StudioDocument, raster: Data?) throws -> CGImage {
+    private func render(_ frame: AnimationFrame, document: StudioDocument, rasterDataByID: [String: Data]) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
+        let smudges = try StudioSmudgeReplay.prepare(frame: frame, layers: document.layers, canvasSize: size, rasterData: nil, rasterDataByID: rasterDataByID)
         var failure: Error?
         let canvas = Canvas { context, actual in
             context.fill(Path(CGRect(origin: .zero, size: actual)), with: .color(.white))
             failure = StudioFrameRenderer.draw(context: &context, frame: frame, layers: document.layers,
-                canvasSize: size, size: actual, rasterData: raster, preparedBrushes: brushes)
+                canvasSize: size, size: actual, preparedBrushes: brushes, preparedSmudges: smudges,
+                rasterSources: rasterDataByID)
         }.frame(width: size.width, height: size.height)
         let renderer = ImageRenderer(content: canvas); renderer.scale = 1; renderer.isOpaque = true
         guard let image = renderer.cgImage, image.width == document.width, image.height == document.height else { throw ExportError.renderFailed }
@@ -817,7 +869,7 @@ final class StudioMovieExportService {
         let descriptions = try await track.load(.formatDescriptions)
         guard descriptions.count == 1, CMFormatDescriptionGetMediaSubType(descriptions[0]) == kCMVideoCodecType_H264 else { throw ExportError.verificationFailed }
         let size = CMVideoFormatDescriptionGetDimensions(descriptions[0])
-        let expectedEnd = CMTime(value: Int64(document.frames.count), timescale: CMTimeScale(document.fps))
+        let expectedEnd = CMTime(value: Int64(document.totalTimelineTicks), timescale: CMTimeScale(document.fps))
         let duration = try await asset.load(.duration)
         let range = try await track.load(.timeRange)
         guard size.width == document.width, size.height == document.height,
@@ -844,8 +896,8 @@ final class StudioMovieExportService {
                     return true
                 }
                 guard CMSampleBufferGetNumSamples(sample) == 1, timedFrames < document.frames.count,
-                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(timedFrames), timescale: CMTimeScale(document.fps))) == 0,
-                      CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: 1, timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
+                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(document.startTick(ofFrame: timedFrames)), timescale: CMTimeScale(document.fps))) == 0,
+                      CMTimeCompare(CMSampleBufferGetDuration(sample), CMTime(value: Int64(document.frames[timedFrames].durationTicks), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
                 timedFrames += 1
                 return true
             }
@@ -867,7 +919,7 @@ final class StudioMovieExportService {
                 guard let sample = output.copyNextSampleBuffer() else { return false }
                 guard count < document.frames.count, let buffer = CMSampleBufferGetImageBuffer(sample),
                       CVPixelBufferGetWidth(buffer) == document.width, CVPixelBufferGetHeight(buffer) == document.height,
-                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(count), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
+                      CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(sample), CMTime(value: Int64(document.startTick(ofFrame: count)), timescale: CMTimeScale(document.fps))) == 0 else { throw ExportError.verificationFailed }
                 count += 1
                 return true
             }

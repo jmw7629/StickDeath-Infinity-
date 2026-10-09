@@ -13,6 +13,11 @@ import time
 
 from seed_diagnostics import Evidence, collect_failure, result_projection, run_bounded
 
+# Cold Photos-library import is setup, not the interactive app journey.
+# CI exhausted 60s; a fresh local device required 34.286s for this one import.
+# Allow one bounded 120s attempt; failure still gates the complete run.
+SEED_IMPORT_SECONDS = 120
+
 
 def make_png() -> bytes:
     width, height = 96, 64
@@ -47,7 +52,35 @@ def main() -> None:
                 for d in devices if d["udid"] == args.udid and d.get("isAvailable") and d["state"] == "Booted"]
     if len(selected) != 1:
         raise ValueError("Use the explicit available booted iOS test simulator")
+    wait_for_command_readiness(args.udid, output)
     seed_verified_fixture(args.udid, output)
+
+
+def wait_for_command_readiness(udid: str, output: pathlib.Path) -> None:
+    """One read-only process-launch acknowledgement after native bootstatus.
+
+    c080's bootstatus finished, but addmedia and all three diagnostic simctl
+    commands produced no output before their limits. Probe the explicit owned
+    device once before importing media; never retry the import or treat an
+    unavailable command channel as successful fixture setup.
+    """
+    evidence = Evidence(udid, output)
+    try:
+        started = time.monotonic()
+        command = ["xcrun", "simctl", "spawn", udid, "launchctl", "list"]
+        result = run_bounded(command, started + 121, work_deadline=started + 120)
+        evidence.json('image-seed-readiness.json', {
+            'simulatorUDID': udid, 'stage': 'command-readiness',
+            'timeoutSeconds': 120, 'attempts': 1, 'readOnly': True,
+            'result': result_projection(result)})
+        if result.spawn_error:
+            raise OSError('The simulator readiness command could not be started')
+        if result.timed_out:
+            raise subprocess.TimeoutExpired(command, 120)
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command)
+    finally:
+        evidence.close()
 
 
 def seed_verified_fixture(udid: str, output: pathlib.Path) -> None:
@@ -66,19 +99,19 @@ def seed_verified_fixture(udid: str, output: pathlib.Path) -> None:
                   "source": "Original generated four-color UI fixture; no third-party corpus",
                   "route": "System Photos library; the app must select through PHPicker"}
         evidence.json('image-seed-start.json', {**report, 'stage': 'addmedia',
-                      'timeoutSeconds': 60, 'ownership': 'Caller already verified the explicit available, booted iOS target'})
+                      'timeoutSeconds': SEED_IMPORT_SECONDS, 'ownership': 'Caller already verified the explicit available, booted iOS target'})
         command = ["xcrun", "simctl", "addmedia", udid, str(fixture)]
         started = time.monotonic()
         result = None
         try:
             evidence.check()
-            # Same 60-second operation gate. One further second only bounds
+            # One 120-second cold-library operation. One further second only bounds
             # reaping the owned timed-out child; there is never a second seed.
-            result = run_bounded(command, started + 61, work_deadline=started + 60)
+            result = run_bounded(command, started + SEED_IMPORT_SECONDS + 1, work_deadline=started + SEED_IMPORT_SECONDS)
             if result.spawn_error:
                 raise OSError('The addmedia command could not be started')
             if result.timed_out:
-                raise subprocess.TimeoutExpired(command, 60)
+                raise subprocess.TimeoutExpired(command, SEED_IMPORT_SECONDS)
             if result.returncode != 0:
                 raise subprocess.CalledProcessError(result.returncode, command)
         except Exception:

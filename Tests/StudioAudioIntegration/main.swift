@@ -171,6 +171,67 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 try require(preview.actualPlayerIsPlaying && preview.measurements[assetID]?.duration == 1, "Saved actual bytes did not preview")
                 preview.close(); await reopened.backToProjects(); try clean(scratch)
             }
+            try await test("same-file imports remain independent across project revision cleanup removal and offline reopen") {
+                let docs = root.appendingPathComponent("shared-source-projects")
+                let storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: root.appendingPathComponent("shared-source-cache"))
+                let sharedSource = root.appendingPathComponent("shared-source.wav")
+                try original.write(to: sharedSource)
+                let first = StudioViewModel(storage: storage), second = StudioViewModel(storage: storage)
+                var assetIDs: [UUID] = []
+                var measuredPeaks: [UUID: [Float]] = [:]
+                for (index, vm) in [first, second].enumerated() {
+                    try requireAsync(await vm.createProject(name: "Shared source \(index)", width: 64, height: 64, fps: 1), "Project creation failed")
+                    let id = vm.document.id, revision = vm.document.revision, frame = vm.currentFrame.id
+                    let importing = StudioAudioPreviewSession(scratchParent: scratch)
+                    try require(importing.importFile(sharedSource,
+                        stillCurrent: { vm.document.id == id && vm.document.revision == revision }, attach: {
+                            try vm.attachImportedAudio($0, expectedProjectID: id, expectedRevision: revision,
+                                                       frameID: frame, trackNumber: 1)
+                        }), "Same-file import refused")
+                    try await idle(importing)
+                    guard let clip = vm.audioClips.first, let asset = clip.assetID,
+                          let measurement = importing.measurements[asset] else { throw Failure(message: "Same-file import produced no measured managed asset") }
+                    assetIDs.append(asset); measuredPeaks[asset] = measurement.peaks
+                    try require(vm.audioTrack(forAssetID: asset)?.audioData == original, "Import did not own its source bytes")
+                    importing.close()
+                    try requireAsync(await vm.save(), "Imported project save failed")
+                }
+                try require(assetIDs[0] != assetIDs[1] && first.document.id != second.document.id,
+                            "Separate projects aliased asset or project identities")
+                let firstID = first.document.id, secondID = second.document.id
+                let secondClip = second.audioClips[0]
+                for volume in [0.2, 0.4, 0.6, 0.8] {
+                    first.setAudioClipVolume(first.audioClips[0].id, volume: volume)
+                    try requireAsync(await first.save(), "Real obsolete revision fixture failed")
+                }
+                await first.backToProjects(); await second.backToProjects()
+                try fm.removeItem(at: sharedSource)
+                let plan = try storage.previewObsoleteRevisions(id: firstID)
+                try require(plan.candidates > 0, "No actual obsolete revisions were eligible")
+                let cleaned = try storage.removeObsoleteRevisions(id: firstID,
+                    expectedSelectedRevision: plan.selectedRevision, expectedConfirmationToken: plan.confirmationToken)
+                try require(cleaned.removedRevisions == plan.candidates && cleaned.stoppedReason == nil,
+                            "Selected project's revision cleanup did not complete")
+                await first.moveProjectToRecovery(firstID)
+                try require(try storage.loadAnimation(id: firstID) == nil, "Removed project remains in active storage")
+                guard let retained = try storage.loadAnimation(id: secondID) else { throw Failure(message: "Removing first project removed second") }
+                let cold = StudioViewModel(storage: storage)
+                try requireAsync(await cold.openProject(retained.metadata), "Second project did not cold reopen offline")
+                guard let track = cold.audioTrack(forAssetID: assetIDs[1]) else { throw Failure(message: "Second project's managed audio is missing") }
+                try require(cold.audioClips == [secondClip] && track.audioData == original,
+                            "Cleanup or removed source changed another project's clip or immutable bytes")
+                let preview = StudioAudioPreviewSession(scratchParent: scratch)
+                var silent = secondClip; silent.volume = 0
+                try require(preview.preview(silent, track: track, stillCurrent: { true }), "Offline owned-audio preview refused")
+                try await idle(preview)
+                try require(preview.actualPlayerIsPlaying && preview.measurements[assetIDs[1]]?.peaks == measuredPeaks[assetIDs[1]],
+                            "Reopened audio no longer produces the original real waveform/playback")
+                preview.close()
+                cold.deleteAudioClip(secondClip.id); cold.undo()
+                try require(cold.audioClips == [secondClip] && cold.audioTrack(forAssetID: assetIDs[1])?.audioData == original,
+                            "Post-cleanup deletion/Undo lost the remaining project's audio")
+                await cold.backToProjects(); try clean(scratch)
+            }
             try await test("VM cancellation stale revision and duplicate asset never partially attach") {
                 let docs = root.appendingPathComponent("atomic"), storage = DeviceStorageManager(documentsDirectory: docs, cachesDirectory: docs)
                 let vm = StudioViewModel(storage: storage)

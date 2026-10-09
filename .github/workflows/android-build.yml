@@ -1,0 +1,58 @@
+name: SDI Android Compile
+on:
+  pull_request:
+    paths:
+      - 'android/**'
+      - 'StickDeathInfinity/Resources/StudioSounds/**'
+      - 'StickDeathInfinity/Resources/StudioImages/**'
+      - 'scripts/verify_android_sound_assets.py'
+      - '.github/workflows/android-build.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sdi-android-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  android-debug-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@07d1f8453baaff67fb503883367f8b13e6158a54 # v6
+        with:
+          gradle-version: '8.9'
+          cache-provider: basic
+          cache-disabled: true
+      - name: Prepare Android compiler SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install 'platforms;android-35' 'build-tools;34.0.0'
+      - name: Compile real debug application
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p android-build-evidence
+          git rev-parse HEAD > android-build-evidence/source-commit.txt
+          gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:assembleDebug 2>&1 | tee android-build-evidence/build.log
+          sha256sum android/app/build/outputs/apk/debug/*.apk > android-build-evidence/apk-sha256.txt
+          python3 scripts/verify_android_sound_assets.py android/app/build/outputs/apk/debug/app-debug.apk > android-build-evidence/sound-assets.json
+      - name: Preserve compiler evidence and debug APK
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sdi-android-debug-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            android-build-evidence/
+            android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+          if-no-files-found: warn

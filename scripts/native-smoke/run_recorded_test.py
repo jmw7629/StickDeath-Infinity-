@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run a bounded UI-test command with a recording of the selected CI simulator."""
 import argparse
+import hashlib
 import json
 import os
 import pathlib
@@ -9,7 +10,27 @@ import subprocess
 import sys
 import time
 
-from seed_image_fixture import seed_verified_fixture
+from seed_image_fixture import seed_verified_fixture, wait_for_command_readiness
+from seed_video_fixture import seed_video_fixture
+from test_budget import build_test_budget, build_shard_budget
+
+
+# Whole-file pin covers test bodies AND shared helpers. Unreviewed source changes
+# retain both mandatory fixtures rather than silently omitting a new dependency.
+FIXTURE_SOURCE_SHA256 = "4b9ffca40b56aae23a22d2eea718a7d6fc5f7e4c46f94353ec77e5b5e4da0c00"
+PHOTO_FIXTURE_CASE = "testPhotoImportUndoPersistenceAndRealPNGExport"
+VIDEO_FIXTURE_CASE = "testRotoscopePhotosActualPlayheadUndoAndColdReopen"
+
+
+def fixture_requirements(source: str, budget: dict, sharded: bool) -> dict:
+    if not sharded or hashlib.sha256(source.encode()).hexdigest() != FIXTURE_SOURCE_SHA256:
+        return {"image": True, "video": True, "reason": "all-tests-or-unreviewed-source"}
+    assigned = set(budget["testNames"])
+    inventory = set(budget["fullTestNames"])
+    if not assigned or not assigned <= inventory or not {PHOTO_FIXTURE_CASE, VIDEO_FIXTURE_CASE} <= inventory:
+        raise ValueError("Fixture plan requires complete validated test assignment")
+    return {"image": PHOTO_FIXTURE_CASE in assigned, "video": VIDEO_FIXTURE_CASE in assigned,
+            "reason": "reviewed-exact-source-assignment"}
 
 
 def stop_owned_process(process: subprocess.Popen, grace_seconds: float = 30) -> int:
@@ -32,6 +53,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--udid", required=True)
     parser.add_argument("--output", type=pathlib.Path, required=True)
+    parser.add_argument("--shard-index", type=int, default=os.environ.get("SDI_NATIVE_SHARD_INDEX"))
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
@@ -46,6 +68,25 @@ def main() -> int:
     if not any("id=" + args.udid in part for part in command):
         raise ValueError("The recorded simulator must match the test destination")
 
+    # Cases retain a hard 180s default; only reviewed named journeys allow 240s.
+    # Budget the complete inventory or its explicit deterministic shard
+    # from the exact checked-in inventory, so a growing suite cannot be cut
+    # off by an unrelated smaller fixed deadline. No retries or caller-supplied filtering.
+    source = pathlib.Path(__file__).resolve().parents[2] / "Tests/NativeUI/StudioSmokeUITests.swift"
+    if args.shard_index is None:
+        budget = build_test_budget(source.read_text(), command)
+    else:
+        budget, command = build_shard_budget(source.read_text(), command, args.shard_index)
+        prepared = json.loads((output / "source-and-config.json").read_text())
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        if prepared.get("sourceCommit") != commit:
+            raise ValueError("Prepared build source must match the shard checkout")
+        budget["sourceCommit"] = commit
+    (output / "ui-test-budget.json").write_text(json.dumps(budget, indent=2) + "\n")
+    test_timeout_seconds = budget["suiteSeconds"]
+    requirements = fixture_requirements(source.read_text(), budget, args.shard_index is not None)
+    (output / "fixture-requirements.json").write_text(json.dumps(requirements, indent=2) + "\n")
+
     inventory = json.loads(subprocess.check_output(
         ["xcrun", "simctl", "list", "devices", "available", "--json"], timeout=30))
     selected = [d for runtime, devices in inventory["devices"].items() if ".iOS-" in runtime
@@ -58,7 +99,33 @@ def main() -> int:
     # Identity was validated above and the explicit target's native bootstatus
     # just succeeded. Re-enumerating every simulator here can stall CoreSimulator.
     # Keep the actual addmedia success and its own timeout as the seeding gate.
-    seed_verified_fixture(args.udid, output)
+    fixture_error = None
+    try:
+        if requirements["image"] or requirements["video"]:
+            wait_for_command_readiness(args.udid, output)
+        if requirements["image"]:
+            seed_verified_fixture(args.udid, output)
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as error:
+        # The isolated target/boot/offline-app gates already passed. A Photos
+        # fixture failure must still fail this job, but need not suppress the
+        # unrelated drawing, persistence, toolbar and export UI evidence.
+        # Run every test, including Photos; never skip or retry the failed seed.
+        fixture_error = type(error).__name__
+        print(json.dumps({"photoFixtureSeeded": False, "failureClass": fixture_error,
+                          "mandatoryGateStillFailed": True, "allUITestsWillRun": args.shard_index is None,
+                          "allAssignedUITestsWillRun": True, "shardIndex": args.shard_index}), flush=True)
+
+    # This new journey uses the real video-only Photos picker. Setup never
+    # injects a project or bypasses the app's actual import commands.
+    video_fixture_error = 'imageSetupFailed' if fixture_error else None
+    if requirements["video"] and fixture_error is None:
+        try:
+            seed_video_fixture(args.udid, output)
+        except (subprocess.SubprocessError, OSError, ValueError) as error:
+            video_fixture_error = type(error).__name__
+            print(json.dumps({"videoFixtureSeeded": False, "failureClass": video_fixture_error,
+                              "mandatoryGateStillFailed": True, "allUITestsWillRun": args.shard_index is None,
+                          "allAssignedUITestsWillRun": True, "shardIndex": args.shard_index}), flush=True)
 
     video = output / "simulator.mp4"
     if video.exists():
@@ -67,9 +134,6 @@ def main() -> int:
     recording_exit = None
     test_exit = 125
     test_process_exit = None
-    # Ten UI journeys, each capped at 180s, share this bounded suite deadline.
-    # The workflow's separate 40-minute deadline still bounds build and testing.
-    test_timeout_seconds = 1680
     def interrupted(_signal: int, _frame: object) -> None:
         raise KeyboardInterrupt("CI recording interrupted")
     signal.signal(signal.SIGINT, interrupted)
@@ -120,12 +184,21 @@ def main() -> int:
     report = {"simulatorUDID": args.udid, "simulatorName": selected[0]["name"],
               "uiTestExitCode": test_exit, "recordingExitCode": recording_exit,
               "recordingError": recording_error, "uiProcessExitCode": test_process_exit,
-              "uiSuiteTimeoutSeconds": test_timeout_seconds}
+              "uiSuiteTimeoutSeconds": test_timeout_seconds,
+              "photoFixtureSeeded": (fixture_error is None) if requirements["image"] else None,
+              "photoFixtureStatus": ("passed" if fixture_error is None else "failed") if requirements["image"] else "not_required",
+              "photoFixtureFailureClass": fixture_error,
+              "videoFixtureSeeded": (video_fixture_error is None) if requirements["video"] else None,
+              "videoFixtureStatus": ("passed" if video_fixture_error is None else "failed") if requirements["video"] else "not_required",
+              "videoFixtureFailureClass": video_fixture_error,
+              "fixtureRequirements": requirements}
     (output / "recording-status.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
     if test_exit != 0:
         return test_exit if test_exit > 0 else 1
-    return 3 if recording_error else 0
+    if recording_error:
+        return 3
+    return 4 if fixture_error or video_fixture_error else 0
 
 
 if __name__ == "__main__":

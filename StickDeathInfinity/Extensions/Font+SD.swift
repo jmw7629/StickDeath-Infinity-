@@ -2,15 +2,15 @@
 // Font+SD — Typography system
 // Matches: React CSS — Special Elite for headings, system for body
 // Fonts: "Special Elite" (Google Fonts), "Anybody" (body alt)
-// NOTE: Add SpecialElite-Regular.ttf to the Xcode project bundle
+// SpecialElite-Regular.ttf is bundled with the native application.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
 
 extension Font {
     /// Special Elite — the signature SD∞ typewriter font
-    static func specialElite(_ size: CGFloat) -> Font {
-        .custom("SpecialElite-Regular", size: size)
+    static func specialElite(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom("SpecialElite-Regular", size: size, relativeTo: style)
     }
 
     /// Anybody — body text alternative

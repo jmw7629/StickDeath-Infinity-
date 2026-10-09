@@ -18,11 +18,12 @@ struct StudioBrushRenderer {
         let marks: [Mark]
         let opacity: Double
         let gradientEndColor: StudioBrushColor?
+        let brightCore: Bool
         let sampledPointCount: Int
         let seed: UInt64
         let bounds: CGRect
         fileprivate init(marks: [Mark], settings: StudioBrushSettings, count: Int, seed: UInt64) {
-            self.marks = marks; opacity = settings.opacity
+            self.marks = marks; opacity = settings.opacity; brightCore = settings.family == .neon
             gradientEndColor = settings.family == .gradient ? settings.gradientEndColor : nil
             sampledPointCount = count; self.seed = seed
             var footprint = CGRect.null
@@ -39,6 +40,7 @@ struct StudioBrushRenderer {
         var x: Double, y: Double, pressure: Double
         var speed: Double?
         var distance: Double = 0
+        var tilt: StudioPencilTilt? = nil
     }
     private struct Random {
         var state: UInt64
@@ -67,6 +69,7 @@ struct StudioBrushRenderer {
             if index % 256 == 0 { try checkCancellation() }
             guard point.x.isFinite, point.y.isFinite, abs(point.x) <= 1_000_000, abs(point.y) <= 1_000_000,
                   point.pressure.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+                  point.tilt?.isValid ?? true,
                   point.timestamp.map({ $0.isFinite && $0 >= 0 && $0 >= (lastTime ?? 0) }) ?? true else {
                 throw StudioBrushError.invalidPoint(index)
             }
@@ -74,6 +77,7 @@ struct StudioBrushRenderer {
         }
         let spacingRatio: Double
         switch settings.family {
+        case .neon: spacingRatio = 0.05
         case .halftone: spacingRatio = 0.65
         case .hatchRight, .hatchLeft: spacingRatio = 0.45
         case .stipple: spacingRatio = 0.28
@@ -93,12 +97,12 @@ struct StudioBrushRenderer {
                 let dx = Double(point.x - points[index - 1].x), dy = Double(point.y - points[index - 1].y)
                 speed = min(1_000_000, hypot(dx, dy) / (time - before))
             }
-            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed))
+            filtered.append(Sample(x: x, y: y, pressure: Double(point.pressure ?? 1), speed: speed, tilt: point.tilt))
             previousX = x; previousY = y
         }
         // Smoothing never drops the exact final input position.
         if let end = points.last, previousX != Double(end.x) || previousY != Double(end.y) {
-            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed))
+            filtered.append(Sample(x: Double(end.x), y: Double(end.y), pressure: Double(end.pressure ?? 1), speed: filtered.last?.speed, tilt: end.tilt))
         }
         var dabs = [filtered[0]], totalDistance = 0.0, nextDistance = spacing
         for index in 1..<filtered.count {
@@ -110,7 +114,7 @@ struct StudioBrushRenderer {
             }
             // A stationary stylus can change force without advancing along
             // the path. Preserve those pressure marks within the same budget.
-            if length == 0 && settings.pressureEnabled && a.pressure != b.pressure {
+            if length == 0 && ((settings.pressureEnabled && a.pressure != b.pressure) || (settings.tiltEnabled && a.tilt != b.tilt)) {
                 guard dabs.count < maximumDabs else { throw StudioBrushError.workLimit("The stroke exceeds the pressure-dab budget.") }
                 var pressureDab = b; pressureDab.distance = totalDistance; dabs.append(pressureDab)
             }
@@ -119,13 +123,14 @@ struct StudioBrushRenderer {
                 if dabs.count % 256 == 0 { try checkCancellation() }
                 let t = (nextDistance - totalDistance) / length
                 dabs.append(Sample(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
-                    pressure: a.pressure + (b.pressure - a.pressure) * t, speed: b.speed, distance: nextDistance))
+                    pressure: a.pressure + (b.pressure - a.pressure) * t, speed: b.speed, distance: nextDistance,
+                    tilt: a.tilt.flatMap { first in b.tilt.map { first.interpolated(to: $0, fraction: t) } }))
                 nextDistance += spacing
             }
             totalDistance += length
         }
         if let end = filtered.last, let last = dabs.last,
-           hypot(end.x - last.x, end.y - last.y) > 0.000_001 || (settings.pressureEnabled && end.pressure != last.pressure) {
+           hypot(end.x - last.x, end.y - last.y) > 0.000_001 || (settings.pressureEnabled && end.pressure != last.pressure) || (settings.tiltEnabled && end.tilt != last.tilt) {
             guard dabs.count < maximumDabs else { throw StudioBrushError.workLimit("The stroke exceeds the rendering budget.") }
             var endpoint = end; endpoint.distance = totalDistance; dabs.append(endpoint)
         }
@@ -141,6 +146,40 @@ struct StudioBrushRenderer {
             let pressure = settings.pressureEnabled ? 0.15 + 0.85 * dab.pressure : 1
             let size = settings.size * pressure
             switch settings.family {
+            case .airbrush:
+                // Nested low-opacity soft dabs accumulate through actual overlap.
+                // Texture is exposed as Flow for this family.
+                for ring in (1...6).reversed() {
+                    let scale = Double(ring) / 6
+                    try mark(.ellipse, dab.x, dab.y, size * scale, size * scale, 0,
+                             (0.015 + settings.texture * 0.045) * (1.2 - scale * 0.5))
+                }
+            case .watercolor:
+                // Seeded translucent washes and pigment flecks; no raster assets.
+                try mark(.ellipse, dab.x, dab.y, size, size, 0, 0.025 + (1-settings.texture) * 0.055)
+                for _ in 0..<5 {
+                    let angle = random.unit() * .pi * 2, radius = sqrt(random.unit()) * size * 0.35
+                    let diameter = size * (0.2 + random.unit() * 0.35)
+                    try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
+                        diameter, diameter * (0.65 + random.unit()*0.35), random.unit() * .pi,
+                        0.025 + settings.texture * 0.08)
+                }
+                for _ in 0..<3 {
+                    let angle = random.unit() * .pi * 2, radius = sqrt(random.unit()) * size * 0.48
+                    let diameter = size * (0.015 + settings.grain * 0.045)
+                    try mark(.ellipse, dab.x + cos(angle)*radius, dab.y + sin(angle)*radius,
+                        diameter, diameter, 0, 0.12 + settings.texture * 0.2)
+                }
+            case .neon:
+                // Colored halo and a bright narrow core use the same geometry in
+                // Canvas and export; Texture controls halo intensity, not a label.
+                for ring in (1...5).reversed() {
+                    let scale = 0.35 + Double(ring) * 0.13
+                    try mark(.ellipse, dab.x, dab.y, size*scale, size*scale, 0,
+                        (0.02 + settings.texture * 0.07) * (1.2-scale))
+                }
+                try mark(.ellipse, dab.x, dab.y, size*0.24, size*0.24, 0, 0.85)
+                try mark(.ellipse, dab.x, dab.y, size*0.10, size*0.10, 0, 1, 0.9)
             case .round:
                 try mark(.ellipse, dab.x, dab.y, size, size)
             case .stipple:
@@ -165,7 +204,10 @@ struct StudioBrushRenderer {
                 try mark(.ellipse, dab.x + (random.unit() - 0.5) * size, dab.y + (random.unit() - 0.5) * size,
                          size * 0.08, size * 0.08, 0, 0.6)
             case .calligraphy:
-                try mark(.ellipse, dab.x, dab.y, size, size * 0.2, settings.tipAngleDegrees * .pi / 180)
+                let tilt = settings.tiltEnabled ? dab.tilt : nil
+                let spread = tilt.map { 1 + 1.5 * cos($0.altitude) } ?? 1
+                let angle = settings.tipAngleDegrees * .pi / 180 + (tilt?.azimuth ?? 0)
+                try mark(.ellipse, dab.x, dab.y, size * spread, size * 0.2, angle)
             case .dipPen:
                 // Absent/equal timestamps use a documented neutral nib width;
                 // sample count is never misrepresented as measured velocity.
@@ -183,7 +225,10 @@ struct StudioBrushRenderer {
             }
         }
         try checkCancellation()
-        return Geometry(marks: marks, settings: settings, count: dabs.count, seed: seed)
+        // Render every halo before every white core. Later colored dabs must
+        // not paint over an earlier core or leave dotted gaps along the tube.
+        let ordered = settings.family == .neon ? marks.filter { $0.colorMix == 0 } + marks.filter { $0.colorMix > 0 } : marks
+        return Geometry(marks: ordered, settings: settings, count: dabs.count, seed: seed)
     }
 
     /// Geometry uses document coordinates. Supply a top-left user-space CTM
@@ -204,7 +249,7 @@ struct StudioBrushRenderer {
         context.beginTransparencyLayer(auxiliaryInfo: nil)
         context.setFillColorSpace(colorSpace)
         for mark in geometry.marks {
-            let tint = mixed(color, geometry.gradientEndColor, mark.colorMix)
+            let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
             context.setAlpha(mark.opacity)
             let components: [CGFloat] = [tint.red, tint.green, tint.blue, tint.alpha]
             context.setFillColor(components)
@@ -223,7 +268,7 @@ struct StudioBrushRenderer {
         group.clip(to: Path(geometry.bounds))
         group.drawLayer { local in
             for mark in geometry.marks {
-                let tint = mixed(color, geometry.gradientEndColor, mark.colorMix)
+                let tint = mixed(color, geometry.brightCore ? StudioBrushColor(red: 1, green: 1, blue: 1, alpha: color.alpha) : geometry.gradientEndColor, mark.colorMix)
                 var stamp = local; stamp.opacity *= mark.opacity
                 stamp.fill(Path(path(mark)), with: .color(Color(.sRGB, red: tint.red, green: tint.green,
                                                               blue: tint.blue, opacity: tint.alpha)))

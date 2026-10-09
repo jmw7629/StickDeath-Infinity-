@@ -1,0 +1,292 @@
+import SwiftUI
+import UIKit
+
+/// The existing Add Picture surface presents this local catalogue. Selection
+/// returns to its real preview/import session; browsing never edits a project.
+@MainActor
+struct StudioImageLibraryView: View {
+    let onSelect: (StudioImageCatalogue, StudioImageCatalogue.Image) -> Void
+    let onClose: () -> Void
+    @State private var catalogue: StudioImageCatalogue?
+    @State private var optionalCatalogues: [String: StudioImageCatalogue] = [:]
+    @State private var packs: [StudioImagePackCache.Descriptor] = []
+    @State private var activePackID: String?
+    @State private var packTask: Task<Void, Never>?
+    @State private var packBusy = false
+    @State private var packsNeedingRemoval = Set<String>()
+    @State private var packNotice: String?
+    @State private var packRequest = UUID()
+    @Environment(\.scenePhase) private var scenePhase
+    private var sources: [StudioImageCatalogue] { [catalogue].compactMap { $0 } + packs.compactMap { optionalCatalogues[$0.id] } }
+    private struct BrowseImage: Identifiable {
+        let image: StudioImageCatalogue.Image
+        let catalogue: StudioImageCatalogue
+        var id: String { image.id }
+    }
+    @State private var query = ""
+    @State private var favorites = Set<String>()
+    @State private var recent: [String] = []
+    @State private var collection = "All"
+    @State private var preferenceNotice: String?
+    private func preferences(_ catalogue: StudioImageCatalogue) -> StudioImageLibraryPreferences {
+        .init(allowedIDs: Set(catalogue.images.map(\.id) + packs.flatMap(\.imageIDs)))
+    }
+    @State private var category: StudioImageCatalogue.Category?
+    @State private var includeCartoonWeapons = true
+    @State private var failure: String?
+    @State private var loadID = UUID()
+    @FocusState private var searchFocused: Bool
+
+    private var matches: [BrowseImage] {
+        // Carry verified catalogue provenance with each result. Thumbnail cells
+        // no longer refilter every pack merely to rediscover their source.
+        let found = sources.flatMap { source in
+            source.search(query, category: category, includeCartoonWeapons: includeCartoonWeapons)
+                .map { BrowseImage(image: $0, catalogue: source) }
+        }
+        if collection == "Favorites" { return found.filter { favorites.contains($0.id) } }
+        if collection == "Recent" {
+            let byID = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
+            return recent.compactMap { byID[$0] }
+        }
+        return found
+    }
+
+    var body: some View {
+        let results = matches
+        return VStack(spacing: 12) {
+            PanelHeader(title: "Image Library", icon: "square.grid.2x2.fill", onClose: onClose)
+            if let catalogue {
+                ScrollView(.vertical) {
+                    VStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("\(sources.reduce(0) { $0 + $1.availableImages.count }) free pictures · available offline")
+                        .font(.specialElite(16)).foregroundColor(.white)
+                        .accessibilityIdentifier("studio.image-library.count")
+                    if let first = packs.first {
+                        packRow(first)
+                        DisclosureGroup("More optional picture packs") {
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
+                            }.padding(.vertical, 8)
+                            .accessibilityIdentifier("studio.image-library.pack-list")
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8))
+                        if packBusy { ProgressView("Downloading and verifying pictures…").font(.specialElite(12, relativeTo: .caption)).tint(.red) }
+                        if let packNotice { Text(packNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7)) }
+                    }
+                    TextField("Search pictures, tags…", text: $query)
+                        .font(.specialElite(16, relativeTo: .body))
+                        .textInputAutocapitalization(.never).autocorrectionDisabled()
+                        .focused($searchFocused).submitLabel(.search)
+                        .onSubmit { searchFocused = false }
+                        .padding(12).background(Color.white.opacity(0.08)).cornerRadius(12)
+                        .foregroundColor(.white)
+                        .accessibilityIdentifier("studio.image-library.search")
+                    Picker("Category", selection: $category) {
+                        Text("All").tag(StudioImageCatalogue.Category?.none)
+                        Text("Props").tag(StudioImageCatalogue.Category?.some(.props))
+                        Text("Scenery").tag(StudioImageCatalogue.Category?.some(.scenery))
+                        Text("Effects").tag(StudioImageCatalogue.Category?.some(.effects))
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("studio.image-library.category")
+                    Picker("Collection", selection: $collection) {
+                        Text("All").tag("All"); Text("Favorites").tag("Favorites"); Text("Recent").tag("Recent")
+                    }.pickerStyle(.segmented).accessibilityIdentifier("studio.image-library.collection")
+                    if collection == "Recent" {
+                        Button("Clear recent previews") {
+                            preferences(catalogue).clearRecent(); recent = []
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
+                    }
+                    if let preferenceNotice { Text(preferenceNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red) }
+                    Toggle("Include cartoon weapons", isOn: $includeCartoonWeapons)
+                        .font(.specialElite(12, relativeTo: .caption)).tint(.red).foregroundColor(.white.opacity(0.8))
+                        .accessibilityIdentifier("studio.image-library.weapons")
+                    HStack {
+                        Text("\(results.count) matching pictures").font(.specialElite(12, relativeTo: .caption))
+                            .accessibilityIdentifier("studio.image-library.matches")
+                        Spacer()
+                        Button("Clear filters") {
+                            query = ""; category = nil; collection = "All"; includeCartoonWeapons = true; searchFocused = false
+                        }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.red)
+                    }.foregroundColor(.white.opacity(0.7))
+                    Text("Choose a picture to preview it. Add attaches it to a new image layer.")
+                        .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.6))
+                }
+                .padding(.horizontal, 20)
+                if results.isEmpty {
+                    Text("No matching pictures").font(.specialElite(16, relativeTo: .body)).foregroundColor(.white.opacity(0.7))
+                        .accessibilityIdentifier("studio.image-library.empty")
+                } else {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 12) {
+                            ForEach(results) { entry in
+                                let item = entry.image
+                                VStack(spacing: 4) {
+                                Button {
+                                    let store = preferences(catalogue); store.recordPreview(item.id); recent = store.recent
+                                    onSelect(entry.catalogue, item)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        StudioLibraryThumbnail(item: item, catalogue: entry.catalogue)
+                                            .frame(height: 106).frame(maxWidth: .infinity)
+                                            .background(Color.white.opacity(0.9)).cornerRadius(8)
+                                        Text(item.title).font(.specialElite(14)).lineLimit(2)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        Text("Kenney · CC0").font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.65))
+                                    }
+                                    .foregroundColor(.white).padding(10)
+                                    .background(Color.white.opacity(0.06)).cornerRadius(12)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Preview \(item.title), free CC0 picture by Kenney")
+                                .accessibilityIdentifier("studio.image-library.item." + item.id)
+                                Button {
+                                    let store = preferences(catalogue)
+                                    preferenceNotice = store.toggleFavorite(item.id) ? nil : "You can keep up to 256 favorites. Remove one before adding another."
+                                    favorites = Set(store.favorites)
+                                } label: {
+                                    Label {
+                                        Text(favorites.contains(item.id) ? "Favorited" : "Favorite")
+                                            .font(.specialElite(12, relativeTo: .caption))
+                                    } icon: {
+                                        Image(systemName: favorites.contains(item.id) ? "star.fill" : "star")
+                                            .font(.caption)
+                                    }
+                                    .foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 44)
+                                }.accessibilityIdentifier("studio.image-library.favorite." + item.id)
+                                }
+                            }
+                        }
+                        .padding(20)
+                        .accessibilityIdentifier("studio.image-library.grid")
+                }
+                    }.frame(maxWidth: .infinity, alignment: .top)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("studio.image-library.scroll")
+            } else if let failure {
+                Text(failure).font(.specialElite(16, relativeTo: .body)).foregroundColor(.white).padding()
+                    .accessibilityIdentifier("studio.image-library.error")
+                Button("Try again") { self.failure = nil; loadID = UUID() }.font(.specialElite(16, relativeTo: .body)).tint(.red)
+                Spacer()
+            } else {
+                ProgressView("Loading pictures…").font(.specialElite(16, relativeTo: .body)).tint(.red).foregroundColor(.white)
+                Spacer()
+            }
+        }
+        .background(Color(hex: "0A0A0F"))
+        .task(id: loadID) {
+            do {
+                let loaded = try await StudioImageCatalogue.loadBundled()
+                try Task.checkCancellation(); catalogue = loaded; failure = nil
+                do {
+                    packs = try StudioImagePackCache.descriptors()
+                } catch {
+                    // Keep the original pinned pack available if expansion metadata is damaged.
+                    packs = (try? StudioImagePackCache.descriptor()).map { [$0] } ?? []
+                    packNotice = "Additional picture packs are unavailable in this installation. Bundled pictures are still available."
+                }
+                optionalCatalogues = [:]; packsNeedingRemoval = []
+                for item in packs {
+                    do {
+                        let installed = try await StudioImagePackCache.shared.installed(item)
+                        try Task.checkCancellation(); optionalCatalogues[item.id] = installed
+                    }
+                    catch is CancellationError { throw CancellationError() }
+                    catch {
+                        packsNeedingRemoval.insert(item.id)
+                        packNotice = "A downloaded pack could not be verified. Remove its downloaded copy and try again."
+                    }
+                }
+                let store = preferences(loaded); favorites = Set(store.favorites); recent = store.recent
+            } catch is CancellationError { }
+            catch { failure = error.localizedDescription }
+        }
+        .onChange(of: query) { if query.count > 256 { query = String(query.prefix(256)) } }
+        .onDisappear {
+            cancelPack()
+            Task { await StudioImageLibraryThumbnails.shared.clear() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            Task { await StudioImageLibraryThumbnails.shared.clear() }
+        }
+        .onChange(of: scenePhase) {
+            if scenePhase != .active { cancelPack() }
+            else { loadID = UUID() }
+        }
+    }
+    @ViewBuilder
+    private func packRow(_ item: StudioImagePackCache.Descriptor) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("\(item.title) · \(item.imageCount) pictures").font(.specialElite(12, relativeTo: .caption))
+                Spacer()
+                if packBusy && activePackID == item.id {
+                    Button("Cancel") { cancelPack() }.font(.specialElite(12, relativeTo: .caption))
+                        .accessibilityIdentifier("studio.image-library.pack.cancel." + item.id)
+                } else if optionalCatalogues[item.id] != nil || packsNeedingRemoval.contains(item.id) {
+                    Button("Remove download") { changePack(item, remove: true) }.font(.specialElite(12, relativeTo: .caption)).disabled(packBusy)
+                        .accessibilityIdentifier("studio.image-library.pack.remove." + item.id)
+                } else {
+                    Button("Download \((item.archiveBytes + 1023) / 1024) KB") { changePack(item, remove: false) }.font(.specialElite(12, relativeTo: .caption)).disabled(packBusy)
+                        .accessibilityIdentifier("studio.image-library.pack.download." + item.id)
+                }
+            }
+            if item.mayContainWeapons {
+                Text("Mixed pixel artwork may include cartoon weapons; hidden when that filter is off.")
+                    .font(.specialElite(11, relativeTo: .caption2)).foregroundColor(.white.opacity(0.6))
+            }
+        }.foregroundColor(.white.opacity(0.8))
+    }
+    private func cancelPack() {
+        packRequest = UUID(); packTask?.cancel(); packTask = nil; packBusy = false; activePackID = nil
+    }
+    private func changePack(_ pack: StudioImagePackCache.Descriptor, remove: Bool) {
+        guard !packBusy else { return }
+        let request = UUID(); packRequest = request; packBusy = true; activePackID = pack.id; packNotice = nil
+        packTask = Task {
+            do {
+                if remove { try await StudioImagePackCache.shared.remove(pack) }
+                else { _ = try await StudioImagePackCache.shared.download(pack) }
+                let installed = try await StudioImagePackCache.shared.installed(pack)
+                try Task.checkCancellation()
+                guard packRequest == request else { return }
+                optionalCatalogues[pack.id] = installed; packsNeedingRemoval.remove(pack.id); packBusy = false; activePackID = nil; packTask = nil
+                packNotice = remove ? "Downloaded library copy removed. Pictures already added to your projects are kept." : "Pictures verified and available offline."
+            } catch is CancellationError { }
+            catch {
+                guard packRequest == request else { return }
+                packBusy = false; activePackID = nil; packTask = nil; packNotice = error.localizedDescription
+            }
+        }
+    }
+}
+
+@MainActor
+private struct StudioLibraryThumbnail: View {
+    let item: StudioImageCatalogue.Image
+    let catalogue: StudioImageCatalogue
+    @State private var image: CGImage?
+    @State private var failed = false
+    var body: some View {
+        Group {
+            if let image {
+                Image(image, scale: 1, label: Text(item.title)).resizable().scaledToFit().padding(8)
+            } else if failed {
+                Text("Preview unavailable").font(.specialElite(12, relativeTo: .caption)).foregroundColor(.black)
+            } else { ProgressView().tint(.red) }
+        }
+        .onDisappear {
+            // Lazy cells may stay allocated after scrolling off-screen. Drop
+            // their decoded image; reappearance reloads through the bounded cache.
+            image = nil; failed = false
+        }
+        .task(id: item.id) {
+            do {
+                let decoded = try await StudioImageLibraryThumbnails.shared.image(item, catalogue: catalogue)
+                try Task.checkCancellation(); image = decoded; failed = false
+            } catch is CancellationError { }
+            catch { failed = true }
+        }
+    }
+}

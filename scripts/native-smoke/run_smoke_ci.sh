@@ -3,6 +3,7 @@
 # app package checkouts and one verified fresh CI phone on an installed runtime.
 set -euo pipefail
 : "${RUNNER_TEMP:?Run on the approved ephemeral macOS CI runner}"
+: "${GITHUB_OUTPUT:?Run as a GitHub Actions step}"
 : "${SDI_SMOKE_SIMULATOR_UDID:?Create and verify one fresh CI simulator}"
 [[ "${GITHUB_ACTIONS:-}" == "true" ]] || { echo 'CI runner required'; exit 2; }
 git diff --quiet HEAD -- || { echo 'Commit tracked changes before recording evidence'; exit 2; }
@@ -13,6 +14,9 @@ sdi_derived="$RUNNER_TEMP/sdi-native-build"
 sdi_package_cache="$sdi_derived/SourcePackages"
 sdi_results="$sdi_run/StudioSmoke.xcresult"
 printf '%s\n' "$sdi_run" > "$RUNNER_TEMP/sdi-native-smoke-artifact-path.txt"
+# Register the owned directory before any child can be interrupted. The upload
+# step must retain partial logs even if the runner never reaches normal cleanup.
+printf 'artifact_path=%s\n' "$sdi_run" >> "$GITHUB_OUTPUT"
 trap 'echo "Native smoke evidence: $sdi_run"' EXIT
 python3 "$sdi_script_dir/select_simulator.py" --copy-marker "$sdi_run" \
   --expected-udid "$SDI_SMOKE_SIMULATOR_UDID" --source "$sdi_commit"
@@ -57,7 +61,7 @@ python3 "$sdi_script_dir/run_recorded_test.py" \
   -destination "platform=iOS Simulator,id=$SDI_SMOKE_SIMULATOR_UDID" \
   -resultBundlePath "$sdi_results" -parallel-testing-enabled NO \
   -maximum-concurrent-test-simulator-destinations 1 -test-timeouts-enabled YES \
-  -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 180
+  -default-test-execution-time-allowance 180 -maximum-test-execution-time-allowance 240
 sdi_test_status=$?
 set -e
 sdi_evidence_status=0
@@ -68,6 +72,10 @@ if [[ -d "$sdi_results" ]]; then
   fi
   if ! xcrun xcresulttool get test-results summary --path "$sdi_results" \
       > "$sdi_run/test-summary.json" 2> "$sdi_run/summary-export.log"; then
+    sdi_evidence_status=3
+  fi
+  if ! xcrun xcresulttool get test-results tests --path "$sdi_results" \
+      > "$sdi_run/test-tree.json" 2> "$sdi_run/test-tree-export.log"; then
     sdi_evidence_status=3
   fi
 else

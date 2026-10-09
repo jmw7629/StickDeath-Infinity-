@@ -1,7 +1,7 @@
 // ═══════════════════════════════════════════════════════════════════
 // MainTabView — Bottom tab bar navigation
 // Matches: MainApp.tsx NAV_ITEMS exactly
-// Tabs: 🏠 Home / ⚔️ Challenges / 🎨 Studio / 💬 Messages / 👤 Profile
+// Tabs: Home / Challenges / Studio / Rooms / Profile
 // Pricing ticker overlay + Spatter AI orb on all tabs except Studio
 // ═══════════════════════════════════════════════════════════════════
 
@@ -12,6 +12,10 @@ struct MainTabView: View {
     @State private var showTutorial = true
     @EnvironmentObject var spatterVM: SpatterAIViewModel
     @ObservedObject private var studioVM = StudioViewModel.shared
+
+    init(initialTab: AppTab = .home) {
+        _activeTab = State(initialValue: initialTab)
+    }
 
     var body: some View {
         ZStack {
@@ -27,10 +31,14 @@ struct MainTabView: View {
                         ChallengesView()
                     case .studio:
                         StudioView()
-                    case .messages:
-                        MessagesView()
+                    case .rooms:
+                        CollabRoomView()
                     case .profile:
-                        ProfileView()
+                        ProfileView(onOpenProjects: {
+                            // Reuse the actual Studio tab and its shared editor.
+                            // Never force-close or discard an existing draft.
+                            activeTab = .studio
+                        })
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -90,14 +98,14 @@ struct MainTabView: View {
 
 // MARK: - App Tab Enum
 enum AppTab: String, CaseIterable {
-    case home, challenges, studio, messages, profile
+    case home, challenges, studio, rooms, profile
 
     var icon: String {
         switch self {
         case .home: return "🏠"
         case .challenges: return "⚔️"
         case .studio: return "🎨"
-        case .messages: return "💬"
+        case .rooms: return "🤝"
         case .profile: return "👤"
         }
     }
@@ -107,7 +115,7 @@ enum AppTab: String, CaseIterable {
         case .home: return "Home"
         case .challenges: return "Challenges"
         case .studio: return "Studio"
-        case .messages: return "Messages"
+        case .rooms: return "Rooms"
         case .profile: return "Profile"
         }
     }

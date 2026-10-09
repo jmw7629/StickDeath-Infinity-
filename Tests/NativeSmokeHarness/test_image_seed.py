@@ -1,3 +1,5 @@
+from pathlib import Path
+import hashlib
 """Exercise the real Python harness with mocked subprocesses; no native runtime claim."""
 import importlib.util, json, os, pathlib, subprocess, sys, tempfile, unittest
 from unittest.mock import patch
@@ -16,6 +18,8 @@ class Harness(unittest.TestCase):
         self.out = self.root / 'evidence'
         self.out.mkdir()
         self.calls = []
+        self.waits = []
+        self.signals = []
         self.env = patch.dict(os.environ, {'GITHUB_ACTIONS': 'true', 'RUNNER_TEMP': str(self.root)})
         self.env.start()
 
@@ -61,11 +65,14 @@ class Harness(unittest.TestCase):
             seed.main()
             self.assertEqual(run.call_args.args[0][2], 'addmedia')
 
-    def recording(self, boot_failure=False, available=True):
+    def recording(self, boot_failure=False, available=True, seed_failure=False, test_exit=0, readiness_failure=False, test_timeout=False, video_failure=False, shard_index=None, prepared_commit=None):
         calls = self.calls
+        waits = self.waits
+        signals = self.signals
 
         def inventory(cmd, **kw):
             calls.append(tuple(cmd))
+            if cmd == ["git", "rev-parse", "HEAD"]: return "1" * 40 + "\n"
             return json.dumps(self.inventory(state='Shutdown', available=available)).encode()
 
         def run(cmd, **kw):
@@ -79,28 +86,124 @@ class Harness(unittest.TestCase):
             def __init__(self, cmd, **kw):
                 calls.append(tuple(cmd))
                 self.returncode = None
+                self.is_test = cmd[:2] == ['xcodebuild', 'test-without-building']
 
             def poll(self):
                 return self.returncode
 
             def wait(self, timeout=None):
-                self.returncode = 0
-                return 0
+                waits.append((self.is_test, timeout))
+                if self.is_test and test_timeout and self.returncode is None:
+                    raise subprocess.TimeoutExpired('owned-test-child', timeout)
+                if self.returncode is None:
+                    self.returncode = test_exit if self.is_test else 0
+                return self.returncode
 
             def send_signal(self, s):
-                self.returncode = 0
+                signals.append((self.is_test, s))
+                self.returncode = -s if self.is_test else 0
 
             def terminate(self):
                 self.returncode = 0
 
             def kill(self):
                 self.returncode = 0
-        argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID]
+        argv = ['rec', '--udid', ID, '--output', str(self.out), '--', 'xcodebuild', 'test-without-building', '-destination', 'id=' + ID,
+                '-test-timeouts-enabled', 'YES', '-default-test-execution-time-allowance', '180',
+                '-maximum-test-execution-time-allowance', '240', '-parallel-testing-enabled', 'NO',
+                '-maximum-concurrent-test-simulator-destinations', '1']
+        if shard_index is not None:
+            argv[1:1] = ['--shard-index', str(shard_index)]
+            (self.out / 'source-and-config.json').write_text(json.dumps({'sourceCommit': prepared_commit or '1' * 40}))
         def bounded(cmd, *args, **kw):
             calls.append(tuple(cmd))
+            if readiness_failure and cmd[:3] == ['xcrun', 'simctl', 'spawn']:
+                return Result(-9, True, 120)
+            if seed_failure and cmd[:3] == ['xcrun', 'simctl', 'addmedia']:
+                return Result(-9, True, 120)
             return Result(0, False, 0)
-        with patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
+        def video(udid, output):
+            calls.append(('seed-video', udid, str(output)))
+            if video_failure: raise subprocess.TimeoutExpired('video addmedia', 120)
+        with patch.object(rec, 'seed_video_fixture', side_effect=video), patch.object(seed, 'collect_failure'), patch.object(seed, 'run_bounded', side_effect=bounded), patch.object(sys, 'argv', argv), patch.object(rec.subprocess, 'check_output', side_effect=inventory), patch.object(rec.subprocess, 'run', side_effect=run), patch.object(rec.subprocess, 'Popen', Child), patch.object(rec.time, 'sleep'), patch.object(rec.signal, 'signal'), patch('builtins.print'):
             return rec.main()
+
+    def test_actual_recorder_constructs_only_reviewed_shard_and_keeps_seed_failure(self):
+        # Keep original assignment/deadline assertions; this shard consumes video
+        # only if the real source inventory assigns the consuming case to it.
+        from test_budget import build_shard_budget
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        import re
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        required = rec.VIDEO_FIXTURE_CASE in names[1::2]
+        self.assertEqual(self.recording(shard_index=1, video_failure=True), 4 if required else 0)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        if not required:
+            self.assertIsNone(report['videoFixtureSeeded'])
+            self.assertEqual(report['videoFixtureStatus'], 'not_required')
+            self.assertFalse(any(c[0] == 'seed-video' for c in self.calls))
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        budget = json.loads((self.out / 'ui-test-budget.json').read_text())
+        self.assertEqual((budget['testCount'], budget['suiteSeconds']), (54, 10380))
+        self.assertEqual([c for c in tests[0] if c.startswith('-only-testing:')],
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n + '()' for n in budget['testNames']])
+        self.assertIn((True, 10380), self.waits)
+        self.assertEqual(budget['sourceCommit'], '1' * 40)
+
+    def test_recorder_rejects_wrong_prepared_source_before_test_or_recording(self):
+        with self.assertRaises(ValueError):
+            self.recording(shard_index=0, prepared_commit='2' * 40)
+        self.assertFalse(any(c[:2] == ('xcodebuild', 'test-without-building') for c in self.calls))
+        self.assertFalse(any(c[:3] == ('xcrun', 'simctl', 'io') for c in self.calls))
+
+    def test_required_shard_video_failure_still_fails_without_skipping_assigned_cases(self):
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        import re
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        shard = names.index(rec.VIDEO_FIXTURE_CASE) % 2
+        self.assertEqual(self.recording(shard_index=shard, video_failure=True), 4)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['videoFixtureSeeded'])
+        self.assertEqual(report['videoFixtureStatus'], 'failed')
+        self.assertEqual(sum(c[0] == 'seed-video' for c in self.calls), 1)
+        actual = next(c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building'))
+        self.assertEqual([v for v in actual if v.startswith('-only-testing:')],
+                         ['-only-testing:StickDeathInfinityUITests/StudioSmokeUITests/' + n + '()' for n in names[shard::2]])
+
+    def test_fixture_plan_binds_actual_consumers_and_fails_closed_on_helper_changes(self):
+        import re
+        source = (Path(__file__).resolve().parents[2] / 'Tests/NativeUI/StudioSmokeUITests.swift').read_text()
+        names = sorted(re.findall(r"^\s*func\s+(test\w+)\s*\(", source, re.MULTILINE))
+        self.assertEqual(hashlib.sha256(source.encode()).hexdigest(), rec.FIXTURE_SOURCE_SHA256,
+                         "Review fixture dependencies before updating the source pin")
+        for consumer, kind in [(rec.PHOTO_FIXTURE_CASE, 'image'), (rec.VIDEO_FIXTURE_CASE, 'video')]:
+            plan = rec.fixture_requirements(source, {'testNames': [consumer], 'fullTestNames': names}, True)
+            self.assertTrue(plan[kind])
+        bundled = rec.fixture_requirements(source, {'testNames': ['testImageTweenLinearPixelsUndoAndColdReopen'], 'fullTestNames': names}, True)
+        self.assertFalse(bundled['image']); self.assertFalse(bundled['video'])
+        quarter = rec.fixture_requirements(source, {'testNames': ['testImageQuarterTweenPixelsUndoAndColdReopen'], 'fullTestNames': names}, True)
+        self.assertFalse(quarter['image']); self.assertFalse(quarter['video'])
+        cancel = 'testRotoscopeFilesPickerCancelPreservesProject'
+        plan = rec.fixture_requirements(source, {'testNames': [cancel], 'fullTestNames': names}, True)
+        self.assertFalse(plan['image']); self.assertFalse(plan['video'])
+        changed = rec.fixture_requirements(source + '\n// changed shared helper', {}, True)
+        self.assertTrue(changed['image']); self.assertTrue(changed['video'])
+        all_tests = rec.fixture_requirements(source, {}, False)
+        self.assertTrue(all_tests['image']); self.assertTrue(all_tests['video'])
+        with self.assertRaises(ValueError):
+            rec.fixture_requirements(source, {'testNames': ['unknown'], 'fullTestNames': names}, True)
+
+    def test_failed_video_seed_runs_all_ui_once_and_keeps_gate_failed(self):
+        self.assertEqual(self.recording(video_failure=True), 4)
+        self.assertEqual(sum(c[0] == 'seed-video' for c in self.calls), 1)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in value or 'only-testing' in value for value in tests[0]))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertTrue(report['photoFixtureSeeded'])
+        self.assertFalse(report['videoFixtureSeeded'])
+        self.assertEqual(report['videoFixtureFailureClass'], 'TimeoutExpired')
 
     def test_integrated_path_checks_identity_boots_then_seeds_once(self):
         self.assertEqual(self.recording(), 0)
@@ -123,5 +226,48 @@ class Harness(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.recording(available=False)
         self.assertEqual(len(self.calls), 1)
+    def test_failed_photo_seed_runs_all_ui_but_keeps_mandatory_failure(self):
+        self.assertEqual(self.recording(seed_failure=True), 4)
+        self.assertEqual(sum(c[:3] == ('xcrun', 'simctl', 'addmedia') for c in self.calls), 1)
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in value or 'only-testing' in value for value in tests[0]))
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['photoFixtureSeeded'])
+        self.assertEqual(report['photoFixtureFailureClass'], 'TimeoutExpired')
+        self.assertEqual(report['uiTestExitCode'], 0)
+        budget = json.loads((self.out / 'ui-test-budget.json').read_text())
+        self.assertEqual(report['uiSuiteTimeoutSeconds'], budget['testCount'] * 180 + 14 * (240 - 180) + 300)
+        self.assertFalse((self.out / 'image-fixture.json').exists())
+
+    def test_failed_readiness_never_imports_or_retries_and_keeps_gate_failed(self):
+        self.assertEqual(self.recording(readiness_failure=True), 4)
+        self.assertEqual(sum(c[:3] == ('xcrun', 'simctl', 'spawn') for c in self.calls), 1)
+        self.assertFalse(any(c[:3] == ('xcrun', 'simctl', 'addmedia') for c in self.calls))
+        self.assertEqual(sum(c[:2] == ('xcodebuild', 'test-without-building') for c in self.calls), 1)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertFalse(report['photoFixtureSeeded'])
+        self.assertFalse((self.out / 'image-fixture.json').exists())
+
+    def test_real_ui_failure_is_retained_alongside_photo_fixture_failure(self):
+        self.assertEqual(self.recording(seed_failure=True, test_exit=65), 65)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertEqual(report['uiTestExitCode'], 65)
+        self.assertFalse(report['photoFixtureSeeded'])
+
+    def test_suite_deadline_fails_without_retry_and_finalizes_owned_children(self):
+        self.assertEqual(self.recording(test_timeout=True), 124)
+        report = json.loads((self.out / 'recording-status.json').read_text())
+        self.assertEqual(report['uiTestExitCode'], 124)
+        self.assertEqual(report['uiProcessExitCode'], -rec.signal.SIGINT)
+        self.assertEqual(report['recordingExitCode'], 0)
+        self.assertIsNone(report['recordingError'])
+        budget = json.loads((self.out / 'ui-test-budget.json').read_text())
+        self.assertEqual(self.waits[0], (True, budget['testCount'] * 180 + 14 * (240 - 180) + 300))
+        self.assertEqual(self.signals, [(True, rec.signal.SIGINT), (False, rec.signal.SIGINT)])
+        tests = [c for c in self.calls if c[:2] == ('xcodebuild', 'test-without-building')]
+        self.assertEqual(len(tests), 1)
+        self.assertFalse(any('skip-testing' in v or 'only-testing' in v for v in tests[0]))
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

@@ -2,6 +2,13 @@ import SwiftUI
 
 struct StickerEmojiPanel: View {
     @ObservedObject var vm: StudioViewModel
+    @EnvironmentObject private var authVM: AuthViewModel
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var insertionNotice: String?
+    @FocusState private var searchFocused: Bool
+    private func insert(_ glyph: String) {
+        insertionNotice = vm.insertShelfGlyph(glyph, isForeground: scenePhase == .active) ? nil : vm.message
+    }
     @State private var tab: String = "stickers"
     @State private var search: String = ""
     @State private var selectedCategoryIndex: Int = 0
@@ -38,12 +45,22 @@ struct StickerEmojiPanel: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
 
+            if let insertionNotice {
+                Text(insertionNotice).font(.caption).foregroundColor(.red)
+                    .accessibilityIdentifier("studio.sticker.result")
+                    .padding(.horizontal, 12)
+            }
+
             // Search
             HStack {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.25))
                 TextField("Search...", text: $search)
+                    .focused($searchFocused)
+                    .submitLabel(.search)
+                    .onSubmit { searchFocused = false }
+                    .accessibilityIdentifier("studio.sticker.search")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.white)
             }
@@ -84,19 +101,7 @@ struct StickerEmojiPanel: View {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                         ForEach(filteredStickers) { sticker in
                             Button(action: {
-                                // Place sticker on canvas as text element
-                                let element = DrawnElement(
-                                    id: UUID().uuidString,
-                                    tool: .text,
-                                    points: [StrokePoint(x: CGFloat(vm.canvasWidth) / 2, y: CGFloat(vm.canvasHeight) / 2)],
-                                    color: "#000000",
-                                    width: 8,
-                                    opacity: 1.0,
-                                    fillColor: sticker.emoji,
-                                    layerID: vm.activeLayerID
-                                )
-                                vm.commitElement(element)
-                                vm.activePanel = .none
+                                insert(sticker.emoji)
                             }) {
                                 VStack(spacing: 4) {
                                     Text(sticker.emoji)
@@ -114,6 +119,7 @@ struct StickerEmojiPanel: View {
                                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.05)))
                                 )
                             }
+                            .accessibilityIdentifier("studio.sticker.item." + sticker.id)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -143,23 +149,13 @@ struct StickerEmojiPanel: View {
                     LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 8), spacing: 4) {
                         ForEach(Self.emojiSets[safe: selectedEmojiCatIndex]?.emojis ?? [], id: \.self) { emoji in
                             Button(action: {
-                                let element = DrawnElement(
-                                    id: UUID().uuidString,
-                                    tool: .text,
-                                    points: [StrokePoint(x: CGFloat(vm.canvasWidth) / 2, y: CGFloat(vm.canvasHeight) / 2)],
-                                    color: "#000000",
-                                    width: 8,
-                                    opacity: 1.0,
-                                    fillColor: emoji,
-                                    layerID: vm.activeLayerID
-                                )
-                                vm.commitElement(element)
-                                vm.activePanel = .none
+                                insert(emoji)
                             }) {
                                 Text(emoji)
                                     .font(.system(size: 24))
                                     .frame(width: 38, height: 38)
                             }
+                            .accessibilityIdentifier("studio.emoji.item." + emoji)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -170,6 +166,10 @@ struct StickerEmojiPanel: View {
         .frame(maxHeight: UIScreen.main.bounds.height * 0.55)
         .background(Color(hex: "1a1a24"))
         .cornerRadius(16, corners: [.topLeft, .topRight])
+        .onChange(of: authVM.userId) { _ in if vm.activePanel == .stickerEmoji { vm.activePanel = .none } }
+        .onChange(of: scenePhase) { phase in
+            if phase != .active, vm.activePanel == .stickerEmoji { vm.activePanel = .none }
+        }
     }
 }
 
