@@ -141,6 +141,7 @@ struct StudioToolStrip: View {
                     }
                     .id(def.tool.rawValue)
                     .accessibilityLabel(def.label)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
                     .accessibilityIdentifier("studio.tool.\(def.tool.rawValue)")
                 }
             }

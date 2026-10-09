@@ -3806,6 +3806,15 @@ final class StudioSmokeUITests: XCTestCase {
         try selectToolbarTool("lasso",app:app)
         let finishPolygon = app.buttons["studio.selection.polygon.finish"]
         XCTAssertTrue(finishPolygon.isEnabled && finishPolygon.isHittable); finishPolygon.tap()
+        let moveTool = app.buttons["studio.tool.move"]
+        XCTAssertTrue(moveTool.waitForExistence(timeout: 5) && moveTool.isSelected,
+                      "Finishing a polygon must activate Move automatically")
+        XCTAssertFalse(app.buttons["studio.tool-settings.close"].exists,
+                       "Completed polygon must dismiss its options to expose the transform box")
+        capture(app,name:"polygon-automatic-move-handoff")
+        // Reopen Lasso explicitly to inspect the selection and use its Delete
+        // action; reopening is no longer an implicit post-selection state.
+        try selectToolbarTool("lasso",app:app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label,"1 drawings selected","Polygon must enclose the same single drawing")
         XCTAssertEqual(app.buttons["studio.save"].label,"Saved","Polygon selection must remain transient")
         capture(app,name:"polygon-selection-finished-with-canonical-drawing")

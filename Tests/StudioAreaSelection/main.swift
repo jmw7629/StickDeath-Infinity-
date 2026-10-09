@@ -76,13 +76,16 @@ private struct Failure: Error { let message: String }
         let original = vm.document, undoBefore = vm.canUndo
         vm.selectDrawingTool(.lasso)
         for bounds in [[CGPoint(x: 8, y: 8), CGPoint(x: 40, y: 40)], [CGPoint(x: 72, y: 72), CGPoint(x: 104, y: 104)]] {
+            vm.selectDrawingTool(.lasso)
             guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Restored Lasso capture unavailable") }
             try require(capture.mode == .add && capture.kind == .rectangle && capture.smoothing == 8,
                 "Restored preferences did not reach real selection capture")
             try require(vm.finishAreaSelection(capture, points: bounds), "Restored additive selection failed")
         }
         try require(vm.selectedElementIDs == [left.id, right.id], "Restored Add mode replaced the prior selection")
-        vm.selectDrawingTool(.move)
+        try require(vm.selectedTool == .move && vm.selectionMode == .new && !vm.selectionPreservesAspect,
+                    "Completed lasso must hand off to free Move without remembered Subtract")
+        vm.selectionMode = .subtract
         _ = vm.selectElement(at: CGPoint(x: 24, y: 24))
         try require(vm.selectionMode == .subtract && vm.selectedElementIDs == [right.id], "Restored Move subtract did not remove only the hit")
         vm.selectDrawingTool(.lasso)
@@ -166,7 +169,11 @@ private struct Failure: Error { let message: String }
             guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Could not begin area selection") }
             try require(vm.finishAreaSelection(capture, points: points), "Actual area selection failed: \(vm.message ?? "unknown")")
         }
+        vm.activePanel = .toolSettings
         try select(left)
+        try require(vm.selectedTool == .move && vm.selectionMode == .new && !vm.selectionPreservesAspect
+                    && vm.activePanel == .none && vm.beginSelectionHandle() != nil && vm.beginAreaSelection() == nil,
+                    "Lasso must expose free Move handles, dismiss options, and stop capturing lasso gestures")
         try require(vm.selectedElementIDs == [red.id] && vm.document == initial && !vm.isDirty && vm.canUndo == undoBefore && vm.message == nil, "Selection must be transient and select only enclosed artwork")
         try select([.init(x: 18, y: 18), .init(x: 30, y: 30)])
         try require(vm.selectedElementIDs.isEmpty, "Partial enclosure selected a whole drawing")
@@ -216,6 +223,7 @@ private struct Failure: Error { let message: String }
         try require(vm.selectedElementIDs == [red.id], "Exact boundary enclosure rejected")
         pass("freehand uses its closed outline including boundary contact and concave cutouts")
 
+        vm.selectedTool = .lasso
         vm.areaSelectionKind = .polygon
         vm.areaSelectionSmoothing = 10
         for point in boundary { try require(vm.appendPolygonSelectionVertex(point), "Polygon vertex rejected") }
@@ -223,6 +231,7 @@ private struct Failure: Error { let message: String }
         try require(polygonRegion.points == boundary, "Polygon corners must not inherit freehand smoothing")
         try require(vm.finishPolygonSelection() && vm.selectedElementIDs == [red.id], "Polygon did not select exact enclosed artwork")
         try require(vm.currentPolygonSelectionVertices.isEmpty && vm.document == initial && vm.canUndo == undoBefore, "Polygon altered document/history or retained draft")
+        vm.selectedTool = .lasso
         for point in boundary.prefix(2) { try require(vm.appendPolygonSelectionVertex(point), "Polygon draft") }
         try require(!vm.finishPolygonSelection() && vm.currentPolygonSelectionVertices.count == 2, "Invalid polygon discarded editable draft")
         vm.message = nil
@@ -255,7 +264,7 @@ private struct Failure: Error { let message: String }
         try select(all); try require(vm.selectedElementIDs.isEmpty, "Full lock selected")
         vm.setLayerLockMode(vm.activeLayerID, mode: .position); try select(left)
         vm.selectedTool = .move
-        try require(vm.selectedElementIDs == [red.id] && vm.beginMove(at: .init(x:24,y:24)) == nil, "Position lock allowed Move")
+        try require(vm.selectedElementIDs.isEmpty && vm.beginMove(at: .init(x:24,y:24)) == nil, "Position-locked artwork must not enter a movable lasso group")
         vm.setLayerLockMode(vm.activeLayerID, mode: .free)
         pass("hidden transparent and full-lock layers are excluded and position-lock movement remains blocked")
 
@@ -284,21 +293,30 @@ private struct Failure: Error { let message: String }
 
         try select(all)
         let beforeCancel = vm.document, selectedBefore = vm.selectedElementIDs
+        vm.selectedTool = .lasso
         guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Missing capture") }
         var checkpoints = 0
-        try require(vm.finishAreaSelection(capture, points: all, checkCancellation: {checkpoints += 1}), "Cancellation probe failed")
+        try require(vm.finishAreaSelection(capture, points: left, checkCancellation: {checkpoints += 1}), "Cancellation probe failed")
         for stop in 1...checkpoints {
+            try select(all)
+            vm.selectedTool = .lasso
+            guard let capture = vm.beginAreaSelection() else { throw Failure(message: "Fresh cancellation capture unavailable") }
             var count = 0
             try require(!vm.finishAreaSelection(capture, points: left, checkCancellation: {count += 1; if count == stop {throw CancellationError()}}), "Cancelled selection succeeded")
+            try require(count == stop, "Cancellation checkpoint was not exercised")
             try require(vm.document == beforeCancel && vm.selectedElementIDs == selectedBefore, "Cancellation partially changed selection or document")
         }
+        try select(all)
+        vm.selectedTool = .lasso
+        guard let reentrantCapture = vm.beginAreaSelection() else { throw Failure(message: "Fresh reentrant capture unavailable") }
         var callbacks = 0
-        try require(!vm.finishAreaSelection(capture, points: left, checkCancellation: {callbacks += 1; if callbacks == 2 {vm.clearElementSelection()}}), "Reentrant selection change was overwritten")
-        try require(vm.selectedElementIDs.isEmpty && vm.document == beforeCancel, "Newer user selection was lost")
+        try require(!vm.finishAreaSelection(reentrantCapture, points: left, checkCancellation: {callbacks += 1; if callbacks == 2 {vm.clearElementSelection()}}), "Reentrant selection change was overwritten")
+        try require(callbacks >= 2 && vm.selectedElementIDs.isEmpty && vm.document == beforeCancel, "Newer user selection was lost or reentrant callback was not exercised")
         pass("every cancellation checkpoint and intervening user selection preserve atomic selection and document state")
 
         for change in 0..<7 {
             try select(all)
+            vm.selectedTool = .lasso
             let c = vm.beginAreaSelection()!
             switch change {
             case 0: vm.selectedTool = .move
@@ -350,6 +368,7 @@ private struct Failure: Error { let message: String }
         try rejects {_ = try StudioSelectionRegion(points:all,kind:.rectangle,smoothing:Double.infinity)}
         try rejects {_ = try StudioSelectionRegion(points:[.zero,.init(x:2_000_000,y:2)],kind:.rectangle,smoothing:0)}
         try select(all); let stable = vm.document, stableIDs = vm.selectedElementIDs
+        vm.selectedTool = .lasso
         let invalidCapture = vm.beginAreaSelection()!
         try require(!vm.finishAreaSelection(invalidCapture,points:[]) && vm.document == stable && vm.selectedElementIDs == stableIDs, "Invalid input changed actual selection")
         pass("invalid nonfinite degenerate oversized and out-of-range outlines fail without changing production state")
