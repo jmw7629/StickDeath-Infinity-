@@ -103,7 +103,7 @@ struct ExportPanel: View {
                             Text("\(output.imageURLs.count) PNG \(output.imageURLs.count == 1 ? "file" : "files") + timing manifest")
                                 .font(.specialElite(12))
                             Text("\(output.manifest.imageWidth) × \(output.manifest.imageHeight) · revision \(output.manifest.documentRevision)")
-                                .font(.system(size: 10, design: .monospaced))
+                                .font(.specialElite(10))
                                 .foregroundColor(.white.opacity(0.6))
                             if let credits = output.manifest.imageCredits, !credits.isEmpty {
                                 Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
@@ -118,7 +118,7 @@ struct ExportPanel: View {
                                     .accessibilityLabel("Exported PNG preview")
                                     .accessibilityIdentifier("studio.export.preview")
                                 Text(output.imageURLs.first?.lastPathComponent ?? "")
-                                    .font(.system(size: 9, design: .monospaced))
+                                    .font(.specialElite(9))
                                     .foregroundColor(.white.opacity(0.6))
                             }
                             Button(action: shareExport) {
@@ -126,7 +126,7 @@ struct ExportPanel: View {
                                     Text("Share files / Save to Files").font(.specialElite(12))
                                 } icon: {
                                     Image(systemName: "square.and.arrow.up")
-                                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(12))
                                 }
                                     .frame(maxWidth: .infinity).padding(12)
                                     .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.1)))

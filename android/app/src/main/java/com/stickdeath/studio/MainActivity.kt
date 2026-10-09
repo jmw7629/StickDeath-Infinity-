@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() { studio.save(); super.onStop() }
+    override fun onStop() { studio.stopAudioPreview(); studio.save(); super.onStop() }
 }
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
@@ -213,12 +213,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
 }
 
 @Composable private fun Editor(vm: StudioViewModel, doc: Document) {
+    val audioImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importAudio(it) }
+    val imageImporter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { vm.importImage(it) }
     // Coalesce slider changes, and flush the final choices when leaving Studio.
     LaunchedEffect(vm.tool, vm.width, vm.strokeOpacity, vm.shapeFilled, vm.shapeEqualSides, vm.smoothing, vm.mirrorMode, vm.color, vm.brushFamily, vm.nibAngle) {
         kotlinx.coroutines.delay(250)
         vm.persistToolSettings()
     }
-    DisposableEffect(vm) { onDispose { vm.cancelFill(); vm.persistToolSettings() } }
+    DisposableEffect(vm) { onDispose { vm.cancelAudioImport(); vm.stopAudioPreview(); vm.cancelImageImport(); vm.cancelFill(); vm.persistToolSettings() } }
     val exportProgress by vm.exportProgress.collectAsState()
     var panel by remember { mutableStateOf<String?>(null) }
     var settingsCapture by remember(doc.id) { mutableStateOf(doc) }
@@ -228,16 +230,25 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var selectedLayerAction by remember(doc.id) { mutableStateOf<String?>(null) }
     var layerName by remember(doc.id) { mutableStateOf("") }
     var previewIndex by remember(doc.id) { mutableIntStateOf(0) }
+    LaunchedEffect(panel) { if (panel != "audio") vm.stopAudioPreview() }
     BackHandler { if (playing) playing = false else vm.save(close = true) }
     val timelineState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(playing, doc.id, doc.revision) {
         if (playing) {
-            vm.cancelFill()
+            vm.cancelAudioImport(); vm.stopAudioPreview(); vm.cancelImageImport(); vm.cancelFill()
             val clock = FramePlaybackClock(doc)
             previewIndex = clock.frameAt(0)
-            val started = withFrameNanos { it }
-            while (playing) {
-                withFrameNanos { now -> previewIndex = clock.frameAt(now - started) }
+            if (doc.audioClips.isNotEmpty()) {
+                try { vm.previewSceneAudio(doc) { elapsed -> previewIndex = clock.frameAt(elapsed) } }
+                catch (error: kotlinx.coroutines.TimeoutCancellationException) { vm.report("Mixed audio playback timed out and stopped.") }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) { vm.report(error.message ?: "Soundtrack playback failed and stopped.") }
+                finally { playing = false }
+            } else {
+                val started = withFrameNanos { it }
+                while (playing) {
+                    withFrameNanos { now -> previewIndex = clock.frameAt(now - started) }
+                }
             }
         }
     }
@@ -253,11 +264,19 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.save() }, enabled = !vm.saving) { Text(if (vm.saving) "Saving…" else if (vm.dirty) "Save" else "Saved") }
         }
         Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-            Tool.entries.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(tool.name) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            Tool.entries.filter { it != Tool.Image }.forEach { tool -> FilterChip(vm.tool == tool, { vm.chooseTool(tool) }, { Text(tool.name) }, enabled = !playing && !vm.closing, modifier = Modifier.padding(horizontal = 4.dp)) }
+            TextButton({
+                if (vm.beginImageImport()) {
+                    try { imageImporter.launch(arrayOf("image/png", "image/jpeg")) }
+                    catch (error: Exception) { vm.cancelImageImport(); vm.report(error.message ?: "Files could not open; no image was added.") }
+                }
+            }, enabled = !playing && !vm.closing && !vm.importingImage) { Text("Import image") }
+            if (vm.importingImage) TextButton({ vm.cancelImageImport() }) { Text("Cancel image import") }
             TextButton({ panel = "brush" }, enabled = !playing && !vm.closing) { Text("Settings") }
             TextButton({ panel = "export" }, enabled = !playing && !vm.closing && !vm.exporting && vm.exportArtifact == null) { Text("Export") }
             if (vm.exporting) TextButton({ vm.cancelExport() }) { Text("Cancel export") }
             TextButton({ panel = "grid" }, enabled = !playing && !vm.closing) { Text("Grid") }
+            TextButton({ panel = "audio" }, enabled = !playing && !vm.closing) { Text("Audio") }
             TextButton({ panel = "layers" }, enabled = !playing && !vm.closing) { Text("Layers") }
             TextButton({ vm.undo() }, enabled = vm.canUndo && !playing) { Text("Undo") }
             TextButton({ vm.redo() }, enabled = vm.canRedo && !playing) { Text("Redo") }
@@ -306,10 +325,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
+    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
+                    "audio" -> AudioClipControls(vm, doc, enabled = !playing && !vm.closing) {
+                        if (vm.beginAudioImport()) try { audioImporter.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")) }
+                        catch (e: Exception) { vm.cancelAudioImport(); vm.report(e.message ?: "Files could not open.") }
+                    }
                     "project" -> {
                         ProjectConfiguration(settingsDraft) { settingsDraft = it }
                         FilterChip(fitArtwork, { fitArtwork = !fitArtwork }, { Text("Fit artwork proportionally") })
@@ -320,8 +343,8 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Text("Export the current saved-or-unsaved project snapshot with its project background. ZIP stores each frame once with FPS and exposure ticks in manifest.json.")
                         Button({ vm.prepareExport(ExportKind.PROJECT); panel = null }) { Text("Editable Android project backup") }
                         Text("Restore this backup from the Android project library. It is not the iOS .sdi format.")
-                        Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video (silent)") }
-                        Text("MP4 uses the exact canvas, FPS and frame holds. Requires a compatible device encoder, even dimensions, and at most 120 seconds / 4 megapixels. Android audio mixing is not implemented.")
+                        Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video + project audio") }
+                        Text("MP4 uses the exact canvas, FPS and frame holds. Requires a compatible device encoder, even dimensions, and at most 120 seconds / 4 megapixels. Saved clips are mixed to stereo AAC across the animation duration, including overlaps, trim, volume and mute. Audio outside that duration is excluded. AAC may add up to four codec frames (about 85 ms) of priming/tail padding; this is not a sample-exact audio master. Encoder failure never falls back to silent output.")
                         Button({ vm.prepareExport(ExportKind.GIF); panel = null }) { Text("Animated GIF (looping)") }
                         Text("GIF uses 256 colors and the opaque project background. Timing rounds to hundredths of a second; some viewers slow fast frames. Up to 120 seconds / 4 megapixels / 256 MiB. No audio.")
                         Button({ vm.prepareExport(ExportKind.PNG); panel = null }) { Text("Current frame PNG") }
@@ -349,7 +372,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Text("Maximum RGB channel difference from the tapped pixel. Zero matches exactly; 255 matches all colors.")
                             FilterChip(vm.fillContiguous, { vm.configureFill(contiguous = !vm.fillContiguous) }, { Text("Contiguous") })
                             Text(if (vm.fillContiguous) "Only the connected region (four neighboring pixels)." else "Every matching pixel across the canvas, including disconnected regions.")
-                            Text("Up to 4,194,304 canvas pixels and 20,000 pixel runs per fill, with a five-second work limit. Fills have pixel edges and cannot yet be selected, transformed or resized with the canvas. Undo/Redo and layer operations remain available.")
+                            Text("Up to 4,194,304 canvas pixels and 20,000 pixel runs per fill, with a five-second work limit. Fills keep their original pixel mask when moved, resized, rotated, flipped or fitted to a new canvas. Lasso selects the whole fill by its bounds. Keep all fill edges inside the canvas; Undo/Redo and layer locks apply.")
                             if (vm.filling) TextButton({ vm.cancelFill(); vm.report("Fill cancelled; no fill was added.") }) { Text("Cancel fill") }
                         } else if (vm.tool == Tool.Eyedropper) {
                             Text("Tap to sample the visible canvas, including layer opacity and erased areas. Hidden layers, onion skin and selection handles are excluded. Sampling returns to your previous color drawing tool.")
@@ -359,7 +382,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = 0.25f..8f)
                             TextButton({ vm.fitViewport() }) { Text("Fit canvas") }
                         } else if (vm.tool == Tool.Lasso || vm.tool == Tool.Move) {
-                            Text("Pixel fills cannot be selected or transformed. Lasso encloses whole unlocked drawings. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
+                            Text("Lasso encloses whole unlocked drawings, text, images and fills. Fill selection encloses its entire bounding box, including gaps between disconnected regions. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
                             if (vm.selectedText != null) TextButton({ vm.chooseTool(Tool.Text) }) { Text("Edit text") }
                             FilterChip(vm.selectionPreservesAspect,
@@ -394,6 +417,16 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                                 TextButton({ vm.flipArtwork(false) }, enabled = vm.selectedStrokeIDs.isNotEmpty()) { Text("Flip vertical") }
                             }
                             if (vm.selectedStrokeIDs.isNotEmpty()) {
+                                val opacityIDs = vm.selectedStrokeIDs.toSet()
+                                val currentOpacities = doc.frame.strokes.filter { it.id in opacityIDs }.map { it.opacity }.distinct()
+                                var artworkOpacity by remember(doc.id, doc.revision, opacityIDs) {
+                                    mutableFloatStateOf(currentOpacities.singleOrNull() ?: 1f)
+                                }
+                                Text("Artwork opacity: ${(artworkOpacity * 100).toInt()}%")
+                                if (currentOpacities.size > 1) Text("The selection has mixed opacities. Apply sets every selected object to the chosen value.")
+                                Slider(artworkOpacity, { artworkOpacity = it }, valueRange = 0f..1f)
+                                Button({ vm.setArtworkOpacity(doc, opacityIDs, artworkOpacity) }) { Text("Apply artwork opacity") }
+                                Text("Affects selected drawings, text, images and fills. At 0% they become invisible; Undo restores their previous opacity. Layer opacity multiplies this value.")
                                 Text("Nudge in canvas pixels")
                                 Row {
                                     listOf(1f, 5f, 10f).forEach { step ->

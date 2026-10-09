@@ -4,17 +4,17 @@ import java.util.UUID
 
 fun newID(): String = UUID.randomUUID().toString()
 data class Point(val x: Float, val y: Float)
-enum class Tool { Pencil, Eraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Fill, Eyedropper, Lasso, Move, Hand;
+enum class Tool { Pencil, Eraser, Line, Rectangle, Ellipse, Triangle, Diamond, Star, Arrow, Text, Image, Fill, Eyedropper, Lasso, Move, Hand;
     val isClosedShape get() = this in listOf(Rectangle, Ellipse, Triangle, Diamond, Star, Arrow)
     val isShape get() = this == Line || isClosedShape
     val isDrawing get() = this == Pencil || this == Eraser || isShape
-    val isSelectable get() = (isDrawing && this != Eraser) || this == Text
+    val isSelectable get() = (isDrawing && this != Eraser) || this == Text || this == Image || this == Fill
 }
 data class Stroke(val id: String = newID(), val layerID: String, val points: List<Point>,
                   val color: Int, val width: Float, val tool: Tool, val filled: Boolean = false, val opacity: Float = 1f,
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
-                  val fill: List<FillSpan>? = null)
+                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null)
 enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
     Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
     ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
@@ -34,14 +34,21 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v13 (reads v1–v12), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v17 (reads v1–v16), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
-    val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings()) {
+    val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList()) {
     val frame get() = frames.first { it.id == activeFrameID }
     val layer get() = layers.first { it.id == activeLayerID }
     val pointCount get() = frames.sumOf { f -> f.strokes.sumOf { it.points.size + (it.text?.content?.length ?: 0) + (it.fill?.size ?: 0) * 3 } }
+    val imageBytes get() = frames.sumOf { f -> f.strokes.sumOf { it.image?.byteCount?.toLong() ?: 0L } }
+    val imagePixels get() = frames.sumOf { f -> f.strokes.sumOf { it.image?.pixels ?: 0L } }
+    val audioBytes get() = audioClips.sumOf { it.source.byteCount.toLong() }
     fun validated(): Document {
+        require(audioClips.size <= 16 && audioBytes <= 2L * 1024 * 1024) { "Audio capacity: 16 clips / 2 MiB per project." }
+        require(audioClips.map { it.id }.toSet().size == audioClips.size)
+        audioClips.forEach { it.validate() }
+        require(imageBytes <= 4L * 1024 * 1024 && imagePixels <= 4_194_304L) { "Project image capacity reached (4 MiB / 4 megapixels)." }
         UUID.fromString(id)
         onion.validate(); grid.validate()
         require(backgroundColor ushr 24 == 255) { "Choose an opaque project background color." }
@@ -58,19 +65,29 @@ data class Document(val id: String, val name: String, val width: Int, val height
             var brushWork = 0
             frame.strokes.forEach { stroke ->
                 require(layers.any { it.id == stroke.layerID })
-                require(stroke.tool.isDrawing || stroke.tool == Tool.Text || stroke.tool == Tool.Fill)
+                require(stroke.tool.isDrawing || stroke.tool == Tool.Text || stroke.tool == Tool.Image || stroke.tool == Tool.Fill)
                 require((stroke.tool == Tool.Fill) == (stroke.fill != null))
                 stroke.fill?.let { spans ->
-                    require(stroke.points.size == 1 && stroke.color ushr 24 == 255 && stroke.opacity == 1f)
-                    require(width.toLong() * height <= BucketFill.MAX_PIXELS)
+                    require(stroke.points.size == 1 && stroke.color ushr 24 == 255)
+                    val geometry = stroke.fillGeometryOrIdentity()
+                    geometry.validate()
                     require(spans.size in 1..BucketFill.MAX_SPANS)
                     var previous: FillSpan? = null
                     spans.forEach { span ->
-                        require(span.y in 0 until height && span.start in 0 until width && span.end in (span.start + 1)..width)
+                        require(span.y in 0 until geometry.sourceHeight && span.start in 0 until geometry.sourceWidth && span.end in (span.start + 1)..geometry.sourceWidth)
                         previous?.let { require(span.y > it.y || (span.y == it.y && span.start > it.end)) }
                         previous = span
                     }
                 }
+                require(stroke.tool == Tool.Fill || stroke.fillGeometry == null)
+                if (stroke.tool == Tool.Fill) {
+                    val bounds = stroke.fillBounds()
+                    require(bounds.left >= 0f && bounds.top >= 0f && bounds.right <= width && bounds.bottom <= height) {
+                        "Keep the complete fill inside the canvas. The change was not applied."
+                    }
+                }
+                require((stroke.tool == Tool.Image) == (stroke.image != null))
+                stroke.image?.validateGeometry(stroke)
                 require((stroke.tool == Tool.Text) == (stroke.text != null))
                 stroke.text?.let { text ->
                     text.validate()

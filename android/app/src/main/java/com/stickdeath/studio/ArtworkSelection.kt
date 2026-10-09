@@ -11,7 +11,8 @@ data class ArtworkBounds(val left: Float, val top: Float, val right: Float, val 
     fun union(b: ArtworkBounds) = ArtworkBounds(min(left,b.left), min(top,b.top), max(right,b.right), max(bottom,b.bottom))
     companion object {
         fun of(stroke: Stroke): ArtworkBounds {
-            val radius = if (stroke.tool == Tool.Text) 0f else stroke.textureRadius()
+            if (stroke.tool == Tool.Fill) return stroke.fillBounds()
+            val radius = if (stroke.tool == Tool.Text || stroke.tool == Tool.Image) 0f else stroke.textureRadius()
             return ArtworkBounds(stroke.points.minOf { it.x } - radius, stroke.points.minOf { it.y } - radius,
                 stroke.points.maxOf { it.x } + radius, stroke.points.maxOf { it.y } + radius)
         }
@@ -21,9 +22,24 @@ data class ArtworkBounds(val left: Float, val top: Float, val right: Float, val 
 data class ArtworkTransform(val dx: Float = 0f, val dy: Float = 0f, val scale: Float = 1f, val angle: Float = 0f, val heightScale: Float = scale) {
     fun apply(frame: Frame, ids: Set<String>, bounds: ArtworkBounds): Frame {
         require(listOf(dx,dy,scale,heightScale,angle).all { it.isFinite() } && scale in 0.25f..4f && heightScale in 0.25f..4f && angle in -360f..360f)
-        val a = angle * PI / 180; val c = cos(a).toFloat(); val s = sin(a).toFloat(); val center = bounds.center
+        val a = angle * PI / 180
+        // Exact quarter turns must not spill a boundary-touching selection
+        // outside the canvas because cos(90 degrees) is a tiny nonzero float.
+        val turn = ((angle % 360f) + 360f) % 360f
+        val (c, s) = when (turn) {
+            0f -> 1f to 0f
+            90f -> 0f to 1f
+            180f -> -1f to 0f
+            270f -> 0f to -1f
+            else -> cos(a).toFloat() to sin(a).toFloat()
+        }
+        val center = bounds.center
         return frame.copy(strokes = frame.strokes.map { stroke ->
-            if (stroke.id !in ids) stroke else {
+            if (stroke.id !in ids) stroke else if (stroke.tool == Tool.Fill) {
+                stroke.transformFill(c*scale,s*scale,-s*heightScale,c*heightScale,
+                    center.x-c*scale*center.x+s*heightScale*center.y+dx,
+                    center.y-s*scale*center.x-c*heightScale*center.y+dy)
+            } else {
                 val width = stroke.width * sqrt(scale * heightScale)
                 if (stroke.brush != BrushFamily.Round) require(width in 1f..128f) { "Transformed brush width must remain 1–128 pixels." }
                 stroke.copy(width = width.coerceIn(1f,128f),

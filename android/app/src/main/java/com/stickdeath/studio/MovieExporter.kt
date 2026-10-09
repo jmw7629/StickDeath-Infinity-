@@ -16,7 +16,7 @@ import java.nio.ByteBuffer
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
-/** Silent H.264 from canonical frames; guides and editor overlays never enter the render. */
+/** Canonical H.264, with bounded AAC soundtrack mixing when the project owns audio clips. */
 object MovieExporter {
     suspend fun prepare(context: Context, document: Document, progress: (Int, Int) -> Unit): ExportArtifact {
         val d = document.validated()
@@ -170,8 +170,10 @@ object MovieExporter {
                 check()
             } finally { extractor.release() }
             val stem = d.name.replace(Regex("[^A-Za-z0-9 _-]"),"_").take(80).ifBlank { "animation" }
+            val result = if (d.audioClips.isEmpty()) file else AudioMovieMuxer.add(context, file, d)
+            if (result !== file) file.delete()
             complete = true
-            return ExportArtifact(file,ExportKind.MP4,"$stem.mp4")
+            return ExportArtifact(result,ExportKind.MP4,"$stem.mp4")
         } finally {
             if (started) runCatching { codec?.stop() }
             runCatching { codec?.release() }; runCatching { muxer?.release() }

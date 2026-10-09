@@ -511,7 +511,7 @@ private func rejects(_ action: () throws -> Void) throws {
             vm.copyBottomSelection(); try require(vm.usesImageClipboard, "Second image copy failed")
             let line = DrawnElement(id: UUID().uuidString, tool: .line, points: [.init(x: 10, y: 10), .init(x: 60, y: 10)], color: "#00FF00", width: 4, opacity: 1, layerID: vm.activeLayerID)
             try require(vm.commitElement(line), "Drawing copy fixture failed")
-            vm.selectedTool = .lasso
+            vm.selectedTool = .lasso; vm.areaSelectionTarget = .drawings
             try require(vm.selectVisibleArtwork() && vm.copySelected(), "Actual selected drawing copy failed")
             try require(!vm.usesImageClipboard && vm.bottomPasteLabel == "Paste drawing", "Drawing copy did not supersede image scope")
             let elementCount = vm.currentFrame.elements.count, frameCount = vm.frames.count
@@ -896,7 +896,7 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 60, width: 80, height: 40), rotationDegrees: 45), "Area fixture angle")
             vm.selectLayer(vm.currentFrame.rasterLayerID!)
             vm.selectDrawingTool(.lasso)
-            try require(vm.areaSelectionTarget == .drawings, "Default selection target changed")
+            try require(vm.areaSelectionTarget == .artwork, "Default lasso must select both images and drawings")
             vm.areaSelectionTarget = .image; vm.areaSelectionKind = .polygon; vm.areaSelectionSmoothing = 0; vm.selectionMode = .new
             let before = vm.document, undo = vm.canUndo, redo = vm.canRedo
             for degrees in [-135.0, -45.0, 0.0, 45.0, 135.0, 179.0] {
@@ -917,27 +917,29 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(region.containsImage(placement: areaCapture.image!.placement, angle: areaCapture.image!.angle),
                         "Real region failed to enclose the rotated image polygon")
             try require(vm.finishAreaSelection(areaCapture, points: polygon), "Rotated polygon selection failed")
-            try require(vm.selectedAreaImageCorners != nil,
+            try require(vm.currentImageMoveCapture() != nil,
                         "Successful image enclosure did not retain selected image; capture=\(String(describing: vm.beginAreaSelection()))")
             try require(vm.selectedElementIDs.isEmpty, "Image selection also selected drawings")
             try require(vm.document == before, "Image selection changed canonical document")
             try require(vm.canUndo == undo && vm.canRedo == redo, "Image selection changed Undo/Redo availability")
             // The narrow oriented outline excludes the image's AABB corners, yet encloses its real polygon.
             let empty = [CGPoint(x: 0, y: 0), CGPoint(x: 8, y: 0), CGPoint(x: 8, y: 8), CGPoint(x: 0, y: 8)]
-            vm.selectionMode = .add
-            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.selectedAreaImageCorners != nil, "Add empty lost selection")
-            vm.selectionMode = .subtract
-            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.selectedAreaImageCorners != nil, "Subtract empty lost selection")
-            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: polygon) && vm.selectedAreaImageCorners == nil, "Subtract enclosed image failed")
-            vm.selectionMode = .new
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .add
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.currentImageMoveCapture() != nil, "Add empty lost selection")
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .subtract
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: empty) && vm.currentImageMoveCapture() != nil, "Subtract empty lost selection")
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .subtract
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: polygon) && vm.currentImageMoveCapture() == nil, "Subtract enclosed image failed")
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .new
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: polygon), "Reselect image")
             // All four corners remain enclosed, but this notch enters the polygon interior.
             let notched = [CGPoint(x: 20, y: 20), CGPoint(x: 76, y: 20), CGPoint(x: 76, y: 85), CGPoint(x: 84, y: 85),
                 CGPoint(x: 84, y: 20), CGPoint(x: 140, y: 20), CGPoint(x: 140, y: 140), CGPoint(x: 20, y: 140)]
-            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: notched) && vm.selectedAreaImageCorners == nil,
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .new
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: notched) && vm.currentImageMoveCapture() == nil,
                         "Concave lasso selected image through an interior notch")
             vm.areaSelectionKind = .rectangle
-            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: [.init(x: 40, y: 60), .init(x: 120, y: 100)]) && vm.selectedAreaImageCorners == nil,
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: [.init(x: 40, y: 60), .init(x: 120, y: 100)]) && vm.currentImageMoveCapture() == nil,
                         "Unrotated rectangle falsely enclosed rotated image")
         }
         try await test("image area selection continues into real Move delete Undo and cold persistence with original bytes") {
@@ -1231,19 +1233,19 @@ private func rejects(_ action: () throws -> Void) throws {
             let picture = [CGPoint(x: 60, y: 60), CGPoint(x: 120, y: 100)]
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: drawing), "Mixed New drawing")
             try require(vm.selectedElementIDs == [line.id] && vm.selectedAreaImageCorners == nil, "Mixed New broadened selection")
-            vm.selectionMode = .add
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .add
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: picture) && vm.hasMixedArtworkSelection,
                         "Mixed Add failed to retain drawing while adding image")
-            vm.selectionMode = .subtract
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .subtract
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: picture), "Mixed Subtract image")
             try require(vm.selectedElementIDs == [line.id] && vm.selectedAreaImageCorners == nil, "Subtract image removed drawing")
-            vm.selectionMode = .add
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .add
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: picture), "Mixed image re-add")
-            vm.selectionMode = .subtract
+            vm.selectDrawingTool(.lasso); vm.selectionMode = .subtract
             try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: drawing), "Mixed Subtract drawing")
-            try require(vm.selectedElementIDs.isEmpty && vm.selectedAreaImageCorners != nil, "Subtract drawing removed image")
-            try require(!vm.canCopyBottomSelection && vm.bottomCopyLabel != "Copy frame",
-                        "Image-only Artwork Lasso silently offered whole-frame Copy")
+            try require(vm.selectedElementIDs.isEmpty && vm.currentImageMoveCapture() != nil, "Subtract drawing removed image")
+            try require(vm.selectedTool == .move && vm.canCopyBottomSelection && vm.bottomCopyLabel == "Copy selected image",
+                        "Image-only lasso handoff must copy only the selected image")
             try selectMixed(vm)
             try require(vm.selectedElementIDs == [line.id] && !vm.selectedElementIDs.contains(other.id), "Mixed selection captured unrelated drawing")
             try require(vm.copySelected() && vm.canCutSelected && vm.usesArtworkClipboard, "Mixed clipboard did not capture both selected kinds")

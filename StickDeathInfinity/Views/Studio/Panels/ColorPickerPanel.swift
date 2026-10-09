@@ -55,7 +55,7 @@ struct ColorPickerPanel: View {
                     )
 
                 Text(selectedHex.uppercased())
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .font(.specialElite(13))
                     .foregroundColor(.white.opacity(0.7))
                     .accessibilityIdentifier("studio.color.current")
 
@@ -66,9 +66,9 @@ struct ColorPickerPanel: View {
 
             Group {
                 HStack(spacing: 10) {
-                    Text("Custom hex").font(.system(size: 11, design: .monospaced))
+                    Text("Custom hex").font(.specialElite(11))
                     TextField("RRGGBB", text: $customHex)
-                        .font(.system(size: 13, design: .monospaced))
+                        .font(.specialElite(13))
                         .textInputAutocapitalization(.characters).autocorrectionDisabled()
                         .keyboardType(.asciiCapable).focused($customHexFocused)
                         .accessibilityLabel(target == .drawing ? "Custom drawing color hex" : "Custom gradient end color hex")
@@ -113,7 +113,7 @@ struct ColorPickerPanel: View {
                     ForEach(Array(Self.palettes.enumerated()), id: \.offset) { index, palette in
                         Button(action: { selectedPaletteIndex = index }) {
                             Text(palette.name)
-                                .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                .font(.specialElite(9))
                                 .foregroundColor(selectedPaletteIndex == index ? Color(hex: "DC2626") : .white.opacity(0.4))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
@@ -148,7 +148,7 @@ struct ColorPickerPanel: View {
             .padding(.bottom, 20)
             if !vm.recentColorHexes.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("RECENT COLORS").font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                    Text("RECENT COLORS").font(.specialElite(10)).foregroundColor(.white.opacity(0.7))
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(vm.recentColorHexes, id: \.self) { hex in

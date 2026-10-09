@@ -128,9 +128,11 @@ final class StudioViewModel: ObservableObject {
                     // Keep an invalid target as a fail-closed sentinel. Never
                     // refresh a stale Lasso revision into fresh Fill authority.
                     if fillImageLayerID != nil { imageMoveTarget?.areaRevision = document.revision }
-                } else if oldValue == .lasso, selectedTool == .move, areaSelectionTarget != .drawings,
+                } else if ((oldValue == .lasso && selectedTool == .move) ||
+                           (oldValue == .move && selectedTool == .lasso)), areaSelectionTarget != .drawings,
                    validAreaImageSelection != nil {
-                    // Preserve the lasso revision across automatic Move handoff.
+                    // Preserve the same valid selection across automatic Move handoff
+                    // and explicit Lasso reentry for Add/Subtract.
                     // Direct transforms renew it only after their own commit.
                     imageMoveTarget?.areaRevision = document.revision
                 } else { imageMoveTarget = nil }

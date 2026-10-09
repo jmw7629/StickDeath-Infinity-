@@ -19,6 +19,124 @@ import kotlinx.coroutines.withContext
 
 class StudioViewModel(application: Application) : AndroidViewModel(application) {
     private val store = ProjectStore(application)
+    var importingAudio by mutableStateOf(false); private set
+    var previewingAudio by mutableStateOf(false); private set
+    private var audioCapture: Document? = null
+    private var audioImportJob: Job? = null
+    private var audioPreviewJob: Job? = null
+    private var sceneAudioJob: Job? = null
+    private val audioPreviewMutex = Mutex()
+    private val audioImportMutex = Mutex()
+    private var audioGeneration = 0L
+    fun beginAudioImport(): Boolean {
+        val captured = document ?: return false
+        if (closing || importingAudio) return false
+        stopAudioPreview()
+        audioCapture = captured; importingAudio = true
+        return true
+    }
+    fun cancelAudioImport() {
+        audioGeneration++; audioImportJob?.cancel(); audioImportJob = null
+        audioCapture = null; importingAudio = false
+    }
+    fun importAudio(uri: Uri?) {
+        val captured = audioCapture ?: return
+        if (uri == null) { cancelAudioImport(); return }
+        audioCapture = null
+        val generation = audioGeneration
+        audioImportJob = viewModelScope.launch {
+            try {
+                val candidate = withContext(Dispatchers.IO) {
+                    audioImportMutex.withLock {
+                        val source = getApplication<Application>().contentResolver.openInputStream(uri)?.use { AudioSource.read(it) }
+                            ?: error("Files could not open this WAV.")
+                        val clip = AudioClip(name = "Audio ${captured.audioClips.size + 1}", source = source)
+                        val next = captured.copy(audioClips = captured.audioClips + clip)
+                        // Combined image/audio Base64 must fit the complete backup,
+                        // not merely each asset's independent byte allowance.
+                        store.encode(next.copy(revision = captured.revision + 1, modified = System.currentTimeMillis()))
+                        currentCoroutineContext().ensureActive()
+                        next
+                    }
+                }
+                ensureActive()
+                if (generation != audioGeneration) return@launch
+                // Finish this import before change() cancels all stale captured operations.
+                audioImportJob = null; audioCapture = null; importingAudio = false
+                if (change { current ->
+                    require(current == captured) { "Project changed during import. Choose the WAV again." }
+                    candidate
+                }) message = "WAV copied into project. Select its clip to edit or preview. MP4 export mixes saved audio clips over the animation duration."
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { report(e.message ?: "WAV import failed; no clip added.") }
+            finally { if (generation == audioGeneration) { audioCapture = null; importingAudio = false; audioImportJob = null } }
+        }
+    }
+    fun editAudio(captured: Document, clip: AudioClip): Boolean = change { current ->
+        require(current == captured && current.audioClips.any { it.id == clip.id && it.source === clip.source }) { "Project changed. Reopen the audio clip." }
+        current.copy(audioClips = current.audioClips.map { if (it.id == clip.id) clip else it })
+    }
+    fun deleteAudio(captured: Document, id: String): Boolean = change { current ->
+        require(current == captured && current.audioClips.any { it.id == id }) { "Project changed. Select the clip again." }
+        current.copy(audioClips = current.audioClips.filterNot { it.id == id })
+    }
+    fun stopAudioPreview() { sceneAudioJob?.cancel(); sceneAudioJob = null; audioPreviewJob?.cancel(); audioPreviewJob = null; previewingAudio = false }
+    suspend fun previewSceneAudio(captured: Document, onElapsedNanos: (Long) -> Unit) {
+        require(document == captured && !closing) { "Project changed before playback." }
+        val owner = currentCoroutineContext()[Job]
+        sceneAudioJob = owner
+        val manager = getApplication<Application>().getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+        val focus = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+            .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setOnAudioFocusChangeListener { state -> if (state < 0) owner?.cancel() }.build()
+        try {
+            require(manager.requestAudioFocus(focus) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus is unavailable; playback stopped." }
+            val startTicks = captured.frames.takeWhile { it.id != captured.activeFrameID }.sumOf { it.hold.toLong() }
+            val firstSample = startTicks * AudioMixer.RATE / captured.fps
+            withContext(Dispatchers.IO) {
+                audioPreviewMutex.withLock {
+                    val mixer = AudioMixer(captured)
+                    kotlinx.coroutines.withTimeout((mixer.frameCount-firstSample)*1000/AudioMixer.RATE + 5000) {
+                        mixer.preview(firstSample) { consumed ->
+                            withContext(Dispatchers.Main.immediate) {
+                                require(document == captured && !closing) { "Project changed during playback." }
+                                onElapsedNanos(consumed*1_000_000_000L/AudioMixer.RATE)
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            manager.abandonAudioFocusRequest(focus)
+            if (sceneAudioJob === owner) sceneAudioJob = null
+        }
+    }
+    fun previewAudio(captured: Document, id: String) {
+        if (closing || document != captured) return
+        val clip = captured.audioClips.firstOrNull { it.id == id } ?: return
+        stopAudioPreview(); previewingAudio = true
+        audioPreviewJob = viewModelScope.launch {
+            val owner = currentCoroutineContext()[Job]
+            val manager = getApplication<Application>().getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+            val focus = android.media.AudioFocusRequest.Builder(android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                .setOnAudioFocusChangeListener { state -> if (state < 0) owner?.cancel() }.build()
+            try {
+                require(manager.requestAudioFocus(focus) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus is unavailable. Try preview again when other audio stops." }
+                withContext(Dispatchers.IO) {
+                    audioPreviewMutex.withLock {
+                        kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip) }
+                    }
+                }
+            } catch (e: kotlinx.coroutines.TimeoutCancellationException) { report("Audio output timed out. Preview stopped.") }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { report(e.message ?: "Audio preview failed.") }
+            finally { manager.abandonAudioFocusRequest(focus); if (audioPreviewJob === owner) { previewingAudio = false; audioPreviewJob = null } }
+        }
+    }
+
     var document by mutableStateOf<Document?>(null); private set
     var library by mutableStateOf(Library(emptyList(), 0)); private set
     var message by mutableStateOf(""); private set
@@ -171,7 +289,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (change { d ->
                     require(d == captured && !d.layer.locked && d.layer.visible && d.layer.opacity > 0f)
                     val stroke = Stroke(layerID = d.activeLayerID, points = listOf(point),
-                        color = fillColor or 0xff000000.toInt(), width = 1f, tool = Tool.Fill, fill = spans)
+                        color = fillColor or 0xff000000.toInt(), width = 1f, tool = Tool.Fill, fill = spans, fillGeometry = FillGeometry(d.width, d.height))
                     d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
                 }) message = "Fill added to ${captured.layer.name}. Undo removes the fill; source drawings stay editable."
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -180,6 +298,68 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             } finally {
                 if (generation == fillGeneration) { filling = false; fillJob = null }
             }
+        }
+    }
+    var importingImage by mutableStateOf(false); private set
+    private var imageCapture: Document? = null
+    private var imageJob: Job? = null
+    private var imageGeneration = 0L
+    private val imageComputeMutex = Mutex()
+    fun beginImageImport(): Boolean {
+        val d = document ?: return false
+        if (closing || importingImage) return false
+        if (android.os.Build.VERSION.SDK_INT < 28) { report("Image import requires Android 9 or later."); return false }
+        if (d.layer.locked || !d.layer.visible || d.layer.opacity <= 0f) { report("Choose a visible unlocked layer for the image."); return false }
+        cancelImageImport()
+        imageCapture = d; importingImage = true
+        return true
+    }
+    fun cancelImageImport() {
+        imageGeneration++; imageJob?.cancel(); imageJob = null; imageCapture = null
+        if (importingImage) report("Image import cancelled; no image was added.")
+        importingImage = false
+    }
+    fun importImage(uri: Uri?) {
+        val captured = imageCapture ?: return
+        imageCapture = null
+        if (uri == null) { cancelImageImport(); return }
+        val generation = imageGeneration
+        imageJob = viewModelScope.launch {
+            try {
+                val id = newID()
+                val candidate = withContext(Dispatchers.IO) {
+                    imageComputeMutex.withLock {
+                        val context = currentCoroutineContext()
+                        val deadline = android.os.SystemClock.elapsedRealtime() + 30_000L
+                        val checkpoint = {
+                            context.ensureActive()
+                            require(android.os.SystemClock.elapsedRealtime() <= deadline) { "Image import exceeded 30 seconds; no image was added." }
+                        }
+                        checkpoint()
+                        val image = getApplication<Application>().contentResolver.openInputStream(uri)?.use { ImageArtwork.importImage(it,checkpoint) }
+                            ?: error("The file provider could not open this image.")
+                        val stroke = Stroke(id = id, layerID = captured.activeLayerID, points = image.corners(captured), color = -1, width = 1f, tool = Tool.Image, image = image)
+                        val next = captured.copy(frames = captured.frames.map { if (it.id == captured.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
+                        store.encode(next.copy(revision = captured.revision + 1, modified = System.currentTimeMillis()))
+                        checkpoint()
+                        next
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                require(generation == imageGeneration && document == captured && !closing) { "Canvas changed while importing; no image was added." }
+                // Detach from cancellation before the single ordinary history transaction.
+                imageJob = null; importingImage = false
+                if (change { d ->
+                    require(d == captured && !d.layer.locked && d.layer.visible && d.layer.opacity > 0f) { "Choose a visible unlocked layer." }
+                    candidate
+                }) {
+                    selectedStrokeIDs = setOf(id); chooseTool(Tool.Move)
+                    report("Image added. Move or use selection settings to resize, rotate or flip. Undo removes it.")
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: OutOfMemoryError) { if (generation == imageGeneration) report("Not enough memory for this image; no image was added.") }
+            catch (error: Exception) { if (generation == imageGeneration) report(error.message ?: "Image import failed; no image was added.") }
+            finally { if (generation == imageGeneration) { imageJob = null; importingImage = false; imageCapture = null } }
         }
     }
     private var sampledColorTool = Tool.Pencil
@@ -305,6 +485,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }) { "Select visible unlocked artwork again." }
         return selected
     }
+    fun setArtworkOpacity(captured: Document, ids: Set<String>, opacity: Float) {
+        if (closing) return
+        if (change { current ->
+            require(current == captured && ids == selectedStrokeIDs && ids.isNotEmpty()) { "Select the current artwork again before setting opacity." }
+            require(opacity.isFinite() && opacity in 0f..1f) { "Opacity must be between 0% and 100%." }
+            selectedArtwork(current) // Recheck visibility, layer locks and every selected identity.
+            current.copy(frames = current.frames.map { frame ->
+                if (frame.id != current.activeFrameID) frame else frame.copy(strokes = frame.strokes.map { stroke ->
+                    if (stroke.id in ids) stroke.copy(opacity = opacity) else stroke
+                })
+            })
+        }) message = if (opacity == 0f) "Selected artwork is invisible. Undo restores its previous opacity." else "Selected artwork opacity updated in one Undo step."
+    }
     fun copyArtwork(cut: Boolean = false) {
         val d = document ?: return
         if (closing) return
@@ -412,7 +605,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             change { current ->
                 require(current == d) { "Select the artwork again." }
                 current.copy(frames = current.frames.map { f -> if (f.id != current.activeFrameID) f else
-                    f.copy(strokes = f.strokes.map { s -> if (s.id !in ids) s else s.copy(
+                    f.copy(strokes = f.strokes.map { s -> if (s.id !in ids) s else if (s.tool == Tool.Fill) s.transformFill(
+                        if (horizontal) -1f else 1f, 0f, 0f, if (horizontal) 1f else -1f,
+                        if (horizontal) bounds.left+bounds.right else 0f, if (horizontal) 0f else bounds.top+bounds.bottom) else s.copy(
                         brushTransform = if (s.brush == BrushFamily.Round) s.brushTransform else s.brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (horizontal) 1f else -1f), points = s.points.map { p ->
                         if (horizontal) Point(bounds.left+bounds.right-p.x,p.y) else Point(p.x,bounds.top+bounds.bottom-p.y)
                     }) }) })
@@ -476,7 +671,10 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         change { d ->
             require(d.frame.strokes.filter { it.id in ids }.all { s -> d.layers.any { it.id == s.layerID && it.visible && !it.locked && it.opacity > 0f } })
             val transformed = transform.apply(d.frame, ids, bounds)
-            require(transformed.strokes.filter { it.id in ids }.all { s -> s.points.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() } }) {
+            require(transformed.strokes.filter { it.id in ids }.all { s ->
+                if (s.tool == Tool.Fill) s.fillBounds().let { it.left >= 0f && it.top >= 0f && it.right <= d.width && it.bottom <= d.height }
+                else s.points.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() }
+            }) {
                 "Keep the selected drawing inside the canvas. The transform was not applied."
             }
             d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) transformed else it })
@@ -567,7 +765,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 message = when (artifact.kind) {
                     ExportKind.PROJECT -> "Editable Android project backup exported."
-                    ExportKind.MP4 -> "Silent MP4 video exported."
+                    ExportKind.MP4 -> "MP4 video exported from the captured project revision."
                     ExportKind.GIF -> "Looping GIF exported with 256-color palette and centisecond timing."
                     ExportKind.PNG -> "PNG exported."
                     ExportKind.SEQUENCE -> "PNG sequence and timing manifest exported."
@@ -586,7 +784,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
     override fun onCleared() {
-        colorSampleJob?.cancel(); exportJob?.cancel(); exportArtifact?.file?.delete(); super.onCleared()
+        cancelAudioImport(); stopAudioPreview()
+        imageJob?.cancel(); colorSampleJob?.cancel(); exportJob?.cancel(); exportArtifact?.file?.delete(); super.onCleared()
     }
     private val undo = mutableStateListOf<Document>()
     private val redo = mutableStateListOf<Document>()
@@ -602,9 +801,6 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         require(d == captured) { "Project changed. Reopen settings before applying." }
         require(width in 16..4096 && height in 16..4096 && fps in 1..60)
         val resizing = width != d.width || height != d.height
-        require(!resizing || d.frames.all { f -> f.strokes.none { it.tool == Tool.Fill } }) {
-            "Canvas resizing with pixel fills is not supported yet. Keep the current size or undo the fills first."
-        }
         val frames = if (resizing && fitArtwork) {
             require(d.frames.all { f -> f.strokes.none { s -> d.layers.any { it.id == s.layerID && it.locked } } }) {
                 "Unlock artwork layers before fitting their contents to a new canvas."
@@ -613,14 +809,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val offsetX = (width - d.width * factor) / 2f
             val offsetY = (height - d.height * factor) / 2f
             d.frames.map { f -> f.copy(strokes = f.strokes.map { s ->
-                val width = if (s.brush == BrushFamily.Round) s.width else s.width * factor
-                require(width in 1f..128f) { "Fitting would exceed the supported textured brush width." }
-                s.copy(width = width, brushTransform = if (s.brush == BrushFamily.Round) s.brushTransform else s.brushTransform.then(factor,0f,0f,factor), points = s.points.map { p ->
+                if (s.tool == Tool.Fill) s.transformFill(factor,0f,0f,factor,offsetX,offsetY) else {
+                val strokeWidth = if (s.brush == BrushFamily.Round) s.width else s.width * factor
+                require(strokeWidth in 1f..128f) { "Fitting would exceed the supported textured brush width." }
+                s.copy(width = strokeWidth, brushTransform = if (s.brush == BrushFamily.Round) s.brushTransform else s.brushTransform.then(factor,0f,0f,factor), points = s.points.map { p ->
                 Point((p.x * factor + offsetX).coerceIn(0f, width.toFloat()),
                     (p.y * factor + offsetY).coerceIn(0f, height.toFloat()))
-            }) }) }
+            }) } }) }
         } else {
-            require(d.frames.all { f -> f.strokes.all { s -> s.points.all { it.x <= width && it.y <= height } } }) {
+            require(d.frames.all { f -> f.strokes.all { s ->
+                if (s.tool == Tool.Fill) s.fillBounds().let { it.left >= 0f && it.top >= 0f && it.right <= width && it.bottom <= height }
+                else s.points.all { it.x <= width && it.y <= height }
+            } }) {
                 "Artwork would fall outside this canvas. Choose Fit artwork or a larger size."
             }
             d.frames
@@ -685,7 +885,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
      * Closing waits for the latest revision; failure leaves the editor and history intact. */
     fun save(close: Boolean = false) {
         if (document == null) return
-        if (close) { cancelFill(); closing = true }
+        if (close) { cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview(); closing = true }
         if (saving) return
         saving = true
         viewModelScope.launch {
@@ -705,7 +905,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     private fun boundedPush(list: MutableList<Document>, value: Document) {
         list.add(value)
-        while (list.size > 1 && (list.size > 32 || list.sumOf { it.pointCount.toLong() } > 200_000)) list.removeAt(0)
+        while (list.size > 1 && (list.size > 32 || list.sumOf { it.pointCount.toLong() } > 200_000 || list.sumOf { it.audioBytes } > 4L * 1024 * 1024 || list.sumOf { it.imageBytes } > 8L * 1024 * 1024 || list.sumOf { it.imagePixels } > 8_388_608L)) list.removeAt(0)
     }
     private fun change(transform: (Document) -> Document): Boolean {
         val before = document ?: return false
@@ -714,7 +914,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val proposed = transform(before)
             if (proposed == before) return false
             val next = proposed.copy(revision = before.revision + 1, modified = System.currentTimeMillis()).validated()
-            cancelFill()
+            cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
             boundedPush(undo, before); redo.clear(); document = next; reconcileSelection(); dirty = true; save()
             return true
         } catch (e: Exception) { report(e.message ?: "This change is unavailable."); return false }
@@ -722,7 +922,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun undo() {
         val before = document ?: return
         if (!canUndo) return
-        cancelFill()
+        cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
         boundedPush(redo, before)
         document = undo.removeAt(undo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
         reconcileSelection(); dirty = true; save()
@@ -730,7 +930,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun redo() {
         val before = document ?: return
         if (!canRedo) return
-        cancelFill()
+        cancelImageImport(); cancelFill(); cancelAudioImport(); stopAudioPreview()
         boundedPush(undo, before)
         document = redo.removeAt(redo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
         reconcileSelection(); dirty = true; save()

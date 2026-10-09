@@ -218,7 +218,7 @@ struct LayerRow: View {
             
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
-                .font(.system(size: 12, weight: .bold, design: .monospaced))
+                .font(.specialElite(12))
                 .foregroundColor(.white.opacity(0.5))
             
             // Chevron
@@ -285,7 +285,7 @@ struct LayerDetailView: View {
                 }.tint(.red)
                 
                 Text("\(Int((draftOpacity ?? layer.opacity) * 100))%")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .font(.specialElite(11))
                     .foregroundColor(.white.opacity(0.6))
             }
             

@@ -83,10 +83,16 @@ object FrameRenderer {
                         }
                         if (stroke.tool == Tool.Fill) {
                             paint.isAntiAlias = false
-                            requireNotNull(stroke.fill).forEachIndexed { index, span ->
-                                if (index % 256 == 0) checkCancellation()
-                                canvas.drawRect(span.start.toFloat(), span.y.toFloat(), span.end.toFloat(), (span.y + 1).toFloat(), paint)
-                            }
+                            val fillCheckpoint = canvas.save()
+                            try {
+                                canvas.concat(stroke.fillGeometryOrIdentity().matrix())
+                                requireNotNull(stroke.fill).forEachIndexed { index, span ->
+                                    if (index % 256 == 0) checkCancellation()
+                                    canvas.drawRect(span.start.toFloat(), span.y.toFloat(), span.end.toFloat(), (span.y + 1).toFloat(), paint)
+                                }
+                            } finally { canvas.restoreToCount(fillCheckpoint) }
+                        } else if (stroke.tool == Tool.Image) {
+                            requireNotNull(stroke.image).draw(canvas, stroke, paint)
                         } else if (stroke.tool == Tool.Text) {
                             TextArtwork.draw(canvas, stroke, paint)
                         } else if (stroke.tool == Tool.Pencil && stroke.brush != BrushFamily.Round) {

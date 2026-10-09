@@ -16,7 +16,8 @@ struct CalendarEventView: View {
     @State private var request = UUID()
     @State private var refreshRevision = 0
 
-    private var calendar: Calendar { Calendar.autoupdatingCurrent }
+    @State private var calendar = Calendar.current
+    @State private var today = Date()
     private var accountKey: String { "\(auth.isAuthenticated):\(auth.userId ?? "guest"):\(refreshRevision)" }
     private var monthStart: Date {
         calendar.dateInterval(of: .month, for: month)?.start ?? month
@@ -47,7 +48,7 @@ struct CalendarEventView: View {
                         .accessibilityLabel("Next month")
                 }
                 HStack {
-                    Text(TimeZone.autoupdatingCurrent.identifier).font(.caption).foregroundColor(.sdTextSecondary)
+                    Text(calendar.timeZone.identifier).font(.caption).foregroundColor(.sdTextSecondary)
                     Spacer()
                     Button("Today") { select(Date()); month = Date() }
                 }
@@ -67,7 +68,7 @@ struct CalendarEventView: View {
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .background(calendar.isDate(date, inSameDayAs: selectedDate) ? Color.sdRed.opacity(0.3) : Color.clear)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(calendar.isDateInToday(date) ? Color.sdRed : .clear))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(calendar.isDate(date, inSameDayAs: today) ? Color.sdRed : .clear))
                         }
                         .accessibilityLabel(date.formatted(date: .complete, time: .omitted))
                         .accessibilityAddTraits(calendar.isDate(date, inSameDayAs: selectedDate) ? .isSelected : [])
@@ -112,6 +113,7 @@ struct CalendarEventView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .onAppear {
+            refreshCalendarClock()
             let restored = Date(timeIntervalSince1970: savedDate)
             if savedDate.isFinite, (1900...2200).contains(calendar.component(.year, from: restored)) {
                 selectedDate = restored; month = restored
@@ -120,11 +122,34 @@ struct CalendarEventView: View {
         .task(id: accountKey) { await load() }
         .refreshable { await load() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { refreshRevision += 1 }
+            if phase == .active { refreshCalendarClock(); refreshRevision += 1 }
             else { request = UUID(); events = []; detail = nil }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSSystemTimeZoneDidChange)) { _ in
+            refreshCalendarClock()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            refreshCalendarClock()
         }
         .sheet(item: $detail) { ChallengeDetailView(challenge: $0) }
         .accessibilityIdentifier("calendar.screen")
+    }
+
+    /// System clock changes invalidate day boundaries and event markers. Keep
+    /// the user's chosen civil date rather than shifting it to yesterday when
+    /// crossing timezones; challenge timestamps remain absolute instants.
+    private func refreshCalendarClock() {
+        let updated = Calendar.current
+        if updated.identifier == calendar.identifier && updated.timeZone != calendar.timeZone {
+            let chosenDay = calendar.dateComponents([.era, .year, .month, .day], from: selectedDate)
+            let shownMonth = calendar.dateComponents([.era, .year, .month], from: month)
+            if let value = updated.date(from: chosenDay) {
+                selectedDate = value; savedDate = value.timeIntervalSince1970
+            }
+            if let value = updated.date(from: shownMonth) { month = value }
+        }
+        calendar = updated
+        today = Date()
     }
 
     private func select(_ date: Date) {

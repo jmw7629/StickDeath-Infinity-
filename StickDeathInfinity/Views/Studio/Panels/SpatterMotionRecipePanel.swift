@@ -134,20 +134,20 @@ struct SpatterMotionRecipePanel: View {
                 Button("Back to advice") { session.close(); onBack() }
                     .accessibilityIdentifier("spatter.motion.back")
                 Spacer()
-                Text("LOCAL EDITS").font(.system(.caption, design: .monospaced).bold())
+                Text("LOCAL EDITS").font(.specialElite(12, relativeTo: .caption))
             }
             .foregroundColor(.red).padding(16)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
-                        .font(.system(.title3, design: .monospaced).bold())
+                        .font(.specialElite(20, relativeTo: .title3))
                     Text(editDescription)
                         .font(.subheadline)
                     Text("Use a complete example. These local edits create supported motion, edit selected audio, flip a selected image, rename the project, change frame exposure, edit layers or erase selected drawings. Open-ended AI briefs remain unfinished. Export renders the resulting project. Nothing publishes automatically.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
 
-                    Text(exampleText).font(.system(.caption, design: .monospaced))
+                    Text(exampleText).font(.specialElite(12, relativeTo: .caption))
                         .textSelection(.enabled).padding(12)
                         .background(Color(hex: "1A1A24")).cornerRadius(10)
                     Button(isFrameActionDraft || isOrderDraft || isImageDraft || isLayerDraft || isExposureDraft || isAudioDraft || isRenameDraft || isErasureDraft || isGlowDraft ? "Use motion example in draft" : "Use example in draft") { draft = isBriefDraft ? SpatterSceneBrief.example : isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example }
@@ -319,7 +319,7 @@ struct SpatterMotionRecipePanel: View {
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("spatter.motion.stick-examples")
                     TextEditor(text: $draft)
-                        .font(.system(.body, design: .monospaced))
+                        .font(.specialElite(17, relativeTo: .body))
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 150)
                         .padding(8).background(Color(hex: "1A1A24")).cornerRadius(10)

@@ -77,10 +77,12 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..13) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..17) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
+        var imageBytes = 0L; var imagePixels = 0L
+        val images = mutableMapOf<String, ImageArtwork>()
         val layers = array(j.getJSONArray("layers")).map {
             Layer(it.getString("id"), it.getString("name"), it.getBoolean("visible"), it.getBoolean("locked"), it.getDouble("opacity").toFloat(),
                 if (it.has("blend")) LayerBlend.valueOf(it.getString("blend")) else LayerBlend.Normal)
@@ -115,6 +117,26 @@ class ProjectStore(context: Context) {
                             require(span.length() == 3)
                             FillSpan(span.getInt(0), span.getInt(1), span.getInt(2))
                         }
+                    } else null,
+                    if (s.has("fillGeometry")) s.getJSONObject("fillGeometry").let { geometry ->
+                        require(j.getInt("version") >= 14 && s.has("fill"))
+                        val t = geometry.getJSONArray("transform")
+                        require(t.length() == 6)
+                        FillGeometry(geometry.getInt("sourceWidth"), geometry.getInt("sourceHeight"),
+                            t.getDouble(0).toFloat(),t.getDouble(1).toFloat(),t.getDouble(2).toFloat(),
+                            t.getDouble(3).toFloat(),t.getDouble(4).toFloat(),t.getDouble(5).toFloat())
+                    } else if (s.has("fill")) {
+                        require(j.getInt("version") == 13) { "Missing fill geometry; original preserved." }
+                        FillGeometry(j.getInt("width"),j.getInt("height"))
+                    } else null,
+                    if (s.has("image")) {
+                        require(j.getInt("version") >= 15)
+                        val data = s.getString("image")
+                        require(data.length <= ImageArtwork.MAX_BASE64)
+                        val artwork = images[data] ?: ImageArtwork.restore(data, 4L * 1024 * 1024 - imageBytes, 4_194_304L - imagePixels).also { images[data] = it }
+                        imageBytes += artwork.byteCount; imagePixels += artwork.pixels
+                        require(imageBytes <= 4L * 1024 * 1024 && imagePixels <= 4_194_304L) { "Project image capacity exceeded." }
+                        artwork
                     } else null)
             }, f.getInt("hold"))
         }
@@ -125,15 +147,28 @@ class ProjectStore(context: Context) {
         val grid = if (j.has("grid")) j.getJSONObject("grid").let {
             GridSettings(it.getBoolean("enabled"), it.getInt("spacing"), it.getDouble("opacity").toFloat(), it.getInt("color"))
         } else GridSettings()
+        val audio = if (j.has("audioClips")) {
+            require(j.getInt("version") >= 17)
+            val clips = j.getJSONArray("audioClips")
+            require(clips.length() <= 16)
+            var bytes = 0L
+            (0 until clips.length()).map { index ->
+                AudioClip.decode(clips.getJSONObject(index)).also {
+                    bytes += it.source.byteCount
+                    require(bytes <= 2L * 1024 * 1024) { "Project audio exceeds 2 MiB." }
+                }
+            }
+        } else emptyList()
         return Document(j.getString("id"), j.getString("name"), j.getInt("width"), j.getInt("height"), j.getInt("fps"),
-            frames, layers, j.getString("activeFrameID"), j.getString("activeLayerID"), j.getLong("revision"), j.getLong("modified"), onion, if (j.has("backgroundColor")) j.getInt("backgroundColor") else -1, grid)
+            frames, layers, j.getString("activeFrameID"), j.getString("activeLayerID"), j.getLong("revision"), j.getLong("modified"), onion, if (j.has("backgroundColor")) j.getInt("backgroundColor") else -1, grid, audio)
             .validated()
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 13)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 17)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
+        j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
         j.put("grid", JSONObject().put("enabled", d.grid.enabled).put("spacing", d.grid.spacing).put("opacity", d.grid.opacity).put("color", d.grid.color))
         j.put("onion", JSONObject().put("enabled", d.onion.enabled).put("previous", d.onion.previous)
             .put("next", d.onion.next).put("opacity", d.onion.opacity).put("tinted", d.onion.tinted))
@@ -143,8 +178,14 @@ class ProjectStore(context: Context) {
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
                 .put("brushTransform", JSONArray(listOf(s.brushTransform.a,s.brushTransform.b,s.brushTransform.c,s.brushTransform.d)))
+                .apply { s.image?.let { put("image", it.encoded) } }
                 .apply { s.text?.let { put("text", JSONObject().put("content", it.content).put("fontSize", it.fontSize)) } }
-                .apply { s.fill?.let { spans -> put("fill", JSONArray(spans.map { JSONArray(listOf(it.y, it.start, it.end)) })) } }
+                .apply { s.fill?.let { spans ->
+                    put("fill", JSONArray(spans.map { JSONArray(listOf(it.y, it.start, it.end)) }))
+                    val geometry = s.fillGeometryOrIdentity()
+                    put("fillGeometry", JSONObject().put("sourceWidth",geometry.sourceWidth).put("sourceHeight",geometry.sourceHeight)
+                        .put("transform",JSONArray(listOf(geometry.a,geometry.b,geometry.c,geometry.d,geometry.tx,geometry.ty))))
+                } }
                 .put("points", JSONArray(s.points.map { JSONArray(listOf(it.x, it.y)) })) })) }))
         val bytes = j.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= 8 * 1024 * 1024) { "Project exceeds 8 MiB. Previous saved version preserved." }
