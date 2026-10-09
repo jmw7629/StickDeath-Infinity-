@@ -12,7 +12,7 @@ import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4 }
+enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF }
 data class ExportArtifact(val file: File, val kind: ExportKind, val name: String)
 
 /** Encodes one bitmap at a time into a bounded, privately owned staging file. */
@@ -30,6 +30,7 @@ object ProjectExporter {
     suspend fun prepare(context: Context, document: Document, kind: ExportKind, progress: (Int, Int) -> Unit): ExportArtifact {
         val d = document.validated()
         if (kind == ExportKind.MP4) return MovieExporter.prepare(context,d,progress)
+        if (kind == ExportKind.GIF) return GifExporter.prepare(context,d,progress)
         require(kind == ExportKind.PROJECT || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
         val layout = if (kind == ExportKind.SPRITESHEET) sheet(d) else null
         val coroutine = currentCoroutineContext()
@@ -113,6 +114,7 @@ object ProjectExporter {
             complete = true
             return ExportArtifact(file, kind, when (kind) {
                 ExportKind.MP4 -> "$stem.mp4"
+                ExportKind.GIF -> "$stem.gif"
                 ExportKind.PROJECT -> "$stem.sdiandroid.json"
                 ExportKind.PNG -> "$stem-frame.png"
                 ExportKind.SEQUENCE -> "$stem-frames.zip"

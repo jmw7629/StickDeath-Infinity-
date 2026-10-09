@@ -77,7 +77,7 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..11) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..13) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
@@ -104,7 +104,18 @@ class ProjectStore(context: Context) {
                         require(t.length() == 4)
                         BrushTransform(t.getDouble(0).toFloat(),t.getDouble(1).toFloat(),t.getDouble(2).toFloat(),t.getDouble(3).toFloat())
                     } else BrushTransform(),
-                    if (s.has("nibAngle")) s.getDouble("nibAngle").toFloat() else if (s.optString("brush") == "Hatch") -45f else 45f)
+                    if (s.has("nibAngle")) s.getDouble("nibAngle").toFloat() else if (s.optString("brush") == "Hatch") -45f else 45f,
+                    if (s.has("text")) s.getJSONObject("text").let { EditableText(it.getString("content"), it.getDouble("fontSize").toFloat()) } else null,
+                    if (s.has("fill")) s.getJSONArray("fill").let { spans ->
+                        require(j.getInt("version") >= 13 && spans.length() in 1..BucketFill.MAX_SPANS)
+                        pointCount += spans.length() * 3
+                        require(pointCount <= 100_000) { "Project fill capacity reached." }
+                        (0 until spans.length()).map { index ->
+                            val span = spans.getJSONArray(index)
+                            require(span.length() == 3)
+                            FillSpan(span.getInt(0), span.getInt(1), span.getInt(2))
+                        }
+                    } else null)
             }, f.getInt("hold"))
         }
         val onion = if (j.has("onion")) j.getJSONObject("onion").let {
@@ -120,7 +131,7 @@ class ProjectStore(context: Context) {
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 11)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 13)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("grid", JSONObject().put("enabled", d.grid.enabled).put("spacing", d.grid.spacing).put("opacity", d.grid.opacity).put("color", d.grid.color))
@@ -132,6 +143,8 @@ class ProjectStore(context: Context) {
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
                 .put("brushTransform", JSONArray(listOf(s.brushTransform.a,s.brushTransform.b,s.brushTransform.c,s.brushTransform.d)))
+                .apply { s.text?.let { put("text", JSONObject().put("content", it.content).put("fontSize", it.fontSize)) } }
+                .apply { s.fill?.let { spans -> put("fill", JSONArray(spans.map { JSONArray(listOf(it.y, it.start, it.end)) })) } }
                 .put("points", JSONArray(s.points.map { JSONArray(listOf(it.x, it.y)) })) })) }))
         val bytes = j.toString().toByteArray(Charsets.UTF_8)
         require(bytes.size <= 8 * 1024 * 1024) { "Project exceeds 8 MiB. Previous saved version preserved." }

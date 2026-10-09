@@ -11,7 +11,7 @@ data class ArtworkBounds(val left: Float, val top: Float, val right: Float, val 
     fun union(b: ArtworkBounds) = ArtworkBounds(min(left,b.left), min(top,b.top), max(right,b.right), max(bottom,b.bottom))
     companion object {
         fun of(stroke: Stroke): ArtworkBounds {
-            val radius = stroke.textureRadius()
+            val radius = if (stroke.tool == Tool.Text) 0f else stroke.textureRadius()
             return ArtworkBounds(stroke.points.minOf { it.x } - radius, stroke.points.minOf { it.y } - radius,
                 stroke.points.maxOf { it.x } + radius, stroke.points.maxOf { it.y } + radius)
         }

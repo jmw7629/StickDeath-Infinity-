@@ -707,7 +707,7 @@ struct MenuSheetToggleRow: View {
                     .font(.specialElite(12)).fontWeight(.bold)
                     .foregroundColor(.red)
             }
-            Toggle("", isOn: $isOn)
+            Toggle(label, isOn: $isOn)
                 .labelsHidden()
                 .tint(.red)
         }

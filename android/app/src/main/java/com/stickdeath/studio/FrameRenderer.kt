@@ -81,7 +81,15 @@ object FrameRenderer {
                             strokeCap = Paint.Cap.ROUND; strokeJoin = Paint.Join.ROUND
                             if (stroke.tool == Tool.Eraser) xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
                         }
-                        if (stroke.tool == Tool.Pencil && stroke.brush != BrushFamily.Round) {
+                        if (stroke.tool == Tool.Fill) {
+                            paint.isAntiAlias = false
+                            requireNotNull(stroke.fill).forEachIndexed { index, span ->
+                                if (index % 256 == 0) checkCancellation()
+                                canvas.drawRect(span.start.toFloat(), span.y.toFloat(), span.end.toFloat(), (span.y + 1).toFloat(), paint)
+                            }
+                        } else if (stroke.tool == Tool.Text) {
+                            TextArtwork.draw(canvas, stroke, paint)
+                        } else if (stroke.tool == Tool.Pencil && stroke.brush != BrushFamily.Round) {
                             BrushRenderer.draw(canvas,stroke,paint,checkCancellation)
                         } else if (stroke.points.size == 1 || stroke.points.all { it == stroke.points.first() }) {
                             canvas.drawCircle(stroke.points.first().x, stroke.points.first().y, stroke.width / 2, paint)

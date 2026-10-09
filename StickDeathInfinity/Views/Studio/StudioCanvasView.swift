@@ -328,6 +328,18 @@ struct StudioCanvasView: View {
                     .accessibilityLabel("Animation canvas")
                     .accessibilityIdentifier("studio.canvas")
                     .accessibilityValue(vm.hasMixedArtworkSelection ? "Selected drawings and image: drag the group to move it, white corner handles to resize, or the red handle to rotate together." : vm.isMovingImageOnCanvas ? "Selected image: drag inside the red outline to move it. Drag white corner handles to resize or the red handle to rotate. Position image offers numeric dimensions and angle." : handles == nil ? "" : "Selected artwork: drag white corner handles to resize or the red handle to rotate. The Move popup also provides Scale and Angle controls.")
+                    .accessibilityActions {
+                        if canAccessSelectionActions {
+                            Button("Move selection left one pixel") { nudgeAccessibleSelection(dx: -1, dy: 0) }
+                            Button("Move selection right one pixel") { nudgeAccessibleSelection(dx: 1, dy: 0) }
+                            Button("Move selection up one pixel") { nudgeAccessibleSelection(dx: 0, dy: -1) }
+                            Button("Move selection down one pixel") { nudgeAccessibleSelection(dx: 0, dy: 1) }
+                            Button("Open selection transform options") {
+                                guard canAccessSelectionActions else { return }
+                                vm.activePanel = .toolSettings
+                            }
+                        }
+                    }
                     if vm.gridEnabled { GridOverlay(settings: vm.document.gridSettings ?? .init()).allowsHitTesting(false) }
                 }
                 .frame(width: size.width, height: size.height)
@@ -878,6 +890,18 @@ struct StudioCanvasView: View {
     private func documentDelta(_ delta: CGSize, size: CGSize) -> CGSize {
         CGSize(width: delta.width / size.width * CGFloat(vm.canvasWidth), height: delta.height / size.height * CGFloat(vm.canvasHeight))
     }
+    // VoiceOver uses the same fresh selection capture, history and lock checks
+    // as pointer/keyboard transforms. Never act on an interrupted canvas gesture.
+    private var canAccessSelectionActions: Bool {
+        scenePhase == .active && vm.activePanel == .none && input == nil && !gestureActive
+            && vm.beginSelectionHandle() != nil
+    }
+
+    private func nudgeAccessibleSelection(dx: Double, dy: Double) {
+        guard canAccessSelectionActions else { return }
+        _ = vm.positionSelected(dx: dx, dy: dy)
+    }
+
     private func selectionHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
         guard let capture = vm.beginSelectionHandle(), let bounds = vm.selectedArtworkBounds(in: frame) else { return nil }
         return StudioSelectionHandleGeometry(bounds: bounds,

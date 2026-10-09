@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
     val moviePicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("video/mp4")) { vm.finishExport(it) }
+    val gifPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/gif")) { vm.finishExport(it) }
     val pngPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { vm.finishExport(it) }
     val projectPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { vm.finishExport(it) }
     val zipPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { vm.finishExport(it) }
@@ -57,6 +58,7 @@ class MainActivity : ComponentActivity() {
             try {
                 when (artifact.kind) {
                     ExportKind.MP4 -> moviePicker.launch(artifact.name)
+                    ExportKind.GIF -> gifPicker.launch(artifact.name)
                     ExportKind.PNG -> pngPicker.launch(artifact.name)
                     ExportKind.PROJECT -> projectPicker.launch(artifact.name)
                     else -> zipPicker.launch(artifact.name)
@@ -216,7 +218,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         kotlinx.coroutines.delay(250)
         vm.persistToolSettings()
     }
-    DisposableEffect(vm) { onDispose { vm.persistToolSettings() } }
+    DisposableEffect(vm) { onDispose { vm.cancelFill(); vm.persistToolSettings() } }
     val exportProgress by vm.exportProgress.collectAsState()
     var panel by remember { mutableStateOf<String?>(null) }
     var settingsCapture by remember(doc.id) { mutableStateOf(doc) }
@@ -230,6 +232,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     val timelineState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(playing, doc.id, doc.revision) {
         if (playing) {
+            vm.cancelFill()
             val clock = FramePlaybackClock(doc)
             previewIndex = clock.frameAt(0)
             val started = withFrameNanos { it }
@@ -319,13 +322,36 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                         Text("Restore this backup from the Android project library. It is not the iOS .sdi format.")
                         Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video (silent)") }
                         Text("MP4 uses the exact canvas, FPS and frame holds. Requires a compatible device encoder, even dimensions, and at most 120 seconds / 4 megapixels. Android audio mixing is not implemented.")
+                        Button({ vm.prepareExport(ExportKind.GIF); panel = null }) { Text("Animated GIF (looping)") }
+                        Text("GIF uses 256 colors and the opaque project background. Timing rounds to hundredths of a second; some viewers slow fast frames. Up to 120 seconds / 4 megapixels / 256 MiB. No audio.")
                         Button({ vm.prepareExport(ExportKind.PNG); panel = null }) { Text("Current frame PNG") }
                         Button({ vm.prepareExport(ExportKind.SEQUENCE); panel = null }) { Text("PNG sequence ZIP") }
                         Button({ vm.prepareExport(ExportKind.SPRITESHEET); panel = null }) { Text("Spritesheet PNG + timing ZIP") }
                         Text("Spritesheets preserve every frame at original size, up to 8 megapixels and an 8192-pixel edge. Larger projects can use PNG sequence.")
                     }
                     "brush" -> {
-                        if (vm.tool == Tool.Eyedropper) {
+                        if (vm.tool == Tool.Text) {
+                            Text("Editable text · system sans serif. Up to 512 characters / 8 lines. Tap the canvas to place new text; select text with Lasso to edit it.")
+                            OutlinedTextField(vm.textContent, { if (it.length <= 512) vm.textContent = it }, label = { Text("Text content") }, maxLines = 8)
+                            Text("Font size: ${vm.textFontSize.toInt()} pixels")
+                            Slider(vm.textFontSize, { vm.textFontSize = it }, valueRange = 8f..128f)
+                            StudioColorPicker("Text color", vm.color) { vm.color = it or 0xff000000.toInt() }
+                            Button({ vm.addText(doc, Point(8f, 8f)) }) { Text("Add new text at top left") }
+                            if (vm.selectedText != null) {
+                                Button({ vm.editText(doc) }) { Text("Apply to selected text") }
+                                TextButton({ panel = "deleteSelection" }) { Text("Delete selected text") }
+                            }
+                        } else if (vm.tool == Tool.Fill) {
+                            Text("Tap to fill from the merged visible frame, including background, layer opacity and blends. Hidden layers, onion skin, grid and selection handles are excluded. The new fill belongs to the active visible unlocked layer.")
+                            StudioColorPicker("Fill color", vm.color) { vm.cancelFill(); vm.color = it or 0xff000000.toInt() }
+                            Text("Tolerance: ${vm.fillTolerance} / 255")
+                            Slider(vm.fillTolerance.toFloat(), { vm.configureFill(tolerance = it.toInt()) }, valueRange = 0f..255f, steps = 254)
+                            Text("Maximum RGB channel difference from the tapped pixel. Zero matches exactly; 255 matches all colors.")
+                            FilterChip(vm.fillContiguous, { vm.configureFill(contiguous = !vm.fillContiguous) }, { Text("Contiguous") })
+                            Text(if (vm.fillContiguous) "Only the connected region (four neighboring pixels)." else "Every matching pixel across the canvas, including disconnected regions.")
+                            Text("Up to 4,194,304 canvas pixels and 20,000 pixel runs per fill, with a five-second work limit. Fills have pixel edges and cannot yet be selected, transformed or resized with the canvas. Undo/Redo and layer operations remain available.")
+                            if (vm.filling) TextButton({ vm.cancelFill(); vm.report("Fill cancelled; no fill was added.") }) { Text("Cancel fill") }
+                        } else if (vm.tool == Tool.Eyedropper) {
                             Text("Tap to sample the visible canvas, including layer opacity and erased areas. Hidden layers, onion skin and selection handles are excluded. Sampling returns to your previous color drawing tool.")
                         } else if (vm.tool == Tool.Hand) {
                             Text("Hand · ${(vm.viewportZoom * 100).toInt()}%")
@@ -333,8 +359,9 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                             Slider(vm.viewportZoom, { vm.viewport(it, 0f, 0f) }, valueRange = 0.25f..8f)
                             TextButton({ vm.fitViewport() }) { Text("Fit canvas") }
                         } else if (vm.tool == Tool.Lasso || vm.tool == Tool.Move) {
-                            Text("Lasso encloses whole unlocked drawings. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
+                            Text("Pixel fills cannot be selected or transformed. Lasso encloses whole unlocked drawings. A selection switches to Move. Drag inside its box; corners resize and the top handle rotates. Keep transformed drawings inside the canvas.")
                             Text("${vm.selectedStrokeIDs.size} selected objects")
+                            if (vm.selectedText != null) TextButton({ vm.chooseTool(Tool.Text) }) { Text("Edit text") }
                             FilterChip(vm.selectionPreservesAspect,
                                 { vm.chooseSelectionAspectLock(!vm.selectionPreservesAspect) },
                                 { Text("Keep proportions") })
@@ -623,7 +650,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                     }
                 }
                 var overflow = false
-                if (tool != Tool.Move && tool != Tool.Eyedropper && !tool.isShape) pending = points.toList()
+                if (tool != Tool.Move && tool != Tool.Fill && tool != Tool.Eyedropper && tool != Tool.Text && !tool.isShape) pending = points.toList()
                 down.consume()
                 try {
                     while (true) {
@@ -633,7 +660,7 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         val change = event.changes.firstOrNull { it.id == down.id } ?: break
                         val current = point(change.position.x, change.position.y)
                         if (tool == Tool.Move && bounds != null) transformed = movement(current).apply(doc.frame, ids, bounds)
-                        else if (tool == Tool.Eyedropper) {
+                        else if (tool == Tool.Fill || tool == Tool.Eyedropper || tool == Tool.Text) {
                             val dx = current.x - first.x; val dy = current.y - first.y
                             val tolerance = 8f * doc.width / size.width / vm.viewportZoom
                             if (dx * dx + dy * dy > tolerance * tolerance) overflow = true
@@ -657,9 +684,11 @@ private fun selectionHandles(bounds: ArtworkBounds, width: Int, height: Int, rad
                         }
                         change.consume()
                         if (!change.pressed) {
-                            if (overflow) vm.report(if (tool == Tool.Eyedropper) "Tap without dragging to sample a color." else "Outline too long. Draw a simpler outline.")
+                            if (overflow) vm.report(if (tool == Tool.Text) "Tap without dragging to place text." else if (tool == Tool.Eyedropper) "Tap without dragging to sample a color." else if (tool == Tool.Fill) "Tap without dragging to fill." else "Outline too long. Draw a simpler outline.")
                             else when(tool) {
+                                Tool.Text -> vm.addText(doc, first)
                                 Tool.Eyedropper -> vm.sampleColor(doc, current)
+                                Tool.Fill -> vm.fillAt(doc, first)
                                 Tool.Lasso -> vm.selectArea(doc, if (selectionShape == SelectionShape.Rectangle) pending else points, selectionMode, ids, selectionShape)
                                 Tool.Move -> vm.transformSelection(doc, ids, movement(current))
                                 else -> vm.commitStroke(doc, if (tool.isShape) pending else points, tool, width, color, filled, opacity, mirror, brush, brushSeed, nibAngle)

@@ -110,8 +110,11 @@ struct ProjectSettingsPanel: View {
                                 .fill(Color.white.opacity(0.05))
                         )
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Edit onion skin settings")
+                .accessibilityValue(showingOnionSettings ? "Expanded" : "Collapsed")
                 
-                Toggle("", isOn: $vm.showOnionSkin)
+                Toggle("Onion skin", isOn: $vm.showOnionSkin)
                     .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#DC2626")))
                     .labelsHidden()
             }
@@ -142,8 +145,11 @@ struct ProjectSettingsPanel: View {
                                 .fill(Color.white.opacity(0.05))
                         )
                 }
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Edit canvas grid settings")
+                .accessibilityValue(showingGridSettings ? "Expanded" : "Collapsed")
                 
-                Toggle("", isOn: $vm.gridEnabled)
+                Toggle("Canvas grid", isOn: $vm.gridEnabled)
                     .toggleStyle(SwitchToggleStyle(tint: Color(hex: "#DC2626")))
                     .labelsHidden()
             }

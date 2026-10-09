@@ -9,6 +9,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -82,7 +84,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         1f, smoothing = if (tool == Tool.Pencil) 3f else 0f)
     fun persistToolSettings() {
         if (tool.isDrawing) drawingSettings[tool] = DrawingSettings(width, strokeOpacity, shapeFilled, shapeEqualSides, smoothing, mirrorMode)
-        val edit = preferences.edit().putFloat("brush.${brushFamily.name}.angle", nibAngle).putInt("color", color).putFloat("selection.nudge", selectionNudge).putBoolean("selection.preserveAspect", selectionPreservesAspect).putString("pencil.brush", brushFamily.name)
+        val edit = preferences.edit().putInt("fill.tolerance", fillTolerance).putBoolean("fill.contiguous", fillContiguous).putFloat("brush.${brushFamily.name}.angle", nibAngle).putInt("color", color).putFloat("selection.nudge", selectionNudge).putBoolean("selection.preserveAspect", selectionPreservesAspect).putString("pencil.brush", brushFamily.name)
         if (tool == Tool.Pencil) {
             val key = "brush.${brushFamily.name}"
             edit.putFloat("$key.width", width).putFloat("$key.opacity", strokeOpacity)
@@ -97,6 +99,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         edit.apply()
     }
     private fun restoreToolSettings() {
+        try { fillTolerance = preferences.getInt("fill.tolerance", 24).coerceIn(0,255) } catch (_: Exception) { }
+        try { fillContiguous = preferences.getBoolean("fill.contiguous", true) } catch (_: Exception) { }
         try { brushFamily = BrushFamily.valueOf(preferences.getString("pencil.brush", "Round") ?: "Round") } catch (_: Exception) { }
         restoreNibAngle()
         try { selectionNudge = preferences.getFloat("selection.nudge", 1f).takeIf { it in listOf(1f, 5f, 10f) } ?: 1f } catch (_: Exception) { }
@@ -119,14 +123,78 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         restoreBrushSettings(if (preferences.contains("Pencil.width")) initial else null)
         try { preferences.getInt("color", color).takeIf { it ushr 24 == 255 }?.let { color = it } } catch (_: Exception) { }
     }
+    var fillTolerance by mutableIntStateOf(24); private set
+    var fillContiguous by mutableStateOf(true); private set
+    var filling by mutableStateOf(false); private set
+    private var fillJob: Job? = null
+    // Cancellation is cooperative during native raster calls. Keep one allocation
+    // owner until that call unwinds before admitting the next requested fill.
+    private val fillComputeMutex = Mutex()
+    private var fillGeneration = 0L
+    fun cancelFill() {
+        if (filling) message = "Fill cancelled; no fill was added."
+        fillGeneration++
+        fillJob?.cancel(); fillJob = null; filling = false
+    }
+    fun configureFill(tolerance: Int = fillTolerance, contiguous: Boolean = fillContiguous) {
+        require(tolerance in 0..255)
+        cancelFill(); fillTolerance = tolerance; fillContiguous = contiguous
+        persistToolSettings()
+    }
+    fun fillAt(captured: Document, point: Point) {
+        if (document != captured || closing || tool != Tool.Fill) return
+        cancelFill()
+        if (captured.layer.locked || !captured.layer.visible || captured.layer.opacity <= 0f) {
+            report("Choose a visible unlocked layer for Fill."); return
+        }
+        val generation = fillGeneration
+        val tolerance = fillTolerance; val contiguous = fillContiguous; val fillColor = color
+        filling = true; message = "Filling from merged visible layers…"
+        fillJob = viewModelScope.launch {
+            try {
+                val spans = withContext(Dispatchers.Default) {
+                    fillComputeMutex.withLock {
+                        val context = currentCoroutineContext()
+                        context.ensureActive()
+                        BucketFill.compute(captured, point, tolerance, contiguous) { context.ensureActive() }
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                if (generation != fillGeneration || document != captured || closing || tool != Tool.Fill ||
+                    fillColor != color || tolerance != fillTolerance || contiguous != fillContiguous) {
+                    if (generation == fillGeneration) report("Fill cancelled because the canvas or settings changed.")
+                    return@launch
+                }
+                // Detach before change() cancels obsolete work. One canonical
+                // stroke enters the ordinary undo/autosave/export pipeline.
+                fillJob = null
+                if (change { d ->
+                    require(d == captured && !d.layer.locked && d.layer.visible && d.layer.opacity > 0f)
+                    val stroke = Stroke(layerID = d.activeLayerID, points = listOf(point),
+                        color = fillColor or 0xff000000.toInt(), width = 1f, tool = Tool.Fill, fill = spans)
+                    d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
+                }) message = "Fill added to ${captured.layer.name}. Undo removes the fill; source drawings stay editable."
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (generation == fillGeneration) report(error.message ?: "Fill could not be completed; no fill was added.")
+            } finally {
+                if (generation == fillGeneration) { filling = false; fillJob = null }
+            }
+        }
+    }
     private var sampledColorTool = Tool.Pencil
     private var colorSampleJob: Job? = null
     fun chooseTool(next: Tool) {
         if (next == tool) return
+        cancelFill()
         persistToolSettings()
-        if (next == Tool.Eyedropper && tool.isSelectable) sampledColorTool = tool
+        if (next == Tool.Eyedropper && (tool.isSelectable || tool == Tool.Fill)) sampledColorTool = tool
         if (next != Tool.Eyedropper) colorSampleJob?.cancel()
         tool = next
+        if (next == Tool.Text) selectedText?.let {
+            val source = requireNotNull(it.text)
+            textContent = source.content; textFontSize = source.fontSize; color = it.color
+        }
         if (next.isDrawing) {
             val settings = drawingSettings[next] ?: DrawingSettings(if (next == Tool.Eraser) 24f else if (next.isShape) 4f else 8f, 1f, smoothing = if (next == Tool.Pencil) 3f else 0f)
             width = settings.width; strokeOpacity = settings.opacity
@@ -145,7 +213,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 }
                 currentCoroutineContext().ensureActive()
                 if (document != captured || closing || tool != Tool.Eyedropper) return@launch
-                color = sampled; chooseTool(sampledColorTool)
+                chooseTool(sampledColorTool); color = sampled
                 message = "Canvas color sampled. Continue drawing with ${sampledColorTool.name}."
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -500,6 +568,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 message = when (artifact.kind) {
                     ExportKind.PROJECT -> "Editable Android project backup exported."
                     ExportKind.MP4 -> "Silent MP4 video exported."
+                    ExportKind.GIF -> "Looping GIF exported with 256-color palette and centisecond timing."
                     ExportKind.PNG -> "PNG exported."
                     ExportKind.SEQUENCE -> "PNG sequence and timing manifest exported."
                     ExportKind.SPRITESHEET -> "Spritesheet and frame/timing manifest exported."
@@ -533,6 +602,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         require(d == captured) { "Project changed. Reopen settings before applying." }
         require(width in 16..4096 && height in 16..4096 && fps in 1..60)
         val resizing = width != d.width || height != d.height
+        require(!resizing || d.frames.all { f -> f.strokes.none { it.tool == Tool.Fill } }) {
+            "Canvas resizing with pixel fills is not supported yet. Keep the current size or undo the fills first."
+        }
         val frames = if (resizing && fitArtwork) {
             require(d.frames.all { f -> f.strokes.none { s -> d.layers.any { it.id == s.layerID && it.locked } } }) {
                 "Unlock artwork layers before fitting their contents to a new canvas."
@@ -613,7 +685,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
      * Closing waits for the latest revision; failure leaves the editor and history intact. */
     fun save(close: Boolean = false) {
         if (document == null) return
-        if (close) closing = true
+        if (close) { cancelFill(); closing = true }
         if (saving) return
         saving = true
         viewModelScope.launch {
@@ -642,6 +714,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val proposed = transform(before)
             if (proposed == before) return false
             val next = proposed.copy(revision = before.revision + 1, modified = System.currentTimeMillis()).validated()
+            cancelFill()
             boundedPush(undo, before); redo.clear(); document = next; reconcileSelection(); dirty = true; save()
             return true
         } catch (e: Exception) { report(e.message ?: "This change is unavailable."); return false }
@@ -649,6 +722,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun undo() {
         val before = document ?: return
         if (!canUndo) return
+        cancelFill()
         boundedPush(redo, before)
         document = undo.removeAt(undo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
         reconcileSelection(); dirty = true; save()
@@ -656,9 +730,38 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun redo() {
         val before = document ?: return
         if (!canRedo) return
+        cancelFill()
         boundedPush(undo, before)
         document = redo.removeAt(redo.lastIndex).copy(revision = before.revision + 1, modified = System.currentTimeMillis())
         reconcileSelection(); dirty = true; save()
+    }
+    var textContent by mutableStateOf("Text")
+    var textFontSize by mutableFloatStateOf(32f)
+    val selectedText: Stroke? get() = document?.frame?.strokes?.singleOrNull { it.id in selectedStrokeIDs }
+        ?.takeIf { selectedStrokeIDs.size == 1 && it.tool == Tool.Text }
+    fun addText(captured: Document, origin: Point) {
+        val id = newID()
+        if (change { d ->
+            require(d == captured) { "The document changed. Add text again." }
+            require(!d.layer.locked && d.layer.visible && d.layer.opacity > 0f) { "Choose a visible unlocked layer." }
+            val source = EditableText(textContent, textFontSize).also { it.validate() }
+            val stroke = Stroke(id = id, layerID = d.activeLayerID, points = TextArtwork.corners(source, origin),
+                color = color or 0xff000000.toInt(), width = 1f, tool = Tool.Text, text = source)
+            require(stroke.points.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() }) {
+                "Text does not fit here. Use fewer characters, a smaller size, or tap nearer the top left."
+            }
+            d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
+        }) { selectedStrokeIDs = setOf(id); chooseTool(Tool.Move); message = "Text added. Move, resize or rotate the selection; use Edit text to change its words." }
+    }
+    fun editText(captured: Document) {
+        val id = selectedText?.id ?: return
+        change { d ->
+            require(d == captured) { "The document changed. Reopen text settings." }
+            val original = selectedArtwork(d).single().also { require(it.id == id && it.tool == Tool.Text) }
+            val updated = TextArtwork.replace(original, EditableText(textContent, textFontSize)).copy(color = color or 0xff000000.toInt())
+            require(updated.points.all { it.x in 0f..d.width.toFloat() && it.y in 0f..d.height.toFloat() }) { "Edited text does not fit. Shorten it, reduce its size or move it first." }
+            d.copy(frames = d.frames.map { if (it.id == d.activeFrameID) it.copy(strokes = it.strokes.map { s -> if (s.id == id) updated else s }) else it })
+        }
     }
     fun commitStroke(captured: Document, points: List<Point>, strokeTool: Tool, strokeWidth: Float, strokeColor: Int, filled: Boolean = false, opacity: Float = 1f, mirror: MirrorMode = MirrorMode.Off, brush: BrushFamily = BrushFamily.Round, brushSeed: Int = newID().hashCode(), nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f) {
         val now = document ?: return

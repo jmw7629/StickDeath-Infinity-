@@ -180,6 +180,9 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                     default: try local.setAudioTrackVolume(trackVolume, volume: 0.4, checkCancellation: checkpoint)
                     }
                     throw Failure(message: "Late draft overwritten mode \(mode)")
+                } catch StudioCommandError.staleRevision where mode == 6 {
+                    // Track volume uses the typed command executor. An intervening
+                    // draft revokes its capture with this specific command error.
                 } catch is StudioDocumentError { }
                 try check(checkpoints == 2 && local.document == before && local.textDraft != nil && local.textInput == "Late words",
                     "Late audio mutation changed draft/history mode \(mode)")
@@ -527,7 +530,7 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
                     checks += 1
                     if checks == 2 { try local.setAudioTrackMuted(2, muted: true, expectedRevision: local.document.revision) }
                 }); throw Failure(message: "late stale volume accepted")
-            } catch is StudioDocumentError { }
+            } catch StudioCommandError.staleRevision { }
             try check(checks == 2 && local.document.isAudioTrackMuted(2) && local.document.audioTrackVolumes == nil,
                       "late stale volume overwrote the intervening edit")
             await local.flush()
