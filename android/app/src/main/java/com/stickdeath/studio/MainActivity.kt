@@ -60,7 +60,7 @@ class MainActivity : ComponentActivity() {
                     ExportKind.MP4 -> moviePicker.launch(artifact.name)
                     ExportKind.GIF -> gifPicker.launch(artifact.name)
                     ExportKind.PNG -> pngPicker.launch(artifact.name)
-                    ExportKind.PROJECT -> projectPicker.launch(artifact.name)
+                    ExportKind.PROJECT, ExportKind.CREDITS -> projectPicker.launch(artifact.name)
                     else -> zipPicker.launch(artifact.name)
                 }
             } catch (e: Exception) { vm.cancelExport(); vm.report(e.message ?: "No document picker is available.") }
@@ -359,6 +359,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                     }
                     "export" -> {
                         Text("Export the current saved-or-unsaved project snapshot with its project background. ZIP stores each frame once with FPS and exposure ticks in manifest.json.")
+                        Button({ vm.prepareExport(ExportKind.CREDITS); panel = null }) { Text("Project asset credits JSON") }
                         Button({ vm.prepareExport(ExportKind.PROJECT); panel = null }) { Text("Editable Android project backup") }
                         Text("Restore this backup from the Android project library. It is not the iOS .sdi format.")
                         Button({ vm.prepareExport(ExportKind.MP4); panel = null }) { Text("MP4 video + project audio") }

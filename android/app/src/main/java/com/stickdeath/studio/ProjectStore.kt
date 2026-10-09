@@ -78,7 +78,7 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..20) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..21) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
@@ -138,6 +138,10 @@ class ProjectStore(context: Context) {
                         imageBytes += artwork.byteCount; imagePixels += artwork.pixels
                         require(imageBytes <= 4L * 1024 * 1024 && imagePixels <= 4_194_304L) { "Project image capacity exceeded." }
                         artwork
+                    } else null,
+                    if (s.has("assetCredit")) {
+                        require(j.getInt("version") >= 21)
+                        AssetCredit.decode(s.getJSONObject("assetCredit"))
                     } else null)
             }, f.getInt("hold"))
         }
@@ -156,6 +160,7 @@ class ProjectStore(context: Context) {
             val sources = mutableMapOf<String, AudioSource>()
             (0 until clips.length()).map { index ->
                 require(!clips.getJSONObject(index).has("fade") || j.getInt("version") >= 18)
+                require(!clips.getJSONObject(index).has("assetCredit") || j.getInt("version") >= 21)
                 val encoded = clips.getJSONObject(index).getString("wav")
                 val source = sources[encoded] ?: AudioSource.decode(encoded).also { sources[encoded] = it }
                 AudioClip.decode(clips.getJSONObject(index), source).also {
@@ -179,7 +184,7 @@ class ProjectStore(context: Context) {
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 20)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 21)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
@@ -193,7 +198,7 @@ class ProjectStore(context: Context) {
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
                 .put("brushTransform", JSONArray(listOf(s.brushTransform.a,s.brushTransform.b,s.brushTransform.c,s.brushTransform.d)))
-                .apply { s.image?.let { put("image", it.encoded) } }
+                .apply { s.image?.let { put("image", it.encoded) }; s.assetCredit?.let { put("assetCredit", it.json()) } }
                 .apply { s.text?.let { put("text", JSONObject().put("content", it.content).put("fontSize", it.fontSize)) } }
                 .apply { s.fill?.let { spans ->
                     put("fill", JSONArray(spans.map { JSONArray(listOf(it.y, it.start, it.end)) }))

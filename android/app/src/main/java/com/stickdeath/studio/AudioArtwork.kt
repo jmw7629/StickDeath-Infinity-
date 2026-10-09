@@ -152,20 +152,21 @@ data class AudioFade(val start: Double, val end: Double, val fadeIn: Double, val
 
 data class AudioClip(val id: String = newID(), val name: String, val source: AudioSource,
     val start: Double = 0.0, val sourceOffset: Double = 0.0, val duration: Double = source.duration,
-    val volume: Float = 1f, val muted: Boolean = false, val track: Int = 1, val fade: AudioFade? = null) {
+    val volume: Float = 1f, val muted: Boolean = false, val track: Int = 1, val fade: AudioFade? = null, val assetCredit: AssetCredit? = null) {
     fun validate() {
         java.util.UUID.fromString(id)
         require(name.isNotBlank() && name.length <= 80 && track in 1..4)
         require(start.isFinite() && start in 0.0..3600.0 && sourceOffset.isFinite() && sourceOffset >= 0 &&
             duration.isFinite() && duration + 1e-12 >= 1.0 / source.rate && sourceOffset + duration <= source.duration + 0.000001) { "Trim must remain inside the source (minimum one source sample)." }
         require(volume.isFinite() && volume in 0f..1f)
+        assetCredit?.validate()
         fade?.validate(source.duration)
     }
     fun json() = JSONObject().put("id",id).put("name",name).put("wav",source.encoded()).put("start",start)
-        .put("sourceOffset",sourceOffset).put("duration",duration).put("volume",volume).put("muted",muted).put("track",track).apply { fade?.let { put("fade", it.json()) } }
+        .put("sourceOffset",sourceOffset).put("duration",duration).put("volume",volume).put("muted",muted).put("track",track).apply { fade?.let { put("fade", it.json()) }; assetCredit?.let { put("assetCredit", it.json()) } }
     companion object {
         fun decode(j: JSONObject, source: AudioSource? = null) = AudioClip(j.getString("id"),j.getString("name"),source ?: AudioSource.decode(j.getString("wav")),
-            j.getDouble("start"),j.getDouble("sourceOffset"),j.getDouble("duration"),j.getDouble("volume").toFloat(),j.getBoolean("muted"),j.getInt("track"), if (j.has("fade")) AudioFade.decode(j.getJSONObject("fade")) else null)
+            j.getDouble("start"),j.getDouble("sourceOffset"),j.getDouble("duration"),j.getDouble("volume").toFloat(),j.getBoolean("muted"),j.getInt("track"), if (j.has("fade")) AudioFade.decode(j.getJSONObject("fade")) else null, if (j.has("assetCredit")) AssetCredit.decode(j.getJSONObject("assetCredit")) else null)
     }
 }
 

@@ -14,7 +14,7 @@ data class Stroke(val id: String = newID(), val layerID: String, val points: Lis
                   val color: Int, val width: Float, val tool: Tool, val filled: Boolean = false, val opacity: Float = 1f,
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
-                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null)
+                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null)
 enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
     Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
     ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
@@ -34,7 +34,7 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v17 (reads v1–v16), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v21 (reads v1–v21), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
     val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {
@@ -89,6 +89,8 @@ data class Document(val id: String, val name: String, val width: Int, val height
                     }
                 }
                 require((stroke.tool == Tool.Image) == (stroke.image != null))
+                require(stroke.assetCredit == null || stroke.image != null)
+                stroke.assetCredit?.validate()
                 stroke.image?.validateGeometry(stroke)
                 require((stroke.tool == Tool.Text) == (stroke.text != null))
                 stroke.text?.let { text ->

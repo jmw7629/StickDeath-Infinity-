@@ -51,16 +51,16 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun addBundledSound(captured: Document, sound: BundledSound) {
         if (document != captured || !beginAudioImport()) return
         audioCapture = null
-        loadAudioIntoProject(captured, sound.title) { BundledSounds.source(getApplication<Application>(), sound) }
+        loadAudioIntoProject(captured, sound.title, AssetCredit(sound.id, sound.title, sound.author, sound.sourceURL, sound.sha256)) { BundledSounds.source(getApplication<Application>(), sound) }
     }
-    private fun loadAudioIntoProject(captured: Document, name: String, load: suspend () -> AudioSource) {
+    private fun loadAudioIntoProject(captured: Document, name: String, credit: AssetCredit? = null, load: suspend () -> AudioSource) {
         val generation = audioGeneration
         audioImportJob = viewModelScope.launch {
             try {
                 val candidate = withContext(Dispatchers.IO) {
                     audioImportMutex.withLock {
                         val source = load()
-                        val clip = AudioClip(name = name.take(80), source = source)
+                        val clip = AudioClip(name = name.take(80), source = source, assetCredit = credit)
                         val next = captured.copy(audioClips = captured.audioClips + clip)
                         // Combined image/audio Base64 must fit the complete backup,
                         // not merely each asset's independent byte allowance.
@@ -408,11 +408,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun addBundledImage(captured: Document, image: BundledImage) {
         if (document != captured || !beginImageImport()) return
         imageCapture = null
-        loadImageIntoProject(captured) { checkpoint ->
+        loadImageIntoProject(captured, AssetCredit(image.id, image.title, image.author, image.sourceURL, image.sha256)) { checkpoint ->
             BundledImages.artwork(getApplication<Application>(), image, checkpoint)
         }
     }
-    private fun loadImageIntoProject(captured: Document, load: ((() -> Unit)) -> ImageArtwork) {
+    private fun loadImageIntoProject(captured: Document, credit: AssetCredit? = null, load: (() -> Unit) -> ImageArtwork) {
         val generation = imageGeneration
         imageJob = viewModelScope.launch {
             try {
@@ -427,7 +427,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                         }
                         checkpoint()
                         val image = load(checkpoint)
-                        val stroke = Stroke(id = id, layerID = captured.activeLayerID, points = image.corners(captured), color = -1, width = 1f, tool = Tool.Image, image = image)
+                        val stroke = Stroke(id = id, layerID = captured.activeLayerID, points = image.corners(captured), color = -1, width = 1f, tool = Tool.Image, image = image, assetCredit = credit)
                         val next = captured.copy(frames = captured.frames.map { if (it.id == captured.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
                         store.encode(next.copy(revision = captured.revision + 1, modified = System.currentTimeMillis()))
                         checkpoint()
@@ -853,6 +853,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     } }
                 }
                 message = when (artifact.kind) {
+                    ExportKind.CREDITS -> "Project asset credits exported; unknown sources remain identified."
                     ExportKind.PROJECT -> "Editable Android project backup exported."
                     ExportKind.MP4 -> "MP4 video exported from the captured project revision."
                     ExportKind.GIF -> "Looping GIF exported with 256-color palette and centisecond timing."

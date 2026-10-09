@@ -12,7 +12,7 @@ import kotlinx.coroutines.ensureActive
 import org.json.JSONArray
 import org.json.JSONObject
 
-enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF }
+enum class ExportKind { PNG, SEQUENCE, SPRITESHEET, PROJECT, MP4, GIF, CREDITS }
 data class ExportArtifact(val file: File, val kind: ExportKind, val name: String)
 
 /** Encodes one bitmap at a time into a bounded, privately owned staging file. */
@@ -31,7 +31,7 @@ object ProjectExporter {
         val d = document.validated()
         if (kind == ExportKind.MP4) return MovieExporter.prepare(context,d,progress)
         if (kind == ExportKind.GIF) return GifExporter.prepare(context,d,progress)
-        require(kind == ExportKind.PROJECT || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
+        require(kind in setOf(ExportKind.PROJECT, ExportKind.CREDITS) || d.width.toLong() * d.height <= 4_194_304) { "PNG export currently supports canvases up to 4 megapixels. No resized export was created." }
         val layout = if (kind == ExportKind.SPRITESHEET) sheet(d) else null
         val coroutine = currentCoroutineContext()
         val check = { coroutine.ensureActive() }
@@ -58,7 +58,8 @@ object ProjectExporter {
                         check()
                     } finally { bitmap.recycle() }
                 }
-                if (kind == ExportKind.PROJECT) { bounded.write(ProjectStore(context).encode(d)); progress(1, 1) }
+                if (kind == ExportKind.CREDITS) { bounded.write(AssetCredits.manifest(d).toString(2).toByteArray(Charsets.UTF_8)); progress(1, 1) }
+                else if (kind == ExportKind.PROJECT) { bounded.write(ProjectStore(context).encode(d)); progress(1, 1) }
                 else if (kind == ExportKind.PNG) { png(d.frame, bounded); progress(1, 1) }
                 else ZipOutputStream(bounded).use { zip ->
                     val entries = JSONArray()
@@ -96,6 +97,7 @@ object ProjectExporter {
                             .put("startTick", tick).put("holdTicks", frame.hold))
                         tick += frame.hold; progress(index + 1, d.frames.size)
                     }
+                    zip.putNextEntry(ZipEntry("asset-credits.json")); zip.write(AssetCredits.manifest(d).toString(2).toByteArray(Charsets.UTF_8)); zip.closeEntry()
                     val manifest = JSONObject().put("format", if (layout == null) "sdi-png-sequence" else "sdi-spritesheet").put("version", 1)
                         .put("projectID", d.id).put("projectName", d.name).put("revision", d.revision)
                         .put("width", d.width).put("height", d.height).put("fps", d.fps)
@@ -115,6 +117,7 @@ object ProjectExporter {
             return ExportArtifact(file, kind, when (kind) {
                 ExportKind.MP4 -> "$stem.mp4"
                 ExportKind.GIF -> "$stem.gif"
+                ExportKind.CREDITS -> "$stem-asset-credits.json"
                 ExportKind.PROJECT -> "$stem.sdiandroid.json"
                 ExportKind.PNG -> "$stem-frame.png"
                 ExportKind.SEQUENCE -> "$stem-frames.zip"

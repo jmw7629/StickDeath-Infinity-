@@ -62,8 +62,10 @@ private object AudioEnvelopes {
     }
 }
 
+private enum class AudioDragMode { Move, TrimStart, TrimEnd }
+
 private data class AudioDrag(val document: Document, val original: AudioClip,
-    val trim: Boolean, val origin: Offset, val preview: AudioClip, val viewportPointer: Offset)
+    val mode: AudioDragMode, val origin: Offset, val preview: AudioClip, val viewportPointer: Offset)
 
 /** Gesture drafts remain local; only a completed gesture produces a history command. */
 @Composable
@@ -102,13 +104,27 @@ fun AudioTimeline(vm: StudioViewModel, doc: Document, enabled: Boolean,
         val pointer = Offset(state.viewportPointer.x + scroll.value, state.viewportPointer.y)
         val delta = (pointer.x - state.origin.x) / scale
         fun quantize(value: Double) = if (snap) round(value * doc.fps) / doc.fps else value
-        val clip = if (state.trim) {
-            val end = quantize(state.original.start + state.original.duration + delta)
-            state.original.copy(duration = (end - state.original.start).coerceIn(
-                1.0 / state.original.source.rate,
-                maxOf(1.0 / state.original.source.rate, state.original.source.duration - state.original.sourceOffset)))
-        } else state.original.copy(start = quantize(state.original.start + delta).coerceIn(0.0, 3600.0),
-            track = (floor((pointer.y - ruler) / rowHeight).toInt() + 1).coerceIn(1, 4))
+        val original = state.original
+        val minimum = 1.0 / original.source.rate
+        val clip = when (state.mode) {
+            AudioDragMode.TrimStart -> {
+                // Keep the right edge and source alignment fixed. Extending left
+                // reveals only real source samples; it never invents leading audio.
+                val earliest = maxOf(0.0, original.start - original.sourceOffset)
+                val latest = minOf(3600.0, original.start + original.duration - minimum).coerceAtLeast(earliest)
+                val start = quantize(original.start + delta).coerceIn(earliest, latest)
+                val shift = start - original.start
+                original.copy(start = start, sourceOffset = maxOf(0.0, original.sourceOffset + shift),
+                    duration = original.duration - shift)
+            }
+            AudioDragMode.TrimEnd -> {
+                val end = quantize(original.start + original.duration + delta)
+                original.copy(duration = (end - original.start).coerceIn(minimum,
+                    maxOf(minimum, original.source.duration - original.sourceOffset)))
+            }
+            AudioDragMode.Move -> original.copy(start = quantize(original.start + delta).coerceIn(0.0, 3600.0),
+                track = (floor((pointer.y - ruler) / rowHeight).toInt() + 1).coerceIn(1, 4))
+        }
         return state.copy(preview = clip)
     }
     val edgeWidth = with(density) { 40.dp.toPx() }
@@ -149,7 +165,7 @@ fun AudioTimeline(vm: StudioViewModel, doc: Document, enabled: Boolean,
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         FilterChip(snap, { snap = !snap }, { Text("Snap to frames (${doc.fps} fps)") }, enabled = enabled)
     }
-    Text("Tracks 1–4 · tap the ruler to select an animation frame; scroll horizontally. Tap a clip to select; hold then drag to move across time or tracks. Hold the selected clip’s right edge to trim. Hold near either viewport edge to scroll while dragging. Use the fields below for precise timing or overlapping clips.")
+    Text("Tracks 1–4 · tap the ruler to select an animation frame; scroll horizontally. Tap a clip to select; hold then drag to move across time or tracks. Hold either selected edge to trim; the left edge adjusts its source offset and keeps its end fixed. Hold near either viewport edge to scroll while dragging. Use the fields below for precise timing or overlapping clips.")
     Text("${if (playbackSeconds == null) "Red marker is the selected animation frame." else "Red marker follows playback: %.2fs.".format(playbackSeconds)} Waveforms show measured source peaks before volume/mute/fades; ${if (envelopes.size < sources.size) "loading…" else "ready"}.")
     Row(Modifier.fillMaxWidth()) {
         Column(Modifier.width(30.dp).padding(top = 28.dp)) {
@@ -169,10 +185,14 @@ fun AudioTimeline(vm: StudioViewModel, doc: Document, enabled: Boolean,
                     if (enabled) detectDragGesturesAfterLongPress(
                         onDragStart = { point ->
                             hit(point)?.let { clip ->
-                                val trimming = currentSelection == clip.id &&
-                                    abs(point.x - ((clip.start + clip.duration) * scale).toFloat()) <= handle
+                                val leftDistance = abs(point.x - (clip.start * scale).toFloat())
+                                val rightDistance = abs(point.x - ((clip.start + clip.duration) * scale).toFloat())
+                                val mode = if (currentSelection != clip.id) AudioDragMode.Move
+                                    else if (leftDistance <= handle && leftDistance < rightDistance) AudioDragMode.TrimStart
+                                    else if (rightDistance <= handle) AudioDragMode.TrimEnd
+                                    else AudioDragMode.Move
                                 select(clip.id)
-                                drag = AudioDrag(doc, clip, trimming, point, clip, Offset(point.x - scroll.value, point.y))
+                                drag = AudioDrag(doc, clip, mode, point, clip, Offset(point.x - scroll.value, point.y))
                             }
                         },
                         onDrag = { change, _ ->
@@ -225,11 +245,14 @@ fun AudioTimeline(vm: StudioViewModel, doc: Document, enabled: Boolean,
                         paint.color = android.graphics.Color.WHITE
                         drawContext.canvas.nativeCanvas.drawText(clip.name + if (clip.muted || doc.audioTracks[clip.track - 1].muted) " (muted)" else "", left + 4, top + textSize, paint)
                     }
-                    if (chosen) drawLine(Color(0xffff343f), Offset(left + width, top), Offset(left + width, top + height), 4.dp.toPx())
+                    if (chosen) {
+                        drawLine(Color(0xffff343f), Offset(left, top), Offset(left, top + height), 4.dp.toPx())
+                        drawLine(Color(0xffff343f), Offset(left + width, top), Offset(left + width, top + height), 4.dp.toPx())
+                    }
                 }
                 drawLine(Color(0xffff343f), Offset(frameX, 0f), Offset(frameX, size.height), 2.dp.toPx())
             }
         }
     }
-    drag?.let { Text("${if (it.trim) "Trim" else "Move"}: track ${it.preview.track}, start ${"%.3f".format(it.preview.start)}s, duration ${"%.3f".format(it.preview.duration)}s · release to apply") }
+    drag?.let { Text("${when (it.mode) { AudioDragMode.Move -> "Move"; AudioDragMode.TrimStart -> "Trim start"; AudioDragMode.TrimEnd -> "Trim end" }}: track ${it.preview.track}, start ${"%.3f".format(it.preview.start)}s, duration ${"%.3f".format(it.preview.duration)}s · release to apply") }
 }

@@ -166,9 +166,9 @@ Move's existing options now apply a chosen opacity to all selected drawings, tex
 
 Audio in the existing options popup imports actual Files WAV data into immutable project-owned storage. It accepts ordinary RIFF PCM WAV only: 16/24-bit little-endian, mono/stereo, 8–48 kHz, one sample–60 seconds, 4 MiB per source. Projects allow 16 clips and 8 MiB audio total, subject to the 24 MiB serialized project limit. Versions 1–16 open with no audio. Embedded sources survive provider access loss, backups, duplicates, deletion/undo and restarts; no external URI or file reference is retained. Atomic project saving retains the prior file on failure.
 
-Select a clip explicitly to edit its name, timeline start (0–3600 seconds), source trim, duration, track (1–4), volume and mute. Apply creates one captured-revision history transaction; stale imports and edits are rejected. History is additionally bounded to 4 MiB of referenced audio across retained snapshots. Trimmed single-clip preview streams real PCM through AudioTrack in bounded buffers, applies saved volume/mute, and is cancellable on Stop, panel dismissal, editing, scene playback, activity stop, project close and ViewModel teardown. Source imports check cancellation between bounded reads.
+Select a clip explicitly to edit its name, timeline start (0–3600 seconds), source trim, duration, track (1–4), volume and mute. Apply creates one captured-revision history transaction; stale imports and edits are rejected. History is additionally bounded to 16 MiB of referenced audio across retained snapshots. Trimmed single-clip preview streams real PCM through AudioTrack in bounded buffers, applies saved volume/mute, and is cancellable on Stop, panel dismissal, editing, scene playback, activity stop, project close and ViewModel teardown. Source imports check cancellation between bounded reads.
 
-Scene playback and MP4 use the shared saved-clip mixer, as described below. Audio-free projects continue to export a single video track. Measured source waveforms are implemented below; a bundled sound library remains outstanding. Device codec/output behavior, focus/interruption behavior, import/history/backup round trips and Android compilation remain deferred acceptance checks under the current owner instruction; implementation is not device verification.
+Scene playback and MP4 use the shared saved-clip mixer, as described below. Audio-free projects continue to export a single video track. Measured source waveforms are implemented below; the bundled sound library is implemented below. Device codec/output behavior, focus/interruption behavior, import/history/backup round trips and Android compilation remain deferred acceptance checks under the current owner instruction; implementation is not device verification.
 
 
 ### Bounded MP4 soundtrack implementation
@@ -237,3 +237,13 @@ Read-only independent review identified that very short effects or scenes might 
 ### Bundled image library implementation
 
 The Studio image library shares the native catalogue of 207 Kenney CC0 images, packaged under StudioImages/ to avoid the sound catalogue filename. Search, categories, twelve-image pages, source credits and bounded previews lead into the same cancellable, revision-guarded image import transaction as Files. Imported artwork is selected in Move and participates in project persistence, undo and exports. Catalogue and license files are pinned and selected image bytes are hash-checked. Android compilation, packaged asset inspection and device acceptance are deferred; this is implementation scope, not a verified release.
+
+### Durable asset credits (format v21)
+
+New bundled image and sound imports retain asset ID, original source digest, title, creator, source URL and CC0 license in their canonical artwork/clip. Ordinary copy, split, duplicate, undo and project backup retain those fields; deleting an asset removes its occurrence from the derived report. v21 reads previous project versions without inventing missing attribution.
+
+The export menu writes a separate project asset-credits JSON file; PNG sequence and spritesheet ZIP exports also include it. The report includes hidden/muted assets, identifies images/audio lacking recorded provenance, and explicitly describes original hashes as pre-normalization hashes. Metadata from imported backups is not a rights certification. Standalone MP4/GIF/PNG bytes are unchanged: use the separate credits file alongside them. Compile, migration and runtime export acceptance remain deferred.
+
+### Two-sided audio trim
+
+A selected clip exposes both trim edges. The nearer edge wins on short clips. Left trim adjusts timeline start and source offset together while preserving the right edge, source-time fade curve and credits; left extension is bounded by existing source samples and time zero. Right trim keeps the source start fixed. Frame snapping, minimum one-sample duration, cancellation, edge autoscroll and one-command undo apply to both. Precise numeric controls remain available. Touch and device audio acceptance are deferred.
