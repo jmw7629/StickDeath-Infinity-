@@ -792,12 +792,24 @@ struct FloatingToolSettingsPanel: View {
             }
         case .lasso:
             VStack(alignment: .leading, spacing: 8) {
-                Picker("Selection target", selection: $vm.areaSelectionTarget) {
-                    ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
-                        Text(target.label).tag(target)
+                Menu {
+                    Picker("Selection target", selection: $vm.areaSelectionTarget) {
+                        ForEach(StudioViewModel.AreaSelectionTarget.allCases, id: \.self) { target in
+                            Text(target.label).tag(target)
+                        }
                     }
-                }.font(.specialElite(12)).frame(minHeight: 44)
-                    .accessibilityIdentifier("studio.selection.target")
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(vm.areaSelectionTarget.label).font(.specialElite(12))
+                        Image(systemName: "chevron.up.chevron.down").font(.system(size: 11))
+                    }
+                    .foregroundColor(.sdStudioActionText)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Selection target")
+                .accessibilityValue(vm.areaSelectionTarget.label)
+                .accessibilityIdentifier("studio.selection.target")
                 Text(areaSelectionGuidance)
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text(areaSelectionCount)

@@ -702,6 +702,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
             Tests/StudioBrushIntegration/main.swift \
             StickDeathInfinity/Models/StudioBrush.swift \
             StickDeathInfinity/Services/StudioBrushRenderer.swift \
@@ -893,6 +894,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
             Tests/StudioAudioIntegration/main.swift \
             -o "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
           "$RUNNER_TEMP/sdi-studio-audio-integration-tests"
@@ -963,6 +965,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
             StickDeathInfinity/Services/StudioAudioMixService.swift \
             StickDeathInfinity/Services/StudioAudioTimelineSession.swift \
             Tests/StudioAudioTimeline/main.swift \
@@ -1104,6 +1107,7 @@ jobs:
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Services/StudioAudioImportService.swift \
             StickDeathInfinity/Services/StudioAudioPreviewSession.swift \
+            StickDeathInfinity/Services/StudioSoundCatalogue.swift \
             StickDeathInfinity/Services/StudioImageProviderFile.swift \
             StickDeathInfinity/Services/StudioVideoFrameImportService.swift \
             StickDeathInfinity/Services/StudioVideoAudioImportService.swift \

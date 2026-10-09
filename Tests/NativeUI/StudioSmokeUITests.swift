@@ -3719,7 +3719,9 @@ final class StudioSmokeUITests: XCTestCase {
             // scroll row is fully actionable at the actual viewport edge;
             // scrolling cannot manufacture an inset above the first row.
             let margin = control.elementType == .slider ? min(12, bounds.height * 0.05) : 0
-            let viewport = bounds.insetBy(dx: 0, dy: margin)
+            // AX reports fractional-point edges independently; allow only
+            // half a point of rounding, never a clipped row or slider thumb.
+            let viewport = bounds.insetBy(dx: -0.5, dy: margin - 0.5)
             guard viewport.width > 0, viewport.height > 0, control.exists else { break }
             let target = control.frame
             // XCTest can report a clipped slider as hittable. Its entire thumb
@@ -3812,7 +3814,7 @@ final class StudioSmokeUITests: XCTestCase {
             canvas.coordinate(withNormalizedOffset:point).tap()
         }
         try selectToolbarTool("lasso",app:app)
-        let finishPolygon = app.buttons["studio.selection.polygon.finish"]
+        let finishPolygon = try fillPreferenceControl("studio.selection.polygon.finish", app: app)
         XCTAssertTrue(finishPolygon.isEnabled && finishPolygon.isHittable); finishPolygon.tap()
         let moveTool = app.buttons["studio.tool.move"]
         XCTAssertTrue(moveTool.waitForExistence(timeout: 5) && moveTool.isSelected,

@@ -99,6 +99,7 @@ struct StudioProjectLibrary: View {
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundColor(.gray)
                     TextField("Search projects", text: $search)
+                        .font(.specialElite(14))
                         .foregroundColor(.white).textInputAutocapitalization(.never)
                         .autocorrectionDisabled().accessibilityIdentifier("studio.library.search")
                         .focused($searchFocused).submitLabel(.search)
