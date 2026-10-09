@@ -43,14 +43,24 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val captured = audioCapture ?: return
         if (uri == null) { cancelAudioImport(); return }
         audioCapture = null
+        loadAudioIntoProject(captured, "Audio ${captured.audioClips.size + 1}") {
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { AudioSource.read(it) }
+                ?: error("Files could not open this WAV.")
+        }
+    }
+    fun addBundledSound(captured: Document, sound: BundledSound) {
+        if (document != captured || !beginAudioImport()) return
+        audioCapture = null
+        loadAudioIntoProject(captured, sound.title) { BundledSounds.source(getApplication<Application>(), sound) }
+    }
+    private fun loadAudioIntoProject(captured: Document, name: String, load: suspend () -> AudioSource) {
         val generation = audioGeneration
         audioImportJob = viewModelScope.launch {
             try {
                 val candidate = withContext(Dispatchers.IO) {
                     audioImportMutex.withLock {
-                        val source = getApplication<Application>().contentResolver.openInputStream(uri)?.use { AudioSource.read(it) }
-                            ?: error("Files could not open this WAV.")
-                        val clip = AudioClip(name = "Audio ${captured.audioClips.size + 1}", source = source)
+                        val source = load()
+                        val clip = AudioClip(name = name.take(80), source = source)
                         val next = captured.copy(audioClips = captured.audioClips + clip)
                         // Combined image/audio Base64 must fit the complete backup,
                         // not merely each asset's independent byte allowance.
@@ -66,20 +76,73 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 if (change { current ->
                     require(current == captured) { "Project changed during import. Choose the WAV again." }
                     candidate
-                }) message = "WAV copied into project. Select its clip to edit or preview. MP4 export mixes saved audio clips over the animation duration."
+                }) message = "Sound copied into project. Select its clip to edit or preview. MP4 export mixes saved audio clips over the animation duration."
             } catch (e: CancellationException) { throw e }
-            catch (e: Exception) { report(e.message ?: "WAV import failed; no clip added.") }
+            catch (e: Exception) { report(e.message ?: "Audio import failed; no clip added.") }
             finally { if (generation == audioGeneration) { audioCapture = null; importingAudio = false; audioImportJob = null } }
         }
+    }
+    fun editAudioTrack(captured: Document, index: Int, mix: AudioTrackMix): Boolean = change { current ->
+        require(current == captured && index in 0..3) { "Timeline changed; reopen track controls." }
+        mix.validate()
+        current.copy(audioTracks = current.audioTracks.mapIndexed { n, old -> if (n == index) mix else old })
     }
     fun editAudio(captured: Document, clip: AudioClip): Boolean = change { current ->
         require(current == captured && current.audioClips.any { it.id == clip.id && it.source === clip.source }) { "Project changed. Reopen the audio clip." }
         current.copy(audioClips = current.audioClips.map { if (it.id == clip.id) clip else it })
     }
+    /** Expansion preflights the complete portable backup off-main before one history edit. */
+    fun expandAudio(captured: Document, id: String, splitAt: Double? = null) {
+        if (closing || importingAudio || document != captured) return
+        val clip = captured.audioClips.firstOrNull { it.id == id } ?: return
+        stopAudioPreview()
+        cancelAudioImport()
+        val generation = audioGeneration
+        importingAudio = true
+        audioImportJob = viewModelScope.launch {
+            try {
+                val candidate = withContext(Dispatchers.IO) {
+                    audioImportMutex.withLock {
+                        val right = if (splitAt == null) {
+                            clip.copy(id = newID(), start = clip.start + clip.duration)
+                        } else {
+                            require(splitAt.isFinite()) { "Enter a finite split time." }
+                            // Source-sample alignment avoids a fractional-sample gap at the join.
+                            val sourceBoundary = kotlin.math.round((clip.sourceOffset + splitAt - clip.start) * clip.source.rate) / clip.source.rate
+                            val leftDuration = sourceBoundary - clip.sourceOffset
+                            require(leftDuration + 1e-12 >= 1.0 / clip.source.rate && clip.duration - leftDuration + 1e-12 >= 1.0 / clip.source.rate) {
+                                "Split must leave at least one source sample on each side."
+                            }
+                            clip.copy(id = newID(), start = clip.start + leftDuration,
+                                sourceOffset = clip.sourceOffset + leftDuration, duration = clip.duration - leftDuration)
+                        }
+                        val left = if (splitAt == null) clip else clip.copy(duration = right.start - clip.start)
+                        val clips = captured.audioClips.flatMap { if (it.id == clip.id) listOf(left, right) else listOf(it) }
+                        val next = captured.copy(audioClips = clips).validated()
+                        store.encode(next.copy(revision = captured.revision + 1, modified = System.currentTimeMillis()))
+                        currentCoroutineContext().ensureActive()
+                        next
+                    }
+                }
+                ensureActive()
+                if (generation != audioGeneration) return@launch
+                audioImportJob = null; importingAudio = false
+                if (change { current ->
+                    require(current == captured) { "Project changed; select the clip again." }
+                    candidate
+                }) message = if (splitAt == null) "Clip duplicated after its end. Undo restores the original timeline."
+                    else "Clip split at the nearest source sample. Undo joins both parts."
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { report(error.message ?: "Audio edit failed; timeline unchanged.") }
+            finally { if (generation == audioGeneration) { audioImportJob = null; importingAudio = false } }
+        }
+    }
     fun deleteAudio(captured: Document, id: String): Boolean = change { current ->
         require(current == captured && current.audioClips.any { it.id == id }) { "Project changed. Select the clip again." }
         current.copy(audioClips = current.audioClips.filterNot { it.id == id })
     }
+    var sceneStopGeneration by mutableStateOf(0L); private set
+    fun stopScenePlayback() { sceneStopGeneration++; stopAudioPreview() }
     fun stopAudioPreview() { sceneAudioJob?.cancel(); sceneAudioJob = null; audioPreviewJob?.cancel(); audioPreviewJob = null; previewingAudio = false }
     suspend fun previewSceneAudio(captured: Document, onElapsedNanos: (Long) -> Unit) {
         require(document == captured && !closing) { "Project changed before playback." }
@@ -115,6 +178,15 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun previewAudio(captured: Document, id: String) {
         if (closing || document != captured) return
         val clip = captured.audioClips.firstOrNull { it.id == id } ?: return
+        previewAudioSource(captured) { clip.copy(
+            volume = clip.volume * captured.audioTracks[clip.track - 1].volume,
+            muted = clip.muted || captured.audioTracks[clip.track - 1].muted) }
+    }
+    fun previewBundledSound(captured: Document, sound: BundledSound) {
+        if (closing || document != captured) return
+        previewAudioSource(captured) { AudioClip(name = sound.title.take(80), source = BundledSounds.source(getApplication<Application>(), sound)) }
+    }
+    private fun previewAudioSource(captured: Document, load: suspend () -> AudioClip) {
         stopAudioPreview(); previewingAudio = true
         audioPreviewJob = viewModelScope.launch {
             val owner = currentCoroutineContext()[Job]
@@ -127,6 +199,11 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 require(manager.requestAudioFocus(focus) == android.media.AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { "Audio focus is unavailable. Try preview again when other audio stops." }
                 withContext(Dispatchers.IO) {
                     audioPreviewMutex.withLock {
+                        val clip = kotlinx.coroutines.withTimeout(30_000) { load() }
+                        withContext(Dispatchers.Main.immediate) {
+                            require(document == captured && !closing) { "Project changed before sound preview." }
+                        }
+                        currentCoroutineContext().ensureActive()
                         kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip) }
                     }
                 }
@@ -323,6 +400,19 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         val captured = imageCapture ?: return
         imageCapture = null
         if (uri == null) { cancelImageImport(); return }
+        loadImageIntoProject(captured) { checkpoint ->
+            getApplication<Application>().contentResolver.openInputStream(uri)?.use { ImageArtwork.importImage(it, checkpoint) }
+                ?: error("The file provider could not open this image.")
+        }
+    }
+    fun addBundledImage(captured: Document, image: BundledImage) {
+        if (document != captured || !beginImageImport()) return
+        imageCapture = null
+        loadImageIntoProject(captured) { checkpoint ->
+            BundledImages.artwork(getApplication<Application>(), image, checkpoint)
+        }
+    }
+    private fun loadImageIntoProject(captured: Document, load: ((() -> Unit)) -> ImageArtwork) {
         val generation = imageGeneration
         imageJob = viewModelScope.launch {
             try {
@@ -336,8 +426,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             require(android.os.SystemClock.elapsedRealtime() <= deadline) { "Image import exceeded 30 seconds; no image was added." }
                         }
                         checkpoint()
-                        val image = getApplication<Application>().contentResolver.openInputStream(uri)?.use { ImageArtwork.importImage(it,checkpoint) }
-                            ?: error("The file provider could not open this image.")
+                        val image = load(checkpoint)
                         val stroke = Stroke(id = id, layerID = captured.activeLayerID, points = image.corners(captured), color = -1, width = 1f, tool = Tool.Image, image = image)
                         val next = captured.copy(frames = captured.frames.map { if (it.id == captured.activeFrameID) it.copy(strokes = it.strokes + stroke) else it })
                         store.encode(next.copy(revision = captured.revision + 1, modified = System.currentTimeMillis()))
@@ -905,7 +994,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     private fun boundedPush(list: MutableList<Document>, value: Document) {
         list.add(value)
-        while (list.size > 1 && (list.size > 32 || list.sumOf { it.pointCount.toLong() } > 200_000 || list.sumOf { it.audioBytes } > 4L * 1024 * 1024 || list.sumOf { it.imageBytes } > 8L * 1024 * 1024 || list.sumOf { it.imagePixels } > 8_388_608L)) list.removeAt(0)
+        while (list.size > 1 && (list.size > 32 || list.sumOf { it.pointCount.toLong() } > 200_000 || list.sumOf { it.audioBytes } > 16L * 1024 * 1024 || list.sumOf { it.imageBytes } > 8L * 1024 * 1024 || list.sumOf { it.imagePixels } > 8_388_608L)) list.removeAt(0)
     }
     private fun change(transform: (Document) -> Document): Boolean {
         val before = document ?: return false
@@ -975,6 +1064,13 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun updateOnion(settings: OnionSettings) = change { d ->
         settings.validate()
         d.copy(onion = settings)
+    }
+    fun seekAudioFrame(captured: Document, seconds: Double): Boolean = change { current ->
+        require(current == captured && seconds.isFinite() && seconds >= 0) { "Timeline changed; choose a frame again." }
+        val tick = kotlin.math.floor(seconds * current.fps).toLong()
+        var end = 0L
+        val frame = current.frames.firstOrNull { end += it.hold; tick < end } ?: current.frames.last()
+        current.copy(activeFrameID = frame.id)
     }
     fun selectFrame(id: String) = change { d -> require(d.frames.any { it.id == id }); d.copy(activeFrameID = id) }
     fun addFrame(duplicate: Boolean) = change { d ->

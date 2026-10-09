@@ -10,7 +10,10 @@ import kotlinx.coroutines.ensureActive
  * Linear interpolation, mono duplication and final saturating sum; no full-song cache.
  * Track is a grouping label: all unmuted clips, including same-track overlaps, sum. */
 class AudioMixer(document: Document) {
-    private val clips = document.audioClips.sortedBy { it.id }.filter { !it.muted && it.volume > 0f }
+    private val clips = document.audioClips.sortedBy { it.id }.map { clip ->
+        val track = document.audioTracks.getOrNull(clip.track - 1) ?: error("Missing audio track.")
+        clip.copy(volume = clip.volume * track.volume, muted = clip.muted || track.muted)
+    }.filter { !it.muted && it.volume > 0f }
     val frameCount = (document.frames.sumOf { it.hold.toLong() } * RATE + document.fps - 1) / document.fps
     init { document.validated(); require(frameCount in 1..RATE * 120L) }
     fun write(first: Long, count: Int, output: ByteBuffer, check: () -> Unit) {
@@ -31,7 +34,8 @@ class AudioMixer(document: Document) {
                 val fraction = position - frame
                 fun value(channel: Int): Double {
                     val a = clip.source.sample(frame, channel)
-                    return (a + (clip.source.sample(next, channel) - a) * fraction) * clip.volume
+                    return (a + (clip.source.sample(next, channel) - a) * fraction) * clip.volume *
+                        (clip.fade?.gain(clip.sourceOffset + elapsed) ?: 1.0)
                 }
                 left += value(0); right += value(1)
             }
@@ -79,6 +83,7 @@ class AudioMixer(document: Document) {
                 }
                 submitted += count
             }
+            track.primeShortPCMStream(frameCount-first, 2)
             while ((track.playbackHeadPosition.toLong() and 0xffffffffL) < frameCount-first) {
                 check(); displayClock(); kotlinx.coroutines.delay(10)
             }

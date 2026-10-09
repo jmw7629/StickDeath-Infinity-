@@ -3,6 +3,9 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'StickDeathInfinity/Resources/StudioSounds/**'
+      - 'StickDeathInfinity/Resources/StudioImages/**'
+      - 'scripts/verify_android_sound_assets.py'
       - '.github/workflows/android-build.yml'
   workflow_dispatch:
 permissions:
@@ -42,6 +45,7 @@ jobs:
           git rev-parse HEAD > android-build-evidence/source-commit.txt
           gradle --project-dir android --no-daemon --max-workers=2 --console=plain :app:assembleDebug 2>&1 | tee android-build-evidence/build.log
           sha256sum android/app/build/outputs/apk/debug/*.apk > android-build-evidence/apk-sha256.txt
+          python3 scripts/verify_android_sound_assets.py android/app/build/outputs/apk/debug/app-debug.apk > android-build-evidence/sound-assets.json
       - name: Preserve compiler evidence and debug APK
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

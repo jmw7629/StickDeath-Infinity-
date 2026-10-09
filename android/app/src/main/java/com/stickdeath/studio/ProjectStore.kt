@@ -41,6 +41,7 @@ class ProjectStore(context: Context) {
         val duplicate = source.copy(id = id, name = name, revision = 0,
             modified = System.currentTimeMillis(), activeLayerID = layerIDs.getValue(source.activeLayerID),
             activeFrameID = frameIDs.getValue(source.activeFrameID),
+            audioClips = source.audioClips.map { it.copy(id = newID()) },
             layers = source.layers.map { it.copy(id = layerIDs.getValue(it.id)) },
             frames = source.frames.map { frame -> frame.copy(id = frameIDs.getValue(frame.id),
                 strokes = frame.strokes.map { it.copy(id = newID(), layerID = layerIDs.getValue(it.layerID)) }) }).validated()
@@ -58,7 +59,7 @@ class ProjectStore(context: Context) {
         while (true) {
             val count = input.read(buffer)
             if (count < 0) break
-            require(output.size() + count <= 8 * 1024 * 1024) { "Project file exceeds the local format limit." }
+            require(output.size() + count <= 24 * 1024 * 1024) { "Project file exceeds the local format limit." }
             output.write(buffer, 0, count)
         }
         val bytes = output.toByteArray()
@@ -77,7 +78,7 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..17) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..20) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
@@ -152,23 +153,37 @@ class ProjectStore(context: Context) {
             val clips = j.getJSONArray("audioClips")
             require(clips.length() <= 16)
             var bytes = 0L
+            val sources = mutableMapOf<String, AudioSource>()
             (0 until clips.length()).map { index ->
-                AudioClip.decode(clips.getJSONObject(index)).also {
+                require(!clips.getJSONObject(index).has("fade") || j.getInt("version") >= 18)
+                val encoded = clips.getJSONObject(index).getString("wav")
+                val source = sources[encoded] ?: AudioSource.decode(encoded).also { sources[encoded] = it }
+                AudioClip.decode(clips.getJSONObject(index), source).also {
                     bytes += it.source.byteCount
-                    require(bytes <= 2L * 1024 * 1024) { "Project audio exceeds 2 MiB." }
+                    require(bytes <= 8L * 1024 * 1024) { "Project audio exceeds 8 MiB." }
                 }
             }
         } else emptyList()
+        val tracks = if (j.has("audioTracks")) {
+            require(j.getInt("version") >= 19)
+            val values = j.getJSONArray("audioTracks")
+            require(values.length() == 4)
+            (0 until 4).map { AudioTrackMix.decode(values.getJSONObject(it)) }
+        } else {
+            require(j.getInt("version") < 19) { "Missing audio track settings; original preserved." }
+            List(4) { AudioTrackMix() }
+        }
         return Document(j.getString("id"), j.getString("name"), j.getInt("width"), j.getInt("height"), j.getInt("fps"),
-            frames, layers, j.getString("activeFrameID"), j.getString("activeLayerID"), j.getLong("revision"), j.getLong("modified"), onion, if (j.has("backgroundColor")) j.getInt("backgroundColor") else -1, grid, audio)
+            frames, layers, j.getString("activeFrameID"), j.getString("activeLayerID"), j.getLong("revision"), j.getLong("modified"), onion, if (j.has("backgroundColor")) j.getInt("backgroundColor") else -1, grid, audio, tracks)
             .validated()
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 17)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 20)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
+        j.put("audioTracks", JSONArray(d.audioTracks.map { it.json() }))
         j.put("grid", JSONObject().put("enabled", d.grid.enabled).put("spacing", d.grid.spacing).put("opacity", d.grid.opacity).put("color", d.grid.color))
         j.put("onion", JSONObject().put("enabled", d.onion.enabled).put("previous", d.onion.previous)
             .put("next", d.onion.next).put("opacity", d.onion.opacity).put("tinted", d.onion.tinted))
@@ -188,7 +203,7 @@ class ProjectStore(context: Context) {
                 } }
                 .put("points", JSONArray(s.points.map { JSONArray(listOf(it.x, it.y)) })) })) }))
         val bytes = j.toString().toByteArray(Charsets.UTF_8)
-        require(bytes.size <= 8 * 1024 * 1024) { "Project exceeds 8 MiB. Previous saved version preserved." }
+        require(bytes.size <= 24 * 1024 * 1024) { "Project exceeds 24 MiB. Previous saved version preserved." }
         return bytes
     }
     @Synchronized fun save(document: Document) {

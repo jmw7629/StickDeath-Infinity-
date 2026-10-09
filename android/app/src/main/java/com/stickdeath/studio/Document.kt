@@ -37,7 +37,7 @@ data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList
  * The storage envelope is Android-local v17 (reads v1–v16), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
-    val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList()) {
+    val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {
     val frame get() = frames.first { it.id == activeFrameID }
     val layer get() = layers.first { it.id == activeLayerID }
     val pointCount get() = frames.sumOf { f -> f.strokes.sumOf { it.points.size + (it.text?.content?.length ?: 0) + (it.fill?.size ?: 0) * 3 } }
@@ -45,7 +45,9 @@ data class Document(val id: String, val name: String, val width: Int, val height
     val imagePixels get() = frames.sumOf { f -> f.strokes.sumOf { it.image?.pixels ?: 0L } }
     val audioBytes get() = audioClips.sumOf { it.source.byteCount.toLong() }
     fun validated(): Document {
-        require(audioClips.size <= 16 && audioBytes <= 2L * 1024 * 1024) { "Audio capacity: 16 clips / 2 MiB per project." }
+        require(audioTracks.size == 4) { "A project requires four audio tracks." }
+        audioTracks.forEach { it.validate() }
+        require(audioClips.size <= 16 && audioBytes <= 8L * 1024 * 1024) { "Audio capacity: 16 clips / 8 MiB per project." }
         require(audioClips.map { it.id }.toSet().size == audioClips.size)
         audioClips.forEach { it.validate() }
         require(imageBytes <= 4L * 1024 * 1024 && imagePixels <= 4_194_304L) { "Project image capacity reached (4 MiB / 4 megapixels)." }

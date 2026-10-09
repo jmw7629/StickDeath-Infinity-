@@ -3,6 +3,11 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+val generatedStudioAssets = layout.buildDirectory.dir("generated/studioAssets")
+val stageStudioImages by tasks.registering(Sync::class) {
+    from("../../StickDeathInfinity/Resources/StudioImages")
+    into(generatedStudioAssets.map { it.dir("StudioImages") })
+}
 android {
     namespace = "com.stickdeath.studio"
     compileSdk = 35
@@ -13,6 +18,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
     }
+    // Reuse the licensed native catalogue; no duplicate asset checkout.
+    sourceSets.getByName("main").assets.srcDir("../../StickDeathInfinity/Resources/StudioSounds")
+    sourceSets.getByName("main").assets.srcDir(generatedStudioAssets)
+    androidResources { noCompress += listOf("wav", "m4a") }
     buildFeatures { compose = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -30,3 +39,5 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }
+
+tasks.named("preBuild").configure { dependsOn(stageStudioImages) }

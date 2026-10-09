@@ -42,7 +42,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    override fun onStop() { studio.stopAudioPreview(); studio.save(); super.onStop() }
+    override fun onStop() { studio.stopScenePlayback(); studio.save(); super.onStop() }
 }
 
 @Composable private fun StudioApp(vm: StudioViewModel) {
@@ -227,9 +227,11 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
     var settingsDraft by remember(doc.id) { mutableStateOf(ProjectDraft.from(doc)) }
     var fitArtwork by remember(doc.id) { mutableStateOf(true) }
     var playing by remember { mutableStateOf(false) }
+    LaunchedEffect(vm.sceneStopGeneration) { playing = false }
     var selectedLayerAction by remember(doc.id) { mutableStateOf<String?>(null) }
     var layerName by remember(doc.id) { mutableStateOf("") }
     var previewIndex by remember(doc.id) { mutableIntStateOf(0) }
+    var previewSeconds by remember(doc.id) { mutableDoubleStateOf(0.0) }
     LaunchedEffect(panel) { if (panel != "audio") vm.stopAudioPreview() }
     BackHandler { if (playing) playing = false else vm.save(close = true) }
     val timelineState = androidx.compose.foundation.lazy.rememberLazyListState()
@@ -238,8 +240,14 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             vm.cancelAudioImport(); vm.stopAudioPreview(); vm.cancelImageImport(); vm.cancelFill()
             val clock = FramePlaybackClock(doc)
             previewIndex = clock.frameAt(0)
+            val startSeconds = doc.frames.takeWhile { it.id != doc.activeFrameID }.sumOf { it.hold.toLong() }.toDouble() / doc.fps
+            val durationSeconds = doc.frames.sumOf { it.hold.toLong() }.toDouble() / doc.fps
+            previewSeconds = startSeconds
             if (doc.audioClips.isNotEmpty()) {
-                try { vm.previewSceneAudio(doc) { elapsed -> previewIndex = clock.frameAt(elapsed) } }
+                try { vm.previewSceneAudio(doc) { elapsed ->
+                    previewIndex = clock.frameAt(elapsed)
+                    previewSeconds = startSeconds + elapsed / 1_000_000_000.0
+                } }
                 catch (error: kotlinx.coroutines.TimeoutCancellationException) { vm.report("Mixed audio playback timed out and stopped.") }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                 catch (error: Exception) { vm.report(error.message ?: "Soundtrack playback failed and stopped.") }
@@ -247,7 +255,10 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             } else {
                 val started = withFrameNanos { it }
                 while (playing) {
-                    withFrameNanos { now -> previewIndex = clock.frameAt(now - started) }
+                    withFrameNanos { now ->
+                        previewIndex = clock.frameAt(now - started)
+                        previewSeconds = (startSeconds + (now - started) / 1_000_000_000.0) % durationSeconds
+                    }
                 }
             }
         }
@@ -271,6 +282,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                     catch (error: Exception) { vm.cancelImageImport(); vm.report(error.message ?: "Files could not open; no image was added.") }
                 }
             }, enabled = !playing && !vm.closing && !vm.importingImage) { Text("Import image") }
+            TextButton({ panel = "images" }, enabled = !playing && !vm.closing) { Text("Image library") }
             if (vm.importingImage) TextButton({ vm.cancelImageImport() }) { Text("Cancel image import") }
             TextButton({ panel = "brush" }, enabled = !playing && !vm.closing) { Text("Settings") }
             TextButton({ panel = "export" }, enabled = !playing && !vm.closing && !vm.exporting && vm.exportArtifact == null) { Text("Export") }
@@ -325,13 +337,19 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
             TextButton({ vm.moveFrame(doc.activeFrameID, false) }, enabled = !playing && !vm.closing && doc.frames.last().id != doc.activeFrameID) { Text("Later") }
         }
     }
-    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
+    if (panel != null) AlertDialog(onDismissRequest = { panel = null }, title = { Text(when(panel) { "images" -> "Image library"; "audio" -> "Audio clips"; "project" -> "Project settings"; "export" -> "Export"; "layers" -> "Layers"; "hold" -> "Frame range & timing"; "onion" -> "Onion skin"; "grid" -> "Canvas grid"; "delete" -> "Delete this frame?"; "renameLayer" -> "Rename layer"; "deleteLayer" -> "Delete layer in every frame?"; "deleteSelection" -> "Delete selected artwork?"; else -> "Tool settings" }) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 when (panel) {
-                    "audio" -> AudioClipControls(vm, doc, enabled = !playing && !vm.closing) {
-                        if (vm.beginAudioImport()) try { audioImporter.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")) }
-                        catch (e: Exception) { vm.cancelAudioImport(); vm.report(e.message ?: "Files could not open.") }
+                    "images" -> BundledImageControls(vm, doc, enabled = !playing && !vm.closing)
+                    "audio" -> {
+                        Button({ playing = !playing }, enabled = !vm.closing) {
+                            Text(if (playing) "Stop scene playback" else "Play scene from selected frame")
+                        }
+                        AudioClipControls(vm, doc, enabled = !playing && !vm.closing, playbackSeconds = if (playing) previewSeconds else null) {
+                            if (vm.beginAudioImport()) try { audioImporter.launch(arrayOf("audio/wav", "audio/x-wav", "audio/wave", "audio/vnd.wave")) }
+                            catch (e: Exception) { vm.cancelAudioImport(); vm.report(e.message ?: "Files could not open.") }
+                        }
                     }
                     "project" -> {
                         ProjectConfiguration(settingsDraft) { settingsDraft = it }
