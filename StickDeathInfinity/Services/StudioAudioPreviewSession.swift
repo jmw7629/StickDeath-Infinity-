@@ -165,6 +165,55 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
         state = .failed("Files could not provide this audio. Download it locally and check its access, then try again.")
     }
 
+    /// Preview or add the exact checked catalogue bytes without blocking UI reads/hashes.
+    /// A nil attach closure means audition only; no project is mutated.
+    @discardableResult
+    func useCatalogueSound(_ sound: StudioSoundCatalogue.Sound, catalogue: StudioSoundCatalogue,
+                           stillCurrent: @escaping () -> Bool,
+                           attach: ((AudioTrack) throws -> String)? = nil) -> Bool {
+        guard !isBusy, stillCurrent() else { return false }
+        stop()
+        let id = UUID(); generation = id
+        isBusy = true; state = attach == nil ? .analyzing : .importing
+        progress = 0; lastImportedClipID = nil
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.isBusy = false; self.task = nil }
+            do {
+                let data = try await catalogue.loadResource(sound)
+                try Task.checkCancellation()
+                guard self.generation == id, stillCurrent() else { throw SessionError.staleProject }
+                let result = try await StudioSavedAudioAnalysis.run(data: data, name: sound.title,
+                    importer: self.importer, scratchParent: self.scratchParent) { [weak self] value in
+                        try Task.checkCancellation()
+                        await self?.updateProgress(value, generation: id)
+                    }
+                try Task.checkCancellation()
+                guard self.generation == id else { return }
+                guard stillCurrent() else { throw SessionError.staleProject }
+                guard abs(result.duration - sound.duration) <= 0.001,
+                      result.sampleRate == sound.sampleRate, result.channelCount == sound.channels else {
+                    throw SessionError.changedResource
+                }
+                let track = result.track
+                if let attach {
+                    let clipID = try attach(track)
+                    self.remember(result, for: track.id)
+                    self.lastImportedClipID = clipID; self.progress = 1; self.state = .ready
+                } else {
+                    self.remember(result, for: track.id)
+                    self.progress = 1; self.state = .ready; self.isBusy = false
+                    _ = self.play(clipID: sound.id, track: track, volume: 1)
+                }
+            } catch is CancellationError {
+                if self.generation == id { self.state = .cancelled }
+            } catch {
+                if self.generation == id { self.state = .failed(Self.message(error)) }
+            }
+        }
+        return true
+    }
+
     /// Start one actual AVAudioPlayer after analysis of the same immutable asset.
     /// A true result means the player accepted playback, not audible device proof.
     @discardableResult

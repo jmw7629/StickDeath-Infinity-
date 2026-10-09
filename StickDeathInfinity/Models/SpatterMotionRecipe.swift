@@ -156,24 +156,97 @@ struct SpatterMotionRecipe: Equatable {
 }
 
 /// Explicit active-layer styling; imported text never executes this instruction.
+struct SpatterFrameReverseInstruction: Equatable {
+    let frames: ClosedRange<Int>
+    static let example = "Reverse frames 1 through 12."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        return words.contains("reverse") && words.contains("frames")
+    }
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? { "Use Reverse frames 1 through 12. Choose 2–96 existing consecutive frames and stop playback. Nothing changed." }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes,
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let regex = try NSRegularExpression(pattern: #"\A\s*reverse\s+frames\s+([1-9][0-9]{0,3})\s+through\s+([1-9][0-9]{0,3})\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let a = Range(match.range(at: 1), in: text), let b = Range(match.range(at: 2), in: text),
+              let first = Int(text[a]), let last = Int(text[b]), first < last, last-first < 96 else { throw Failure.unsupported }
+        return .init(frames: first...last)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard frames.lowerBound >= 1, frames.upperBound <= context.frames.count,
+              (1...95).contains(frames.upperBound-frames.lowerBound) else { throw Failure.unsupported }
+        let ids = frames.map { context.frames[$0-1].id }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.reverseFrames(.init(frameIDs: ids))]))
+    }
+}
+
+struct SpatterFrameDuplicateRangeInstruction: Equatable {
+    let frames: ClosedRange<Int>
+    static let example = "Duplicate frames 1 through 12."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
+        return words.contains("duplicate") && words.contains("frames")
+    }
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? { "Use Duplicate frames 1 through 12. Choose 1–96 existing consecutive frames and stop playback. Nothing changed." }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes,
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let regex = try NSRegularExpression(pattern: #"\A\s*duplicate\s+frames\s+([1-9][0-9]{0,3})\s+through\s+([1-9][0-9]{0,3})\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let a = Range(match.range(at: 1), in: text), let b = Range(match.range(at: 2), in: text),
+              let first = Int(text[a]), let last = Int(text[b]), first <= last, last-first < 96 else { throw Failure.unsupported }
+        return .init(frames: first...last)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard frames.lowerBound >= 1, frames.upperBound <= context.frames.count,
+              context.frames.count + frames.count <= 1000,
+              (0...95).contains(frames.upperBound-frames.lowerBound) else { throw Failure.unsupported }
+        let ids = frames.map { context.frames[$0-1].id }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.duplicateFrameRange(.init(frameIDs: ids))]))
+    }
+}
+
 struct SpatterFrameExposureInstruction: Equatable {
     let ticks: Int
+    var frames: ClosedRange<Int>? = nil
+    static let rangeExample = "Set frames 1 through 12 exposure to 2 ticks."
     static let example = "Set selected frame exposure to 12 ticks."
     static func isInstruction(_ text: String) -> Bool {
         let words = Set(text.lowercased().split { !$0.isLetter }.map(String.init))
-        return words.contains("frame") && words.contains("exposure")
+        return (words.contains("frame") || words.contains("frames")) && words.contains("exposure")
     }
     enum Failure: LocalizedError {
         case unsupported, invalidContext
         var errorDescription: String? {
             switch self {
-            case .unsupported: return "Use Set selected frame exposure to 12 ticks. with a whole number from 1 to 600. Nothing changed."
+            case .unsupported: return "Use Set selected frame exposure to 12 ticks. or Set frames 1 through 12 exposure to 2 ticks. Use 1–600 ticks and at most 96 existing frames. Nothing changed."
             case .invalidContext: return "Select an existing frame before changing its exposure. Nothing changed."
             }
         }
     }
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let rangePattern = try NSRegularExpression(pattern: #"\A\s*set\s+frames\s+([1-9][0-9]{0,3})\s+through\s+([1-9][0-9]{0,3})\s+exposure\s+to\s+([1-9][0-9]{0,2})\s+ticks\.\s*\z"#, options: [.caseInsensitive])
+        if let match = rangePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+            func number(_ group: Int) -> Int? { Range(match.range(at: group), in: text).flatMap { Int(text[$0]) } }
+            guard let first = number(1), let last = number(2), let ticks = number(3),
+                  first <= last, last <= 1000, last - first < 96, (1...600).contains(ticks) else { throw Failure.unsupported }
+            return .init(ticks: ticks, frames: first...last)
+        }
         let regex = try NSRegularExpression(pattern: #"\A\s*set\s+selected\s+frame\s+exposure\s+to\s+([1-9][0-9]{0,2})\s+ticks\.\s*\z"#, options: [.caseInsensitive])
         guard let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
               let range = Range(match.range(at: 1), in: text), let ticks = Int(text[range]), (1...600).contains(ticks)
@@ -185,6 +258,16 @@ struct SpatterFrameExposureInstruction: Equatable {
         try checkCancellation()
         guard (1...600).contains(ticks) else { throw Failure.unsupported }
         guard context.frames.contains(where: { $0.id == context.activeFrameID }) else { throw Failure.invalidContext }
+        if let frames {
+            guard frames.lowerBound >= 1, frames.upperBound <= context.frames.count,
+                  frames.upperBound - frames.lowerBound < 96 else { throw Failure.invalidContext }
+            var commands: [StudioCommand] = []
+            for number in frames {
+                try checkCancellation()
+                commands.append(.setFrameHold(.init(frame: .id(context.frames[number - 1].id), ticks: ticks)))
+            }
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply(commands))
+        }
         try checkCancellation()
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.setFrameHold(.init(frame: .id(context.activeFrameID), ticks: ticks))]))
@@ -276,18 +359,20 @@ struct SpatterProjectRenameInstruction: Equatable {
 struct SpatterAudioInstruction: Equatable {
     let settings: StudioAudioClipSettings
     let duplicates: Bool
+    let additionalCopies: Int
     let splitTime: Double?
     let deletes: Bool
-    init(settings: StudioAudioClipSettings, duplicates: Bool = false, splitTime: Double? = nil, deletes: Bool = false) {
-        self.settings = settings; self.duplicates = duplicates; self.splitTime = splitTime; self.deletes = deletes
+    init(settings: StudioAudioClipSettings, duplicates: Bool = false, splitTime: Double? = nil, deletes: Bool = false, additionalCopies: Int = 1) {
+        self.settings = settings; self.duplicates = duplicates; self.additionalCopies = additionalCopies; self.splitTime = splitTime; self.deletes = deletes
     }
     enum Example: String, CaseIterable, Identifiable {
-        case volume, mute, unmute, fades, clear, placement, trim, duplicate, split, delete
+        case volume, mute, unmute, fades, clear, placement, trim, duplicate, repetition, split, delete
         var id: String { rawValue }
         var title: String {
             switch self {
             case .split: return "Split clip"
             case .delete: return "Delete selected clip"
+            case .repetition: return "Repeat clip"
             case .duplicate: return "Duplicate clip"
             case .trim: return "Trim clip"
             case .placement: return "Move clip"
@@ -302,6 +387,7 @@ struct SpatterAudioInstruction: Equatable {
             switch self {
             case .split: return "Split selected audio clip at 0.5 timeline seconds."
             case .delete: return "Delete selected audio clip."
+            case .repetition: return "Repeat selected audio clip with 4 additional copies."
             case .duplicate: return "Duplicate selected audio clip."
             case .trim: return "Trim selected audio clip from source 0.10 seconds for 0.50 seconds."
             case .placement: return "Move selected audio clip to 1.25 seconds on track 2."
@@ -318,16 +404,17 @@ struct SpatterAudioInstruction: Equatable {
         var errorDescription: String? {
             switch self {
             case .unsupported: return "Use one complete audio instruction from the examples. Additional actions are unavailable. Nothing changed."
-            case .invalidValue: return "Use volume 0–100%, fades within the clip, start 0–1,000 seconds on track 1–4, or a source trim containing playable audio. Nothing changed."
+            case .invalidValue: return "Use volume 0–100%, fades within the clip, start 0–1,000 seconds on track 1–4, a source trim containing playable audio, or 1–32 additional copies. Nothing changed."
             case .missingClip: return "Select a playable clip in the Audio workspace, then reopen Spatter. Nothing changed."
             }
         }
     }
     static func isAudioInstruction(_ text: String) -> Bool {
         let first = text.split(whereSeparator: { $0.isWhitespace }).first?.lowercased()
-        return ["set", "mute", "unmute", "fade", "clear", "move", "trim", "duplicate", "split", "delete"].contains(first ?? "")
+        return ["set", "mute", "unmute", "fade", "clear", "move", "trim", "duplicate", "repeat", "split", "delete"].contains(first ?? "")
     }
     private static let patterns: [(String, String)] = [
+        ("repeat", #"\A\s*repeat\s+selected\s+audio\s+clip\s+with\s+([1-9][0-9]?)\s+additional\s+copies\.?\s*\z"#),
         ("split", #"\A\s*split\s+selected\s+audio\s+clip\s+at\s+([^\s]+)\s+timeline\s+seconds?\.?\s*\z"#),
         ("delete", #"\A\s*delete\s+selected\s+audio\s+clip\.?\s*\z"#),
         ("duplicate", #"\A\s*duplicate\s+selected\s+audio\s+clip\.?\s*\z"#),
@@ -362,6 +449,9 @@ struct SpatterAudioInstruction: Equatable {
             switch kind {
             case "split": return .init(settings: .init(), splitTime: try number(1, maximum: 1300))
             case "delete": return .init(settings: .init(), deletes: true)
+            case "repeat":
+                guard let count = Int(try token(1)), (1...32).contains(count) else { throw InstructionError.invalidValue }
+                return .init(settings: .init(), duplicates: true, additionalCopies: count)
             case "duplicate": return .init(settings: .init(), duplicates: true)
             case "trim":
                 let offset = try number(1, maximum: 300), duration = try number(2, maximum: 300)
@@ -397,9 +487,17 @@ struct SpatterAudioInstruction: Equatable {
                 action: .apply([.deleteAudioClip(.init(clipID: clip.id))]))
         }
         if duplicates {
-            try checkCancellation()
+            guard (1...32).contains(additionalCopies) else { throw InstructionError.invalidValue }
+            var commands: [StudioCommand] = []
+            var source = clip.id
+            for _ in 0..<additionalCopies {
+                try checkCancellation()
+                let next = UUID().uuidString
+                commands.append(.duplicateAudioClip(.init(clipID: source, newClipID: next)))
+                source = next
+            }
             return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
-                action: .apply([.duplicateAudioClip(.init(clipID: clip.id, newClipID: UUID().uuidString))]))
+                action: .apply(commands))
         }
         _ = try settings.applying(to: clip)
         try checkCancellation()
@@ -793,6 +891,102 @@ struct SpatterSelectedErasureInstruction: Equatable {
 }
 
 /// Explicit same-command layer duplication; no imported content is executed.
+/// Explicit one-based navigation resolves to captured stable identities.
+struct SpatterNavigationInstruction: Equatable {
+    enum Target: String { case frame, layer }
+    let target: Target
+    let number: Int
+    var example: String { "Select \(target.rawValue) \(number)." }
+    static let frameExample = "Select frame 1."
+    static let layerExample = "Select layer 1."
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*select\s+(?:frame|layer)\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    enum Failure: LocalizedError {
+        case unsupported, missing
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Select frame 1. or Select layer 1. with a positive whole number. Nothing changed."
+            case .missing: return "That frame or layer does not exist in the captured project. Nothing changed."
+            }
+        }
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let expression = try NSRegularExpression(pattern: #"\A\s*select\s+(frame|layer)\s+([1-9][0-9]{0,3})\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let kind = Range(match.range(at: 1), in: text), let value = Range(match.range(at: 2), in: text),
+              let target = Target(rawValue: text[kind].lowercased()), let number = Int(text[value]) else { throw Failure.unsupported }
+        return .init(target: target, number: number)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        let command: StudioCommand
+        switch target {
+        case .frame:
+            guard number > 0, number <= context.frames.count else { throw Failure.missing }
+            command = .selectFrame(.id(context.frames[number - 1].id))
+        case .layer:
+            guard number > 0, number <= context.layers.count else { throw Failure.missing }
+            command = .selectLayer(.id(context.layers[number - 1].id))
+        }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply([command]))
+    }
+}
+
+struct SpatterLayerStructureInstruction: Equatable {
+    enum Action: Equatable { case add, delete }
+    let action: Action
+    let name: String?
+    static let addExample = "Add layer named \"Foreground\"."
+    static let deleteExample = "Delete active layer."
+    var example: String { action == .delete ? Self.deleteExample : "Add layer named \"\(name ?? "Foreground")\"." }
+    enum Failure: LocalizedError {
+        case unsupported, unavailable
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Add layer named \"Foreground\". or Delete active layer. as one complete instruction. Nothing changed."
+            case .unavailable: return "Select an existing layer. Keep at least one layer and at most 128 layers. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["add", "delete"].contains(words.first.map(String.init) ?? "") && words.contains("layer")
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        if text.range(of: #"\A\s*delete\s+active\s+layer\.\s*\z"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return .init(action: .delete, name: nil)
+        }
+        let expression = try NSRegularExpression(pattern: #"\A\s*add\s+layer\s+named\s+"([^"\r\n]+)"\.\s*\z"#, options: [.caseInsensitive])
+        guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range(at: 1), in: text) else { throw Failure.unsupported }
+        let name = String(text[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard StudioCommandExecutor.isValidLayerName(name) else { throw Failure.unsupported }
+        return .init(action: .add, name: name)
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard context.layers.contains(where: { $0.id == context.activeLayerID }) else { throw Failure.unavailable }
+        let command: StudioCommand
+        switch action {
+        case .add:
+            guard context.layers.count < 128, let name, StudioCommandExecutor.isValidLayerName(name) else { throw Failure.unavailable }
+            command = .addLayer(.init(name: name, result: "new_layer"))
+        case .delete:
+            guard context.layers.count > 1 else { throw Failure.unavailable }
+            command = .deleteLayer(.id(context.activeLayerID))
+        }
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply([command]))
+    }
+}
+
 struct SpatterLayerDuplicateInstruction: Equatable {
     static let example = "Duplicate active layer."
     static func isInstruction(_ text: String) -> Bool {
@@ -828,28 +1022,46 @@ struct SpatterLayerUpdateInstruction: Equatable {
     let name: String?
     let opacity: Double?
     var visible: Bool? = nil
+    var blend: StudioCommandBlend? = nil
+    var lock: StudioCommandLock? = nil
+    static let lockModes: [StudioCommandLock] = [.free, .full, .position, .alpha]
+    static func lockExample(_ mode: StudioCommandLock) -> String { "Set active layer lock to \(mode.rawValue)." }
+    static let blendModes: [StudioCommandBlend] = [.normal, .multiply, .screen, .overlay, .darken, .lighten]
+    static func blendExample(_ mode: StudioCommandBlend) -> String { "Set active layer blend to \(mode.rawValue)." }
     static let renameExample = "Rename active layer to \"Foreground\"."
     static let hideExample = "Hide active layer."
     static let showExample = "Show active layer."
     static let opacityExample = "Set active layer opacity to 50%."
     static func isInstruction(_ text: String) -> Bool {
-        text.range(of:#"\A\s*(?:rename\s+active\s+layer|set\s+active\s+layer\s+opacity|(?:hide|show)\s+active\s+layer)\b"#, options:[.regularExpression,.caseInsensitive]) != nil
+        text.range(of:#"\A\s*(?:rename\s+active\s+layer|set\s+active\s+layer\s+(?:opacity|blend|lock)|(?:hide|show)\s+active\s+layer)\b"#, options:[.regularExpression,.caseInsensitive]) != nil
     }
     enum Failure: LocalizedError {
         case unsupported, invalidContext
         var errorDescription: String? {
             switch self {
-            case .unsupported: return "Use Rename active layer to \"Foreground\". or Set active layer opacity to 50%. Hide active layer. and Show active layer. change visibility. Names use 1–120 characters and opacity is 0–100%. Nothing changed."
+            case .unsupported: return "Use Rename active layer to \"Foreground\". or Set active layer opacity to 50%. Hide active layer. and Show active layer. change visibility. Set active layer blend to multiply. supports normal, multiply, screen, overlay, darken and lighten. Set active layer lock to position. supports free, full, position and alpha. Names use 1–120 characters and opacity is 0–100%. Nothing changed."
             case .invalidContext: return "Select an existing active layer before changing its settings. Nothing changed."
             }
         }
     }
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
         let range = NSRange(text.startIndex...,in:text)
+        let lockExpression = try NSRegularExpression(pattern: #"\A\s*set\s+active\s+layer\s+lock\s+to\s+(free|full|position|alpha)\.\s*\z"#, options: [.caseInsensitive])
+        if let match = lockExpression.firstMatch(in: text, range: range),
+           let value = Range(match.range(at: 1), in: text),
+           let mode = StudioCommandLock(rawValue: text[value].lowercased()) {
+            return .init(name: nil, opacity: nil, lock: mode)
+        }
+        let blendExpression = try NSRegularExpression(pattern: #"\A\s*set\s+active\s+layer\s+blend\s+to\s+(normal|multiply|screen|overlay|darken|lighten)\.\s*\z"#, options: [.caseInsensitive])
+        if let match = blendExpression.firstMatch(in: text, range: range),
+           let value = Range(match.range(at: 1), in: text),
+           let mode = StudioCommandBlend(rawValue: text[value].lowercased()) {
+            return .init(name: nil, opacity: nil, blend: mode)
+        }
         let visibility = try NSRegularExpression(pattern:#"\A\s*(hide|show)\s+active\s+layer\.\s*\z"#,options:[.caseInsensitive])
         if let match = visibility.firstMatch(in:text,range:range), let word = Range(match.range(at:1),in:text) {
-            guard !text.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else { throw Failure.unsupported }
             return .init(name:nil,opacity:nil,visible:text[word].lowercased() == "show")
         }
 
@@ -868,9 +1080,9 @@ struct SpatterLayerUpdateInstruction: Equatable {
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
         guard context.layers.contains(where:{$0.id == context.activeLayerID}) else { throw Failure.invalidContext }
-        guard [name != nil, opacity != nil, visible != nil].filter({$0}).count == 1, name.map(StudioCommandExecutor.isValidLayerName) ?? true,
+        guard [name != nil, opacity != nil, visible != nil, blend != nil, lock != nil].filter({$0}).count == 1, name.map(StudioCommandExecutor.isValidLayerName) ?? true,
               opacity.map({$0.isFinite && (0...1).contains($0)}) ?? true else { throw Failure.unsupported }
-        var settings = StudioCommandLayerSettings(); settings.name = name; settings.opacity = opacity; settings.visible = visible
+        var settings = StudioCommandLayerSettings(); settings.name = name; settings.opacity = opacity; settings.visible = visible; settings.blend = blend; settings.lock = lock
         try checkCancellation()
         return .init(requestID:requestID,projectID:context.projectID,expectedRevision:context.revision,
             action:.apply([.updateLayer(.init(layer:.id(context.activeLayerID),settings:settings))]))
@@ -928,6 +1140,83 @@ struct SpatterImageReflectionInstruction: Equatable {
 
 
 /// Explicit local ordering only; the session owns captured selection authority.
+struct SpatterAudioTrackInstruction: Equatable {
+    let track: Int
+    var volume: Double? = nil
+    var muted: Bool? = nil
+    static let volumeExample = "Set audio track 1 volume to 40%."
+    static let muteExample = "Mute audio track 1."
+    static let unmuteExample = "Unmute audio track 1."
+    enum Failure: LocalizedError {
+        case unsupported
+        var errorDescription: String? { "Use Set audio track 1 volume to 40%., Mute audio track 1., or Unmute audio track 1. Choose track 1–4 and volume 0–100%. Nothing changed." }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.contains("audio") && words.contains("track") && !words.contains("clip")
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let patterns = [#"\A\s*set\s+audio\s+track\s+([1-4])\s+volume\s+to\s+([0-9]{1,3}(?:\.[0-9]{1,6})?)\s*%\.?\s*\z"#,
+                        #"\A\s*(mute|unmute)\s+audio\s+track\s+([1-4])\.?\s*\z"#]
+        for (index, pattern) in patterns.enumerated() {
+            let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                  let first = Range(match.range(at: 1), in: text), let second = Range(match.range(at: 2), in: text) else { continue }
+            if index == 0 {
+                guard let track = Int(text[first]), let percent = Double(text[second]), percent.isFinite,
+                      (0...100).contains(percent) else { throw Failure.unsupported }
+                return .init(track: track, volume: percent / 100)
+            }
+            guard let track = Int(text[second]) else { throw Failure.unsupported }
+            return .init(track: track, muted: text[first].lowercased() == "mute")
+        }
+        throw Failure.unsupported
+    }
+    func prepare(in context: StudioCommandContext, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.updateAudioTrack(.init(track: track, volume: volume, muted: muted))]))
+    }
+}
+
+/// Local, complete-instruction grammar; never falls back to a provider or an implicit target.
+struct SpatterDrawingDuplicateInstruction: Equatable {
+    static let example = "Duplicate selected drawings."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Duplicate selected drawings. as one complete instruction. Nothing changed."
+            case .selection: return "Select 1–1024 drawings with Move before opening Spatter. Images and mixed artwork are not drawing duplication targets. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "duplicate" && words.contains("drawings")
+    }
+    static func parse(_ text: String) throws -> Self {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
+        let expression = try NSRegularExpression(pattern: #"\A\s*duplicate\s+selected\s+drawings\.?\s*\z"#, options: [.caseInsensitive])
+        guard expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else { throw Failure.unsupported }
+        return .init()
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard !selectedElementIDs.isEmpty, selectedElementIDs.count <= 1024,
+              selectedElementIDs.allSatisfy({ !$0.isEmpty && $0.count <= 160 }),
+              let frame = context.frames.first(where: { $0.id == context.activeFrameID }),
+              selectedElementIDs.count <= frame.elementCount else { throw Failure.selection }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.duplicateElements(.init(frame: .id(context.activeFrameID), elementIDs: selectedElementIDs.sorted()))]))
+    }
+}
+
 struct SpatterArtworkOrderInstruction: Equatable {
     let forward: Bool
     static let forwardExample = "Bring selected artwork forward."
@@ -1013,9 +1302,10 @@ struct SpatterLayerOrderInstruction: Equatable {
 
 /// One explicit active-frame operation. Never infer a plural frame selection.
 struct SpatterFrameActionInstruction: Equatable {
-    enum Action: String, CaseIterable { case duplicate, earlier, later, delete
+    enum Action: String, CaseIterable { case add, duplicate, earlier, later, delete
         var example: String {
             switch self {
+            case .add: return "Add blank frame."
             case .duplicate: return "Duplicate active frame."
             case .earlier: return "Move active frame earlier."
             case .later: return "Move active frame later."
@@ -1024,11 +1314,18 @@ struct SpatterFrameActionInstruction: Equatable {
         }
     }
     let action: Action
+    let count: Int
+    init(action: Action, count: Int = 1) { self.action = action; self.count = count }
+    var example: String {
+        if action == .add && count > 1 { return "Add \(count) blank frames." }
+        if action == .duplicate && count > 1 { return "Duplicate active frame \(count) times." }
+        return action.example
+    }
     enum Failure: LocalizedError {
         case unsupported, unavailable, boundary, lastFrame, capacity
         var errorDescription: String? {
             switch self {
-            case .unsupported: return "Use Duplicate active frame., Move active frame earlier., Move active frame later., or Delete active frame. as one complete instruction. Only one active frame is targeted. Nothing changed."
+            case .unsupported: return "Use Add blank frame., Add 12 blank frames. (1–96), Duplicate active frame., Duplicate active frame 12 times. (1–96), Move active frame earlier., Move active frame later., or Delete active frame. as one complete instruction. Nothing changed."
             case .unavailable: return "Select an existing active frame and stop playback before editing frames. Nothing changed."
             case .boundary: return "The active frame cannot move farther in this direction. Nothing changed."
             case .lastFrame: return "The last frame cannot be deleted. Nothing changed."
@@ -1038,12 +1335,24 @@ struct SpatterFrameActionInstruction: Equatable {
     }
     static func isInstruction(_ text: String) -> Bool {
         let words = text.lowercased().split { !$0.isLetter }
-        return ["duplicate","move","delete"].contains(words.first.map(String.init) ?? "")
+        return ["add","duplicate","move","delete"].contains(words.first.map(String.init) ?? "")
             && words.contains(where:{$0 == "frame" || $0 == "frames"})
     }
     static func parse(_ text: String) throws -> Self {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
         guard !text.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}) else { throw Failure.unsupported }
+        let addition = try NSRegularExpression(pattern: #"\A\s*add\s+(?:blank\s+frame|([1-9][0-9]?)\s+blank\s+frames)\.\s*\z"#, options: [.caseInsensitive])
+        if let match = addition.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) {
+            let count = Range(match.range(at: 1), in: text).flatMap { Int(text[$0]) } ?? 1
+            guard (1...96).contains(count) else { throw Failure.unsupported }
+            return .init(action: .add, count: count)
+        }
+        let duplicates = try NSRegularExpression(pattern: #"\A\s*duplicate\s+active\s+frame\s+([1-9][0-9]?)\s+times\.\s*\z"#, options: [.caseInsensitive])
+        if let match = duplicates.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let value = Range(match.range(at: 1), in: text), let count = Int(text[value]) {
+            guard (1...96).contains(count) else { throw Failure.unsupported }
+            return .init(action: .duplicate, count: count)
+        }
         let pattern = try NSRegularExpression(pattern:#"\A\s*(duplicate\s+active\s+frame|delete\s+active\s+frame|move\s+active\s+frame\s+(?:earlier|later))\.\s*\z"#,options:[.caseInsensitive])
         guard pattern.firstMatch(in:text,range:NSRange(text.startIndex...,in:text)) != nil else { throw Failure.unsupported }
         let words = text.lowercased().split { !$0.isLetter }
@@ -1053,11 +1362,31 @@ struct SpatterFrameActionInstruction: Equatable {
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
         guard let index = context.frames.firstIndex(where:{$0.id == context.activeFrameID}) else { throw Failure.unavailable }
+        guard action == .add || action == .duplicate || count == 1 else { throw Failure.unsupported }
         let command: StudioCommand
         switch action {
+        case .add:
+            guard (1...96).contains(count), context.frames.count <= 1000 - count else { throw Failure.capacity }
+            var commands: [StudioCommand] = []
+            var previous = StudioCommandReference.id(context.activeFrameID)
+            for number in 0..<count {
+                try checkCancellation()
+                let alias = "blank_frame_\(number)"
+                commands.append(.addFrame(.init(after: previous, result: alias)))
+                previous = .created(alias)
+            }
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply(commands))
         case .duplicate:
-            guard context.frames.count < 1000 else { throw Failure.capacity }
-            command = .duplicateFrame(.init(source:.id(context.activeFrameID),result:"duplicated_frame"))
+            guard (1...96).contains(count), context.frames.count <= 1000 - count else { throw Failure.capacity }
+            var commands: [StudioCommand] = []
+            var previous = StudioCommandReference.id(context.activeFrameID)
+            for number in 0..<count {
+                try checkCancellation()
+                let alias = number == 0 ? "duplicated_frame" : "duplicated_frame_\(number)"
+                commands.append(.duplicateFrame(.init(source: previous, result: alias)))
+                previous = .created(alias)
+            }
+            return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision, action: .apply(commands))
         case .delete:
             guard context.frames.count > 1 else { throw Failure.lastFrame }
             command = .deleteFrame(.id(context.activeFrameID))
@@ -1162,5 +1491,29 @@ struct SpatterGridInstruction: Equatable {
         try checkCancellation()
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.canvasOptions(.init(grid: visible, gridSettings: settings))]))
+    }
+}
+
+/// Explicit local command; additional instructions never become implicit edits.
+struct SpatterFrameCutInstruction {
+    static let example = "Cut current frame."
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "cut" && words.contains("frame")
+    }
+    static func prepare(_ text: String, in context: StudioCommandContext, requestID: UUID,
+                        checkCancellation: () throws -> Void) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes,
+              !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+            throw StudioCommandError.invalidSettings
+        }
+        let expression = try NSRegularExpression(pattern: #"\A\s*cut\s+current\s+frame\.?\s*\z"#, options: [.caseInsensitive])
+        guard expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil else {
+            throw StudioDocumentError.invalid("Use Cut current frame. as one complete instruction. Nothing changed.")
+        }
+        guard context.frames.count > 1 else { throw StudioCommandError.cannotDeleteLastFrame }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.cutFrame(.id(context.activeFrameID))]))
     }
 }

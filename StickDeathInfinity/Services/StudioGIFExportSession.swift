@@ -46,7 +46,7 @@ final class StudioGIFExportSession: ObservableObject {
     init(outputParent: URL = FileManager.default.temporaryDirectory) { self.outputParent = outputParent }
 
     @discardableResult
-    func start(from vm: StudioViewModel, scope: Scope) -> Bool {
+    func start(from vm: StudioViewModel, scope: Scope, maximumDimension: Int? = nil) -> Bool {
         guard !isClosed, !isRunning, !isSharing, !isStarting, !isBeginningShare, !isCleaning else { return false }
         isStarting = true
         defer { isStarting = false }
@@ -56,6 +56,11 @@ final class StudioGIFExportSession: ObservableObject {
         guard vm.activeStrokeID == nil, vm.pendingBrushStroke == nil else {
             errorMessage = "Finish or resolve the current drawing before exporting GIF."; return false
         }
+        do {
+            let capacity = try StudioGIFEncoder.frameCapacity(document: vm.document, maximumDimension: maximumDimension)
+            guard vm.document.frames.count <= capacity else { throw StudioGIFEncoder.Failure.limit }
+            guard (1...50).contains(vm.document.fps) else { throw StudioGIFEncoder.Failure.frameRate }
+        } catch { errorMessage = error.localizedDescription; return false }
         currentScope = scope
         guard cleanupOutput() else { return false }
         guard !isClosed, currentScope.isStudioVisible, currentScope.isForeground,
@@ -79,7 +84,7 @@ final class StudioGIFExportSession: ObservableObject {
             errorMessage = error.localizedDescription; notice = nil
             return false
         }
-        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, imageCredits: imageCredits)
+        let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, maximumDimension: maximumDimension, imageCredits: imageCredits)
         editor = vm; accountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision, name: document.name)
         errorMessage = nil; notice = nil; completedFrames = 0

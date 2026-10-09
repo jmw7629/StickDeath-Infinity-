@@ -257,9 +257,11 @@ final class StudioExportService {
 
     func render(_ frame: AnimationFrame, document: StudioDocument,
                         background: Background, raster: Data?, thumbnail: Bool = false,
-                        rasterDataByID: [String: Data] = [:]) throws -> CGImage {
+                        rasterDataByID: [String: Data] = [:], maximumDimension: Int? = nil) throws -> CGImage {
         let size = CGSize(width: document.width, height: document.height)
-        let ratio = thumbnail ? min(1, 256 / max(size.width, size.height)) : 1
+        if let maximumDimension, !(1...4096).contains(maximumDimension) { throw ExportError.renderFailed }
+        let limit = thumbnail ? 256 : maximumDimension
+        let ratio = limit.map { min(1, CGFloat($0) / max(size.width, size.height)) } ?? 1
         let output = CGSize(width: max(1, floor(size.width * ratio)), height: max(1, floor(size.height * ratio)))
         let brushes = try StudioFrameRenderer.prepare(frame: frame)
         var sources = rasterDataByID

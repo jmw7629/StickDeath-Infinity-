@@ -7,6 +7,8 @@
 	objects = {
 
 		/* Begin PBXBuildFile section */
+		AAB15AC8238445F6A58B7C19 /* WatchTogetherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBFA0DC9DB6DCE2A3459B51F /* WatchTogetherView.swift */; };
+		F174EEA58A7D4ABAB28C3201 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = F174EEA58A7D4ABAB28C3202 /* LaunchScreen.storyboard */; };
 		4911D5FFF30EDAA2918B5350 /* StudioImages in Resources */ = {isa = PBXBuildFile; fileRef = 7F1C22FABEA8838E9360B606 /* StudioImages */; };
 		150831B4989F4128925792C1 /* StudioImageLibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D9126553C3561AC5D1ABDB4 /* StudioImageLibraryView.swift */; };
 		D7920D8132C59F7DC9F19468 /* StudioImageLibraryThumbnails.swift in Sources */ = {isa = PBXBuildFile; fileRef = EAA996275130A25712C8ED57 /* StudioImageLibraryThumbnails.swift */; };
@@ -176,6 +178,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		/* End PBXTargetDependency section */
 
 		/* Begin PBXFileReference section */
+		F174EEA58A7D4ABAB28C3202 /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
 		7F1C22FABEA8838E9360B606 /* StudioImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "StickDeathInfinity/Resources/StudioImages"; sourceTree = SOURCE_ROOT; };
 		3D9126553C3561AC5D1ABDB4 /* StudioImageLibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/StudioImageLibraryView.swift"; sourceTree = SOURCE_ROOT; };
 		EAA996275130A25712C8ED57 /* StudioImageLibraryThumbnails.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioImageLibraryThumbnails.swift"; sourceTree = SOURCE_ROOT; };
@@ -423,6 +426,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				4A6CA8964B099D03D70149E6 /* Views */,
 				A58386C9AEBE847DB9B6FA95 /* Assets.xcassets */,
 				29A746F00A0D8FF087EA2B7D /* Info.plist */,
+				F174EEA58A7D4ABAB28C3202 /* LaunchScreen.storyboard */,
 				91D97B83C728AB10BD060A8A /* StickDeathInfinity.entitlements */,
 			);
 			path = StickDeathInfinity;
@@ -940,6 +944,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				D1B101D322C26862C36EACE5 /* spatter_brain_1000_index.json in Resources */,
 				E1EBF30959AF698AD53EDE22 /* spatter_core_20.json in Resources */,
 				B08F79CCEDA61C3317EA4D09 /* Assets.xcassets in Resources */,
+				F174EEA58A7D4ABAB28C3201 /* LaunchScreen.storyboard in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1025,6 +1030,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				6D3F591B404BDCD5F2216548 /* SpatterBrainLoader.swift in Sources */,
 				8330063EC77BDD2C502C77F5 /* AdminDashboardView.swift in Sources */,
 				6260DA8DF449BE20C32FB9BE /* ChallengeDetailView.swift in Sources */,
+				AAB15AC8238445F6A58B7C19 /* WatchTogetherView.swift in Sources */,
 				07EFDADF3CEB9020D448D504 /* CollabRoomView.swift in Sources */,
 				B94FD5E096DBD0F8D41D758F /* LeaderboardView.swift in Sources */,
 				79F3C4DD8ACBDE4106EAEB78 /* WarRoomView.swift in Sources */,
@@ -1235,7 +1241,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				INFOPLIST_FILE = StickDeathInfinity/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1264,7 +1270,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				INFOPLIST_FILE = StickDeathInfinity/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = NO;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (

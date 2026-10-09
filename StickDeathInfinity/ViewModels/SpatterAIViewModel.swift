@@ -197,14 +197,16 @@ final class SpatterAIViewModel: ObservableObject {
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { isOrbVisible.toggle() }
     }
 
-    /// Current shipping behavior takes precedence over historical brain packs.
+    /// Current implemented behavior takes precedence over historical brain packs.
     /// These are instructions for the user, never execution receipts.
-    static let currentGuideVersion = "2026-10-08.2"
+    static let currentGuideVersion = "2026-10-09.4"
     private static let portableProjectGuide = "Save and return to the project library. In a saved project's menu, choose Save Project Backup to Files, choose a destination and complete the Files save; the system confirmation can be labelled Save or Move. The .sdiproject backup contains the saved editable project and its stored media; MP4 and GIF exports are not editable project backups. Wait for Project backup saved to Files before treating the save as complete. To bring it back, choose Import project backup in the library and select the .sdiproject file. Validation must finish before a separate project with a new identity is created; it does not overwrite the original or restore prior-process Undo history. Cancelling changes no projects. If a file is unsupported, damaged or too large, keep the original and report the displayed error; I cannot repair it or claim it was imported. This is an explicit Files transfer, not automatic cloud sync or a backup of every app setting."
     private static let deviceStorageGuide = "Open Storage in the project library, then Refresh to measure files. The report covers Documents and disk caches, including saved revisions. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded; the number is not total app or device usage. Clear releases cached frame encodings from memory, not disk space. It preserves projects, history, media, backups and exports, and leaves unclassified disk cache files untouched. I cannot inspect free device space or promise a storage reduction. Keep a verified project backup before managing files outside the app; Recently Deleted is recoverable storage, not a permanent-delete or automatic-purge feature."
 
     private static let imagePackGuide = "Open Image Library in Studio. The bundled catalogue has 207 pictures. Six optional packs offer 1818 more: 1-Bit Scenery (458), 1-Bit Characters and Props (615), 1-Bit Platformer (391), Monochrome RPG (135), Micro Roguelike (160), and Smoke and Explosions (59). That is 2025 pictures with all six verified packs, not a claim that your device has installed them. Each pack has its own Download button and displayed size; for example Micro Roguelike shows Download 178 KB. Downloading needs a connection and sufficient space; wait for Pictures verified and available offline for that pack. Already verified pictures can be used offline. Cancel or a download/verification error is not an installation, and starting a download does not add pictures to a project. Remove download removes only that pack's downloaded library copy; pictures already added to projects are kept. If verification fails, remove that downloaded copy and try again when connected. Select and preview a picture, then explicitly Add to current frame. Many entries are small pixel-art tiles, and categories can be broad. I cannot see whether your device has installed a pack, check its network or free space, or download anything through this conversation."
-    private static let imageEditingGuide = "You can add two or more independently imported images to the same frame: each import gets its own image layer and preserves the other originals. Select the imported image’s layer in Layers. In Lasso, choose Image on active layer and enclose the whole image with Rectangle, Polygon or Freehand; New replaces selection, Add keeps it and Subtract removes it. Choose Move to use the selected image’s controls. Position, size and angle are in the Move popup, and the red canvas handle rotates it; Apply or releasing the handle creates one Undo step. Cut image in Move transfers the selected active-layer image to the clipboard and removes only that instance in one Undo step. Copy selected image keeps that instance’s crop, flips and angle; Paste image adds a new image layer to the current frame and never replaces an existing image. Layers can duplicate an image layer as a linked instance sharing the original file, with separate placement. To select drawings together with one image, make that image's layer active, choose Drawings + image in Lasso and enclose the whole artwork, then choose Move. The group can move, scale, rotate and flip together. Copy and Cut preserve its selected drawings, image and layer appearance; Paste artwork adds fresh artwork identities and layers without replacing the originals. Group Cut or Delete is one Undo step. This group includes at most one active-layer image; it is not a multiple-image or pixel-region selection. Ordering or locking mixed artwork requires selecting one kind separately. Hidden or locked artwork is excluded, and changed context rejects stale actions. A historical frame with an opaque original record still requires a new blank frame; a save, playback, draft, permission or capacity error is not a successful import or paste. Chat guidance does not select or edit artwork for you."
+    private static let imageEditingGuide = "You can add two or more independently imported images to the same frame: each import gets its own image layer and preserves the other originals. Select the imported image’s layer in Layers. In Lasso, choose Image on active layer and enclose the whole image with Rectangle, Polygon or Freehand; New replaces selection, Add keeps it and Subtract removes it. After a nonempty lasso, Move activates automatically with the selected image’s transform controls. Position, size and angle are in the Move popup, and the red canvas handle rotates it; Apply or releasing the handle creates one Undo step. Cut image in Move transfers the selected active-layer image to the clipboard and removes only that instance in one Undo step. Copy selected image keeps that instance’s crop, flips and angle; Paste image adds a new image layer to the current frame and never replaces an existing image. Layers can duplicate an image layer as a linked instance sharing the original file, with separate placement. To select drawings together with one image, make that image's layer active, choose Drawings + image in Lasso and enclose the whole artwork, and Move activates automatically. Drag inside its selection box or use its handles; the group can move, scale, rotate and flip together. Copy and Cut preserve its selected drawings, image and layer appearance; Paste artwork adds fresh artwork identities and layers without replacing the originals. Group Cut or Delete is one Undo step. This group includes at most one active-layer image; it is not a multiple-image or pixel-region selection. Ordering or locking mixed artwork requires selecting one kind separately. Hidden or locked artwork is excluded, and changed context rejects stale actions. A historical frame with an opaque original record still requires a new blank frame; a save, playback, draft, permission or capacity error is not a successful import or paste. Chat guidance does not select or edit artwork for you."
+    private static let wandGuide = "Choose Wand and an active, visible image layer set to Free, normal blend, full opacity and no glow or drawings. Tap visible image pixels. Tolerance changes color matching; Connected pixels only limits the region to connected matching pixels. Sample colors offers Active image or Visible canvas. Visible canvas samples rendered colors across layers, but edits only original pixels from the active image; it does not flatten or edit other layers. New replaces selection, Add extends it and Subtract removes matching pixels. Select all, Invert, Grow 1 px and Shrink 1 px operate inside the image's visible crop; Grow/Shrink use source-image pixels. Move on canvas lifts the selected pixels to their own layer and switches to Move so you can drag, resize and rotate them. Lifting creates an undoable edit before subsequent transforms; Undo the transforms and then the lift to restore the original. Copy, Cut and Delete affect selected pixels only. Original image bytes stay preserved. Wand supports images and canvases up to four megapixels with bounded masks; it does not yet select arbitrary vector-layer pixels. Its tolerance, matching, sampling and selection-mode settings are remembered on this device; Reset this tool restores defaults without resetting other tools. When Wand is active in a shared Studio snapshot, I can report its settings, selected-pixel count and whether that selection is editable. I cannot inspect the actual mask or infer which object it depicts."
+    private static let lassoGuide = "Choose Lasso and Drawings, Image on active layer, or Drawings + image. Draw a freehand outline, rectangle or polygon around the desired artwork. A tight outline can enclose drawing strokes without enclosing empty bounding-box corners. This selects whole drawing objects or the whole active-layer image; it does not cut arbitrary pixels from an image. Use Wand for image color regions. Nonempty lasso selection switches to Move automatically, dismisses the tool popup and shows its transform box. Drawing-only selection starts with free width/height resizing; enable Keep proportions in Move options when needed. Drag inside the box to move, use the corner handles to resize, or use the red handle to rotate. Hand pans the canvas rather than moving selected artwork. Keep proportions can be disabled for drawing-only selection; image/mixed groups retain proportions. Hidden and transform-locked layers are excluded: set the relevant layer lock to Free. Move transforms at most 1,024 drawing objects together with at most one selected active-layer image. If no box appears, inspect the selection target, layer visibility/lock, save/playback state and the displayed error; guidance alone does not prove the selection succeeded."
     private static let personalPreferencesGuide = "In Studio's Spatter panel, open Local memory preferences…. Local Memory is off by default. Use my local preferences saves only fixed choices: Guidance is Standard or Beginner; Animation focus is General, Timing, Drawing or Audio. Choose Save preferences to apply. Records stay on this device, separately scoped to each account and guest; signing out does not transfer them. Spatter does not learn from conversation history, infer emotions or store arbitrary secrets through this feature. Preferences add local hints and are not automatically sent to cloud advice. Turning off stops using choices; Reset saved preferences deletes this account's local record. Import preference JSON… loads a draft for review, then Save is required. Export saved preferences… includes supported choices only, with no account identity or conversation. Imports accept version 1, at most 2 KB, and no extra fields. App-managed preferences are excluded from device backup; explicitly exported files remain where you save them. I cannot inspect or change your saved choices through chat."
 
     private static func persistenceGuide(for query: String) -> String? {
@@ -249,6 +251,8 @@ final class SpatterAIViewModel: ObservableObject {
     Take Photo is an explicit still-camera permission flow with preview and a separate Add action; it does not record audio.
     The Color panel accepts six-digit RGB hex and remembers recent colors on this device.
     \(imageEditingGuide)
+    \(wandGuide)
+    \(lassoGuide)
     Layers have real thumbnails, drag/arrow reordering, visibility, opacity, blending and full locking.
     Move's Lock layers locks the selected elements' entire layers across every frame; it is not object or alpha locking.
     Voice Maker creates local speech from installed system voices; preview it and explicitly add it to the audio timeline.
@@ -286,7 +290,7 @@ final class SpatterAIViewModel: ObservableObject {
         return nil
     }
 
-    private static func currentGuide(for query: String) -> String? {
+    private static func currentGuide(for query: String, context: SpatterContext) -> String? {
         let words = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).prefix(64))
         func mentions(_ values: String...) -> Bool { !words.isDisjoint(with: values) }
         // A project can be context for an image action; do not turn that into
@@ -299,6 +303,14 @@ final class SpatterAIViewModel: ObservableObject {
             mentions("select", "selection", "lasso", "marquee", "rectangle", "polygon", "freehand", "move", "rotate", "rotation", "angle", "flip", "copy", "cut", "paste", "duplicate", "duplicating", "import", "imported", "add", "insert", "two", "second", "multiple") && !wholeProjectTarget
         let mixedArtworkRequest = mentions("artwork", "drawings") && mentions("mixed", "together", "group") &&
             mentions("select", "selection", "move", "copy", "cut", "paste", "delete", "rotate", "scale") && !wholeProjectTarget
+        if !wholeProjectTarget && !mentions("export", "mp4", "gif", "png", "backup") {
+            if mentions("wand") { return wandStateSummary(context) + "\n\n" + wandGuide }
+            if mentions("lasso", "marquee") { return lassoGuide }
+        }
+        if !wholeProjectTarget && (mentions("audio", "sound", "music") || (mentions("track", "clip") && mentions("volume", "mute", "muted", "silent", "silence"))) &&
+            !mentions("export", "mp4", "gif", "png", "backup", "voice", "speech") {
+            return audioStateSummary(context) + "\n\nOpen Audio to select a clip. Clip volume and its track volume multiply; muting either silences that clip without deleting it. The track speaker buttons mute whole tracks. Drag a clip to move it or change tracks, drag its edges to trim, or use the selected-clip controls for precise placement and source range. Preview with the timeline Play button. In Spatter's local edit panel, choose an audio track example, edit its track number (1–4) or volume (0–100%), and Apply. Stop playback before editing. A sound file must contain real audio; a snapshot cannot prove it is audible or that device output is enabled."
+        }
         if mentions("camera", "photo", "photograph") && mentions("take", "capture", "permission", "denied") {
             return "Open Add Picture in Studio, then Take Photo. The app asks for camera permission only when you choose capture. Review the still image, then explicitly Add it to the project; cancelling changes nothing. There is no microphone recording. If access is denied, enable camera access in iOS Settings before retrying. Hardware availability varies; Photos and Files remain alternatives."
         }
@@ -306,10 +318,10 @@ final class SpatterAIViewModel: ObservableObject {
             return "In the project library, open the selected project's context menu and choose Move to Recently Deleted, then confirm. The complete bundle stays on your device. Open Recently Deleted and choose Restore to return it. There is no automatic purge or permanent-delete button. If another project already uses its identity, restoration refuses to overwrite either copy. This does not recover files deleted outside the app."
         }
         if mentions("project", "projects") && mentions("duplicate", "copy", "copies", "rename", "name") && !imageEditingRequest {
-            return "Use Duplicate Project in a saved project's context menu to create a separate local copy with a new project identity. To rename the open animation, use Studio's Project Settings, edit its name and choose Rename project; Undo restores the previous name. A stale settings form must reload its name before applying. Neither action publishes or uploads your work."
+            return "Use Duplicate Project in a saved project's context menu to create a separate local copy with a new project identity. To rename the open animation, use Studio's Project Settings, edit its name and choose Apply Changes; Undo restores the previous name. A stale settings form must reload current settings before applying. Neither action publishes or uploads your work."
         }
-        if mentions("canvas") && mentions("size", "dimensions", "custom", "width", "height") {
-            return "Choose New Project in the library, then Custom canvas. Each side must be 16–4096 pixels; Swap width and height changes orientation before creation. Select the animation FPS before creating. This creates a new project rather than resizing existing artwork. Large canvases and effects require more memory, and export formats have separate limits."
+        if (mentions("canvas") && mentions("size", "dimensions", "custom", "width", "height")) || (mentions("project", "animation", "settings") && mentions("fps", "framerate", "frame rate")) {
+            return "For a new animation, use New Project and its canvas/FPS controls. For the open animation, choose Project Settings from the Studio menu, change the canvas size or frame rate in the same configuration card, then Apply Changes. Canvas sides are 16–4096 pixels and FPS is 1–60. Canvas resizing keeps artwork coordinates and changes the visible area; it does not scale the drawings. Changing FPS changes animation speed while audio keeps its time in seconds. One Undo restores the previous settings. Historical flattened images, replayable pixel effects or shrinking through stored fill coverage can block resizing without changing anything; name/FPS edits can still be made while keeping the original dimensions. If settings are stale, Reload current settings before applying. A successful in-memory edit still needs the ordinary device save to finish; export formats have separate limits."
         }
         if mentions("voice", "speech", "narration", "narrator") {
             return "Open Voice Maker from Studio's menu. Enter your script, choose an installed system voice and generate local speech. Preview the real recording, then explicitly add it to the audio timeline. Availability depends on installed voices; this uses no microphone or cloud provider. Audio placement and volume can be edited afterward."
@@ -341,6 +353,31 @@ final class SpatterAIViewModel: ObservableObject {
         return nil
     }
 
+    private static func audioStateSummary(_ context: SpatterContext) -> String {
+        guard let state = context.studio else { return "Open a Studio project to share its current audio state." }
+        var lines: [String] = []
+        if let tracks = state.audioMix {
+            lines.append(tracks.map { "Track \($0.track): \(Int(($0.volume * 100).rounded()))%, \($0.muted ? "muted" : "unmuted"), \($0.clipCount) clips" }.joined(separator: "; ") + ".")
+        } else { lines.append("Current track gain/mute settings are not shared.") }
+        if let clip = state.selectedAudioClip {
+            lines.append("Selected clip: track \(clip.track), start \(String(format: "%.2f", clip.startTime))s, duration \(String(format: "%.2f", clip.duration))s, source offset \(String(format: "%.2f", clip.sourceOffset))s, volume \(Int((clip.volume * 100).rounded()))%, \(clip.muted ? "muted" : "unmuted").")
+            if let track = state.audioMix?.first(where: { $0.track == clip.track }) {
+                let gain = clip.muted || track.muted ? 0 : clip.volume * track.volume
+                lines.append("Combined clip/track gain before fades and overlapping clips: \(Int((gain * 100).rounded()))%.")
+            }
+        } else { lines.append("No current selected-clip details are shared.") }
+        if state.isPlaying { lines.append("Playback is running; stop it before editing.") }
+        if state.isSaving { lines.append("The project is saving; wait before editing.") }
+        return lines.joined(separator: "\n")
+    }
+
+    private static func wandStateSummary(_ context: SpatterContext) -> String {
+        guard let state = context.studio?.wand else {
+            return "Current Wand settings are not shared. Open Studio and select Wand before asking for its current state."
+        }
+        return "Wand snapshot: tolerance \(Int(state.tolerance.rounded())); \(state.contiguous ? "connected pixels" : "all matching pixels"); sample \(state.sampleVisibleCanvas ? "visible canvas" : "active image"); mode \(state.mode); \(state.selectedPixels) selected source pixels. \(state.isWorking ? "Selection work is running." : state.canEditSelection ? "The captured pixel selection is available for editing." : "No editable pixel selection is currently available.")"
+    }
+
     /// Explain observed blockers, never infer account access or diagnose lost data.
     /// The supplied snapshot is immutable and completion must still match it.
     private static func studioTroubleshooting(for query: String, context: SpatterContext) -> String? {
@@ -352,6 +389,7 @@ final class SpatterAIViewModel: ObservableObject {
             return "No Studio project is open in this conversation. Open your project and ask from Studio so I can check its current tool, layer and selection. I cannot diagnose the editor from this screen."
         }
         var findings: [String] = []
+        if words.contains("wand") { findings.append(wandStateSummary(context)) }
         if state.isPlaying { findings.append("Playback is running. Stop playback before editing artwork.") }
         if state.isSaving { findings.append("The project is saving. Wait for saving to finish before editing.") }
         if let layer = state.activeLayer {
@@ -359,7 +397,7 @@ final class SpatterAIViewModel: ObservableObject {
             if !layer.visible { findings.append("The active layer is hidden. Show it in Layers to see and edit its artwork.") }
             if layer.opacity == 0 { findings.append("The active layer has 0% opacity. Raise its opacity in Layers to make its artwork visible.") }
         }
-        if !words.isDisjoint(with: ["move", "delete", "selection"]), state.selectedElementCount == 0 {
+        if !words.isDisjoint(with: ["move", "delete", "selection"]), state.selectedElementCount == 0, state.wand?.canEditSelection != true {
             findings.append("No drawn elements are selected. Select artwork with Move, Marquee or Lasso before moving or deleting it. Imported images use their separate image controls.")
         }
         if findings.isEmpty {
@@ -414,7 +452,8 @@ final class SpatterAIViewModel: ObservableObject {
     }
 
     static func localGuidance(for query: String, context: SpatterContext) -> String {
-        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + guide + "\n\nGuidance only; no project changes were made." }
+        let project = context.studio.map { "Project snapshot: \($0.name), \($0.frameCount) frames at \($0.fps) FPS.\n\n" } ?? ""
+        if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query, context: context) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + project + guide + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
         let tokens = Set(query.lowercased().split { !$0.isLetter && !$0.isNumber }
@@ -446,9 +485,8 @@ final class SpatterAIViewModel: ObservableObject {
         if (!allWords.isDisjoint(with: creativeTopics) || hasReviewedPhrase), allWords.isDisjoint(with: functionalRequests),
            let creative = ranked.first(where: { creativeIDs.contains($0.0.id) })?.0 {
             let details = creative.knowledge.prefix(3).map { String($0.prefix(800)) }.joined(separator: "\n")
-            return "💀 Creative reference · \(creative.title)\n\n\(details)\n\nThese are creative suggestions to apply yourself, not evidence of an automatic tool or a completed edit. Guidance only; no project changes were made."
+            return "💀 Creative reference · \(creative.title)\n\n\(project)\(details)\n\nThese are creative suggestions to apply yourself, not evidence of an automatic tool or a completed edit. Guidance only; no project changes were made."
         }
-        let project = context.studio.map { "Project snapshot: \($0.name), \($0.frameCount) frames at \($0.fps) FPS.\n\n" } ?? ""
         guard let module = ranked.first?.0 else {
             return "💀 \(project)I couldn't find a matching entry in the 120 bundled guidance modules. Try a concrete topic such as layers, timing, onion skin or export. No animation was generated."
         }
@@ -494,6 +532,17 @@ struct SpatterContext: Equatable {
         let editableAudioClipCount: Int, retainedAudioTrackCount: Int, unknownAudioTimingCount: Int
         let selectedAudioClipID: String?
         let audioPlayheadTime: Double?
+        var wand: StudioViewModel.CommandScreenContext.Wand? = nil
+        var audioMix: [StudioViewModel.CommandScreenContext.AudioMixTrack]? = nil
+        var selectedAudioClip: AudioClipSnapshot? = nil
+        struct AudioClipSnapshot: Codable, Equatable {
+            let track: Int
+            let startTime: Double
+            let duration: Double
+            let sourceOffset: Double
+            let volume: Double
+            let muted: Bool
+        }
     }
     let currentScreen: String
     let studio: StudioSnapshot?
@@ -509,6 +558,17 @@ struct SpatterContext: Equatable {
             StudioSnapshot.Layer(id: $0.id, name: String($0.name.prefix(80)), blendMode: String($0.blendMode.prefix(32)),
                                  visible: $0.visible, fullyLocked: $0.isFullyLocked, opacity: $0.opacity)
         }
+        let audioMix = context.audioMix.flatMap { tracks -> [StudioViewModel.CommandScreenContext.AudioMixTrack]? in
+            guard tracks.count == 4, Set(tracks.map(\.track)) == Set(1...4),
+                  tracks.allSatisfy({ $0.volume.isFinite && (0...1).contains($0.volume) && (0...4096).contains($0.clipCount) }) else { return nil }
+            return tracks.sorted { $0.track < $1.track }
+        }
+        let selectedClip = doc.editableAudioClips.first { $0.id == context.selectedAudioClipID }.flatMap { clip -> StudioSnapshot.AudioClipSnapshot? in
+            guard (1...4).contains(clip.track), [clip.startTime, clip.duration, clip.sourceOffset, clip.volume].allSatisfy(\.isFinite),
+                  clip.startTime >= 0, clip.duration > 0, clip.sourceOffset >= 0, (0...1).contains(clip.volume) else { return nil }
+            return .init(track: clip.track, startTime: clip.startTime, duration: clip.duration,
+                         sourceOffset: clip.sourceOffset, volume: clip.volume, muted: clip.isMuted)
+        }
         return SpatterContext(currentScreen: "studio", studio: .init(gridEnabled: doc.gridEnabled, gridSettings: doc.gridSettings,
             onionEnabled: doc.onionEnabled, onionSettings: doc.onionSettings,
             projectID: doc.projectID, revision: doc.revision,
@@ -520,7 +580,8 @@ struct SpatterContext: Equatable {
             isDirty: context.isDirty, isSaving: context.isSaving, editableAudioClipCount: doc.editableAudioClips.count,
             retainedAudioTrackCount: context.retainedAudio.count,
             unknownAudioTimingCount: context.retainedAudio.filter { !$0.timingKnown }.count,
-            selectedAudioClipID: context.selectedAudioClipID, audioPlayheadTime: context.audioPlayheadTime))
+            selectedAudioClipID: context.selectedAudioClipID, audioPlayheadTime: context.audioPlayheadTime, wand: context.wand,
+            audioMix: audioMix, selectedAudioClip: selectedClip))
     }
 
     func promptSummary() throws -> String {

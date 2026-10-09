@@ -5,6 +5,7 @@ struct StudioCanvasView: View {
     @ObservedObject var vm: StudioViewModel
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
+    @State private var navigationOrigin: (scale: CGFloat, offset: CGSize)?
     @State private var gestureActive = false
     @State private var startedAsWand = false
     @State private var wandCapture: StudioViewModel.ImageRegionCapture?
@@ -217,6 +218,21 @@ struct StudioCanvasView: View {
                             }
                         }
                         if let handles {
+                            // A lasso becomes one transformable group. Draw its
+                            // box through the actual handles, including the minimum
+                            // touch size used for small artwork and zoomed canvases.
+                            let box = handles.box
+                            if !box.isNull {
+                                context.stroke(Path(box), with: .color(.red),
+                                    style: StrokeStyle(lineWidth: 1.5 / handles.zoom, dash: [5 / handles.zoom, 3 / handles.zoom]))
+                                if let rotation = handles.handles.first(where: { $0.kind == .rotate }) {
+                                    var stem = Path()
+                                    stem.move(to: CGPoint(x: rotation.point.x,
+                                        y: rotation.point.y < box.minY ? box.minY : box.maxY))
+                                    stem.addLine(to: rotation.point)
+                                    context.stroke(stem, with: .color(.red), lineWidth: 1 / handles.zoom)
+                                }
+                            }
                             for handle in handles.handles {
                                 let r = handles.visualRadius
                                 let circle = Path(ellipseIn: CGRect(x: handle.point.x-r, y: handle.point.y-r, width: 2*r, height: 2*r))
@@ -318,7 +334,40 @@ struct StudioCanvasView: View {
                 .clipped()
                 .contentShape(Rectangle())
                 .overlay {
-                    StudioTouchSurface(onChanged: { value in
+                    StudioTouchSurface(shortcutsEnabled: vm.isEditing && scenePhase == .active && vm.activePanel == .none && !vm.isPlaying && !vm.isSaving && input == nil && !gestureActive && vm.pendingBrushStroke == nil && vm.textDraft == nil,
+                    onShortcut: { input, shifted in
+                        guard vm.isEditing, scenePhase == .active, vm.activePanel == .none,
+                              !vm.isPlaying, !vm.isSaving, self.input == nil, !gestureActive,
+                              vm.pendingBrushStroke == nil, vm.textDraft == nil else { return }
+                        switch input {
+                        case "z": if shifted { if vm.canRedo { vm.redo() } } else if vm.canUndo { vm.undo() }
+                        case "c":
+                            if !vm.selectedElementIDs.isEmpty || vm.bottomImageSelection != nil || vm.canEditImageRegion {
+                                vm.copyBottomSelection()
+                            }
+                        case "x":
+                            if vm.selectedTool == .wand { _ = vm.applyImageRegion(.cut) }
+                            else if let capture = vm.selectedImageCutCapture { _ = vm.cutSelectedImage(capture) }
+                            else if vm.canCutSelected { _ = vm.cutSelected() }
+                        case "v": if vm.canPaste { vm.pasteClipboard() }
+                        case UIKeyCommand.inputLeftArrow, UIKeyCommand.inputRightArrow,
+                             UIKeyCommand.inputUpArrow, UIKeyCommand.inputDownArrow:
+                            let step = shifted ? 10.0 : 1.0
+                            let dx = input == UIKeyCommand.inputLeftArrow ? -step : input == UIKeyCommand.inputRightArrow ? step : 0
+                            let dy = input == UIKeyCommand.inputUpArrow ? -step : input == UIKeyCommand.inputDownArrow ? step : 0
+                            if vm.beginSelectionHandle() != nil { _ = vm.positionSelected(dx: dx, dy: dy) }
+                        default: break
+                        }
+                    }, navigationEnabled: [.hand, .zoom].contains(vm.selectedTool) && scenePhase == .active,
+                    onNavigation: { factor, translation, anchor, began in
+                        if began { navigationOrigin = (vm.canvasScale, vm.canvasOffset) }
+                        guard let origin = navigationOrigin, factor.isFinite, factor > 0 else { return }
+                        let scale = min(5, max(0.25, origin.scale * factor))
+                        let delta = origin.scale - scale
+                        vm.canvasOffset = CGSize(width: origin.offset.width + translation.width + (anchor.x-size.width/2)*delta,
+                                                 height: origin.offset.height + translation.height + (anchor.y-size.height/2)*delta)
+                        vm.canvasScale = scale
+                    }, onNavigationEnded: { navigationOrigin = nil }, onChanged: { value in
                         gestureActive = true
                         inputChanged(value, size: size)
                     }, onEstimated: { value in
@@ -415,7 +464,7 @@ struct StudioCanvasView: View {
                     }
                     if startedAsMove {
                         moveLayout = .init(viewport: size, scale: vm.canvasScale, offset: vm.canvasOffset)
-                        moveCapture = vm.beginMove(at: documentPoint(value.startLocation, size: size))
+                        moveCapture = vm.beginMove(at: documentPoint(value.startLocation, size: size), viewport: size, zoom: vm.canvasScale)
                     }
                     if startedAsArea {
                         areaCapture = vm.beginAreaSelection()
@@ -446,8 +495,10 @@ struct StudioCanvasView: View {
                 if colorInput.startedAsPicker || (input == nil && vm.selectedTool == .eyedropper) { return }
                 if input == nil && vm.selectedTool == .hand {
                     if panOrigin == nil { panOrigin = vm.canvasOffset }
-                    vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.translation.width,
-                                             height: (panOrigin?.height ?? 0) + value.translation.height)
+                    // The canvas itself moves and scales. Its local touch
+                    // coordinates therefore cannot measure its screen-space pan.
+                    vm.canvasOffset = CGSize(width: (panOrigin?.width ?? 0) + value.windowTranslation.width,
+                                             height: (panOrigin?.height ?? 0) + value.windowTranslation.height)
                     return
                 }
                 guard inputFailure == nil else { return }
@@ -828,9 +879,10 @@ struct StudioCanvasView: View {
         CGSize(width: delta.width / size.width * CGFloat(vm.canvasWidth), height: delta.height / size.height * CGFloat(vm.canvasHeight))
     }
     private func selectionHandles(frame: AnimationFrame, size: CGSize) -> StudioSelectionHandleGeometry? {
-        guard vm.beginSelectionHandle() != nil, let bounds = vm.selectedArtworkBounds(in: frame) else { return nil }
+        guard let capture = vm.beginSelectionHandle(), let bounds = vm.selectedArtworkBounds(in: frame) else { return nil }
         return StudioSelectionHandleGeometry(bounds: bounds,
-            documentSize: CGSize(width: vm.canvasWidth,height: vm.canvasHeight),viewport: size,zoom: vm.canvasScale)
+            documentSize: CGSize(width: vm.canvasWidth,height: vm.canvasHeight),viewport: size,zoom: vm.canvasScale,
+            allowsAxisHandles: !capture.preservesAspect)
     }
     private func cancelHandlePreview() {
         if startedAsHandle { handleCancelled = true; handleFrame = nil }
@@ -843,7 +895,7 @@ struct StudioCanvasView: View {
             cancelHandlePreview(); return false
         }
         do {
-            let values = try geometry.values(kind: kind,start: start,current: location)
+            let values = try geometry.values(kind: kind,start: start,current: location, preservesAspect: capture.preservesAspect)
             let now = ProcessInfo.processInfo.systemUptime
             if final || now-lastPreviewTime >= 1/30 {
                 handleFrame = try vm.selectionHandlePreview(capture, values: values)
@@ -977,6 +1029,7 @@ private struct StudioTouchValue {
     let expectsUpdates: Bool
     let location: CGPoint
     let startLocation: CGPoint
+    let windowTranslation: CGSize
     let time: Date
     let pressure: CGFloat?
     let tilt: StudioPencilTilt?
@@ -984,6 +1037,11 @@ private struct StudioTouchValue {
 }
 
 private struct StudioTouchSurface: UIViewRepresentable {
+    var shortcutsEnabled: Bool
+    var onShortcut: (String, Bool) -> Void
+    var navigationEnabled: Bool
+    var onNavigation: (CGFloat, CGSize, CGPoint, Bool) -> Void
+    var onNavigationEnded: () -> Void
     var onChanged: (StudioTouchValue) -> Void
     var onEstimated: (StudioTouchValue) -> Void
     var onEnded: (StudioTouchValue) -> Void
@@ -997,12 +1055,49 @@ private struct StudioTouchSurface: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: StudioTouchView, context: Context) {
+        view.shortcutsEnabled = shortcutsEnabled; view.shortcut = onShortcut
+        view.navigation = onNavigation; view.navigationEnded = onNavigationEnded
+        view.navigationEnabled = navigationEnabled
         view.changed = onChanged; view.estimated = onEstimated; view.ended = onEnded; view.cancelled = onCancelled
     }
-    static func dismantleUIView(_ view: StudioTouchView, coordinator: ()) { view.cancelStroke() }
+    static func dismantleUIView(_ view: StudioTouchView, coordinator: ()) { view.cancelStroke(); view.cancelNavigation() }
 }
 
 private final class StudioTouchView: UIView {
+    var shortcutsEnabled = false
+    var shortcut: ((String, Bool) -> Void)?
+    override var canBecomeFirstResponder: Bool { true }
+    override var keyCommands: [UIKeyCommand]? {
+        guard shortcutsEnabled else { return [] }
+        var commands: [UIKeyCommand] = []
+        func add(_ input: String, _ modifiers: UIKeyModifierFlags, _ title: String) {
+            let command = UIKeyCommand(input: input, modifierFlags: modifiers, action: #selector(handleShortcut(_:)))
+            command.discoverabilityTitle = title
+            commands.append(command)
+        }
+        add("z", .command, "Undo Studio edit")
+        add("z", [.command, .shift], "Redo Studio edit")
+        add("c", .command, "Copy selected artwork")
+        add("x", .command, "Cut selected artwork")
+        add("v", .command, "Paste Studio clipboard")
+        for (input, direction) in [(UIKeyCommand.inputLeftArrow, "left"), (UIKeyCommand.inputRightArrow, "right"),
+                                   (UIKeyCommand.inputUpArrow, "up"), (UIKeyCommand.inputDownArrow, "down")] {
+            add(input, [], "Move selection \(direction) 1 pixel")
+            add(input, .shift, "Move selection \(direction) 10 pixels")
+        }
+        return commands
+    }
+    @objc private func handleShortcut(_ command: UIKeyCommand) {
+        guard shortcutsEnabled, isFirstResponder, let input = command.input else { return }
+        shortcut?(input, command.modifierFlags.contains(.shift))
+    }
+    var navigationEnabled = false { didSet { if !navigationEnabled { cancelNavigation() } } }
+    var navigation: ((CGFloat, CGSize, CGPoint, Bool) -> Void)?
+    var navigationEnded: (() -> Void)?
+    private var navigationTouches: (UITouch, UITouch)?
+    private var navigationDistance: CGFloat = 1
+    private var navigationCenter = CGPoint.zero
+    private var navigationAnchor = CGPoint.zero
     var changed: ((StudioTouchValue) -> Void)?
     var estimated: ((StudioTouchValue) -> Void)?
     var ended: ((StudioTouchValue) -> Void)?
@@ -1011,12 +1106,28 @@ private final class StudioTouchView: UIView {
     private var strokeID = UUID().uuidString
     private var held = Set<UITouch>()
     private var start = CGPoint.zero
+    private var startInWindow = CGPoint.zero
     private var startTime: TimeInterval = 0
     private var startDate = Date()
     private var lastTime: TimeInterval = -.infinity
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if !isFirstResponder { becomeFirstResponder() }
         held.formUnion(touches)
+        if navigationTouches != nil { return }
+        if navigationEnabled, active?.type != .pencil, held.count == 2,
+           held.allSatisfy({ $0.type == .direct }) {
+            let fingers = Array(held)
+            let a = fingers[0].preciseLocation(in: window), b = fingers[1].preciseLocation(in: window)
+            let distance = hypot(b.x-a.x, b.y-a.y)
+            guard distance >= 8 else { cancelStroke(); return }
+            cancelStroke()
+            navigationTouches = (fingers[0], fingers[1]); navigationDistance = distance
+            navigationCenter = CGPoint(x: (a.x+b.x)/2, y: (a.y+b.y)/2)
+            navigationAnchor = convert(navigationCenter, from: window)
+            emitNavigation(began: true)
+            return
+        }
         if let active {
             // Ignore palm contacts while Pencil owns the stroke. Additional
             // fingers cancel finger drawing rather than connecting segments.
@@ -1029,10 +1140,12 @@ private final class StudioTouchView: UIView {
         guard held.count == 1 || touch.type == .pencil else { return }
         strokeID = UUID().uuidString
         active = touch; start = touch.preciseLocation(in: self)
+        startInWindow = touch.preciseLocation(in: window)
         startTime = touch.timestamp; startDate = Date(); lastTime = -.infinity
         emit(touch, event: event)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if navigationTouches != nil { emitNavigation(); return }
         guard let active, touches.contains(active) else { return }
         emit(active, event: event)
     }
@@ -1045,6 +1158,9 @@ private final class StudioTouchView: UIView {
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         defer { held.subtract(touches) }
+        if let pair = navigationTouches, touches.contains(pair.0) || touches.contains(pair.1) {
+            emitNavigation(); cancelNavigation(); return
+        }
         guard let active, touches.contains(active) else { return }
         emit(active, event: event)
         let final = value(active)
@@ -1052,16 +1168,30 @@ private final class StudioTouchView: UIView {
         ended?(final)
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if let pair = navigationTouches, touches.contains(pair.0) || touches.contains(pair.1) { cancelNavigation() }
         if let active, touches.contains(active) { cancelStroke() }
         held.subtract(touches)
     }
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelStroke(); held.removeAll() }
+        if window == nil { cancelStroke(); cancelNavigation(); held.removeAll() }
     }
     func cancelStroke() {
         guard active != nil else { return }
         active = nil; cancelled?()
+    }
+    func cancelNavigation() {
+        guard navigationTouches != nil else { return }
+        navigationTouches = nil; navigationEnded?()
+    }
+    private func emitNavigation(began: Bool = false) {
+        guard let pair = navigationTouches, navigationEnabled, window != nil else { return }
+        let a = pair.0.preciseLocation(in: window), b = pair.1.preciseLocation(in: window)
+        let center = CGPoint(x: (a.x+b.x)/2, y: (a.y+b.y)/2)
+        let factor = hypot(b.x-a.x, b.y-a.y)/navigationDistance
+        guard factor.isFinite, factor > 0, center.x.isFinite, center.y.isFinite else { return }
+        navigation?(factor, CGSize(width: center.x-navigationCenter.x, height: center.y-navigationCenter.y),
+                    navigationAnchor, began)
     }
     private func emit(_ touch: UITouch, event: UIEvent?) {
         // Predicted samples are deliberately excluded from persisted artwork.
@@ -1082,9 +1212,11 @@ private final class StudioTouchView: UIView {
                 azimuth: azimuth < 0 ? azimuth + .pi * 2 : azimuth)
             tilt = measuredTilt.isValid ? measuredTilt : nil
         }
+        let windowPoint = touch.preciseLocation(in: window)
         return StudioTouchValue(strokeID: strokeID, estimationIndex: touch.estimationUpdateIndex?.int64Value,
             expectsUpdates: !touch.estimatedPropertiesExpectingUpdates.isEmpty,
             location: touch.preciseLocation(in: self), startLocation: start,
+            windowTranslation: CGSize(width: windowPoint.x-startInWindow.x, height: windowPoint.y-startInWindow.y),
             time: startDate.addingTimeInterval(max(0, touch.timestamp-startTime)), pressure: pressure, tilt: tilt)
     }
 }

@@ -58,7 +58,7 @@ class NativeSharding(unittest.TestCase):
     def test_actual_inventory_partition_and_command_ownership(self):
         full = build_test_budget(SOURCE, receipt.COMMAND)
         names = []
-        for index, count, seconds, longcases in ((0,52,9960,5),(1,52,10020,6)):
+        for index, count, seconds, longcases in ((0, 54, 10500, 8), (1, 53, 10140, 5)):
             b, command = build_shard_budget(SOURCE, receipt.COMMAND, index)
             self.assertEqual((b['testCount'],b['suiteSeconds'],len(b['extendedCases'])),(count,seconds,longcases))
             self.assertEqual(b['testNames'],sorted(full['testNames'])[index::2])
@@ -81,7 +81,7 @@ class NativeSharding(unittest.TestCase):
     def test_collector_and_aggregate_actual_ids_not_counts(self):
         values = [collected(0),collected(1)]
         self.assertTrue(all(r['passed'] for r in values))
-        self.assertEqual(receipt.aggregate(SOURCE,values,BINDING,DEPENDENCIES)['actualPassedTests'],104)
+        self.assertEqual(receipt.aggregate(SOURCE,values,BINDING,DEPENDENCIES)['actualPassedTests'],107)
         for mutation in ('wrongID','duplicate','skipped','failed','unknown','summary','source','attempt','run','digest','assigned','auth','upload','errors'):
             v=copy.deepcopy(values)
             r=v[0]

@@ -13,7 +13,7 @@ RETIRED = {
     "LiveKitService.swift", "MessageService.swift", "MessagesViewModel.swift",
     "MessagesView.swift", "ChatRoomView.swift", "CallsView.swift",
     "ContactsView.swift", "VideoCallView.swift", "WatchPartyView.swift",
-    "CreatorRoomView.swift", "WatchTogetherView.swift",
+    "CreatorRoomView.swift",
 }
 EXCLUSIONS = {
     "Services/LiveKitService.swift", "Services/LiveKit", "Services/Message",
@@ -21,7 +21,6 @@ EXCLUSIONS = {
     "Views/Messages/ChatRoomView.swift", "Views/Messages/CallsView.swift",
     "Views/Messages/ContactsView.swift", "Views/Messages/VideoCall",
     "Views/Messages/WatchParty", "Views/Collab/CreatorRoomView.swift",
-    "Views/Collab/WatchTogetherView.swift",
 }
 
 
@@ -31,12 +30,13 @@ def verify(root: Path = ROOT) -> None:
     # Keep this deliberately fail-closed if source membership format changes.
     sources = set(re.findall(r"/\* ([^*]+\.swift) in Sources \*/", pbx))
     assert {"StudioView.swift", "MainTabView.swift", "CollabRoomView.swift",
-            "WarRoomView.swift", "SpatterService.swift", "View+SD.swift"} <= sources
+            "WarRoomView.swift", "WatchTogetherView.swift", "SpatterService.swift", "View+SD.swift"} <= sources
     assert not sources & RETIRED, "Retired communication source is in the app target"
     assert not re.search(r"productName\s*=\s*LiveKit|github.com/livekit/", pbx)
     assert "client-sdk-swift" not in spec
     excludes = set(re.findall(r"^          - (.+)$", spec, re.M))
     assert EXCLUSIONS <= excludes, "XcodeGen can reintroduce retired code"
+    assert "Views/Collab/WatchTogetherView.swift" not in excludes, "XcodeGen excludes approved shared playback"
     plist = plistlib.loads((root / "StickDeathInfinity/Info.plist").read_bytes())
     assert not {"NSMicrophoneUsageDescription",
                 "NSContactsUsageDescription", "LIVEKIT_WS_URL"} & plist.keys()
@@ -61,7 +61,7 @@ def verify(root: Path = ROOT) -> None:
 
         assert not re.search(r"^import LiveKit\b|\b(?:LiveKitService|MessageService)\.shared",
                              content, re.M), str(path)
-    for name in ("CollabRoomView", "WarRoomView"):
+    for name in ("CollabRoomView", "WarRoomView", "WatchTogetherView"):
         content = (root / f"StickDeathInfinity/Views/Collab/{name}.swift").read_text()
         assert "URLSession" not in content and ".samples" not in content
         assert "MatchmakingView()" not in content

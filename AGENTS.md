@@ -2,6 +2,14 @@
 
 Joseph Willis transferred primary implementation ownership of this native iOS project to Codex on 2026-09-08. Treat this file as project policy, subject to the owner's current instructions. The transition is recorded in issue #110.
 
+## Owner execution update (2026-10-09)
+
+- Prioritize coherent implementation batches for native iOS, Android and the product website. Android delivery is explicitly authorized; preserve SwiftUI and do not replace iOS with a web wrapper.
+- Defer debugging and verification until the full implementation backlog is built. Remove per-step test/review loops from active implementation. Preserve tests and failed evidence for the final integration phase; label unrun verification deferred, never passed. Separate implementation completion from deferred acceptance. Release and merge claims still require honest verification.
+- Use bounded agents only for independent, actionable implementation work. End their assignments promptly; do not keep idle review loops or duplicate builders running.
+- Spatter training and creative tuning transfer to the owner. Resolve training-only scope as owner-managed when encountered; do not claim unperformed training. Working Studio command integration, customer assistance, generation and exact-render approval remain delivery requirements.
+- Conserve account usage and existing infrastructure. No paid external AI calls, capacity purchases, fabricated acceptance or issue-count padding.
+
 ## Owner execution update (2026-10-06)
 
 - The owner now authorizes bounded parallel agents to accelerate delivery. One primary coordinator retains worktree, compiler, GitHub and deployment ownership; agents use disjoint files and may provide independent review. This supersedes older single-agent restrictions below.

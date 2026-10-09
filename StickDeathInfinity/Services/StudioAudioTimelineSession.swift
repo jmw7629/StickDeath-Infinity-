@@ -40,7 +40,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
 
     @discardableResult
     func play(document: StudioDocument, tracks: [AudioTrack], duration: Double,
-              from start: Double, auditionVolume: Float = 1,
+              from start: Double, auditionVolume: Float = 1, loop: Bool = false,
               stillCurrent: @escaping () -> Bool,
               onTime: @escaping (Double, Bool) -> Void) -> Bool {
         guard !isPreparing, work == nil else { return false }
@@ -79,7 +79,7 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
                 guard self.generation == token, stillCurrent() else { throw TimelineError.stale }
                 let next = try AVAudioPlayer(contentsOf: result.checkedURL())
                 guard next.duration.isFinite, abs(next.duration - length) <= 0.01 else { throw TimelineError.playback }
-                next.delegate = self; next.numberOfLoops = 0
+                next.delegate = self; next.numberOfLoops = loop ? -1 : 0
                 // The mixed file preserves exact gains/over-range samples. Only
                 // audition gain is reduced, visibly, to avoid clipping playback.
                 self.previewGain = 1 / max(1, Double(result.receipt.peakAbsoluteSample))

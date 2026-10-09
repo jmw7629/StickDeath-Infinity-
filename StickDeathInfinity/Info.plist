@@ -22,11 +22,8 @@
     <string>1</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
-    <key>UILaunchScreen</key>
-    <dict>
-        <key>UIColorName</key>
-        <string>LaunchBackground</string>
-    </dict>
+    <key>UILaunchStoryboardName</key>
+    <string>LaunchScreen</string>
     <key>UISupportedInterfaceOrientations</key>
     <array>
         <string>UIInterfaceOrientationPortrait</string>
@@ -70,5 +67,13 @@
     <string>$(SUPABASE_PUBLISHABLE_KEY)</string>
     <key>SUPABASE_ANON_KEY</key>
     <string>$(SUPABASE_ANON_KEY)</string>
+    <key>SDI_UPLOAD_SERVICE_URL</key>
+    <string>$(SDI_UPLOAD_SERVICE_URL)</string>
+    <key>SDI_RENDER_PREVIEW_URL</key>
+    <string>$(SDI_RENDER_PREVIEW_URL)</string>
+    <key>SDI_PUBLISHING_CONSENT_VERSION</key>
+    <string>$(SDI_PUBLISHING_CONSENT_VERSION)</string>
+    <key>SDI_PUBLISHING_TERMS_URL</key>
+    <string>$(SDI_PUBLISHING_TERMS_URL)</string>
 </dict>
 </plist>

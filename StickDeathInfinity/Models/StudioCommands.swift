@@ -157,6 +157,7 @@ enum StudioCommand: Codable {
     struct SplitAudioClip: Codable { let clipID: String; let seconds: Double; let newClipID: String }
     struct DeleteAudioClip: Codable { let clipID: String }
     struct DuplicateAudioClip: Codable { let clipID: String; let newClipID: String }
+    struct UpdateAudioTrack: Codable { let track: Int; var volume: Double? = nil; var muted: Bool? = nil }
     struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable {
         let grid: Bool?
@@ -168,6 +169,9 @@ enum StudioCommand: Codable {
         }
     }
 
+    struct ReverseFrames: Codable, Equatable { let frameIDs: [String] }
+    case reverseFrames(ReverseFrames)
+    case duplicateFrameRange(ReverseFrames)
     case eraseSelectedElements(EraseSelectedElements)
     case renameProject(RenameProject)
     case cropImage(CropImage)
@@ -175,15 +179,16 @@ enum StudioCommand: Codable {
     case tweenFrames(TweenFrames)
     case splitAudioClip(SplitAudioClip), deleteAudioClip(DeleteAudioClip)
     case duplicateAudioClip(DuplicateAudioClip)
+    case updateAudioTrack(UpdateAudioTrack)
     case updateAudioClip(UpdateAudioClip)
-    case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference)
+    case draw(Draw), addFrame(AddFrame), duplicateFrame(Duplicate), deleteFrame(StudioCommandReference), cutFrame(StudioCommandReference)
     case moveFrame(Move), selectFrame(StudioCommandReference), addLayer(AddLayer), duplicateLayer(Duplicate)
     case updateLayer(UpdateLayer), moveLayer(Move), selectLayer(StudioCommandReference), deleteLayer(StudioCommandReference)
     case deleteElements(DeleteElements), translateElements(TranslateElements), orderElements(OrderElements), reflectElements(ReflectElements), canvasOptions(CanvasOptions)
     case transformSelectedArtwork(TransformSelectedArtwork), deleteSelectedArtwork(DeleteSelectedArtwork), orderSelectedArtwork(OrderSelectedArtwork)
     case rotateImage(RotateImage), reflectImage(ReflectImage), deleteImage(DeleteImage), updateImagePlacement(UpdateImagePlacement)
     case cutElements(DeleteElements)
-    case copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
+    case duplicateElements(DeleteElements), copyElements(DeleteElements), pasteElements(PasteElements), updateText(UpdateText), transformElements(TransformElements)
 
     init(from decoder: Decoder) throws {
         let (container, key) = try singleCommandKey(decoder)
@@ -196,6 +201,7 @@ enum StudioCommand: Codable {
         case "splitAudioClip": self = .splitAudioClip(try container.decode(SplitAudioClip.self, forKey: key))
         case "deleteAudioClip": self = .deleteAudioClip(try container.decode(DeleteAudioClip.self, forKey: key))
         case "duplicateAudioClip": self = .duplicateAudioClip(try container.decode(DuplicateAudioClip.self, forKey: key))
+        case "updateAudioTrack": self = .updateAudioTrack(try container.decode(UpdateAudioTrack.self, forKey: key))
         case "updateAudioClip": self = .updateAudioClip(try container.decode(UpdateAudioClip.self, forKey: key))
         case "rotateImage": self = .rotateImage(try container.decode(RotateImage.self, forKey: key))
         case "reflectImage": self = .reflectImage(try container.decode(ReflectImage.self, forKey: key))
@@ -210,6 +216,9 @@ enum StudioCommand: Codable {
         case "addFrame": self = .addFrame(try container.decode(AddFrame.self, forKey: key))
         case "duplicateFrame": self = .duplicateFrame(try container.decode(Duplicate.self, forKey: key))
         case "deleteFrame": self = .deleteFrame(try container.decode(StudioCommandReference.self, forKey: key))
+        case "cutFrame": self = .cutFrame(try container.decode(StudioCommandReference.self, forKey: key))
+        case "duplicateFrameRange": self = .duplicateFrameRange(try container.decode(ReverseFrames.self, forKey: key))
+        case "reverseFrames": self = .reverseFrames(try container.decode(ReverseFrames.self, forKey: key))
         case "moveFrame": self = .moveFrame(try container.decode(Move.self, forKey: key))
         case "selectFrame": self = .selectFrame(try container.decode(StudioCommandReference.self, forKey: key))
         case "addLayer": self = .addLayer(try container.decode(AddLayer.self, forKey: key))
@@ -223,6 +232,7 @@ enum StudioCommand: Codable {
         case "reflectElements": self = .reflectElements(try container.decode(ReflectElements.self, forKey: key))
         case "orderElements": self = .orderElements(try container.decode(OrderElements.self, forKey: key))
         case "cutElements": self = .cutElements(try container.decode(DeleteElements.self, forKey: key))
+        case "duplicateElements": self = .duplicateElements(try container.decode(DeleteElements.self, forKey: key))
         case "copyElements": self = .copyElements(try container.decode(DeleteElements.self, forKey: key))
         case "pasteElements": self = .pasteElements(try container.decode(PasteElements.self, forKey: key))
         case "canvasOptions": self = .canvasOptions(try container.decode(CanvasOptions.self, forKey: key))
@@ -239,6 +249,7 @@ enum StudioCommand: Codable {
         case .splitAudioClip(let value): try container.encode(value, forKey: StudioWireKey("splitAudioClip"))
         case .deleteAudioClip(let value): try container.encode(value, forKey: StudioWireKey("deleteAudioClip"))
         case .duplicateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("duplicateAudioClip"))
+        case .updateAudioTrack(let value): try container.encode(value, forKey: StudioWireKey("updateAudioTrack"))
         case .updateAudioClip(let value): try container.encode(value, forKey: StudioWireKey("updateAudioClip"))
         case .rotateImage(let value): try container.encode(value, forKey: StudioWireKey("rotateImage"))
         case .reflectImage(let value): try container.encode(value, forKey: StudioWireKey("reflectImage"))
@@ -254,6 +265,9 @@ enum StudioCommand: Codable {
         case .addFrame(let value): try container.encode(value, forKey: StudioWireKey("addFrame"))
         case .duplicateFrame(let value): try container.encode(value, forKey: StudioWireKey("duplicateFrame"))
         case .deleteFrame(let value): try container.encode(value, forKey: StudioWireKey("deleteFrame"))
+        case .cutFrame(let value): try container.encode(value, forKey: StudioWireKey("cutFrame"))
+        case .duplicateFrameRange(let value): try container.encode(value, forKey: StudioWireKey("duplicateFrameRange"))
+        case .reverseFrames(let value): try container.encode(value, forKey: StudioWireKey("reverseFrames"))
         case .moveFrame(let value): try container.encode(value, forKey: StudioWireKey("moveFrame"))
         case .selectFrame(let value): try container.encode(value, forKey: StudioWireKey("selectFrame"))
         case .addLayer(let value): try container.encode(value, forKey: StudioWireKey("addLayer"))
@@ -267,6 +281,7 @@ enum StudioCommand: Codable {
         case .reflectElements(let value): try container.encode(value, forKey: StudioWireKey("reflectElements"))
         case .orderElements(let value): try container.encode(value, forKey: StudioWireKey("orderElements"))
         case .cutElements(let value): try container.encode(value, forKey: StudioWireKey("cutElements"))
+        case .duplicateElements(let value): try container.encode(value, forKey: StudioWireKey("duplicateElements"))
         case .copyElements(let value): try container.encode(value, forKey: StudioWireKey("copyElements"))
         case .pasteElements(let value): try container.encode(value, forKey: StudioWireKey("pasteElements"))
         case .canvasOptions(let value): try container.encode(value, forKey: StudioWireKey("canvasOptions"))
@@ -440,6 +455,7 @@ enum StudioCommandExecutor {
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
             "duplicateAudioClip": ["clipID", "newClipID"],
+            "updateAudioTrack": ["track", "volume", "muted"],
             "updateAudioClip": ["clipID", "settings"],
             "rotateImage": ["layer", "frame", "assetID", "direction"],
             "reflectImage": ["layer", "frame", "assetID", "axis"],
@@ -452,13 +468,15 @@ enum StudioCommandExecutor {
             "updateText": ["frame", "elementID", "text", "color", "opacity"],
             "draw": ["frame", "layer", "strokes"], "addFrame": ["after", "result"],
             "duplicateFrame": ["source", "result"], "duplicateLayer": ["source", "result"],
+            "reverseFrames": ["frameIDs"],
+            "duplicateFrameRange": ["frameIDs"],
             "moveFrame": ["target", "direction"], "moveLayer": ["target", "direction"],
             "addLayer": ["name", "result"], "updateLayer": ["layer", "settings"],
             "translateElements": ["frame", "elementIDs", "dx", "dy"],
             "orderElements": ["frame", "elementIDs", "direction"],
             "reflectElements": ["frame", "elementIDs", "axis"],
             "cutElements": ["frame", "elementIDs"],
-            "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
+            "duplicateElements": ["frame", "elementIDs"], "copyElements": ["frame", "elementIDs"], "pasteElements": ["frame", "layer", "clipboardID"],
             "deleteElements": ["frame", "elementIDs"], "canvasOptions": ["grid", "onion", "gridSettings", "onionSettings"]
         ]
         func textDescriptor(_ value: Any) throws {
@@ -470,7 +488,7 @@ enum StudioCommandExecutor {
         for command in commands {
             guard let command = command as? [String: Any], command.count == 1, let kind = command.keys.first,
                   let body = command[kind] else { throw StudioCommandError.malformed }
-            if ["selectFrame", "selectLayer", "deleteFrame", "deleteLayer"].contains(kind) { try reference(body); continue }
+            if ["selectFrame", "selectLayer", "deleteFrame", "cutFrame", "deleteLayer"].contains(kind) { try reference(body); continue }
             guard let keys = arguments[kind] else { throw StudioCommandError.unsupportedCommand }
             let fields = try object(body, keys: keys)
             for key in ["frame", "layer", "after", "to", "source", "target"] where keys.contains(key) {
@@ -585,7 +603,7 @@ enum StudioCommandExecutor {
             // A mixed batch containing any other operation keeps existing clearing semantics.
             let preservesSelection = commands.allSatisfy {
                 switch $0 {
-                case .renameProject, .eraseSelectedElements: return true
+                case .renameProject, .eraseSelectedElements, .updateAudioTrack: return true
                 default: return false
                 }
             }
@@ -694,6 +712,8 @@ enum StudioCommandExecutor {
             try editor.deleteAudioClip(value.clipID)
         case .duplicateAudioClip(let value):
             try editor.duplicateAudioClip(value.clipID, newClipID: value.newClipID)
+        case .updateAudioTrack(let value):
+            try editor.updateAudioTrack(value.track, volume: value.volume, muted: value.muted)
         case .updateAudioClip(let value):
             try editor.updateAudioClip(value.clipID, settings: value.settings)
         case .eraseSelectedElements(let value):
@@ -800,10 +820,28 @@ enum StudioCommandExecutor {
             try budget.generate(document.frames.first { $0.id == source }!.elements)
             editor.selectFrame(source); try editor.duplicateFrame()
             created[value.result] = .init(kind: .frame, id: editor.document.activeFrameID)
+        case .cutFrame(let reference):
+            let id = try frame(reference)
+            guard document.frames.count > 1 else { throw StudioCommandError.cannotDeleteLastFrame }
+            try editor.cutFrame(id)
         case .deleteFrame(let reference):
             let id = try frame(reference)
             guard document.frames.count > 1 else { throw StudioCommandError.cannotDeleteLastFrame }
             try editor.deleteFrame(id)
+        case .duplicateFrameRange(let value):
+            guard (1...96).contains(value.frameIDs.count), Set(value.frameIDs).count == value.frameIDs.count else {
+                throw StudioCommandError.invalidSettings
+            }
+            for id in value.frameIDs {
+                guard let source = document.frames.first(where: { $0.id == id }) else { throw StudioCommandError.invalidSettings }
+                try budget.generate(source.elements)
+            }
+            try editor.duplicateFrameRange(value.frameIDs, checkCancellation: checkCancellation)
+        case .reverseFrames(let value):
+            guard (2...96).contains(value.frameIDs.count), Set(value.frameIDs).count == value.frameIDs.count else {
+                throw StudioCommandError.invalidSettings
+            }
+            try editor.reverseFrames(value.frameIDs)
         case .moveFrame(let value):
             let id = try frame(value.target), index = document.frames.firstIndex { $0.id == id }!
             guard document.frames.indices.contains(index + value.direction.offset) else { throw StudioCommandError.cannotMove }
@@ -867,6 +905,15 @@ enum StudioCommandExecutor {
             try checkCancellation()
             try editor.deleteSelected()
             try checkCancellation()
+        case .duplicateElements(let value):
+            let id = try frame(value.frame), ids = Set(value.elementIDs)
+            guard !ids.isEmpty, ids.count <= maximumGeneratedElements,
+                  ids.count == value.elementIDs.count else { throw StudioCommandError.missingSelection }
+            let originals = document.frames.first { $0.id == id }!.elements.filter { ids.contains($0.id) }
+            guard originals.count == ids.count else { throw StudioCommandError.invalidReference }
+            try budget.generate(originals)
+            // The editor validates visibility/locks and retains the user's clipboard.
+            _ = try editor.duplicateElements(frameID: id, ids: ids, checkCancellation: checkCancellation)
         case .copyElements(let value):
             let id = try frame(value.frame)
             guard !value.elementIDs.isEmpty, value.elementIDs.count <= maximumGeneratedElements,

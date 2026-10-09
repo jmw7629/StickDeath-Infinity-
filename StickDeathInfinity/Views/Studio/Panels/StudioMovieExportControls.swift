@@ -20,6 +20,7 @@ struct StudioMovieExportControls: View {
     @State private var background: StudioMovieExportService.Background = .white
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioMovieExportSession.ShareRequest?
+    @State private var reviewExport: SDIRenderUploadExport?
 
     private var scope: StudioMovieExportSession.Scope {
         .init(isStudioVisible: isVisible && vm.isEditing && vm.activePanel == .export,
@@ -33,11 +34,11 @@ struct StudioMovieExportControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("VIDEO QUALITY").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4)).tracking(1)
+            Text("VIDEO QUALITY").font(.specialElite(9)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
             Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. White background only. Saved audio is mixed as stereo AAC. Trim audio within the animation duration; missing sources and overloaded mixes report an error. Editor grid and onion skin are not included.")
-                .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
             Picker("MP4 background", selection: $background) {
                 Text("White").tag(StudioMovieExportService.Background.white)
                 Text("Transparent (unsupported)").tag(StudioMovieExportService.Background.transparent)
@@ -46,7 +47,7 @@ struct StudioMovieExportControls: View {
             .accessibilityIdentifier("studio.export.movie.background")
             if let pending = shareLifetime.pendingMessage {
                 Text(pending).foregroundColor(.white.opacity(0.75))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.movie.share.pending")
             }
             if let error = movie.directError {
@@ -54,22 +55,22 @@ struct StudioMovieExportControls: View {
                     .accessibilityIdentifier("studio.export.movie.direct-error")
             }
             if let provenance = movie.directArtifactDescription {
-                Text(provenance).font(.system(size: 10, design: .monospaced))
+                Text(provenance).font(.specialElite(10))
                     .accessibilityIdentifier("studio.export.movie.spatter-receipt")
             }
             if let error = session.errorMessage {
                 Text(error).foregroundColor(Color(hex: "#FF8888"))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.status")
             } else if let notice = session.notice {
                 Text(notice).foregroundColor(.white.opacity(0.75))
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.status")
             }
             if session.isRunning {
                 ProgressView(value: Double(session.completedFrames), total: Double(max(1, session.totalFrames)))
                     .tint(Color(hex: "#DC2626"))
-                Text(progressText).font(.system(size: 11, design: .monospaced))
+                Text(progressText).font(.specialElite(11))
                     .accessibilityIdentifier("studio.export.movie.progress")
                 Button("Cancel export") { session.cancel() }
                     .accessibilityIdentifier("studio.export.cancel")
@@ -77,7 +78,7 @@ struct StudioMovieExportControls: View {
                 Button {
                     _ = movie.start(from: vm, background: background, scope: scope)
                 } label: {
-                    Text("EXPORT MP4").font(.system(size: 14, weight: .bold, design: .monospaced))
+                    Text("EXPORT MP4").font(.specialElite(14))
                         .foregroundColor(.white).frame(maxWidth: .infinity).padding(.vertical, 14)
                         .background(RoundedRectangle(cornerRadius: 12).fill(Color(hex: "#DC2626")))
                 }
@@ -90,12 +91,12 @@ struct StudioMovieExportControls: View {
             }
             if let source = session.source {
                 Text("Captured \(source.name) · revision \(source.revision)")
-                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                    .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                     .accessibilityIdentifier("studio.export.movie.source")
             }
             if let output = session.output, !output.isCleaned {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(session.needsCleanup ? "MP4 needs recovery" : "MP4 ready on this device").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.5)).tracking(1)
+                    Text(session.needsCleanup ? "MP4 needs recovery" : "MP4 ready on this device").font(.specialElite(9)).foregroundColor(.white.opacity(0.5)).tracking(1)
                     Text(output.movieURL.lastPathComponent).font(.system(size: 12, weight: .bold, design: .monospaced))
                         .accessibilityIdentifier("studio.export.movie.filename")
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
@@ -103,7 +104,7 @@ struct StudioMovieExportControls: View {
                         .accessibilityIdentifier("studio.export.movie.receipt")
                     if let credits = output.manifest.imageCredits, !credits.isEmpty {
                         Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
-                            .font(.system(size: 10, design: .monospaced))
+                            .font(.specialElite(10))
                             .foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.image-credits")
                     }
@@ -119,7 +120,7 @@ struct StudioMovieExportControls: View {
                             .accessibilityIdentifier("studio.export.movie.preview")
                     }
                     if let error = preview.errorMessage {
-                        Text(error).font(.system(size: 10, design: .monospaced))
+                        Text(error).font(.specialElite(10))
                             .foregroundColor(Color(hex: "#FF8888"))
                         Button("Retry movie preview") { refreshPreview() }
                             .accessibilityIdentifier("studio.export.movie.preview.retry")
@@ -143,7 +144,7 @@ struct StudioMovieExportControls: View {
                                 .accessibilityIdentifier("studio.export.movie.preview.time")
                         }
                         Text(preview.didFinish ? "Playback finished" : preview.isPlaying ? "Playing rendered MP4" : preview.isWaiting ? "Preparing playback…" : preview.isReady ? "Preview ready" : "Loading rendered MP4…")
-                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("studio.export.movie.preview.status")
                     }
                     Button {
@@ -157,14 +158,42 @@ struct StudioMovieExportControls: View {
                     }
                     .disabled(movie.isBusy || session.isClosed || session.needsCleanup || shareLifetime.isReserved)
                     .accessibilityIdentifier("studio.export.share")
+                    Button {
+                        guard let account = scope.accountID,
+                              let request = session.beginSharing(scope: scope) else { return }
+                        reviewExport = SDIRenderUploadExport(request: request, account: account,
+                            title: String(vm.document.name.prefix(100)),
+                            revision: "Studio project \(output.manifest.projectID.uuidString), revision \(output.manifest.documentRevision)")
+                    } label: {
+                        Label("Submit this MP4 for review", systemImage: "checkmark.shield")
+                            .font(.specialElite(12))
+                            .frame(maxWidth: .infinity).padding(12)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#DC2626")))
+                    }
+                    .disabled(movie.isBusy || session.isClosed || session.needsCleanup || shareLifetime.isReserved || scope.accountID == nil)
+                    .accessibilityIdentifier("studio.export.movie.submit-review")
+                    if scope.accountID == nil {
+                        Text("Sign in before submitting an export for private review.").font(.specialElite(10))
+                    }
                     Text("Share the rendered MP4 or save it to Files.")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color(hex: "#12121a")))
                 .id("studio.export.movie.result")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(item: $reviewExport) { exported in
+            NavigationStack {
+                SDIRenderUploadView(exportedMovie: exported)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { exported.close(); reviewExport = nil }
+                        }
+                    }
+            }
+            .onDisappear { exported.close() }
+        }
         .background {
             if let request = shareRequest {
                 let binding = $shareRequest
@@ -200,6 +229,7 @@ struct StudioMovieExportControls: View {
         }
         .onChange(of: scenePhase) { _, _ in refreshScope(); refreshPreview() }
         .onChange(of: authVM.userId) {
+            reviewExport?.close(); reviewExport = nil
             refreshScope(); session.close(); shareRequest = nil
         }
         .onChange(of: vm.document.id) { refreshScope() }

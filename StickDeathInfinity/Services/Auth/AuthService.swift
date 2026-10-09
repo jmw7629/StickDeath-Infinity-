@@ -164,7 +164,7 @@ final class AuthService: ObservableObject {
     /// notification against the actual SDK session, without a mirrored model.
     func reconcileAuthStateChange(_ event: AuthChangeEvent) {
         switch event {
-        case .initialSession, .signedIn, .tokenRefreshed, .userUpdated, .signedOut, .userDeleted:
+        case .initialSession, .signedIn, .tokenRefreshed, .userUpdated, .signedOut, .userDeleted, .mfaChallengeVerified:
             guard let client = try? supabase else { setIdentity(nil); return }
             guard let session = client.auth.currentSession, !session.isExpired else {
                 setIdentity(nil)
@@ -181,6 +181,51 @@ final class AuthService: ObservableObject {
             }
         default: break
         }
+    }
+
+    enum AuthenticatorAction { case list, enroll, verify(factorID: String, code: String), removeUnfinished(factorID: String) }
+    struct AuthenticatorReply { let factors: [Factor]; let enrollment: AuthMFAEnrollResponse? }
+
+    /// Uses the same single-operation lease as sign-in/sign-out/restoration.
+    /// The view never calls the session-mutating MFA SDK directly.
+    func authenticatorOperation(accountID: String, action: AuthenticatorAction) async throws -> AuthenticatorReply {
+        try beginAuthentication()
+        defer { authenticationInProgress = false }
+        let client = try supabase
+        guard isAuthenticated, let account = UUID(uuidString: accountID), currentUser?.id == account,
+              client.auth.currentSession?.user.id == account else { throw CancellationError() }
+        let revision = identityRevision
+        func requireCurrent() throws {
+            try Task.checkCancellation()
+            guard revision == identityRevision, currentUser?.id == account,
+                  client.auth.currentSession?.user.id == account else { throw CancellationError() }
+        }
+        let user = try await client.auth.user()
+        try requireCurrent()
+        guard user.id == account else { throw CancellationError() }
+        var enrollment: AuthMFAEnrollResponse?
+        switch action {
+        case .list: break
+        case .enroll:
+            enrollment = try await client.auth.mfa.enroll(params: .totp())
+        case .verify(let factorID, let code):
+            guard code.count == 6, code.utf8.allSatisfy({ (48...57).contains($0) }),
+                  user.factors?.contains(where: { $0.id == factorID && $0.factorType == "totp" }) == true else {
+                throw CancellationError()
+            }
+            try await client.auth.mfa.challengeAndVerify(params: .init(factorId: factorID, code: code))
+        case .removeUnfinished(let factorID):
+            guard user.factors?.contains(where: { $0.id == factorID && $0.factorType == "totp" && $0.status == .unverified }) == true else {
+                throw CancellationError()
+            }
+            try await client.auth.mfa.unenroll(params: .init(factorId: factorID))
+        }
+        try requireCurrent()
+        let refreshed = try await client.auth.user()
+        try requireCurrent()
+        guard refreshed.id == account else { throw CancellationError() }
+        currentUser = refreshed
+        return .init(factors: (refreshed.factors ?? []).filter { $0.factorType == "totp" }, enrollment: enrollment)
     }
 
     // ═══════════════════════════════════════════════════════════════

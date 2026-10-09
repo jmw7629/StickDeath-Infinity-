@@ -218,6 +218,7 @@ final class StudioViewModel: ObservableObject {
     func cancelMenuHandoff() { pendingMenuHandoff = nil }
     @Published var showToolbar = true
     @Published private(set) var isPlaying = false
+    @Published var playbackLoops = true { didSet { if oldValue != playbackLoops { stopPlayback() } } }
     @Published var canvasScale: CGFloat = 1
     @Published var canvasOffset: CGSize = .zero
     @Published var audioPlayheadTime: Double = 0
@@ -439,7 +440,10 @@ final class StudioViewModel: ObservableObject {
             dodgeBurnRange: dodgeBurnRange, dodgeBurnProtectTones: dodgeBurnProtectTones,
             lineAngleSnap: lineAngleSnap, equalShapeSides: equalShapeSides,
             lineRulerEnabled: lineRulerEnabled, lineRulerAngle: lineRulerAngle,
-            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength)
+            lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength,
+            selectionPreservesAspect: selectionPreservesAspect, selectionNudgeDistance: selectionNudgeDistance,
+            wandTolerance: wandTolerance, wandContiguous: wandContiguous,
+            wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -467,8 +471,14 @@ final class StudioViewModel: ObservableObject {
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
         lineArrowEnds = value.lineArrowEnds ?? .none; lineArrowLength = value.lineArrowLength ?? 16
         selectionMode = value.selectionMode ?? .new
+        selectionPreservesAspect = value.selectionPreservesAspect ?? true
+        selectionNudgeDistance = value.selectionNudgeDistance ?? 1
         areaSelectionKind = value.areaSelectionKind ?? .freehand
         areaSelectionSmoothing = value.areaSelectionSmoothing ?? 3
+        wandTolerance = value.wandTolerance ?? 32
+        wandContiguous = value.wandContiguous ?? true
+        wandSampleVisibleCanvas = value.wandSampleVisibleCanvas ?? false
+        wandMode = value.wandMode ?? .newSelection
         fillTolerance = value.fillTolerance ?? 32; fillExpand = value.fillExpand ?? 0
         fillGapClose = value.fillGapClose ?? 0; fillContiguous = value.fillContiguous ?? true
         fillAntiAlias = value.fillAntiAlias ?? true; fillSampleAll = value.fillSampleAll ?? false
@@ -506,6 +516,21 @@ final class StudioViewModel: ObservableObject {
     /// visibility, authenticated transport and authorized project-context sharing.
     struct CommandScreenContext {
         enum Route: String { case library, editor }
+        struct Wand: Codable, Equatable {
+            let tolerance: Double
+            let contiguous: Bool
+            let sampleVisibleCanvas: Bool
+            let mode: String
+            let selectedPixels: Int
+            let isWorking: Bool
+            let canEditSelection: Bool
+        }
+        struct AudioMixTrack: Codable, Equatable {
+            let track: Int
+            let volume: Double
+            let muted: Bool
+            let clipCount: Int
+        }
         struct RetainedAudio {
             let id: UUID
             let name: String
@@ -532,6 +557,8 @@ final class StudioViewModel: ObservableObject {
         let isSaving: Bool
         let canUndo: Bool
         let canRedo: Bool
+        var wand: Wand? = nil
+        var audioMix: [AudioMixTrack]? = nil
     }
 
     var commandScreenContext: CommandScreenContext {
@@ -552,7 +579,16 @@ final class StudioViewModel: ObservableObject {
                 .init(id: $0.id, name: $0.name, format: $0.format, startTime: $0.startTime, duration: $0.duration,
                       timingKnown: $0.legacySourceFilename == nil, hasAudioData: $0.audioData != nil)
             }, canApplyCommands: !isSaving && pendingBrushStroke == nil && activeStrokeID == nil,
-            isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo)
+            isDirty: isDirty, isSaving: isSaving, canUndo: canUndo, canRedo: canRedo,
+            wand: selectedTool == .wand && wandTolerance.isFinite && (0...128).contains(wandTolerance)
+                ? .init(tolerance: wandTolerance, contiguous: wandContiguous,
+                    sampleVisibleCanvas: wandSampleVisibleCanvas, mode: wandMode.rawValue,
+                    selectedPixels: max(0, min(StudioFillRegion.maximumPixels, wandSelectedPixels)),
+                    isWorking: wandWorking, canEditSelection: canEditImageRegion) : nil,
+            audioMix: (1...4).map { track in
+                .init(track: track, volume: document.audioTrackVolume(track), muted: document.isAudioTrackMuted(track),
+                      clipCount: document.audioClips.filter { $0.track == track }.count)
+            })
     }
 
     /// The returned receipt describes an in-memory edit, never a successful save,
@@ -571,15 +607,23 @@ final class StudioViewModel: ObservableObject {
         let containsTween: Bool
         let containsRename: Bool
         let containsCut: Bool
+        let containsTrackEdit: Bool
+        let containsDuplicate: Bool
         let containsSelectedErasure: Bool
         let inputFrame = currentFrame.id, inputLayer = activeLayerID, inputTool = selectedTool
         if case .apply(let commands) = request.action {
-            containsCut = commands.contains { if case .cutElements = $0 { return true }; return false }
+            containsTrackEdit = commands.contains { if case .updateAudioTrack = $0 { return true }; return false }
+            containsDuplicate = commands.contains { if case .duplicateElements = $0 { return true }; return false }
+            containsCut = commands.contains {
+                switch $0 { case .cutElements, .cutFrame: return true; default: return false }
+            }
             containsTween = commands.contains { if case .tweenFrames = $0 { return true }; return false }
             containsRename = commands.contains { if case .renameProject = $0 { return true }; return false }
             containsSelectedErasure = commands.contains { if case .eraseSelectedElements = $0 { return true }; return false }
-        } else { containsCut = false; containsTween = false; containsRename = false; containsSelectedErasure = false }
-        if containsCut && isPlaying { throw StudioDocumentError.unavailable("Stop playback before cutting selected drawings.") }
+        } else { containsTrackEdit = false; containsDuplicate = false; containsCut = false; containsTween = false; containsRename = false; containsSelectedErasure = false }
+        if containsTrackEdit && !canMutateAudioDocument { throw StudioDocumentError.unavailable("Stop playback and finish editing before changing audio tracks.") }
+        if containsDuplicate && isPlaying { throw StudioDocumentError.unavailable("Stop playback before duplicating drawings.") }
+        if containsCut && isPlaying { throw StudioDocumentError.unavailable("Stop playback before cutting artwork or frames.") }
         if containsSelectedErasure && isPlaying { throw StudioDocumentError.unavailable("Stop playback before erasing selected drawings.") }
         if containsRename && isPlaying { throw StudioDocumentError.unavailable("Stop playback before renaming the project.") }
         if containsTween && isPlaying { throw StudioDocumentError.unavailable("Stop playback before tweening frames.") }
@@ -591,7 +635,7 @@ final class StudioViewModel: ObservableObject {
             }
             try validateAudioTrim(clip, asset: asset)
         }
-        if candidate.document.audioClips != document.audioClips {
+        if candidate.document.audioClips != document.audioClips || containsTrackEdit {
             guard !isPlaying else { throw StudioDocumentError.unavailable("Stop playback before applying audio edits.") }
             _ = try audioTracksForSave(candidate.document)
         }
@@ -615,6 +659,11 @@ final class StudioViewModel: ObservableObject {
         if candidate.document.audioClips != document.audioClips, isPlaying {
             throw StudioDocumentError.unavailable("Playback started while preparing audio edits. Nothing changed.")
         }
+        if containsTrackEdit && !canMutateAudioDocument { throw StudioCommandError.staleRevision }
+        if containsDuplicate && (isPlaying || editor.selectedElementIDs != selection ||
+            currentFrame.id != inputFrame || activeLayerID != inputLayer || selectedTool != inputTool) {
+            throw StudioDocumentError.unavailable("The selection or input context changed while duplicating. Nothing changed.")
+        }
         if containsCut && (isPlaying || editor.selectedElementIDs != selection ||
             currentFrame.id != inputFrame || activeLayerID != inputLayer || selectedTool != inputTool) {
             throw StudioDocumentError.unavailable("The selection or input context changed while cutting. Nothing was cut.")
@@ -635,6 +684,12 @@ final class StudioViewModel: ObservableObject {
                 }
                 break
             }
+        }
+        if case .apply(let commands) = request.action, commands.count == 1,
+           case .duplicateElements(let edit) = commands[0],
+           case .id(let frameID) = edit.frame, frameID == currentFrame.id,
+           !receipt.createdElementIDs.isEmpty {
+            activatePastedArtwork(ids: Set(receipt.createdElementIDs))
         }
         if receipt.outcome != .unchanged {
             stopPlayback()
@@ -715,7 +770,7 @@ final class StudioViewModel: ObservableObject {
             case .transformSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
             case .orderSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
             case .deleteSelectedArtwork(let selection): edits += 1; try addUnits(selection.elementIDs.count + 1, weight: 32)
-            case .duplicateFrame, .duplicateLayer, .pasteElements, .tweenFrames:
+            case .duplicateFrame, .duplicateFrameRange, .duplicateLayer, .duplicateElements, .pasteElements, .tweenFrames:
                 // Aliases may duplicate content created earlier in this batch.
                 // Reserve the executor's full cumulative generated-data budget
                 // rather than undercounting a reference we have not staged yet.
@@ -1291,7 +1346,33 @@ final class StudioViewModel: ObservableObject {
             pruneManagedImages()
         } catch { message = error.localizedDescription }
     }
-    func pasteFrame() { stopPlayback(); command { try $0.pasteFrame() } }
+    var canCutTimelineFrame: Bool {
+        isEditing && !isSaving && !isPlaying && activeStrokeID == nil && pendingBrushStroke == nil &&
+            textDraft == nil && frames.count > 1
+    }
+    func cutFrame(_ frameID: String) {
+        guard canCutTimelineFrame else {
+            message = "Finish the current edit before cutting. At least one frame must remain."
+            return
+        }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.cutFrame(.id(frameID))])))
+        } catch { message = error.localizedDescription }
+    }
+    var canPasteTimelineFrame: Bool {
+        isEditing && !isSaving && !isPlaying && activeStrokeID == nil && pendingBrushStroke == nil &&
+            textDraft == nil && editor.canPasteFrame && frames.count < 1000
+    }
+    func pasteFrame() { pasteFrame(after: currentFrame.id) }
+    func pasteFrame(after frameID: String) {
+        stopPlayback()
+        guard canPasteTimelineFrame else {
+            message = "Copy a frame and finish the current edit before pasting. The project can contain up to 1,000 frames."
+            return
+        }
+        command { try $0.pasteFrame(after: frameID) }
+    }
     func pasteClipboard() {
         if usesArtworkClipboard { _ = pasteSelectedArtwork(); return }
         if usesImageClipboard { _ = pasteImage(); return }
@@ -1303,9 +1384,23 @@ final class StudioViewModel: ObservableObject {
             let receipt = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
                 expectedRevision: document.revision, action: .apply([.pasteElements(.init(
                     frame: .id(currentFrame.id), layer: .id(activeLayerID), clipboardID: editor.clipboardVersion.uuidString))])))
-            imageMoveTarget = nil
-            editor.selectedElementIDs = Set(receipt.createdElementIDs)
+            activatePastedArtwork(ids: Set(receipt.createdElementIDs))
         } catch { message = error.localizedDescription }
+    }
+    /// Paste is a committed document edit; selection/tool state is published
+    /// afterward so changing target/tool cannot clear the newly selected IDs.
+    private func activatePastedArtwork(ids: Set<String>, imageAssetID: String? = nil,
+                                       imageLayerID: String? = nil) {
+        areaSelectionTarget = imageAssetID == nil ? .drawings : ids.isEmpty ? .image : .artwork
+        selectedTool = .move
+        selectionMode = .new
+        imageMoveTarget = nil
+        if let imageAssetID, let imageLayerID {
+            imageMoveTarget = .init(projectID: document.id, frameID: currentFrame.id,
+                                   assetID: imageAssetID, layerID: imageLayerID)
+        }
+        editor.selectedElementIDs = ids
+        resetSelectionTransform()
     }
     func deleteFrame(_ id: String) { stopPlayback(); command { try $0.deleteFrame(id) } }
     func moveFrame(_ id: String, offset: Int) { stopPlayback(); command { try $0.moveFrame(id, offset: offset) } }
@@ -1513,6 +1608,18 @@ final class StudioViewModel: ObservableObject {
             !element.hasPixelEffect && layers.contains { $0.id == element.layerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" }
         }
     }
+    var canDuplicateSelected: Bool { canCutSelected && !isSelectingMixedArtwork }
+    @discardableResult
+    func duplicateSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        guard canDuplicateSelected else { message = "Select drawings on free, visible layers before duplicating."; return false }
+        do {
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+                expectedRevision: document.revision, action: .apply([.duplicateElements(.init(
+                    frame: .id(currentFrame.id), elementIDs: selectedElementIDs.sorted()))])),
+                checkCancellation: checkCancellation)
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     @discardableResult
     func cutSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         if hasMixedArtworkSelection { return copySelectedArtwork(cut: true, checkCancellation: checkCancellation) }
@@ -1548,6 +1655,9 @@ final class StudioViewModel: ObservableObject {
     }
     @Published var selectionMode: SelectionMode = .new { didSet { rememberDrawingToolPreferences() } }
     @Published var selectionScalePercent: Double = 100
+    @Published var selectionHeightPercent: Double = 100
+    @Published var selectionPreservesAspect = true { didSet { rememberDrawingToolPreferences() } }
+    @Published var selectionNudgeDistance: Double = 1 { didSet { rememberDrawingToolPreferences() } }
     @Published var selectionRotationDegrees: Double = 0
     @discardableResult
     func transformSelected(checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
@@ -1560,13 +1670,47 @@ final class StudioViewModel: ObservableObject {
         do {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
                 expectedRevision: document.revision, action: .apply([.transformElements(.init(frame:.id(currentFrame.id),
-                    elementIDs:ids.sorted(),scaleX:selectionScalePercent/100,scaleY:selectionScalePercent/100,
-                    rotation:selectionRotationDegrees))])))
+                    elementIDs:ids.sorted(),scaleX:selectionScalePercent/100,
+                    scaleY:(selectionPreservesAspect ? selectionScalePercent : selectionHeightPercent)/100,
+                    rotation:selectionRotationDegrees))])), checkCancellation: checkCancellation)
             editor.selectedElementIDs=ids;resetSelectionTransform();return true
         } catch { message=error.localizedDescription;return false }
     }
-    func resetSelectionTransform() { selectionScalePercent=100;selectionRotationDegrees=0 }
+    enum SelectionAlignment: String, CaseIterable {
+        case left = "Left", center = "Center horizontally", right = "Right"
+        case top = "Top", middle = "Center vertically", bottom = "Bottom"
+    }
+    @discardableResult
+    func positionSelected(dx: Double = 0, dy: Double = 0, alignment: SelectionAlignment? = nil,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
+        do {
+            guard let capture = beginSelectionHandle() else { throw StudioCommandError.staleRevision }
+            var x = dx, y = dy
+            if let alignment {
+                switch alignment {
+                case .left: x = -capture.bounds.minX
+                case .center: x = Double(canvasWidth) / 2 - capture.bounds.midX
+                case .right: x = Double(canvasWidth) - capture.bounds.maxX
+                case .top: y = -capture.bounds.minY
+                case .middle: y = Double(canvasHeight) / 2 - capture.bounds.midY
+                case .bottom: y = Double(canvasHeight) - capture.bounds.maxY
+                }
+            }
+            try checkCancellation()
+            guard x.isFinite, y.isFinite else { throw StudioCommandError.invalidSettings }
+            if x == 0 && y == 0 { return true }
+            let request = try artworkRequest(capture, dx: x, dy: y)
+            _ = try applyStudioCommands(request, checkCancellation: {
+                try checkCancellation()
+                guard self.beginSelectionHandle() == capture else { throw StudioCommandError.staleRevision }
+            })
+            retainArtworkSelection(capture)
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
+    func resetSelectionTransform() { selectionScalePercent=100;selectionHeightPercent=100;selectionRotationDegrees=0 }
     struct SelectionHandleCapture: Equatable {
+        var preservesAspect = true
         let projectID: UUID
         let revision: Int
         let frameID: String
@@ -1620,13 +1764,28 @@ final class StudioViewModel: ObservableObject {
         }
         let image = isSelectingMixedArtwork ? validSelectedArtworkImage : nil
         guard !isSelectingMixedArtwork || image != nil, let bounds = selectedArtworkBounds(in: currentFrame) else { return nil }
-        return .init(projectID: document.id, revision: document.revision,
+        return .init(preservesAspect: image != nil || selectionPreservesAspect,
+            projectID: document.id, revision: document.revision,
             frameID: currentFrame.id, ids: selectedElementIDs, mode: selectionMode, bounds: bounds,
             image: image, imageSelectionID: image == nil ? nil : imageMoveTarget?.selectionID,
             generation: areaSelectionGeneration)
     }
     func beginSelectionHandle() -> SelectionHandleCapture? {
         selectedTool == .move ? captureArtworkSelection() : nil
+    }
+    var selectionTransformExplanation: String? {
+        guard !selectedElementIDs.isEmpty else { return "Select artwork to resize or rotate it." }
+        if isPlaying { return "Stop playback to transform this selection." }
+        if isSaving { return "Wait for saving to finish before transforming." }
+        if selectedElementIDs.count > 1024 { return "Select at most 1,024 objects for one transform." }
+        let selected = currentFrame.elements.filter { selectedElementIDs.contains($0.id) }
+        if selected.contains(where: { element in
+            !layers.contains(where: { $0.id == element.layerID && $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free" })
+        }) {
+            return "This selection includes hidden or locked artwork. Show and unlock its layers, or select only unlocked artwork, to move or reshape it."
+        }
+        if beginSelectionHandle() == nil { return "Finish the current edit or select the artwork again to transform it." }
+        return nil
     }
     private func artworkRequest(_ capture: SelectionHandleCapture, dx: Double = 0, dy: Double = 0,
                                 scale: Double = 1, rotation: Double = 0,
@@ -1664,7 +1823,7 @@ final class StudioViewModel: ObservableObject {
         if capture.image != nil { return try artworkRequest(capture, scale: values.scale, rotation: values.rotation) }
         return .init(requestID: UUID(), projectID: capture.projectID, expectedRevision: capture.revision,
             action: .apply([.transformElements(.init(frame: .id(capture.frameID), elementIDs: capture.ids.sorted(),
-                scaleX: values.scale, scaleY: values.scale, rotation: values.rotation))]))
+                scaleX: values.scale, scaleY: values.heightScale ?? values.scale, rotation: values.rotation))]))
     }
     /// Preview executes the same validated operation on a disposable editor.
     func selectionHandlePreview(_ capture: SelectionHandleCapture,
@@ -1697,7 +1856,7 @@ final class StudioViewModel: ObservableObject {
         }
     }
     private var areaSelectionGeneration = UUID()
-    @Published var areaSelectionTarget: AreaSelectionTarget = .drawings {
+    @Published var areaSelectionTarget: AreaSelectionTarget = .artwork {
         didSet {
             if areaSelectionTarget != oldValue {
                 areaSelectionGeneration = UUID()
@@ -1831,19 +1990,31 @@ final class StudioViewModel: ObservableObject {
                     }
                 } else { imageMoveTarget = nil }
                 editor.selectedElementIDs.removeAll()
+                activateMoveAfterAreaSelection()
                 return true
             }
             guard currentFrame.elements.count <= 2_000_000 / region.points.count else {
                 throw StudioDocumentError.unavailable("This lasso is too complex for the current frame. Use Rectangle or a simpler outline.")
             }
-            let eligibleLayers = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
+            // The lasso hands its result directly to Move. Position/alpha-locked
+            // drawings cannot join that group: one such identity would prevent
+            // captureArtworkSelection from displaying handles for every object.
+            let eligibleLayers = Set(layers.filter {
+                $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
+            }.map(\.id))
             var found = Set<String>()
+            var selectionWork = 2_000_000
             for element in currentFrame.elements {
                 try checkCancellation()
                 guard let layerID = element.layerID, eligibleLayers.contains(layerID), element.opacity > 0,
                       element.tool != .eraser, let bounds = try StudioSelectionRegion.drawingBounds(element) else { continue }
                 let visibleBounds = bounds.intersection(CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight))
-                guard !visibleBounds.isNull, region.contains(visibleBounds) else { continue }
+                guard !visibleBounds.isNull else { continue }
+                let enclosed: Bool
+                if region.contains(visibleBounds) { enclosed = true }
+                else { enclosed = try region.enclosesArtwork(element,
+                    workRemaining: &selectionWork, checkCancellation: checkCancellation) }
+                guard enclosed else { continue }
                 found.insert(element.id)
             }
             var selected = capture.selectedIDs
@@ -1872,8 +2043,36 @@ final class StudioViewModel: ObservableObject {
                 } else { imageMoveTarget = nil }
             }
             editor.selectedElementIDs = selected
+            activateMoveAfterAreaSelection()
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+    /// Completing a nonempty lasso hands the same selected identities to the
+    /// canvas transform box. Hand pans the viewport and must not be used here.
+    private func activateMoveAfterAreaSelection() {
+        guard !selectedElementIDs.isEmpty || validAreaImageSelection != nil else {
+            message = selectionMode == .subtract
+                ? "Selection cleared. Draw another outline to select artwork."
+                : "No movable artwork selected. Enclose a drawing’s stroke or the whole image on its active layer. Set the layer lock to Free to move or resize it."
+            return
+        }
+        selectedTool = .move
+        // Restore Move preferences first, then make the next drag transform the
+        // selection rather than apply a remembered Add/Subtract operation.
+        selectionMode = .new
+        // A completed drawing lasso is ready for free reshaping immediately.
+        // Image-backed groups retain proportions until their transform pipeline
+        // supports independent axes without flattening the original asset.
+        if imageMoveTarget == nil { selectionPreservesAspect = false }
+        resetSelectionTransform()
+        // Do not leave the former Lasso popup covering the newly selected box.
+        if activePanel == .toolSettings { activePanel = .none }
+        if beginSelectionHandle() != nil || currentImageMoveCapture() != nil {
+            message = nil
+        } else {
+            message = selectionTransformExplanation ??
+                "This selection cannot be transformed. Select visible artwork on an unlocked layer."
+        }
     }
     /// All/Invert operate on visible editable artwork only. They never create
     /// document history and never select an invisible or fully locked layer.
@@ -1882,7 +2081,9 @@ final class StudioViewModel: ObservableObject {
                               checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
         do {
             guard areaSelectionTarget != .image, let capture = beginAreaSelection(), textDraft == nil else { return false }
-            let eligible = Set(layers.filter { $0.visible && $0.opacity > 0 && !$0.isFullyLocked }.map(\.id))
+            let eligible = Set(layers.filter {
+                $0.visible && $0.opacity > 0 && !$0.isFullyLocked && $0.lockMode == "free"
+            }.map(\.id))
             let canvas = CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight)
             var ids = Set<String>()
             for element in currentFrame.elements {
@@ -1903,6 +2104,7 @@ final class StudioViewModel: ObservableObject {
                 } else { imageMoveTarget = nil }
             }
             cancelPolygonSelection()
+            activateMoveAfterAreaSelection()
             return true
         } catch { message = error.localizedDescription; return false }
     }
@@ -2258,9 +2460,23 @@ final class StudioViewModel: ObservableObject {
         }
         return hit
     }
-    func beginMove(at point: CGPoint) -> MoveCapture? {
+    func beginMove(at point: CGPoint, viewport: CGSize? = nil, zoom: Double = 1) -> MoveCapture? {
         guard isEditing, !isPlaying, !isSaving, selectedTool == .move, !isMovingImageOnCanvas,
               activeStrokeID == nil, pendingBrushStroke == nil else { return nil }
+        if selectionMode == .new, let artwork = beginSelectionHandle() {
+            // The displayed box expands to remain usable for tiny artwork. Its
+            // empty interior is still a group drag target, not a deselection tap.
+            let geometry = viewport.flatMap { StudioSelectionHandleGeometry(bounds: artwork.bounds,
+                documentSize: CGSize(width: canvasWidth, height: canvasHeight), viewport: $0, zoom: zoom) }
+            let insideVisibleBox = geometry.map {
+                $0.box.contains(CGPoint(x: point.x / CGFloat(canvasWidth) * $0.viewport.width,
+                                       y: point.y / CGFloat(canvasHeight) * $0.viewport.height))
+            } ?? false
+            if insideVisibleBox || artwork.bounds.insetBy(dx: -6, dy: -6).contains(point) {
+                return .init(projectID: document.id, revision: document.revision, frameID: currentFrame.id,
+                             ids: selectedElementIDs, mode: selectionMode, artwork: artwork)
+            }
+        }
         if areaSelectionTarget == .artwork && selectionMode != .new {
             // Add/Subtract are selection input before transform admission. This
             // also lets either missing kind be re-added to a one-kind group.
@@ -2411,6 +2627,29 @@ final class StudioViewModel: ObservableObject {
     func setLayerLockMode(_ id: String, mode: LayerLockMode) {
         command { try $0.updateLayer(id) { $0.lockMode = mode.rawValue; $0.locked = mode == .full } }
     }
+    struct LayerSliderCapture: Equatable {
+        let projectID: UUID
+        let revision: Int
+        let layer: CanvasLayer
+    }
+    func prepareLayerSlider(_ id: String) -> LayerSliderCapture? {
+        guard isEditing, !isPlaying, !isSaving, activePanel == .layers,
+              activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
+              let layer = layers.first(where: { $0.id == id }) else { return nil }
+        return .init(projectID: document.id, revision: document.revision, layer: layer)
+    }
+    @discardableResult
+    func applyLayerSlider(_ capture: LayerSliderCapture, opacity: Double? = nil,
+                          glowRadius: Double? = nil, glowStrength: Double? = nil) -> Bool {
+        do {
+            guard prepareLayerSlider(capture.layer.id) == capture else { throw StudioCommandError.staleRevision }
+            _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+                expectedRevision: capture.revision, action: .apply([.updateLayer(.init(
+                    layer: .id(capture.layer.id), settings: .init(opacity: opacity,
+                        glowRadius: glowRadius, glowStrength: glowStrength)))])))
+            return true
+        } catch { message = error.localizedDescription; return false }
+    }
     func setLayerOpacity(_ id: String, opacity: Double) { command { try $0.updateLayer(id) { $0.opacity = opacity } } }
     func setLayerBlend(_ id: String, mode: String) { command { try $0.updateLayer(id) { $0.blendMode = mode } } }
     func setLayerGlow(_ id: String, enabled: Bool) { command { try $0.updateLayer(id) { $0.glowEnabled = enabled } } }
@@ -2548,7 +2787,7 @@ final class StudioViewModel: ObservableObject {
     /// are ownership/metadata checks, not an independent codec validation claim.
     @discardableResult
     func attachImportedAudio(_ track: AudioTrack, expectedProjectID: UUID, expectedRevision: Int,
-                             frameID: String, trackNumber: Int,
+                             frameID: String, trackNumber: Int, atPlayhead: Double? = nil,
                              checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> String {
         try checkCancellation()
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
@@ -2565,10 +2804,16 @@ final class StudioViewModel: ObservableObject {
               audioTrack(forAssetID: track.id) == nil else {
             throw StudioDocumentError.invalid("The decoded audio asset has invalid metadata or conflicts with an existing asset.")
         }
+        if let atPlayhead {
+            guard atPlayhead.isFinite, (0...1000).contains(atPlayhead), audioPlayheadTime == atPlayhead else {
+                throw StudioDocumentError.unavailable("The audio playhead changed. Add the sound again at the current position.")
+            }
+        }
+        let insertionTime = atPlayhead ?? Double(document.startTick(ofFrame: frame)) / Double(fps)
         let clipboardVersion = editor.clipboardVersion, selectedIDs = editor.selectedElementIDs
         let selectedClipID = selectedAudioClip?.id
         let clip = AudioClip(id: UUID().uuidString, soundName: track.name, track: trackNumber,
-            startTime: Double(document.startTick(ofFrame: frame)) / Double(fps), duration: track.duration, assetID: track.id)
+            startTime: insertionTime, duration: track.duration, assetID: track.id)
         var candidate = editor
         try candidate.change { $0.audioClips.append(clip) }
         let liveIDs = candidate.referencedAudioAssetIDsIncludingHistory
@@ -2588,7 +2833,8 @@ final class StudioViewModel: ObservableObject {
         guard isEditing, !isSaving, !isPlaying, activeStrokeID == nil, pendingBrushStroke == nil, textDraft == nil,
               document.id == expectedProjectID, document.revision == expectedRevision,
               document.activeFrameID == frameID, editor.clipboardVersion == clipboardVersion,
-              editor.selectedElementIDs == selectedIDs, selectedAudioClip?.id == selectedClipID else {
+              editor.selectedElementIDs == selectedIDs, selectedAudioClip?.id == selectedClipID,
+              atPlayhead == nil || audioPlayheadTime == atPlayhead else {
             throw StudioDocumentError.unavailable("The editor changed before the audio could be attached. No audio was added.")
         }
         // Publish the bytes and the single undoable document edit together.
@@ -2671,6 +2917,9 @@ final class StudioViewModel: ObservableObject {
         switch edit {
         case .place(let start, let track): clip.startTime = start; clip.track = track
         case .trim(let offset, let duration): clip.sourceOffset = offset; clip.duration = duration
+        case .trimLeading(let start):
+            let delta = start - clip.startTime
+            clip.startTime = start; clip.sourceOffset += delta; clip.duration -= delta
         case .volume(let value): clip.volume = value
         case .mute(let value): clip.isMuted = value
         }
@@ -2683,6 +2932,10 @@ final class StudioViewModel: ObservableObject {
         case .mute(let value): try candidate.updateAudioClip(id, settings: .init(isMuted: value))
         case .trim(let offset, let duration):
             try candidate.updateAudioClip(id, settings: .init(trim: .init(sourceOffset: offset, duration: duration)))
+        case .trimLeading:
+            try candidate.updateAudioClip(id, settings: .init(
+                trim: .init(sourceOffset: clip.sourceOffset, duration: clip.duration),
+                placement: .init(startTime: clip.startTime, track: clip.track)))
         }
         try preflightRasterDocument(candidate.document)
         _ = try audioTracksForSave(candidate.document)
@@ -2723,6 +2976,28 @@ final class StudioViewModel: ObservableObject {
         }
         editor = candidate; selectedAudioClip = duplicate; message = nil; scheduleSave()
         return duplicate.id
+    }
+    /// Repeat the selected source consecutively without duplicating audio bytes.
+    /// Canonical command batching validates every copy before one history commit.
+    func repeatAudioClip(_ capture: AudioDuplicationCapture, additionalCopies: Int,
+                         checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard (1...32).contains(additionalCopies), prepareAudioDuplication() == capture else {
+            throw StudioDocumentError.invalid("Select the current clip and choose 1–32 additional copies.")
+        }
+        var commands: [StudioCommand] = []
+        var source = capture.clip.id
+        for _ in 0..<additionalCopies {
+            try checkCancellation()
+            let next = UUID().uuidString
+            commands.append(.duplicateAudioClip(.init(clipID: source, newClipID: next)))
+            source = next
+        }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+            expectedRevision: capture.revision, action: .apply(commands)), checkCancellation: {
+                try checkCancellation()
+                guard self.prepareAudioDuplication() == capture else { throw StudioCommandError.staleRevision }
+            })
+        message = "Added \(additionalCopies) consecutive audio copies in one Undo step."
     }
     struct AudioClipVolumeCapture: Equatable {
         let selection: AudioDuplicationCapture
@@ -2856,23 +3131,10 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
         }
         guard document.isAudioTrackMuted(track) != muted else { return }
-        let projectID = document.id
-        var candidate = editor
-        try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 12)
-            var tracks = Set(value.mutedAudioTracks ?? [])
-            if muted { tracks.insert(track) } else { tracks.remove(track) }
-            value.mutedAudioTracks = tracks.sorted()
-        }
-        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
-        try checkCancellation()
-        guard canMutateAudioDocument,
-              document.id == projectID, document.revision == expectedRevision else {
-            throw StudioDocumentError.unavailable("The project changed while setting track mute. Nothing was changed.")
-        }
-        editor = candidate
-        selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
-        message = nil; scheduleSave()
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+            expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, muted: muted))])),
+            checkCancellation: checkCancellation)
+        message = nil
     }
     struct AudioTrackVolumeCapture: Equatable {
         let projectID: UUID
@@ -2897,26 +3159,19 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("The project or track changed. Finish saving and stop playback before changing track volume.")
         }
         guard capture.volume != volume else { return }
-        var candidate = editor
-        try candidate.change { value in
-            value.schemaVersion = max(value.schemaVersion, 13)
-            var volumes = value.audioTrackVolumes ?? Array(repeating: 1, count: 4)
-            volumes[capture.track - 1] = volume
-            value.audioTrackVolumes = volumes
-        }
-        try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
-        try checkCancellation()
-        guard prepareAudioTrackVolume(capture.track) == capture else {
-            throw StudioDocumentError.unavailable("The project changed while setting track volume. Nothing was changed.")
-        }
-        editor = candidate
-        selectedAudioClip = selectedAudioClip.flatMap { selected in document.audioClips.first { $0.id == selected.id } }
-        message = nil; scheduleSave()
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
+            expectedRevision: capture.revision, action: .apply([.updateAudioTrack(.init(track: capture.track, volume: volume))])),
+            checkCancellation: {
+                try checkCancellation()
+                guard self.prepareAudioTrackVolume(capture.track) == capture else { throw StudioCommandError.staleRevision }
+            })
+        message = nil
     }
     /// Real audio-player time drives the display frame; no second animation timer.
     func displayAudioPlaybackTime(_ seconds: Double, playing: Bool) {
         guard seconds.isFinite, seconds >= 0, seconds <= audioDuration, !frames.isEmpty else { return }
         playbackTimer?.invalidate(); playbackTimer = nil
+        playbackClock = nil; playbackGeneration = UUID()
         audioPlayheadTime = seconds
         let target = document.frameIndex(atTick: Int(min(Double(document.totalTimelineTicks), max(0, seconds * Double(fps))).rounded(.down)))
         if playing {
@@ -3288,7 +3543,8 @@ final class StudioViewModel: ObservableObject {
                   selectedElementIDs == selected, imageMoveTarget == selectionTarget, canPasteImage else {
                 throw StudioCommandError.staleRevision
             }
-            editor = candidate; editor.selectedElementIDs = created; imageMoveTarget = nil
+            editor = candidate
+            activatePastedArtwork(ids: created, imageAssetID: assetID, imageLayerID: document.activeLayerID)
             scheduleSave(); message = nil
             return true
         } catch { message = error.localizedDescription; return false }
@@ -3445,6 +3701,7 @@ final class StudioViewModel: ObservableObject {
                   editor.clipboardVersion == clipboardVersion, imageClipboardEditorVersion == clipboardScope,
                   selectedElementIDs == selectedIDs, canPasteImage else { throw StudioCommandError.staleRevision }
             editor = candidate
+            activatePastedArtwork(ids: [], imageAssetID: assetID, imageLayerID: layer.id)
             scheduleSave()
             return true
         } catch { message = error.localizedDescription; return false }
@@ -3457,9 +3714,10 @@ final class StudioViewModel: ObservableObject {
         let capture: ImageRegionCapture
         let result: StudioImageRegionService.Result
     }
-    @Published var wandTolerance: Double = 32 { didSet { cancelImageRegionWork() } }
-    @Published var wandContiguous = true { didSet { cancelImageRegionWork() } }
-    @Published var wandMode: StudioImageRegionService.Mode = .newSelection { didSet { cancelImageRegionWork() } }
+    @Published var wandTolerance: Double = 32 { didSet { cancelImageRegionWork(); rememberDrawingToolPreferences() } }
+    @Published var wandSampleVisibleCanvas = false { didSet { cancelImageRegionWork(); rememberDrawingToolPreferences() } }
+    @Published var wandContiguous = true { didSet { cancelImageRegionWork(); rememberDrawingToolPreferences() } }
+    @Published var wandMode: StudioImageRegionService.Mode = .newSelection { didSet { cancelImageRegionWork(); rememberDrawingToolPreferences() } }
     @Published var wandMoveX: Double = 0
     @Published var wandMoveY: Double = 0
     @Published private(set) var wandWorking = false
@@ -3495,7 +3753,8 @@ final class StudioViewModel: ObservableObject {
         !wandWorking && imageRegionSelection != nil && (try? captureImageRegion()) == imageRegionSelection?.capture
     }
     @discardableResult
-    func selectImageRegion(_ capture: ImageRegionCapture, at point: CGPoint) async -> Bool {
+    func selectImageRegion(_ capture: ImageRegionCapture, at point: CGPoint,
+                           membershipOperation: StudioImageRegionService.MembershipOperation? = nil) async -> Bool {
         guard imageRegionWorker == nil else {
             message = "The previous Wand selection is still finishing. Wait for it to finish before selecting again."
             return false
@@ -3515,10 +3774,25 @@ final class StudioViewModel: ObservableObject {
                   wandTolerance.isFinite, (0...128).contains(wandTolerance) else { throw StudioCommandError.staleRevision }
             let previous = imageRegionSelection?.capture == capture ? imageRegionSelection?.result.membership : nil
             let mode = wandMode, tolerance = Int(wandTolerance.rounded()), contiguous = wandContiguous
+            imageRegionWorkerID = owner
             wandWorking = true
+            // Share Fill's canonical composited snapshot, without issuing a
+            // Fill command or changing the document. Region edits retain only
+            // the active image's original pixels and source-space membership.
+            let sample: StudioImageRegionService.CanvasSample?
+            if wandSampleVisibleCanvas && membershipOperation == nil {
+                let rendered = try StudioFillService.capture(document: document,
+                    frameID: capture.frameID, layerID: capture.layerID, point: point,
+                    color: "#000000", opacity: 1,
+                    settings: .init(tolerance: tolerance, contiguous: contiguous, expand: 0, gapClose: 0, antiAlias: false),
+                    sampleAllLayers: true, rasterData: rasterData(currentFrame.rasterAssetID),
+                    rasterDataByID: rasterSources(for: currentFrame))
+                sample = .init(width: rendered.width, height: rendered.height, rgba: rendered.rgba)
+            } else { sample = nil }
             let worker = Task.detached(priority: .userInitiated) {
                 try StudioImageRegionService.select(png: png, instance: capture.instance, point: point,
-                    tolerance: tolerance, contiguous: contiguous, mode: mode, previous: previous)
+                    tolerance: tolerance, contiguous: contiguous, mode: mode, previous: previous,
+                    membershipOperation: membershipOperation, canvasSample: sample)
             }
             imageRegionWorker = worker; imageRegionWorkerID = owner
             let result = try await withTaskCancellationHandler(operation: { try await worker.value }, onCancel: { worker.cancel() })
@@ -3535,7 +3809,14 @@ final class StudioViewModel: ObservableObject {
             return false
         }
     }
-    enum ImageRegionAction { case copy, delete, move }
+    @discardableResult
+    func changeImageRegionMembership(_ operation: StudioImageRegionService.MembershipOperation) async -> Bool {
+        do {
+            let capture = try captureImageRegion()
+            return await selectImageRegion(capture, at: .zero, membershipOperation: operation)
+        } catch { message = error.localizedDescription; return false }
+    }
+    enum ImageRegionAction { case copy, cut, delete, move, lift }
     @discardableResult
     func applyImageRegion(_ action: ImageRegionAction,
                           checkCancellation: () throws -> Void = { try Task.checkCancellation() }) -> Bool {
@@ -3554,15 +3835,21 @@ final class StudioViewModel: ObservableObject {
             var next = retainedRasterFrames, candidate = editor
             var copied: AnimationFrame?
             switch action {
-            case .copy:
+            case .copy, .cut:
                 guard var frame = currentFrame.projectedRasterFrame(on: selected.capture.layerID) else { throw StudioImageRegionService.Failure.invalid }
                 frame.elements = []; frame.holdTicks = nil; frame.rasterStackPosition = nil
                 var fragment = try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation)
                 fragment.stackPosition = nil
                 try frame.updateRasterInstance(fragment); copied = frame
-            case .delete, .move:
+            case .delete, .move, .lift: break
+            }
+            switch action {
+            case .copy: break
+            case .cut, .delete, .move, .lift:
                 let operation: StudioDocumentEditor.ImageRegionAction
-                if case .move = action { operation = .move(dx: dx, dy: dy) } else { operation = .delete }
+                if case .move = action { operation = .move(dx: dx, dy: dy) }
+                else if case .lift = action { operation = .lift }
+                else { operation = .delete }
                 try candidate.editImageRegion(frameID: selected.capture.frameID, layerID: selected.capture.layerID,
                     sourceID: selected.capture.sourceID, expected: selected.capture.instance,
                     fragment: try StudioImageRegionService.fragmentInstance(selected.result, original: selected.capture.instance, checkCancellation: checkCancellation),
@@ -3583,9 +3870,20 @@ final class StudioViewModel: ObservableObject {
             if let copied {
                 imageClipboard = copied; copiedImageLayer = layer; copiedArtworkLayers = []; copiedArtworkSchema = 32
                 imageClipboardEditorVersion = version
-                message = "Copied \(selected.result.selectedPixels) image pixels. Choose Move to paste a separate image."
+                if case .cut = action {
+                    // Publish the preflighted removal and prepared clipboard
+                    // together only after every stale-state/cancellation check.
+                    editor = candidate; clearImageRegion(); scheduleSave()
+                    message = "Cut \(selected.result.selectedPixels) image pixels. Choose Move to paste a separate image, or Undo to restore them."
+                } else {
+                    message = "Copied \(selected.result.selectedPixels) image pixels. Choose Move to paste a separate image."
+                }
             } else {
                 editor = candidate; clearImageRegion(); scheduleSave(); message = nil
+                if case .lift = action {
+                    activatePastedArtwork(ids: [], imageAssetID: selected.capture.sourceID, imageLayerID: activeLayerID)
+                    activePanel = .none
+                }
             }
             return true
         } catch { message = error is CancellationError ? "Wand action cancelled. Artwork and clipboard are unchanged." : error.localizedDescription; return false }
@@ -3688,26 +3986,73 @@ final class StudioViewModel: ObservableObject {
     }
     func togglePlayback() { if isPlaying { stopPlayback() } else { startPlayback() } }
     private var playbackTick: Int?
+    private var playbackGeneration = UUID()
+    private struct PlaybackClock {
+        let projectID: UUID
+        let revision: Int
+        let startedAt: TimeInterval
+        let startTick: Int
+        let fps: Int
+        let totalTicks: Int
+    }
+    private var playbackClock: PlaybackClock?
     private func startPlayback() {
         guard allowDocumentEditDuringInput() else { return }
         guard document.totalTimelineTicks > 1 else { return }
-        playbackTick = document.startTick(ofFrame: currentFrameIndex)
+        playbackTimer?.invalidate()
+        let generation = UUID(); playbackGeneration = generation
+        let startTick = document.startTick(ofFrame: currentFrameIndex)
+        playbackClock = PlaybackClock(projectID: document.id, revision: document.revision,
+            startedAt: ProcessInfo.processInfo.systemUptime, startTick: startTick,
+            fps: fps, totalTicks: document.totalTimelineTicks)
+        playbackTick = startTick
+        audioPlayheadTime = Double(startTick)/Double(fps)
         playbackFrameIndex = currentFrameIndex; isPlaying = true
-        playbackTimer = Timer.scheduledTimer(withTimeInterval: 1 / Double(fps), repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 1 / Double(fps), repeats: true) { [weak self] _ in
             Task { @MainActor in
-                guard let self, self.isPlaying else { return }
-                self.advancePlaybackFrame()
+                guard let self, self.isPlaying, self.playbackGeneration == generation else { return }
+                self.updatePlaybackClock()
             }
         }
+        playbackTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+    /// Timer callbacks are display opportunities, not elapsed timeline ticks.
+    /// A delayed callback jumps directly to the correct held frame without
+    /// accumulating drift or allocating work for every missed frame.
+    private func updatePlaybackClock() {
+        guard let clock = playbackClock, isPlaying else { return }
+        guard clock.projectID == document.id, clock.revision == document.revision else { stopPlayback(); return }
+        let elapsed = ProcessInfo.processInfo.systemUptime-clock.startedAt
+        guard elapsed.isFinite, elapsed >= 0, clock.totalTicks > 0, clock.fps > 0 else { stopPlayback(); return }
+        if !playbackLoops, elapsed >= Double(clock.totalTicks-clock.startTick)/Double(clock.fps) {
+            stopPlayback()
+            audioPlayheadTime = document.durationSeconds
+            return
+        }
+        let duration = Double(clock.totalTicks)/Double(clock.fps)
+        let loopTime = elapsed.truncatingRemainder(dividingBy: duration)
+        let elapsedTicks = min(clock.totalTicks-1, Int((loopTime*Double(clock.fps)).rounded(.down)))
+        let tick = (clock.startTick+elapsedTicks) % clock.totalTicks
+        playbackTick = tick
+        playbackFrameIndex = document.frameIndex(atTick: tick)
+        audioPlayheadTime = Double(tick)/Double(clock.fps)
     }
     func advancePlaybackFrame() {
         guard isPlaying else { return }
-        let tick = ((playbackTick ?? document.startTick(ofFrame: currentFrameIndex)) + 1) % document.totalTimelineTicks
+        let nextTick = (playbackTick ?? document.startTick(ofFrame: currentFrameIndex)) + 1
+        if !playbackLoops, nextTick >= document.totalTimelineTicks {
+            stopPlayback(); audioPlayheadTime = document.durationSeconds; return
+        }
+        let tick = nextTick % document.totalTimelineTicks
         playbackTick = tick
         playbackFrameIndex = document.frameIndex(atTick: tick)
         audioPlayheadTime = Double(tick) / Double(fps)
     }
-    func stopPlayback() { isPlaying = false; playbackTimer?.invalidate(); playbackTimer = nil; playbackFrameIndex = nil; playbackTick = nil }
+    func stopPlayback() {
+        isPlaying = false; playbackTimer?.invalidate(); playbackTimer = nil
+        playbackFrameIndex = nil; playbackTick = nil; playbackClock = nil; playbackGeneration = UUID()
+    }
 }
 
 enum StudioPanelType: String {
@@ -3807,6 +4152,159 @@ struct StudioSelectionRegion {
         for i in points.indices where segmentIntersects(points[i], points[(i + 1) % points.count], inner) { return false }
         return true
     }
+    /// Test sparse bucket coverage and placed rectangular objects in their own
+    /// coordinates. A rotated object must not require empty world-bounds corners
+    /// to be inside the lasso; separated fill spans remain one editable object.
+    func enclosesArtwork(_ element: DrawnElement, workRemaining: inout Int,
+                         checkCancellation: () throws -> Void) throws -> Bool {
+        if element.fillMask != nil || [.rectangle, .circle, .text].contains(element.tool) {
+            let inverse = try element.erasurePlacement().invertedForErasure()
+            let local = try StudioSelectionRegion(points: points.map { inverse.point($0) },
+                                                  kind: .polygon, smoothing: 0)
+            func debit(_ count: Int) throws {
+                let cost = count.multipliedReportingOverflow(by: points.count)
+                guard !cost.overflow, cost.partialValue <= workRemaining else {
+                    throw StudioDocumentError.unavailable("The selection is too complex. Use Rectangle or select fewer objects.")
+                }
+                workRemaining -= cost.partialValue
+            }
+            if let mask = element.fillMask {
+                guard !mask.spans.isEmpty else { return false }
+                try debit(mask.spans.count)
+                for span in mask.spans {
+                    try checkCancellation()
+                    let coverage = CGRect(x: span.start, y: span.row,
+                                          width: span.end-span.start, height: 1)
+                    guard local.contains(coverage) else { return false }
+                }
+                return true
+            }
+            try debit(1)
+            try checkCancellation()
+            var unplaced = element
+            unplaced.transform = nil; unplaced.translation = nil; unplaced.reflection = nil
+            guard let bounds = unplaced.selectionBounds else { return false }
+            if element.tool == .circle { return local.containsEllipse(bounds) }
+            return local.contains(bounds)
+        }
+        return try enclosesStroke(element, workRemaining: &workRemaining,
+                                  checkCancellation: checkCancellation)
+    }
+    /// Analytic ellipse enclosure: after normalization, no lasso edge may enter
+    /// the open unit disk. This avoids both empty-corner rejection and polygonal
+    /// approximations that can miss a narrow cut through a circular object.
+    private func containsEllipse(_ bounds: CGRect) -> Bool {
+        guard bounds.width > 0, bounds.height > 0 else { return false }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        guard path.cgPath.contains(center, using: .evenOdd) else { return false }
+        func normalized(_ p: CGPoint) -> CGPoint {
+            CGPoint(x: (p.x-center.x)/(bounds.width/2),
+                    y: (p.y-center.y)/(bounds.height/2))
+        }
+        for index in points.indices {
+            let a = normalized(points[index]), b = normalized(points[(index+1) % points.count])
+            let dx = b.x-a.x, dy = b.y-a.y, lengthSquared = dx*dx+dy*dy
+            let t = lengthSquared > 0 ? min(1, max(0, -(a.x*dx+a.y*dy)/lengthSquared)) : 0
+            let x = a.x+t*dx, y = a.y+t*dy
+            if x*x+y*y < 1-0.0000001 { return false }
+        }
+        return true
+    }
+    /// Freehand artwork is selected by its placed stroke, not the empty corners
+    /// of its bounding rectangle. Every segment must stay in the lasso, including
+    /// between samples across a concave outline. The selected identity remains a
+    /// whole editable object; this does not crop or flatten its pixels.
+    func enclosesStroke(_ element: DrawnElement, workRemaining: inout Int,
+                        checkCancellation: () throws -> Void) throws -> Bool {
+        guard rectangle == nil, element.fillMask == nil, !element.hasPixelEffect,
+              [.pen, .pencil, .marker, .brush, .crayon, .airbrush, .watercolor,
+               .neon, .calligraphy, .line].contains(element.tool), !element.points.isEmpty else { return false }
+        let placement = try element.erasurePlacement()
+        if element.tool == .line, let shape = element.shape,
+           let first = element.points.first, let last = element.points.last {
+            let heads = shape.arrowTriangles(from: CGPoint(x: first.x, y: first.y),
+                                            to: CGPoint(x: last.x, y: last.y))
+            for head in heads {
+                try checkCancellation()
+                guard workRemaining >= points.count * 3 else {
+                    throw StudioDocumentError.unavailable("The selection is too complex. Use Rectangle or select fewer strokes.")
+                }
+                workRemaining -= points.count * 3
+                guard containsTriangle(head.map { placement.point($0) }) else { return false }
+            }
+        }
+        let cost = element.points.count.multipliedReportingOverflow(by: points.count)
+        guard !cost.overflow, cost.partialValue <= workRemaining else {
+            throw StudioDocumentError.unavailable("The selection is too complex. Use Rectangle or select fewer strokes.")
+        }
+        workRemaining -= cost.partialValue
+        func inside(_ point: CGPoint) -> Bool {
+            path.cgPath.contains(point, using: .evenOdd) || onBoundary(point)
+        }
+        var previous: CGPoint?
+        for sample in element.points {
+            try checkCancellation()
+            let current = placement.point(CGPoint(x: sample.x, y: sample.y))
+            guard inside(current) else { return false }
+            if let a = previous {
+                let dx = current.x-a.x, dy = current.y-a.y
+                var cuts: [CGFloat] = [0, 1]
+                for index in points.indices {
+                    let b = points[index], c = points[(index+1) % points.count]
+                    let ex = c.x-b.x, ey = c.y-b.y
+                    let determinant = dx*ey-dy*ex
+                    if abs(determinant) < 0.0000001 { continue }
+                    let bx = b.x-a.x, by = b.y-a.y
+                    let t = (bx*ey-by*ex)/determinant
+                    let u = (bx*dy-by*dx)/determinant
+                    if t > 0, t < 1, u >= 0, u <= 1 { cuts.append(t) }
+                }
+                cuts.sort()
+                for index in 1..<cuts.count {
+                    try checkCancellation()
+                    guard workRemaining >= points.count else {
+                        throw StudioDocumentError.unavailable("The selection is too complex. Use Rectangle or select fewer strokes.")
+                    }
+                    workRemaining -= points.count
+                    let t = (cuts[index-1]+cuts[index])/2
+                    guard inside(CGPoint(x: a.x+dx*t, y: a.y+dy*t)) else { return false }
+                }
+            }
+            previous = current
+        }
+        return true
+    }
+    /// Clip each lasso edge against the open arrowhead triangle. Testing only
+    /// its vertices would allow a concave outline to cut through a filled head.
+    private func containsTriangle(_ vertices: [CGPoint]) -> Bool {
+        guard vertices.count == 3,
+              vertices.allSatisfy({ path.cgPath.contains($0, using: .evenOdd) || onBoundary($0) }) else { return false }
+        func cross(_ a: CGPoint, _ b: CGPoint, _ p: CGPoint) -> CGFloat {
+            (b.x-a.x)*(p.y-a.y)-(b.y-a.y)*(p.x-a.x)
+        }
+        let area = cross(vertices[0], vertices[1], vertices[2])
+        guard abs(area) > 0.0000001 else { return false }
+        let orientation: CGFloat = area > 0 ? 1 : -1
+        for index in points.indices {
+            let start = points[index], end = points[(index+1) % points.count]
+            var low: CGFloat = 0, high: CGFloat = 1
+            var intersects = true
+            for edge in vertices.indices {
+                let a = vertices[edge], b = vertices[(edge+1) % vertices.count]
+                // A small inset preserves exact boundary inclusion.
+                let inset = hypot(b.x-a.x, b.y-a.y) * 0.0000001
+                let origin = orientation*cross(a, b, start)-inset
+                let delta = orientation*cross(a, b, end)-inset-origin
+                if abs(delta) < 0.0000000001 {
+                    if origin <= 0 { intersects = false; break }
+                } else if delta > 0 { low = max(low, -origin/delta) }
+                else { high = min(high, -origin/delta) }
+                if low >= high { intersects = false; break }
+            }
+            if intersects, low < high { return false }
+        }
+        return true
+    }
     /// Whole rotated-image enclosure, not enclosure of its axis-aligned bounds.
     /// The image polygon is convex. A concave lasso must not enter its open interior.
     func containsImage(placement: StudioRasterPlacement, angle: Double) -> Bool {
@@ -3862,21 +4360,22 @@ struct StudioSelectionRegion {
 /// Editor-only handle geometry. Coordinates enter in the unscaled canvas view;
 /// zoom affects touch radius and decoration size, never document transforms.
 struct StudioSelectionHandleGeometry {
-    enum Kind: String, CaseIterable { case topLeft, topRight, bottomLeft, bottomRight, rotate }
+    enum Kind: String, CaseIterable { case topLeft, topRight, bottomLeft, bottomRight, left, right, top, bottom, rotate }
     struct Handle { let kind: Kind; let point: CGPoint }
-    struct Values: Equatable { var scale: Double = 1; var rotation: Double = 0 }
+    struct Values: Equatable { var scale: Double = 1; var rotation: Double = 0; var heightScale: Double? = nil }
     let bounds: CGRect
     let documentSize: CGSize
     let viewport: CGSize
     let zoom: Double
+    let allowsAxisHandles: Bool
     var hitRadius: Double { 22 / zoom }
     var visualRadius: Double { 6 / zoom }
-    init?(bounds: CGRect, documentSize: CGSize, viewport: CGSize, zoom: Double) {
+    init?(bounds: CGRect, documentSize: CGSize, viewport: CGSize, zoom: Double, allowsAxisHandles: Bool = false) {
         guard !bounds.isNull, bounds.width > 0, bounds.height > 0,
               [bounds.minX,bounds.minY,bounds.maxX,bounds.maxY,documentSize.width,documentSize.height,viewport.width,viewport.height,zoom].allSatisfy(\.isFinite),
               documentSize.width > 0, documentSize.height > 0, zoom >= 0.25, zoom <= 5,
               viewport.width * zoom >= 44, viewport.height * zoom >= 44 else { return nil }
-        self.bounds = bounds; self.documentSize = documentSize; self.viewport = viewport; self.zoom = zoom
+        self.bounds = bounds; self.documentSize = documentSize; self.viewport = viewport; self.zoom = zoom; self.allowsAxisHandles = allowsAxisHandles
     }
     var handles: [Handle] {
         let sx = viewport.width / documentSize.width, sy = viewport.height / documentSize.height
@@ -3888,16 +4387,39 @@ struct StudioSelectionHandleGeometry {
         let left=x(center.x-halfWidth), right=x(center.x+halfWidth)
         let top=y(center.y-halfHeight), bottom=y(center.y+halfHeight)
         let rotationY = top-30/zoom >= margin ? top-30/zoom : min(viewport.height-margin,bottom+30/zoom)
-        return [.init(kind:.topLeft,point:.init(x:left,y:top)), .init(kind:.topRight,point:.init(x:right,y:top)),
+        var result: [Handle] = [.init(kind:.topLeft,point:.init(x:left,y:top)), .init(kind:.topRight,point:.init(x:right,y:top)),
                 .init(kind:.bottomLeft,point:.init(x:left,y:bottom)), .init(kind:.bottomRight,point:.init(x:right,y:bottom)),
                 .init(kind:.rotate,point:.init(x:x(center.x),y:rotationY))]
+        // Keep 44-point hit targets apart. Small selections retain corners;
+        // precise independent sizes also remain available in the Move popup.
+        if allowsAxisHandles {
+            if bottom-top >= 4*hitRadius {
+                result.append(.init(kind: .left, point: .init(x: left, y: (top+bottom)/2)))
+                result.append(.init(kind: .right, point: .init(x: right, y: (top+bottom)/2)))
+            }
+            if right-left >= 4*hitRadius {
+                let candidates: [Handle] = [.init(kind: .top, point: .init(x: (left+right)/2, y: top)),
+                                            .init(kind: .bottom, point: .init(x: (left+right)/2, y: bottom))]
+                for handle in candidates where result.allSatisfy({ hypot($0.point.x-handle.point.x, $0.point.y-handle.point.y) >= 2*hitRadius }) {
+                    result.append(handle)
+                }
+            }
+        }
+        return result
+    }
+    /// Shared by the transform outline and drag admission, in viewport coordinates.
+    var box: CGRect {
+        let corners = handles.filter { $0.kind != .rotate }.map(\.point)
+        guard let left = corners.map(\.x).min(), let right = corners.map(\.x).max(),
+              let top = corners.map(\.y).min(), let bottom = corners.map(\.y).max() else { return .null }
+        return CGRect(x: left, y: top, width: right-left, height: bottom-top)
     }
     func hit(_ point: CGPoint) -> Kind? {
         guard point.x.isFinite, point.y.isFinite else { return nil }
         return handles.filter { hypot($0.point.x-point.x,$0.point.y-point.y) <= hitRadius }
             .min { hypot($0.point.x-point.x,$0.point.y-point.y) < hypot($1.point.x-point.x,$1.point.y-point.y) }?.kind
     }
-    func values(kind: Kind, start: CGPoint, current: CGPoint) throws -> Values {
+    func values(kind: Kind, start: CGPoint, current: CGPoint, preservesAspect: Bool = true) throws -> Values {
         guard [start.x,start.y,current.x,current.y].allSatisfy(\.isFinite) else { throw StudioElementTransform.Failure.settings }
         let sx = documentSize.width / viewport.width, sy = documentSize.height / viewport.height
         let a = CGPoint(x:start.x*sx-bounds.midX,y:start.y*sy-bounds.midY)
@@ -3909,6 +4431,20 @@ struct StudioSelectionHandleGeometry {
             var degrees = (atan2(b.y,b.x)-atan2(a.y,a.x))*180 / .pi
             if degrees > 180 { degrees -= 360 }; if degrees < -180 { degrees += 360 }
             return Values(rotation: degrees)
+        }
+        if [.left, .right, .top, .bottom].contains(kind) {
+            guard allowsAxisHandles, !preservesAspect else { throw StudioElementTransform.Failure.settings }
+            if kind == .left || kind == .right {
+                guard abs(a.x) > 0.000001 else { throw StudioElementTransform.Failure.settings }
+                return Values(scale: min(4, max(0.25, b.x/a.x)), heightScale: 1)
+            }
+            guard abs(a.y) > 0.000001 else { throw StudioElementTransform.Failure.settings }
+            return Values(scale: 1, heightScale: min(4, max(0.25, b.y/a.y)))
+        }
+        if !preservesAspect {
+            guard abs(a.x) > 0.000001, abs(a.y) > 0.000001 else { throw StudioElementTransform.Failure.settings }
+            return Values(scale: min(4, max(0.25, b.x/a.x)),
+                          heightScale: min(4, max(0.25, b.y/a.y)))
         }
         return Values(scale: min(4,max(0.25,(a.x*b.x+a.y*b.y)/length)))
     }
@@ -3964,8 +4500,16 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var pencilTiltEnabled: Bool? = nil
         var lineArrowEnds: StudioArrowEnds? = nil
         var lineArrowLength: Double? = nil
+        var selectionPreservesAspect: Bool? = nil
+        var selectionNudgeDistance: Double? = nil
+        var wandTolerance: Double? = nil
+        var wandContiguous: Bool? = nil
+        var wandSampleVisibleCanvas: Bool? = nil
+        var wandMode: StudioImageRegionService.Mode? = nil
 
         var isValid: Bool {
+            (wandTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
+            (selectionNudgeDistance.map { [1.0, 10, 100].contains($0) } ?? true) &&
             (areaSelectionSmoothing.map { $0.isFinite && (0...10).contains($0) } ?? true) &&
             (fillTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
             (fillExpand.map { $0.isFinite && (-5...5).contains($0) } ?? true) &&

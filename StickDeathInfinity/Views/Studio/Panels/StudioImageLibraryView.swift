@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The existing Add Picture surface presents this local catalogue. Selection
 /// returns to its real preview/import session; browsing never edits a project.
@@ -17,8 +18,10 @@ struct StudioImageLibraryView: View {
     @State private var packRequest = UUID()
     @Environment(\.scenePhase) private var scenePhase
     private var sources: [StudioImageCatalogue] { [catalogue].compactMap { $0 } + packs.compactMap { optionalCatalogues[$0.id] } }
-    private func source(for image: StudioImageCatalogue.Image) -> StudioImageCatalogue? {
-        sources.first { $0.availableImages.contains(image) }
+    private struct BrowseImage: Identifiable {
+        let image: StudioImageCatalogue.Image
+        let catalogue: StudioImageCatalogue
+        var id: String { image.id }
     }
     @State private var query = ""
     @State private var favorites = Set<String>()
@@ -34,8 +37,13 @@ struct StudioImageLibraryView: View {
     @State private var loadID = UUID()
     @FocusState private var searchFocused: Bool
 
-    private var matches: [StudioImageCatalogue.Image] {
-        let found = sources.flatMap { $0.search(query, category: category, includeCartoonWeapons: includeCartoonWeapons) }
+    private var matches: [BrowseImage] {
+        // Carry verified catalogue provenance with each result. Thumbnail cells
+        // no longer refilter every pack merely to rediscover their source.
+        let found = sources.flatMap { source in
+            source.search(query, category: category, includeCartoonWeapons: includeCartoonWeapons)
+                .map { BrowseImage(image: $0, catalogue: source) }
+        }
         if collection == "Favorites" { return found.filter { favorites.contains($0.id) } }
         if collection == "Recent" {
             let byID = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
@@ -45,9 +53,12 @@ struct StudioImageLibraryView: View {
     }
 
     var body: some View {
-        VStack(spacing: 12) {
+        let results = matches
+        return VStack(spacing: 12) {
             PanelHeader(title: "Image Library", icon: "square.grid.2x2.fill", onClose: onClose)
             if let catalogue {
+                ScrollView(.vertical) {
+                    VStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 12) {
                     Text("\(sources.reduce(0) { $0 + $1.availableImages.count }) free pictures · available offline")
                         .font(.specialElite(16)).foregroundColor(.white)
@@ -55,11 +66,9 @@ struct StudioImageLibraryView: View {
                     if let first = packs.first {
                         packRow(first)
                         DisclosureGroup("More optional picture packs") {
-                            ScrollView {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
-                                }.padding(.vertical, 8)
-                            }.frame(maxHeight: 170)
+                            VStack(alignment: .leading, spacing: 12) {
+                                ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
+                            }.padding(.vertical, 8)
                             .accessibilityIdentifier("studio.image-library.pack-list")
                         }.font(.caption).foregroundColor(.white.opacity(0.8))
                         if packBusy { ProgressView("Downloading and verifying pictures…").tint(.red) }
@@ -93,7 +102,7 @@ struct StudioImageLibraryView: View {
                         .font(.caption).tint(.red).foregroundColor(.white.opacity(0.8))
                         .accessibilityIdentifier("studio.image-library.weapons")
                     HStack {
-                        Text("\(matches.count) matching pictures").font(.caption)
+                        Text("\(results.count) matching pictures").font(.caption)
                             .accessibilityIdentifier("studio.image-library.matches")
                         Spacer()
                         Button("Clear filters") {
@@ -104,25 +113,22 @@ struct StudioImageLibraryView: View {
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                 }
                 .padding(.horizontal, 20)
-                if matches.isEmpty {
+                if results.isEmpty {
                     Text("No matching pictures").foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.image-library.empty")
-                    Spacer()
                 } else {
-                    ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 130), spacing: 12)], spacing: 12) {
-                            ForEach(matches) { item in
+                            ForEach(results) { entry in
+                                let item = entry.image
                                 VStack(spacing: 4) {
                                 Button {
                                     let store = preferences(catalogue); store.recordPreview(item.id); recent = store.recent
-                                    if let selectedSource = source(for: item) { onSelect(selectedSource, item) }
+                                    onSelect(entry.catalogue, item)
                                 } label: {
                                     VStack(alignment: .leading, spacing: 8) {
-                                        if let selectedSource = source(for: item) {
-                                            StudioLibraryThumbnail(item: item, catalogue: selectedSource)
-                                                .frame(height: 106).frame(maxWidth: .infinity)
-                                                .background(Color.white.opacity(0.9)).cornerRadius(8)
-                                        }
+                                        StudioLibraryThumbnail(item: item, catalogue: entry.catalogue)
+                                            .frame(height: 106).frame(maxWidth: .infinity)
+                                            .background(Color.white.opacity(0.9)).cornerRadius(8)
                                         Text(item.title).font(.specialElite(14)).lineLimit(2)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                         Text("Kenney · CC0").font(.caption2).foregroundColor(.white.opacity(0.65))
@@ -140,15 +146,18 @@ struct StudioImageLibraryView: View {
                                 } label: {
                                     Label(favorites.contains(item.id) ? "Favorited" : "Favorite",
                                           systemImage: favorites.contains(item.id) ? "star.fill" : "star")
-                                        .font(.caption).foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 32)
+                                        .font(.caption).foregroundColor(.red).frame(maxWidth: .infinity, minHeight: 44)
                                 }.accessibilityIdentifier("studio.image-library.favorite." + item.id)
                                 }
                             }
                         }
                         .padding(20)
-                    }
-                    .accessibilityIdentifier("studio.image-library.grid")
+                        .accessibilityIdentifier("studio.image-library.grid")
                 }
+                    }.frame(maxWidth: .infinity, alignment: .top)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("studio.image-library.scroll")
             } else if let failure {
                 Text(failure).foregroundColor(.white).padding()
                     .accessibilityIdentifier("studio.image-library.error")
@@ -188,7 +197,13 @@ struct StudioImageLibraryView: View {
             catch { failure = error.localizedDescription }
         }
         .onChange(of: query) { if query.count > 256 { query = String(query.prefix(256)) } }
-        .onDisappear { cancelPack() }
+        .onDisappear {
+            cancelPack()
+            Task { await StudioImageLibraryThumbnails.shared.clear() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+            Task { await StudioImageLibraryThumbnails.shared.clear() }
+        }
         .onChange(of: scenePhase) {
             if scenePhase != .active { cancelPack() }
             else { loadID = UUID() }
@@ -254,6 +269,11 @@ private struct StudioLibraryThumbnail: View {
             } else if failed {
                 Text("Preview unavailable").font(.caption).foregroundColor(.black)
             } else { ProgressView().tint(.red) }
+        }
+        .onDisappear {
+            // Lazy cells may stay allocated after scrolling off-screen. Drop
+            // their decoded image; reappearance reloads through the bounded cache.
+            image = nil; failed = false
         }
         .task(id: item.id) {
             do {

@@ -36,5 +36,11 @@ actor StudioImageLibraryThumbnails {
         cached[key] = image; order.append(key)
         return image
     }
+    /// Derived previews only. Source packs and project-managed images are never
+    /// deleted to relieve transient UI memory pressure.
+    func clear() {
+        cached.removeAll(keepingCapacity: false)
+        order.removeAll(keepingCapacity: false)
+    }
     var cachedImageCount: Int { cached.count }
 }

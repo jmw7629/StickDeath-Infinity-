@@ -247,6 +247,8 @@ struct LayerDetailView: View {
     @ObservedObject var vm: StudioViewModel
     let layer: CanvasLayer
     @State private var draftOpacity: Double?
+    @State private var sliderCapture: StudioViewModel.LayerSliderCapture?
+    @Environment(\.scenePhase) private var sliderScenePhase
     @State private var draftGlowRadius: Double?
     @State private var draftGlowStrength: Double?
     @State private var pendingDeletion: StudioViewModel.LayerDeleteCapture?
@@ -261,7 +263,7 @@ struct LayerDetailView: View {
                 pendingRename = capture
             } label: {
                 Label("Rename layer", systemImage: "pencil")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.specialElite(12))
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .accessibilityIdentifier("studio.layer.rename." + layer.id)
@@ -273,10 +275,16 @@ struct LayerDetailView: View {
                     .foregroundColor(.white.opacity(0.4))
                 
                 Slider(value: Binding(get: { draftOpacity ?? layer.opacity }, set: { draftOpacity = $0 }), in: 0...1) { editing in
-                    if !editing, let value = draftOpacity { vm.setLayerOpacity(layer.id, opacity: value); draftOpacity = nil }
+                    if editing { sliderCapture = vm.prepareLayerSlider(layer.id) }
+                    else {
+                        if sliderScenePhase == .active, let capture = sliderCapture, let value = draftOpacity {
+                            _ = vm.applyLayerSlider(capture, opacity: value)
+                        }
+                        clearSliderDrafts()
+                    }
                 }.tint(.red)
                 
-                Text("\(Int(layer.opacity * 100))%")
+                Text("\(Int((draftOpacity ?? layer.opacity) * 100))%")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.white.opacity(0.6))
             }
@@ -320,7 +328,7 @@ struct LayerDetailView: View {
                         Text(layer.blendMode.capitalized)
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down")
-                    }.font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
+                    }.font(.specialElite(12)).foregroundColor(.white)
                         .padding(12).background(Color.white.opacity(0.05)).cornerRadius(8)
                 }.accessibilityIdentifier("studio.layer.blend." + layer.id)
             }
@@ -342,7 +350,7 @@ struct LayerDetailView: View {
             
             if layer.glowEnabled {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Glow color").font(.caption)
+                    Text("Glow color").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     HStack(spacing: 8) {
                         ForEach(["#FF0000", "#FF8800", "#FFFF00", "#00FF00", "#0088FF", "#AA44FF", "#FFFFFF"], id: \.self) { hex in
                             Button {
@@ -356,13 +364,25 @@ struct LayerDetailView: View {
                     }
                     Text("Strength \(Int((draftGlowStrength ?? layer.effectiveGlowStrength) * 100))%")
                     Slider(value: Binding(get: { draftGlowStrength ?? layer.effectiveGlowStrength }, set: { draftGlowStrength = $0 }), in: 0...1) { editing in
-                        if !editing, let value = draftGlowStrength { vm.setLayerGlowStyle(layer.id, strength: value); draftGlowStrength = nil }
+                        if editing { sliderCapture = vm.prepareLayerSlider(layer.id) }
+                        else {
+                            if sliderScenePhase == .active, let capture = sliderCapture, let value = draftGlowStrength {
+                                _ = vm.applyLayerSlider(capture, glowStrength: value)
+                            }
+                            clearSliderDrafts()
+                        }
                     }.accessibilityLabel("Glow strength").accessibilityIdentifier("studio.layer.glow-strength." + layer.id)
                     Text("Radius \(Int(draftGlowRadius ?? layer.effectiveGlowRadius)) canvas points")
                     Slider(value: Binding(get: { draftGlowRadius ?? layer.effectiveGlowRadius }, set: { draftGlowRadius = $0 }), in: 0...128, step: 1) { editing in
-                        if !editing, let value = draftGlowRadius { vm.setLayerGlowStyle(layer.id, radius: value); draftGlowRadius = nil }
+                        if editing { sliderCapture = vm.prepareLayerSlider(layer.id) }
+                        else {
+                            if sliderScenePhase == .active, let capture = sliderCapture, let value = draftGlowRadius {
+                                _ = vm.applyLayerSlider(capture, glowRadius: value)
+                            }
+                            clearSliderDrafts()
+                        }
                     }.accessibilityLabel("Glow radius").accessibilityIdentifier("studio.layer.glow-radius." + layer.id)
-                }.font(.caption).foregroundColor(.white.opacity(0.8)).tint(.red)
+                }.font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8)).tint(.red)
             }
 
             // Layer label color (independent of rendered glow).
@@ -419,7 +439,7 @@ struct LayerDetailView: View {
             }
             Button(role: .destructive) { pendingDeletion = vm.prepareLayerDeletion(layer.id) } label: {
                 Label("Delete selected layer", systemImage: "trash")
-                    .font(.system(size: 12, design: .monospaced))
+                    .font(.specialElite(12))
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .accessibilityIdentifier("studio.layer.delete." + layer.id)
@@ -428,6 +448,10 @@ struct LayerDetailView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .background(Color(hex: "14141E"))
+        .onChange(of: vm.document.id) { _, _ in clearSliderDrafts() }
+        .onChange(of: vm.document.revision) { _, _ in clearSliderDrafts() }
+        .onChange(of: sliderScenePhase) { _, phase in if phase != .active { clearSliderDrafts() } }
+        .onDisappear { clearSliderDrafts() }
         .alert("Rename layer", isPresented: Binding(
             get: { pendingRename != nil }, set: { if !$0 { pendingRename = nil } }),
             presenting: pendingRename) { capture in
@@ -449,6 +473,10 @@ struct LayerDetailView: View {
                 Text("Delete \"\(capture.name)\" and its content in \(capture.frameCount) frame(s)? You can undo this edit.")
             }
     }
+    private func clearSliderDrafts() {
+        sliderCapture = nil; draftOpacity = nil; draftGlowRadius = nil; draftGlowStrength = nil
+    }
+
 }
 
 // MARK: - Lock Mode Button

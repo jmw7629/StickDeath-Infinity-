@@ -1106,6 +1106,8 @@ struct StudioAudioClipSettings: Codable, Equatable {
 enum StudioAudioClipEdit: Equatable {
     case place(start: Double, track: Int)
     case trim(sourceOffset: Double, duration: Double)
+    /// Leading timeline edge: preserve the clip end and source alignment.
+    case trimLeading(start: Double)
     case volume(Double)
     case mute(Bool)
 }
@@ -1117,6 +1119,27 @@ enum StudioAudioTimelineGeometry {
     static func snapped(_ time: Double, fps: Int, enabled: Bool) -> Double? {
         guard time.isFinite, (1...60).contains(fps), time >= 0, time <= 1000 else { return nil }
         return enabled ? (time * Double(fps)).rounded() / Double(fps) : time
+    }
+    /// Magnetic targets win near a visible edge; otherwise retain frame snapping.
+    /// For a moving clip, either end can meet a target without changing duration.
+    static func magneticTime(_ time: Double, duration: Double = 0, targets: [Double],
+                             pointsPerSecond: Double, fps: Int, enabled: Bool) -> Double? {
+        guard let frameTime = snapped(time, fps: fps, enabled: enabled),
+              pointsPerSecond.isFinite, pointsPerSecond > 0,
+              duration.isFinite, duration >= 0, duration <= 300 else { return nil }
+        guard enabled else { return frameTime }
+        let tolerance = min(0.25, 8 / pointsPerSecond)
+        var closest: Double?, distance = Double.infinity
+        for target in targets where target.isFinite && (0...1000).contains(target) {
+            for start in duration > 0 ? [target, target - duration] : [target] {
+                guard (0...1000).contains(start) else { continue }
+                let delta = abs(start - time)
+                if delta <= tolerance && delta < distance {
+                    closest = start; distance = delta
+                }
+            }
+        }
+        return closest ?? frameTime
     }
     static func time(at x: Double, pointsPerSecond: Double, fps: Int, snap: Bool) -> Double? {
         guard x.isFinite, pointsPerSecond.isFinite, pointsPerSecond > 0 else { return nil }

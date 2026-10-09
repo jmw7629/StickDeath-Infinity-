@@ -4,7 +4,13 @@ import ImageIO
 
 /// Image-source pixels only. No frame flattening or document mutation.
 enum StudioImageRegionService {
-    enum Mode: String, CaseIterable, Sendable { case newSelection = "New", add = "Add", subtract = "Subtract" }
+    enum Mode: String, Codable, CaseIterable, Sendable { case newSelection = "New", add = "Add", subtract = "Subtract" }
+    enum MembershipOperation: Sendable { case all, invert, grow, shrink }
+    struct CanvasSample: Sendable {
+        let width: Int, height: Int
+        /// Straight RGBA from the canonical frame renderer, without editor overlays.
+        let rgba: Data
+    }
     struct Result: Sendable {
         let width: Int, height: Int, selectedPixels: Int
         let membership: Data
@@ -47,8 +53,35 @@ enum StudioImageRegionService {
         try crop.validate()
         return CGPoint(x: (crop.x + u * crop.width) * Double(width), y: (crop.y + v * crop.height) * Double(height))
     }
+    /// Inverse of sourcePoint, including crop, quarter turns, reflection and
+    /// arbitrary rotation. Reused for every sample via one affine transform.
+    private static func sourceToCanvas(instance: StudioRasterLayerInstance, width: Int, height: Int) throws -> CGAffineTransform {
+        let sampled = instance.regionMask?.sampledInstance(instance) ?? instance
+        guard let placement = sampled.placement else { throw Failure.invalid }
+        let crop = sampled.crop ?? .full
+        try crop.validate()
+        let turns = sampled.quarterTurns ?? 0
+        let quarter = Double(turns) * .pi / 2
+        let angle = (sampled.rotationDegrees ?? 0) * .pi / 180
+        let w = turns % 2 == 0 ? placement.width : placement.height
+        let h = turns % 2 == 0 ? placement.height : placement.width
+        func map(_ sx: Double, _ sy: Double) -> CGPoint {
+            let x = ((sx / Double(width) - crop.x) / crop.width - 0.5) * w
+            let y = ((sy / Double(height) - crop.y) / crop.height - 0.5) * h
+            var qx = x * cos(quarter) - y * sin(quarter)
+            var qy = x * sin(quarter) + y * cos(quarter)
+            if sampled.reflection?.horizontal == true { qx = -qx }
+            if sampled.reflection?.vertical == true { qy = -qy }
+            return CGPoint(x: qx * cos(angle) - qy * sin(angle) + placement.x + placement.width / 2,
+                           y: qx * sin(angle) + qy * cos(angle) + placement.y + placement.height / 2)
+        }
+        let origin = map(0, 0), x = map(1, 0), y = map(0, 1)
+        return CGAffineTransform(a: x.x-origin.x, b: x.y-origin.y,
+            c: y.x-origin.x, d: y.y-origin.y, tx: origin.x, ty: origin.y)
+    }
     static func select(png: Data, instance: StudioRasterLayerInstance, point: CGPoint,
                        tolerance: Int, contiguous: Bool, mode: Mode, previous: Data?,
+                       membershipOperation: MembershipOperation? = nil, canvasSample: CanvasSample? = nil,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Result? {
         try checkCancellation()
         guard png.count <= 16 * 1024 * 1024,
@@ -71,13 +104,18 @@ enum StudioImageRegionService {
             context.setBlendMode(.copy); context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height)); return true
         }
         guard decoded else { throw Failure.invalid }
-        let seed = try sourcePoint(point, instance: instance, width: width, height: height)
-        let sx = Int(floor(seed.x)), sy = Int(floor(seed.y))
-        guard sx >= 0, sy >= 0, sx < width, sy < height else { throw Failure.outside }
-        guard instance.regionMask?.contains(x: sx, y: sy) ?? true else { throw Failure.outside }
-        guard original[(sy * width + sx) * 4 + 3] > 0 else { throw Failure.transparent }
+        var seed: CGPoint?
+        if membershipOperation == nil {
+            let value = try sourcePoint(point, instance: instance, width: width, height: height)
+            let sx = Int(floor(value.x)), sy = Int(floor(value.y))
+            guard sx >= 0, sy >= 0, sx < width, sy < height else { throw Failure.outside }
+            guard instance.regionMask?.contains(x: sx, y: sy) ?? true else { throw Failure.outside }
+            guard original[(sy * width + sx) * 4 + 3] > 0 else { throw Failure.transparent }
+            seed = value
+        }
         var straight = original, coverage = [UInt8](repeating: 0, count: count)
         let crop = (instance.regionMask != nil ? instance.regionMask!.sourceClip : instance.crop) ?? .full
+        try crop.validate()
         for y in 0..<height {
             try checkCancellation()
             for x in 0..<width {
@@ -89,17 +127,69 @@ enum StudioImageRegionService {
                 } else { straight[i] = 0; straight[i + 1] = 0; straight[i + 2] = 0 }
             }
         }
-        let mask = try StudioFillRegion.compute(rgba: Data(straight), width: width, height: height, x: sx, y: sy,
-            settings: .init(tolerance: tolerance, contiguous: contiguous, expand: 0, gapClose: 0, antiAlias: false),
-            selectionCoverage: Data(coverage), checkCancellation: checkCancellation)
+        if let sample = canvasSample, membershipOperation == nil {
+            guard sample.width > 0, sample.height > 0, sample.width <= 4096, sample.height <= 4096,
+                  sample.width <= StudioFillRegion.maximumPixels / sample.height,
+                  sample.rgba.count == sample.width * sample.height * 4 else { throw Failure.invalid }
+            let colors = [UInt8](sample.rgba)
+            let transform = try sourceToCanvas(instance: instance, width: width, height: height)
+            for y in 0..<height {
+                try checkCancellation()
+                for x in 0..<width where coverage[y * width + x] > 0 {
+                    let mapped = CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5).applying(transform)
+                    let pixel = y * width + x
+                    guard mapped.x.isFinite, mapped.y.isFinite, mapped.x >= 0, mapped.y >= 0,
+                          mapped.x < CGFloat(sample.width), mapped.y < CGFloat(sample.height) else {
+                        coverage[pixel] = 0; continue
+                    }
+                    let source = (Int(floor(mapped.y)) * sample.width + Int(floor(mapped.x))) * 4
+                    for channel in 0..<4 { straight[pixel * 4 + channel] = colors[source + channel] }
+                }
+            }
+        }
         var selected = [UInt8](repeating: 0, count: count)
-        if mode != .newSelection, let previous {
-            guard previous.count == count else { throw Failure.invalid }
+        if mode != .newSelection || (membershipOperation != nil && membershipOperation != .all), let previous {
+            guard previous.count == count, previous.allSatisfy({ $0 <= 1 }) else { throw Failure.invalid }
             selected = [UInt8](previous)
         }
-        for span in mask.spans {
-            try checkCancellation()
-            for x in span.start..<span.end { selected[span.row * width + x] = mode == .subtract ? 0 : 1 }
+        if let membershipOperation {
+            if membershipOperation == .grow || membershipOperation == .shrink {
+                guard previous != nil, selected.contains(1) else { throw Failure.empty }
+            }
+            // Read only the original membership throughout the pass. In-place
+            // neighborhood writes would make the result depend on scan order.
+            let before = selected
+            for y in 0..<height {
+                try checkCancellation()
+                for x in 0..<width {
+                    let index = y * width + x
+                    guard coverage[index] > 0 else { selected[index] = 0; continue }
+                    switch membershipOperation {
+                    case .all: selected[index] = 1
+                    case .invert: selected[index] = before[index] == 0 ? 1 : 0
+                    case .grow, .shrink:
+                        var any = false, all = true
+                        for dy in -1...1 {
+                            for dx in -1...1 {
+                                let nx = x+dx, ny = y+dy
+                                let included = nx >= 0 && ny >= 0 && nx < width && ny < height &&
+                                    coverage[ny*width+nx] > 0 && before[ny*width+nx] == 1
+                                any = any || included; all = all && included
+                            }
+                        }
+                        selected[index] = (membershipOperation == .grow ? any : all) ? 1 : 0
+                    }
+                }
+            }
+        } else if let seed {
+            let mask = try StudioFillRegion.compute(rgba: Data(straight), width: width, height: height,
+                x: Int(floor(seed.x)), y: Int(floor(seed.y)),
+                settings: .init(tolerance: tolerance, contiguous: contiguous, expand: 0, gapClose: 0, antiAlias: false),
+                selectionCoverage: Data(coverage), checkCancellation: checkCancellation)
+            for span in mask.spans {
+                try checkCancellation()
+                for x in span.start..<span.end { selected[span.row * width + x] = mode == .subtract ? 0 : 1 }
+            }
         }
         var fragment = original, remainder = original, selectedCount = 0, spans = 0
         for y in 0..<height {

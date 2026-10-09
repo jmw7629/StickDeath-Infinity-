@@ -5,6 +5,8 @@ import re
 PER_CASE_SECONDS = 180
 MAXIMUM_CASE_SECONDS = 240
 EXTENDED_CASE_SECONDS = {
+    "testImageQuarterTweenPixelsUndoAndColdReopen": 240,
+    "testImageTweenLinearPixelsUndoAndColdReopen": 240,
     "testSharpenPixelsUndoAndColdReopen": 240,
     "testImageDrawingOrderUndoAndColdReopen": 240,
     "testActiveLayerImageMarqueeDeleteUndoAndColdReopen": 240,
@@ -20,7 +22,7 @@ EXTENDED_CASE_SECONDS = {
 }
 # Includes real rendered-MP4 Files save/re-export/cold-readback coverage. Adding a
 # journey changes the total inventory budget, never another case's allowance.
-MAXIMUM_CASES = 104
+MAXIMUM_CASES = 107
 SUITE_OVERHEAD_SECONDS = 300
 
 

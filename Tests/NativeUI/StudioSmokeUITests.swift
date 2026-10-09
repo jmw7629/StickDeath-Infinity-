@@ -48,7 +48,7 @@ final class StudioSmokeUITests: XCTestCase {
         target.tap(); XCTAssertEqual(target.value as? String, "Image")
         app.buttons["studio.tool-settings.close"].tap()
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
-        let guidance = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Fill stays within the explicitly selected image")).firstMatch
+        let guidance = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Fill adds paint on the active image layer")).firstMatch
         XCTAssertTrue(guidance.waitForExistence(timeout: 5), "Explicit image target was lost on Fill handoff")
         XCTAssertTrue(guidance.label.contains("alpha, crop and region mask"))
         try fillPreferenceControl("studio.tool-settings.reset", app: app).tap()
@@ -765,6 +765,238 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    func testImageTweenLinearPixelsUndoAndColdReopen() throws {
+        // Existing drawing tween took161.387s; this also imports/positions a real
+        // licensed image. Match the reviewed240s image-authoring journey cap.
+        executionTimeAllowance = 240
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        @MainActor func frames(_ target: XCUIApplication) -> XCUIElementQuery {
+            target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
+        }
+        @MainActor func cleanCanvas() throws {
+            try selectToolbarTool("pencil", app: app)
+            app.buttons["studio.tool-settings.close"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
+        func ink(_ raster: Raster) throws -> (x: Double, y: Double, count: Int) {
+            var sx = 0.0, sy = 0.0, count = 0
+            for y in 0..<raster.height { for x in 0..<raster.width {
+                let i = (y * raster.width + x) * 4
+                if max(raster.bytes[i], max(raster.bytes[i + 1], raster.bytes[i + 2])) < 160 {
+                    sx += Double(x); sy += Double(y); count += 1
+                }
+            } }
+            XCTAssertGreaterThan(count, 80, "Actual Dragon ink is required; blank preview is not tween evidence")
+            guard count > 80 else { throw NSError(domain: "NativeImageTween", code: 1) }
+            return (sx / Double(count * raster.width), sy / Double(count * raster.height), count)
+        }
+        try importLicensedImageForExport(app, canvas: canvas)
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5) && imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        try selectToolbarTool("move", app: app)
+        try fillPreferenceControl("studio.image-placement.open", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.half", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.apply", app: app).tap()
+        try cleanCanvas()
+        let firstID = frames(app).firstMatch.identifier
+        let first = try pixels(canvas.screenshot().image), startInk = try ink(first)
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertEqual(frames(app).count, 2)
+        let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
+        try selectToolbarTool("move", app: app)
+        let target = try fillPreferenceControl("studio.image-move.target", app: app)
+        if target.value as? String != "Image" { target.tap() }
+        XCTAssertEqual(target.value as? String, "Image")
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertTrue((canvas.value as? String)?.contains("Selected image") == true)
+        canvas.coordinate(withNormalizedOffset: .init(dx: 0.5, dy: 0.5)).press(forDuration: 0.1,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: .init(dx: 0.68, dy: 0.5)))
+        try cleanCanvas()
+        let last = try pixels(canvas.screenshot().image), endInk = try ink(last)
+        XCTAssertGreaterThan(endInk.x - startInk.x, 0.12, "Real endpoint image did not move")
+        XCTAssertEqual(endInk.y, startInk.y, accuracy: 0.01)
+        XCTAssertEqual(Double(endInk.count) / Double(startInk.count), 1, accuracy: 0.05,
+                       "Moving the endpoint cropped or replaced source artwork")
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Tween to next frame…", in: app).tap()
+        let count = app.steppers["studio.tween.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        let decrement = count.buttons["studio.tween.count-Decrement"]
+        XCTAssertTrue(decrement.exists && decrement.isHittable)
+        for _ in 0..<4 { decrement.tap() }
+        XCTAssertTrue(count.label.contains("2 new frames"))
+        app.buttons["studio.tween.easing"].tap(); try waitForButton("Linear", in: app).tap()
+        try waitForButton("Insert in-betweens", in: app).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 4)
+        let middleButton = frames(app).matching(NSPredicate(format: "label == %@", "Frame 2")).firstMatch
+        XCTAssertTrue(middleButton.exists); let middleID = middleButton.identifier
+        middleButton.tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let middle = try pixels(canvas.screenshot().image), middleInk = try ink(middle)
+        XCTAssertEqual((middleInk.x - startInk.x) / (endInk.x - startInk.x), 1.0 / 3.0, accuracy: 0.035,
+                       "Rendered image intermediate is not the actual linear one-third pose")
+        XCTAssertEqual(middleInk.y, startInk.y, accuracy: 0.01)
+        XCTAssertEqual(Double(middleInk.count) / Double(startInk.count), 1, accuracy: 0.05)
+        XCTAssertGreaterThan(try changedPixelCount(first, middle), 80)
+        capture(app, name: "image-tween-linear-intermediate")
+        app.buttons[firstID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(first, pixels(canvas.screenshot().image)), 4)
+        app.buttons[lastID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(last, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 2)
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(last, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 4)
+        app.buttons[middleID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertEqual(frames(reopened).count, 4)
+        XCTAssertEqual(reopened.buttons[middleID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(restored.screenshot().image)), 4,
+                                 "Actual interpolated image pixels did not survive saved cold reopen")
+        capture(reopened, name: "image-tween-linear-cold-reopened")
+    }
+
+    @MainActor
+    func testImageQuarterTweenPixelsUndoAndColdReopen() throws {
+        // Same import/position/tween/history/cold workload as the measured234s
+        // image-translation case, using one midpoint and the existing240s cap.
+        executionTimeAllowance = 240
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let projectName = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        let frame = canvas.frame
+        @MainActor func frames(_ target: XCUIApplication) -> XCUIElementQuery {
+            target.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "studio.frame."))
+        }
+        @MainActor func cleanCanvas() throws {
+            try selectToolbarTool("pencil", app: app)
+            app.buttons["studio.tool-settings.close"].tap()
+            try settlePickerCanvasAfterSave(app, canvas: canvas)
+        }
+        try importLicensedImageForExport(app, canvas: canvas)
+        app.buttons["studio.layers.open"].tap()
+        let imageLayer = app.staticTexts["Image: Dungeon Dragon"].firstMatch
+        XCTAssertTrue(imageLayer.waitForExistence(timeout: 5) && imageLayer.isHittable); imageLayer.tap()
+        app.buttons["studio.layers.close"].tap()
+        try selectToolbarTool("move", app: app)
+        try fillPreferenceControl("studio.image-placement.open", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.half", app: app).tap()
+        try fillPreferenceControl("studio.image-placement.apply", app: app).tap()
+        try cleanCanvas()
+        let firstID = frames(app).firstMatch.identifier
+        let first = try pixels(canvas.screenshot().image)
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Duplicate frame", in: app).tap()
+        XCTAssertEqual(frames(app).count, 2)
+        let lastID = try XCTUnwrap(frames(app).allElementsBoundByIndex.first { $0.identifier != firstID }).identifier
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
+        try selectToolbarTool("move", app: app)
+        let turn = try fillPreferenceControl("studio.image-rotate.clockwise", app: app)
+        turn.tap()
+        XCTAssertTrue(expectation(for: NSPredicate(format: "value == %@", "90 degrees clockwise"), evaluatedWith: turn).waitUntilFulfilled(timeout: 5))
+        try cleanCanvas()
+        let last = try pixels(canvas.screenshot().image)
+        try assertQuarterTweenRotation(first, last, degrees: 90)
+        app.buttons[firstID].press(forDuration: 0.7)
+        try waitForButton("Tween to next frame…", in: app).tap()
+        let count = app.steppers["studio.tween.count"]
+        XCTAssertTrue(count.waitForExistence(timeout: 5))
+        let decrement = count.buttons["studio.tween.count-Decrement"]
+        XCTAssertTrue(decrement.exists && decrement.isHittable)
+        for _ in 0..<5 { decrement.tap() }
+        XCTAssertTrue(count.label.contains("1 new frame"))
+        app.buttons["studio.tween.easing"].tap(); try waitForButton("Linear", in: app).tap()
+        try waitForButton("Insert in-betweens", in: app).tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 3)
+        let middleButton = frames(app).matching(NSPredicate(format: "label == %@", "Frame 2")).firstMatch
+        XCTAssertTrue(middleButton.exists); let middleID = middleButton.identifier
+        middleButton.tap(); try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertTrue(app.frame.contains(canvas.frame), "The settled canvas escaped the app bounds")
+        let middle = try pixels(canvas.screenshot().image)
+        try assertQuarterTweenRotation(first, middle, degrees: 45)
+        XCTAssertGreaterThan(try changedPixelCount(first, middle), 80)
+        XCTAssertGreaterThan(try changedPixelCount(last, middle), 80)
+        capture(app, name: "image-quarter-tween-intermediate")
+        app.buttons[firstID].tap(); try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertTrue(app.frame.contains(canvas.frame), "The settled canvas escaped the app bounds")
+        XCTAssertLessThanOrEqual(try changedPixelCount(first, pixels(canvas.screenshot().image)), 4)
+        app.buttons[lastID].tap(); try waitForStableCanvas(canvas, expected: frame)
+        XCTAssertTrue(app.frame.contains(canvas.frame), "The settled canvas escaped the app bounds")
+        XCTAssertLessThanOrEqual(try changedPixelCount(last, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.undo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 2)
+        XCTAssertEqual(app.buttons[lastID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(last, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.redo"].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertEqual(frames(app).count, 3)
+        app.buttons[middleID].tap(); try settlePickerCanvasAfterSave(app, canvas: canvas)
+        XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(canvas.screenshot().image)), 4)
+        app.buttons["studio.back"].tap(); app.terminate()
+        let reopened = try launchGuestStudio(); defer { reopened.terminate() }
+        let project = reopened.buttons.matching(NSPredicate(format: "label == %@", projectName)).firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 8)); project.tap()
+        let restored = reopened.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(restored, expected: frame)
+        XCTAssertEqual(frames(reopened).count, 3)
+        XCTAssertEqual(reopened.buttons[middleID].value as? String, "Selected")
+        XCTAssertLessThanOrEqual(try changedPixelCount(middle, pixels(restored.screenshot().image)), 4,
+                                 "Actual interpolated image pixels did not survive saved cold reopen")
+        capture(reopened, name: "image-quarter-tween-cold-reopened")
+    }
+
+    private func assertQuarterTweenRotation(_ original: Raster, _ rotated: Raster, degrees: Double) throws {
+        XCTAssertEqual(original.width, rotated.width); XCTAssertEqual(original.height, rotated.height)
+        let angle = degrees * .pi / 180, c = cos(angle), s = sin(angle)
+        let cx = Double(original.width) / 2, cy = Double(original.height) / 2
+        func dark(_ raster: Raster, _ x: Int, _ y: Int) -> Bool {
+            let i = (y * raster.width + x) * 4
+            return Int(raster.bytes[i]) + Int(raster.bytes[i + 1]) + Int(raster.bytes[i + 2]) < 450
+        }
+        var checked = 0, matched = 0, originalInk = 0, rotatedInk = 0
+        for y in 0..<original.height { for x in 0..<original.width {
+            if dark(rotated, x, y) { rotatedInk += 1 }
+            guard dark(original, x, y) else { continue }
+            originalInk += 1
+            guard x % 2 == 0 && y % 2 == 0 else { continue }
+            checked += 1
+            let dx = Double(x) + 0.5 - cx, dy = Double(y) + 0.5 - cy
+            let tx = Int(floor(cx + dx * c - dy * s)), ty = Int(floor(cy + dx * s + dy * c))
+            let minX = max(0, tx - 2), maxX = min(rotated.width - 1, tx + 2)
+            let minY = max(0, ty - 2), maxY = min(rotated.height - 1, ty + 2)
+            guard minX <= maxX && minY <= maxY else { continue }
+            var found = false
+            for yy in minY...maxY { for xx in minX...maxX {
+                if dark(rotated, xx, yy) { found = true }
+            } }
+            if found { matched += 1 }
+        } }
+        XCTAssertGreaterThan(checked, 30, "Licensed asymmetric source must contain actual dark artwork")
+        XCTAssertGreaterThan(Double(matched) / Double(max(1, checked)), 0.90,
+            "Actual source pixels do not follow the authored clockwise rotation")
+        XCTAssertEqual(Double(rotatedInk) / Double(max(1, originalInk)), 1, accuracy: 0.08,
+            "Rotation cropped, replaced or changed the source artwork scale")
+    }
+
+    @MainActor
     func testTweenEasingEditableFramesUndoAndColdReopen() throws {
         let app = try launchGuestStudio()
         defer { app.terminate(); XCUIDevice.shared.orientation = .portrait }
@@ -897,19 +1129,44 @@ final class StudioSmokeUITests: XCTestCase {
             XCTAssertTrue(element.exists && element.isHittable && scroll.frame.intersection(application.frame).insetBy(dx: 2, dy: 2).contains(element.frame),
                 "Project control must be fully visible before interaction")
         }
-        @MainActor func setName(_ field: XCUIElement, _ value: String) {
+        @MainActor func setName(_ field: XCUIElement, _ value: String) throws {
             field.tap()
-            if let old = field.value as? String {
-                field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count))
+            if let old = field.value as? String, !old.isEmpty, old != field.placeholderValue {
+                let clear = app.buttons[field.identifier + ".clear"]
+                XCTAssertTrue(clear.waitForExistence(timeout: 5) && clear.isHittable,
+                              "The real project-name clear control must be reachable")
+                guard clear.exists && clear.isHittable else { throw NSError(domain: "NativeProjectName", code: 1) }
+                clear.tap()
+                let cleared = field.value as? String
+                XCTAssertTrue(cleared == "" || cleared == field.placeholderValue, "Project name replacement left old text")
             }
+            field.tap()
             field.typeText(value + "\n")
+            XCTAssertEqual(field.value as? String, value, "Actual project name differs from the intended exact title")
         }
         let library = app.scrollViews["studio.library.scroll"]
         XCTAssertTrue(library.waitForExistence(timeout: 8))
         app.buttons["studio.new-project"].tap()
         let name = app.textFields["studio.project-name"]
         try reveal(name, in: library, application: app, upward: false)
-        setName(name, originalName)
+        try setName(name, originalName)
+        // Aliases have the same dimensions but must never appear selected
+        // together. Use the real card buttons, preserving the SD/24 journey.
+        @MainActor func requireExclusivePreset(_ expected: String) {
+            for id in ["portrait", "tiktok", "landscape", "youtube"] {
+                let button = app.buttons["studio.project.preset." + id]
+                XCTAssertTrue(button.exists, "Preset alias control missing: " + id)
+                XCTAssertEqual(button.isSelected, id == expected, "Preset selection is not exclusive: " + id)
+            }
+        }
+        let portrait = app.buttons["studio.project.preset.portrait"]
+        try reveal(portrait, in: library, application: app)
+        requireExclusivePreset("portrait")
+        for id in ["tiktok", "portrait", "landscape", "youtube"] {
+            let preset = app.buttons["studio.project.preset." + id]
+            try reveal(preset, in: library, application: app); preset.tap()
+            requireExclusivePreset(id)
+        }
         let sd = app.buttons["studio.project.preset.sd"]
         try reveal(sd, in: library, application: app); sd.tap()
         let fps24 = app.buttons["studio.project.fps.24"]
@@ -927,7 +1184,7 @@ final class StudioSmokeUITests: XCTestCase {
         let settingsName = app.textFields["studio.settings.name"]
         XCTAssertTrue(settingsName.waitForExistence(timeout: 8))
         let settingsScroll = app.scrollViews["studio.settings.scroll"]
-        setName(settingsName, finalName)
+        try setName(settingsName, finalName)
         let hd = app.buttons["studio.project.preset.hd"]
         try reveal(hd, in: settingsScroll, application: app); hd.tap()
         let fps30 = app.buttons["studio.project.fps.30"]
@@ -964,6 +1221,80 @@ final class StudioSmokeUITests: XCTestCase {
         try reveal(coldFPS, in: cold.scrollViews["studio.settings.scroll"], application: cold)
         XCTAssertTrue(coldFPS.isSelected, "Cold settings lost frame rate")
         capture(cold, name: "owner-project-settings-cold-reopen")
+    }
+
+    @MainActor
+    func testProjectLibraryLastRowWithExpandedCreation() throws {
+        let app = try launchGuestStudio(); defer { app.terminate() }
+        let prefix = try createProjectIfLibraryIsShown(app)
+        let canvas = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(canvas)
+        try choosePickerTestColor("#FF0000", app: app)
+        try selectToolbarTool("pencil", app: app)
+        app.buttons["studio.tool-settings.close"].tap()
+        try waitForStableCanvas(canvas)
+        let blank = try pixels(canvas.screenshot().image)
+        canvas.coordinate(withNormalizedOffset: .init(dx: 0.25, dy: 0.4)).press(forDuration: 0.1,
+            thenDragTo: canvas.coordinate(withNormalizedOffset: .init(dx: 0.65, dy: 0.6)))
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        let artwork = try pixels(canvas.screenshot().image), canvasFrame = canvas.frame
+        XCTAssertGreaterThan(try changedPixelCount(blank, artwork), 30,
+                             "The real drawing gesture must change the blank canvas")
+        let redPixels = stride(from: 0, to: artwork.bytes.count, by: 4).filter {
+            artwork.bytes[$0] > 180 && artwork.bytes[$0 + 1] < 100 && artwork.bytes[$0 + 2] < 100
+        }.count
+        XCTAssertGreaterThan(redPixels, 30, "The saved project must contain actual red stroke pixels")
+        app.buttons["studio.back"].tap()
+        let library = app.scrollViews["studio.library.scroll"]
+        XCTAssertTrue(library.waitUntilPresent(timeout: 8))
+        @MainActor func reveal(_ element: XCUIElement, upward: Bool = true) throws {
+            for _ in 0..<12 {
+                let viewport = library.frame.intersection(app.frame).insetBy(dx: 2, dy: 2)
+                if element.exists && viewport.contains(element.frame) && element.isHittable { return }
+                if upward { library.swipeUp() } else { library.swipeDown() }
+            }
+            XCTAssertTrue(element.exists && library.frame.intersection(app.frame).insetBy(dx: 2, dy: 2).contains(element.frame) && element.isHittable,
+                          "Last-row control must be fully reachable in the actual library viewport")
+            guard element.exists && element.isHittable else { throw NSError(domain: "NativeLongLibrary", code: 1) }
+        }
+        let search = app.textFields["studio.library.search"]
+        try reveal(search, upward: false); search.tap(); search.typeText(prefix + "\n")
+        XCTAssertFalse(app.keyboards.firstMatch.exists)
+        // Six real UI-saved projects, isolated by a fresh name. Each duplicate
+        // preserves actual artwork; existing user/test projects are untouched.
+        var lastName = prefix
+        for expectedCount in 2...6 {
+            let action = app.buttons["Actions for " + lastName]
+            try reveal(action, upward: false); action.tap()
+            try waitForButton("Duplicate Project", in: app).tap()
+            lastName += " Copy"
+            let count = app.staticTexts["studio.library.count"]
+            XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "\(expectedCount) of "), evaluatedWith: count).waitUntilFulfilled(timeout: 8),
+                          "A real saved duplicate was not added to the isolated library")
+        }
+        let sort = app.buttons["studio.library.sort"]
+        try reveal(sort, upward: false); sort.tap(); try waitForButton("Name", in: app).tap()
+        XCTAssertTrue(sort.label.contains("Name"))
+        let newProject = app.buttons["studio.new-project"]
+        try reveal(newProject, upward: false)
+        if !newProject.label.contains("Close New Animation") { newProject.tap() }
+        XCTAssertTrue(newProject.label.contains("Close New Animation"))
+        let draft = app.textFields["studio.project-name"]
+        try reveal(draft); draft.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitUntilPresent(timeout: 5))
+        draft.typeText("\n")
+        XCTAssertTrue(expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.keyboards.firstMatch).waitUntilFulfilled(timeout: 5))
+        let last = app.buttons.matching(NSPredicate(format: "label == %@", lastName)).firstMatch
+        let initiallyOutside = !last.exists || !library.frame.intersection(app.frame).contains(last.frame)
+        XCTAssertTrue(initiallyOutside, "Fixture did not require scrolling past the expanded creation card")
+        try reveal(last)
+        capture(app, name: "library-last-row-expanded-creation")
+        last.tap()
+        let reopened = app.descendants(matching: .any)["studio.canvas"].firstMatch
+        try waitForStableCanvas(reopened, expected: canvasFrame)
+        XCTAssertLessThanOrEqual(try changedPixelCount(artwork, pixels(reopened.screenshot().image)), 4,
+                                "Last-row project did not reopen the real saved artwork")
+        capture(app, name: "library-last-row-opened-artwork")
     }
 
     @MainActor

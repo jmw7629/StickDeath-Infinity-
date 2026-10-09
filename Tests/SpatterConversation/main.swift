@@ -425,6 +425,14 @@ private final class NetworkTrap: URLProtocol {
                 try require(chat.submit("What are my current grid and onion skin settings?", context: captured), "Guide question rejected")
                 try await idle(chat)
                 let answer = chat.messages.last!.content
+                let projectSnapshot = "Project snapshot: Guide facts, 1 frames at 12 FPS."
+                try require(answer.contains(projectSnapshot), "Current guide dropped submitted project identity/timing")
+                for question in ["onion skin", "eraser", "cinematic staging", "unrecognized topic xyz"] {
+                    let reply = SpatterAIViewModel.localGuidance(for: question, context: captured)
+                    try require(reply.contains(projectSnapshot), "Local route dropped project snapshot: \(question)")
+                    let general = SpatterAIViewModel.localGuidance(for: question, context: .general)
+                    try require(!general.contains("Project snapshot:"), "General route invented a project snapshot")
+                }
                 for fact in ["Current grid: disabled", "48 canvas points", "31%", "red tint",
                              "Current onion skin: enabled", "2 previous frames, 0 next frames", "47%", "tinted",
                              "Edit control", "Show grid.", "Hide onion skin.", "not snapping", "Guidance only"] {

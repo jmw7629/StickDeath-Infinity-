@@ -10,7 +10,18 @@ final class StudioGIFEncoder {
     struct Snapshot {
         let document: StudioDocument
         let rasterDataByID: [String: Data]
+        var maximumDimension: Int? = nil
         var imageCredits: [String: StudioExportService.ImageCredit] = [:]
+    }
+    static func outputSize(document: StudioDocument, maximumDimension: Int?) throws -> (width: Int, height: Int) {
+        guard (1...4096).contains(document.width), (1...4096).contains(document.height) else { throw Failure.limit }
+        if let maximumDimension, ![320, 640, 960].contains(maximumDimension) { throw Failure.limit }
+        let ratio = maximumDimension.map { min(1, Double($0) / Double(max(document.width, document.height))) } ?? 1
+        return (max(1, Int(floor(Double(document.width) * ratio))), max(1, Int(floor(Double(document.height) * ratio))))
+    }
+    static func frameCapacity(document: StudioDocument, maximumDimension: Int?) throws -> Int {
+        let size = try outputSize(document: document, maximumDimension: maximumDimension)
+        return min(240, maximumPixels / (size.width * size.height))
     }
     struct Receipt: Codable {
         var version = 1
@@ -37,7 +48,7 @@ final class StudioGIFEncoder {
         case limit, frameRate, missingRaster, encoding, verification, alreadyEncoding
         var errorDescription: String? {
             switch self {
-            case .limit: return "GIF exceeds the safe frame, pixel, source or output size limit. Use a smaller canvas or MP4."
+            case .limit: return "GIF exceeds the safe frame, pixel, source or output size limit. Choose a smaller GIF output size or use MP4."
             case .frameRate: return "GIF supports 1–50 FPS here. Use MP4 to retain a higher frame rate."
             case .missingRaster: return "An original project image is missing. No GIF was returned."
             case .encoding: return "The animated GIF could not be encoded. No GIF was returned."
@@ -83,7 +94,8 @@ final class StudioGIFEncoder {
         let renderer = StudioExportService()
         try renderer.validate(document)
         let delays = try Self.timing(document: document)
-        guard document.width * document.height * document.frames.count <= Self.maximumPixels,
+        let size = try Self.outputSize(document: document, maximumDimension: snapshot.maximumDimension)
+        guard document.frames.count <= (try Self.frameCapacity(document: document, maximumDimension: snapshot.maximumDimension)),
               snapshot.rasterDataByID.count <= 240, snapshot.imageCredits.count <= 240 else { throw Failure.limit }
         var sourceBytes = 0
         for bytes in snapshot.rasterDataByID.values {
@@ -101,7 +113,7 @@ final class StudioGIFEncoder {
             try Task.checkCancellation()
             try autoreleasepool {
                 let image = try renderer.render(frame, document: document, background: .white, raster: nil,
-                    rasterDataByID: snapshot.rasterDataByID)
+                    rasterDataByID: snapshot.rasterDataByID, maximumDimension: snapshot.maximumDimension)
                 let delay = Double(delays[index]) / 100
                 CGImageDestinationAddImage(destination, image,
                     [kCGImagePropertyGIFDictionary: [kCGImagePropertyGIFDelayTime: delay,
@@ -136,7 +148,7 @@ final class StudioGIFEncoder {
                       abs(delay.doubleValue - Double(delays[index]) / 100) < 0.0001,
                       let image = CGImageSourceCreateImageAtIndex(source, index,
                           [kCGImageSourceShouldCache: false] as CFDictionary),
-                      image.width == document.width, image.height == document.height else { throw Failure.verification }
+                      image.width == size.width, image.height == size.height else { throw Failure.verification }
             }
             try progress(.init(phase: .verifying, completed: index + 1, total: document.frames.count))
             await Task.yield()
@@ -144,7 +156,7 @@ final class StudioGIFEncoder {
         try Task.checkCancellation()
         let credits = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: snapshot.imageCredits)
         return Encoded(data: encoded, receipt: Receipt(version: credits.isEmpty ? 1 : 2, projectID: document.id, revision: document.revision,
-            frameIDs: document.frames.map(\.id), width: document.width, height: document.height,
+            frameIDs: document.frames.map(\.id), width: size.width, height: size.height,
             sourceFPS: document.fps, delaysCentiseconds: delays, encodedBytes: encoded.count,
             background: "white", audioIncluded: false, editorGuidesIncluded: false, imageCredits: credits.isEmpty ? nil : credits))
     }

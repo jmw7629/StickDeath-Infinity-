@@ -24,7 +24,7 @@ struct StudioFillContext: Equatable {
               vm.fillGapClose.isFinite, (0...5).contains(vm.fillGapClose),
               let layer = vm.layers.first(where: { $0.id == vm.activeLayerID }), layer.visible,
               !layer.isFullyLocked, ["free", "position"].contains(layer.lockMode) else { return nil }
-        guard !vm.hasFillImageTarget || (vm.fillImageLayerID != nil && vm.selectedElementIDs.isEmpty) else { return nil }
+        guard !vm.hasFillImageTarget || vm.fillImageLayerID != nil else { return nil }
         let opacity = vm.capturedStrokeOpacity
         guard opacity.isFinite, (0...1).contains(opacity) else { return nil }
         return Self(projectID: vm.document.id, revision: vm.document.revision,
@@ -110,7 +110,9 @@ final class StudioFillSession: ObservableObject {
             }
             let committed = vm.commitElement(element, frameID: context.frameID)
             if committed {
-                vm.message = context.selectedImageLayerID != nil ? "Added paint within the selected image alpha. Original image bytes remain unchanged." : context.selectedElementIDs.isEmpty ? "Filled the tapped canvas region."
+                vm.message = context.selectedImageLayerID != nil && !context.selectedElementIDs.isEmpty
+                    ? "Added paint on the active layer within selected drawings and image coverage. Original artwork remains unchanged."
+                    : context.selectedImageLayerID != nil ? "Added paint within the selected image alpha. Original image bytes remain unchanged." : context.selectedElementIDs.isEmpty ? "Filled the tapped canvas region."
                     : "Added paint on the active layer within selected artwork coverage. Original drawings remain unchanged."
             }
             return committed

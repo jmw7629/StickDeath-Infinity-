@@ -95,7 +95,7 @@ struct StudioProjectLibrary: View {
                     Spacer()
                     Text("\(vm.savedProjects.count) projects").font(.specialElite(13)).foregroundStyle(.gray)
                 }
-                if let message = vm.message { Text(message).font(.caption).foregroundColor(.red).accessibilityIdentifier("studio.status") }
+                if let message = vm.message { Text(message).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.red).accessibilityIdentifier("studio.status") }
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundColor(.gray)
                     TextField("Search projects", text: $search)
@@ -117,21 +117,21 @@ struct StudioProjectLibrary: View {
                         .accessibilityIdentifier("studio.library.sort")
                 }.padding(.horizontal, 12).background(Color(hex: "17171F")).cornerRadius(12)
                 Text("\(matchingProjects.count) of \(vm.savedProjects.count) projects · \(sort.rawValue)")
-                    .font(.caption).foregroundColor(.gray).accessibilityIdentifier("studio.library.count")
+                    .font(.specialElite(12)).foregroundColor(.gray).accessibilityIdentifier("studio.library.count")
                 HStack {
                     Button { importGeneration = transferContext.generation; showingImport = true } label: {
-                        Label("Import project backup", systemImage: "square.and.arrow.down").font(.caption).foregroundColor(.gray)
+                        Label { Text("Import project backup").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)) } icon: { Image(systemName: "square.and.arrow.down") }.font(.caption).foregroundColor(.gray)
                     }.accessibilityIdentifier("studio.library.import-backup")
                     Spacer()
-                    if let transferNotice { Text(transferNotice).font(.caption).foregroundColor(.gray) }
+                    if let transferNotice { Text(transferNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.gray) }
                 }
                 HStack {
                 Button { vm.loadRecoverableProjects(); showingRecovery = true } label: {
-                    Label("Recently Deleted", systemImage: "trash").font(.caption).foregroundColor(.gray)
+                    Label { Text("Recently Deleted").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)) } icon: { Image(systemName: "trash") }.font(.caption).foregroundColor(.gray)
                 }.accessibilityIdentifier("studio.library.recently-deleted")
                 Spacer()
                 Button { showingStorage = true } label: {
-                    Label("Storage", systemImage: "internaldrive").font(.caption).foregroundColor(.gray)
+                    Label { Text("Storage").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)) } icon: { Image(systemName: "internaldrive") }.font(.caption).foregroundColor(.gray)
                 }.accessibilityIdentifier("studio.library.storage")
                 }
                 VStack(spacing: 12) {
@@ -140,11 +140,11 @@ struct StudioProjectLibrary: View {
                             Image(systemName: "pencil.and.scribble").font(.system(size: 48)).foregroundColor(.red)
                             Text("Your next animation starts here.").font(.specialElite(18)).foregroundColor(.white)
                             Text("Create, draw and save offline. Your projects stay on this device.")
-                                .font(.callout).foregroundColor(.gray).multilineTextAlignment(.center)
+                                .font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray).multilineTextAlignment(.center)
                         }.frame(maxWidth: .infinity).padding(.vertical, 70)
                     }
                     if !vm.savedProjects.isEmpty && matchingProjects.isEmpty {
-                        Text("No projects match your search.").font(.callout).foregroundColor(.gray)
+                        Text("No projects match your search.").font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray)
                             .frame(maxWidth: .infinity).padding(.vertical, 40)
                     }
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], spacing: 12) {
@@ -163,9 +163,9 @@ struct StudioProjectLibrary: View {
                                     }
                                     Text(project.title).font(.specialElite(14)).foregroundColor(.white).lineLimit(2)
                                     Text("\(project.frameCount) frames · \(project.fps) FPS")
-                                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.gray)
+                                        .font(.specialElite(10)).foregroundColor(.gray)
                                     Text(project.modifiedAt, format: .dateTime.month(.abbreviated).day().year().hour().minute())
-                                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.gray)
+                                        .font(.specialElite(10)).foregroundColor(.gray)
                                         .accessibilityLabel("Last edited " + project.modifiedAt.formatted(date: .abbreviated, time: .shortened))
                                 }.padding(12).background(Color(hex: "17171F")).cornerRadius(14)
                             }
@@ -195,7 +195,7 @@ struct StudioProjectLibrary: View {
             if transferTask != nil {
                 HStack {
                     ProgressView().tint(.red)
-                    Text("Transferring project backup…").font(.caption)
+                    Text("Transferring project backup…").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     Button("Cancel") { transferTask?.cancel() }
                         .accessibilityIdentifier("studio.library.transfer.cancel")
                 }.padding().background(Color(hex: "17171F")).foregroundColor(.white).cornerRadius(12)
@@ -250,7 +250,7 @@ struct StudioProjectLibrary: View {
         .sheet(isPresented: $showingRecovery) {
             NavigationStack {
                 List {
-                    Text("Projects remain on this device until restored. There is no automatic deletion.").font(.caption)
+                    Text("Projects remain on this device until restored. There is no automatic deletion.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                     if let message = vm.message { Text(message).foregroundColor(.red) }
                     if vm.recoverableProjects.isEmpty { Text("No readable projects in Recently Deleted.") }
                     ForEach(vm.recoverableProjects, id: \.id) { project in
@@ -402,7 +402,7 @@ private struct StudioStorageSheet: View {
             List {
                 Section("On this device") {
                     Text("Measures Documents and disk caches, including every saved revision. Downloaded image packs and preferences in Application Support, and exported backups outside the app, are excluded. This is not total app or device usage.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundStyle(.secondary)
                     if scanning { ProgressView("Measuring files…").accessibilityIdentifier("studio.storage.scanning") }
                     if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("studio.storage.error") }
                     if let usage {
@@ -414,7 +414,7 @@ private struct StudioStorageSheet: View {
                         LabeledContent("Documents and cache bytes", value: bytes(usage.totalFileBytes))
                             .accessibilityIdentifier("studio.storage.total")
                         if usage.skippedLinksAndSpecialFiles > 0 {
-                            Text("\(usage.skippedLinksAndSpecialFiles) links or special files excluded; their targets were not followed.").font(.caption)
+                            Text("\(usage.skippedLinksAndSpecialFiles) links or special files excluded; their targets were not followed.").font(.specialElite(12))
                         }
                     }
                     Button("Refresh usage") { refresh = UUID() }
@@ -422,7 +422,7 @@ private struct StudioStorageSheet: View {
                 }
                 Section("Older successful saves") {
                     Text("Remove obsolete full-document snapshots only when their successful save history can be verified. Keeps the current and previous version, original media, legacy files, and failed-save recovery data. Permanent removal is optional; back up projects first. This does not clear Undo or delete your project.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundStyle(.secondary)
                     Picker("Project", selection: $cleanupProject) {
                         Text("Choose a project").tag(UUID?.none)
                         ForEach(vm.savedProjects, id: \.id) { project in
@@ -446,26 +446,26 @@ private struct StudioStorageSheet: View {
                     }
                     if let preview = cleanup.preview {
                         Text("\(preview.candidates) verified obsolete versions · \(bytes(preview.removableFileBytes)) of file contents. Current and previous saved versions stay on this device.")
-                            .font(.caption).accessibilityIdentifier("studio.storage.revision-preview")
+                            .font(.specialElite(12)).accessibilityIdentifier("studio.storage.revision-preview")
                         if preview.candidates > 0 {
                             Button("Remove reviewed old versions", role: .destructive) { confirmingCleanup = true }
                                 .disabled(cleanup.isBusy).accessibilityIdentifier("studio.storage.remove-revisions")
                         } else {
-                            Text("No eligible old versions. Historical and unverified recovery files are preserved.").font(.caption)
+                            Text("No eligible old versions. Historical and unverified recovery files are preserved.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                         }
                         if preview.moreBatchesAvailable {
-                            Text("More versions remain. Review another bounded batch after this one finishes.").font(.caption)
+                            Text("More versions remain. Review another bounded batch after this one finishes.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                         }
                     }
-                    if let cleanupNotice = cleanup.notice { Text(cleanupNotice).font(.caption).accessibilityIdentifier("studio.storage.revision-result") }
+                    if let cleanupNotice = cleanup.notice { Text(cleanupNotice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).accessibilityIdentifier("studio.storage.revision-result") }
                 }
                 Section("Regenerable working memory") {
                     LabeledContent("Estimated frame cache memory", value: bytes(Int64(cacheBytes)))
                     Text("Clear releases cached frame encodings from memory. It does not free disk space. Existing projects, history, media, backups and exports are preserved. Unclassified disk cache files remain untouched.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundStyle(.secondary)
                     Button("Clear working cache") { confirmingClear = true }
                         .accessibilityIdentifier("studio.storage.clear-cache")
-                    if let notice { Text(notice).font(.caption).accessibilityIdentifier("studio.storage.notice") }
+                    if let notice { Text(notice).font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).accessibilityIdentifier("studio.storage.notice") }
                 }
             }
             .accessibilityIdentifier("studio.storage.list")
@@ -677,30 +677,57 @@ struct StudioProjectConfigurationCard: View {
     var chooseExistingBackground: (() -> Void)? = nil
     let onSubmit: () -> Void
     @State private var showingCustom = false
+    @State private var showingCustomFPS = false
+    @State private var preferredPreset: String?
     private let presets: [(String, Int, Int)] = [
         ("Portrait",1080,1920), ("Landscape",1920,1080), ("Square",1080,1080),
         ("TikTok",1080,1920), ("YouTube",1920,1080), ("Instagram",1080,1350),
         ("SD",640,480), ("HD",1280,720)
     ]
-    private var valid: Bool {
-        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.count <= 120 &&
-            (16...4096).contains(width) && (16...4096).contains(height) && (1...60).contains(fps)
+    // Aliases share dimensions, but the card must expose a single selection.
+    // Saved projects only store dimensions, so use the first matching preset
+    // unless the user has explicitly selected a matching alias in this card.
+    private var selectedPreset: String? {
+        let matches = presets.filter { $0.1 == width && $0.2 == height }
+        return matches.first(where: { $0.0 == preferredPreset })?.0 ?? matches.first?.0
     }
+    private var validationNotice: String? {
+        guard (16...4096).contains(width), (16...4096).contains(height) else {
+            return "Enter a whole-number width and height from 16 to 4096 pixels."
+        }
+        guard (1...60).contains(fps) else { return "Enter a whole-number frame rate from 1 to 60 FPS." }
+        do { _ = try StudioDocument.validatedProjectName(name) }
+        catch { return error.localizedDescription }
+        return nil
+    }
+    private var valid: Bool { validationNotice == nil }
     private var backgroundName: String {
         StudioImageImportService.BackgroundPreset.all.first(where: { $0.id == backgroundID })?.name ?? "Choose background…"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             TextField("Project name…", text: $name).font(.specialElite(18)).foregroundStyle(.white)
+                .padding(.trailing, 44)
                 .padding(16).background(Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 15))
                 .overlay(RoundedRectangle(cornerRadius: 15).stroke(Color.white.opacity(0.08)))
                 .accessibilityIdentifier(nameIdentifier)
+                .overlay(alignment: .trailing) {
+                    if !name.isEmpty {
+                        Button { name = "" } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 18)).foregroundStyle(.gray)
+                                .frame(width: 44, height: 44)
+                        }.buttonStyle(.plain).padding(.trailing, 8)
+                            .accessibilityLabel("Clear project name")
+                            .accessibilityIdentifier(nameIdentifier + ".clear")
+                    }
+                }
             heading("CANVAS SIZE")
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                 ForEach(presets.indices, id: \.self) { index in
                     let preset = presets[index]
-                    choice("\(preset.0) (\(preset.1)×\(preset.2))", selected: width == preset.1 && height == preset.2) {
-                        width = preset.1; height = preset.2
+                    choice("\(preset.0) (\(preset.1)×\(preset.2))", selected: selectedPreset == preset.0) {
+                        preferredPreset = preset.0; width = preset.1; height = preset.2
                     }.accessibilityIdentifier("studio.project.preset." + preset.0.lowercased())
                 }
             }
@@ -723,7 +750,12 @@ struct StudioProjectConfigurationCard: View {
                 ForEach([1,6,8,10,12,15,18,24,25,30,48,50,60], id: \.self) { rate in
                     Button("\(rate) FPS") { fps = rate }
                 }
-            }.font(.specialElite(11)).foregroundStyle(.gray).frame(minHeight: 30)
+            }.font(.specialElite(11)).foregroundStyle(.gray).frame(minHeight: 44)
+            DisclosureGroup("Custom frame rate · \(fps) FPS", isExpanded: $showingCustomFPS) {
+                dimension("Frames per second", value: $fps, identifier: "studio.project-fps-custom")
+                    .padding(.top, 10)
+                Text("Whole numbers from 1 to 60 FPS").font(.specialElite(11)).foregroundStyle(.gray)
+            }.font(.specialElite(12)).tint(.red).foregroundStyle(.gray)
             heading("BACKGROUND")
             Group {
                 if let action = chooseExistingBackground {
@@ -737,6 +769,11 @@ struct StudioProjectConfigurationCard: View {
                     } label: { backgroundLabel }
                 }
             }.buttonStyle(.plain).accessibilityIdentifier("studio.project.background")
+            if let validationNotice, !name.isEmpty || width < 16 || height < 16 || !(1...60).contains(fps) {
+                Text(validationNotice).font(.specialElite(12)).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("studio.project.validation")
+            }
             if let notice { Text(notice).font(.specialElite(12)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             Button(action: onSubmit) {
                 HStack {
@@ -780,12 +817,32 @@ struct StudioProjectConfigurationCard: View {
         }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
     }
     private func dimension(_ title: String, value: Binding<Int>, identifier: String) -> some View {
+        StudioProjectIntegerField(title: title, value: value, identifier: identifier)
+    }
+}
+
+/// Keep the displayed draft and submitted integer in sync, including empty/invalid input.
+/// Zero is an invalid sentinel rejected by the configuration card; it is never submitted.
+private struct StudioProjectIntegerField: View {
+    let title: String
+    @Binding var value: Int
+    let identifier: String
+    @State private var draft = ""
+    var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.specialElite(11)).foregroundStyle(.gray)
-            TextField(title, value: value, format: .number).keyboardType(.numberPad)
+            TextField(title, text: Binding(get: { draft }, set: { text in
+                draft = String(text.prefix(12))
+                value = !draft.isEmpty && draft.utf8.allSatisfy({ (48...57).contains($0) }) ? (Int(draft) ?? 0) : 0
+            })).keyboardType(.numberPad)
                 .font(.specialElite(16)).foregroundStyle(.white).padding(10)
                 .background(Color(hex: "101017"), in: RoundedRectangle(cornerRadius: 8))
                 .accessibilityIdentifier(identifier)
+        }
+        .onAppear { draft = String(value) }
+        .onChange(of: value) { _, updated in
+            // Presets, swapping dimensions and reloading settings update the field.
+            if (Int(draft) ?? 0) != updated { draft = String(updated) }
         }
     }
 }

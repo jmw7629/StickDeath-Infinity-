@@ -15,6 +15,15 @@ struct ProjectSettingsPanel: View {
     @State private var showingOnionSettings = false
     @State private var showingGridSettings = false
 
+    private var settingsAreCurrent: Bool {
+        capturedProjectID == vm.document.id && capturedRevision == vm.document.revision
+    }
+    private var settingsNotice: String? {
+        if capturedProjectID != nil && !settingsAreCurrent {
+            return "The project changed after these settings were opened. Your entered values are still shown. Reload current settings before applying."
+        }
+        return notice
+    }
     var body: some View {
         ZStack {
             Color(hex: "0A0A0F").ignoresSafeArea()
@@ -30,10 +39,10 @@ struct ProjectSettingsPanel: View {
                     StudioProjectConfigurationCard(name: $projectName, width: $width, height: $height,
                         fps: $fps, backgroundID: $backgroundID, submitTitle: "Apply Changes →",
                         submitIdentifier: "studio.settings.rename", nameIdentifier: "studio.settings.name",
-                        notice: notice, busy: vm.isSaving,
-                        canSubmit: capturedProjectID != nil && scenePhase == .active && !vm.isPlaying,
+                        notice: settingsNotice, busy: vm.isSaving,
+                        canSubmit: capturedProjectID != nil && settingsAreCurrent && scenePhase == .active && !vm.isPlaying,
                         chooseExistingBackground: chooseBackground, onSubmit: apply)
-                    Text("Canvas changes keep artwork at its original position and change the visible area. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings.")
+                    Text("Canvas changes keep artwork at its original position and change the visible area. Frame rate changes animation speed; audio stays at its time in seconds. Undo restores the previous settings. Resizing may be unavailable for historical flattened images, pixel effects or a smaller size that would discard fill coverage.")
                         .font(.specialElite(12)).foregroundStyle(.gray)
                     Button("Reload current settings") { load() }
                         .font(.specialElite(14)).foregroundStyle(.red).frame(minHeight: 44)
@@ -55,7 +64,7 @@ struct ProjectSettingsPanel: View {
         guard let id = capturedProjectID, scenePhase == .active else { return }
         if vm.updateProjectSettings(name: projectName, width: width, height: height, fps: fps,
                                     expectedProjectID: id, expectedRevision: capturedRevision) {
-            load(); notice = "Project settings updated."
+            load(); notice = vm.isDirty ? "Settings applied to the open project. Check the Studio save indicator for device-save status." : "Settings match the current project."
         } else { notice = vm.message ?? "Settings could not be changed." }
     }
     private func chooseBackground() {
@@ -207,7 +216,7 @@ struct StudioOnionSettingsControls: View {
                     Toggle("Red previous / blue next", isOn: $vm.onionTinted)
                         .accessibilityIdentifier("studio.onion.tint")
                     Text("Farther frames fade. Ghosts are hidden during playback and never included in export.")
-                        .font(.caption2).foregroundColor(.secondary)
+                        .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.secondary)
                 }.font(.specialElite(11)).padding(.horizontal, 14).padding(.vertical, 8)
     }
 }
@@ -226,7 +235,7 @@ struct StudioGridSettingsControls: View {
                 ForEach(StudioGridSettings.Tint.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
             }.pickerStyle(.segmented).accessibilityIdentifier("studio.grid.tint")
             Text("Grid moves and zooms with the canvas. It is a visual guide and is never included in exported artwork.")
-                .font(.caption2).foregroundColor(.secondary)
+                .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.secondary)
         }.font(.specialElite(11)).padding(.horizontal, 14).padding(.vertical, 8)
     }
 }

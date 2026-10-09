@@ -29,7 +29,13 @@ final class SpatterStudioEditSession: ObservableObject {
         let gridInstruction: SpatterGridInstruction?
         let onionInstruction: SpatterOnionInstruction?
         let frameExposureTicks: Int?
+        var exposureFrames: ClosedRange<Int>? = nil
+        var reversedFrames: ClosedRange<Int>? = nil
+        var duplicatedFrameRange: ClosedRange<Int>? = nil
         let frameAction: SpatterFrameActionInstruction.Action?
+        var layerStructureAction: SpatterLayerStructureInstruction.Action? = nil
+        var layerSettingsInstruction: SpatterLayerUpdateInstruction? = nil
+        var navigationInstruction: SpatterNavigationInstruction? = nil
         let isLayerGlowEdit: Bool
         let isLayerDuplicate: Bool
         let isLayerUpdate: Bool
@@ -45,7 +51,30 @@ final class SpatterStudioEditSession: ObservableObject {
         let addedFrameCount: Int
         let fps: Int
         let addedDurationSeconds: Double
+        var audioTrackInstruction: SpatterAudioTrackInstruction? = nil
+        var cutFrameCount: Int = 0
+        var duplicatedDrawingCount: Int = 0
         var summary: String {
+            if let edit = audioTrackInstruction {
+                if receipt.outcome == .unchanged { return "Audio track \(edit.track) already has this setting. Nothing changed." }
+                if let volume = edit.volume { return "Set audio track \(edit.track) volume to \(String(format: "%.6g", volume * 100))% in one Undo step. Clip volumes and original audio are unchanged." }
+                return "\(edit.muted == true ? "Muted" : "Unmuted") audio track \(edit.track) in one Undo step. Clips and original audio are preserved."
+            }
+            if cutFrameCount > 0 {
+                return "Cut the captured frame into the frame clipboard. Paste frame after this inserts an editable copy; Undo restores the removed frame. Audio timing is unchanged."
+            }
+            if duplicatedDrawingCount > 0 {
+                return "Created \(duplicatedDrawingCount) editable drawing copies in one Undo step. Copies are selected for Move; original drawings and clipboard are preserved."
+            }
+            if let navigationInstruction {
+                return receipt.outcome == .unchanged ? "That frame or layer is already selected. Nothing changed."
+                    : "Selected \(navigationInstruction.target.rawValue) \(navigationInstruction.number). Artwork is unchanged."
+            }
+            if let layerStructureAction {
+                return layerStructureAction == .add
+                    ? "Added and selected a named blank layer in one undoable local edit. Existing artwork is preserved."
+                    : "Deleted the captured active layer and its contents across frames in one undoable local edit. Undo restores the layer."
+            }
             if let gridInstruction {
                 if receipt.outcome == .unchanged { return "Grid settings already match. Nothing changed." }
                 if let visible = gridInstruction.visible {
@@ -60,9 +89,16 @@ final class SpatterStudioEditSession: ObservableObject {
                 }
                 return "Updated onion-skin counts, opacity and tint in one undoable local edit. Guide visibility and artwork are unchanged."
             }
+            if let duplicatedFrameRange {
+                return "Duplicated frames \(duplicatedFrameRange.lowerBound) through \(duplicatedFrameRange.upperBound) after the source range in one undoable edit. Copies have new identities with editable artwork and the same exposure. Audio times are unchanged."
+            }
+            if let reversedFrames {
+                return "Reversed frames \(reversedFrames.lowerBound) through \(reversedFrames.upperBound) in one undoable local edit, keeping their artwork and exposure. Audio times are unchanged."
+            }
             if let frameAction {
                 switch frameAction {
-                case .duplicate: return "Duplicated the active frame in one undoable local edit. Its editable artwork and exposure were copied."
+                case .add: return "Added \(addedFrameCount) blank \(addedFrameCount == 1 ? "frame" : "frames") after the active frame in one undoable local edit. Existing frames remain editable."
+                case .duplicate: return "Created \(addedFrameCount) editable \(addedFrameCount == 1 ? "copy" : "copies") of the active frame in one undoable local edit. Artwork and exposure were copied."
                 case .delete: return "Deleted only the active frame in one undoable local edit. Undo restores its artwork and exposure."
                 case .earlier: return "Moved the active frame one position earlier in one undoable local edit. Its identity and exposure are unchanged."
                 case .later: return "Moved the active frame one position later in one undoable local edit. Its identity and exposure are unchanged."
@@ -83,6 +119,10 @@ final class SpatterStudioEditSession: ObservableObject {
                 return receipt.outcome == .unchanged ? "The project already has this name. Nothing changed."
                     : "Renamed project to “\(renamedProjectName)” in one undoable local edit."
             }
+            if let frameExposureTicks, let exposureFrames {
+                return receipt.outcome == .unchanged ? "The frame range already has that exposure. Nothing changed."
+                    : "Set frames \(exposureFrames.lowerBound) through \(exposureFrames.upperBound) to \(frameExposureTicks) ticks each at \(fps) FPS in one undoable local edit."
+            }
             if let frameExposureTicks {
                 return receipt.outcome == .unchanged ? "The selected frame already has this exposure. Nothing changed."
                     : "Set selected frame exposure to \(frameExposureTicks) ticks at \(fps) FPS in one undoable local edit."
@@ -94,6 +134,16 @@ final class SpatterStudioEditSession: ObservableObject {
             if let layerVisibility {
                 return receipt.outcome == .unchanged ? "The active layer is already \(layerVisibility ? "shown" : "hidden"). Nothing changed."
                     : "\(layerVisibility ? "Showed" : "Hid") the active layer in one undoable local edit. Artwork and lock settings are unchanged."
+            }
+            if isLayerUpdate, let instruction = layerSettingsInstruction {
+                let setting: String
+                if let blend = instruction.blend { setting = "blend mode to \(blend.rawValue)" }
+                else if let lock = instruction.lock { setting = "lock mode to \(lock.rawValue)" }
+                else if let name = instruction.name { setting = "name to \(name)" }
+                else if let opacity = instruction.opacity { setting = "opacity to \(String(format: "%.12g", opacity * 100))%" }
+                else { setting = "visibility" }
+                return receipt.outcome == .unchanged ? "The active layer already matches the requested setting. Nothing changed."
+                    : "Set the active layer \(setting) in one undoable local edit."
             }
             if isLayerUpdate {
                 return receipt.outcome == .unchanged ? "The active layer settings already match. Nothing changed."
@@ -110,6 +160,7 @@ final class SpatterStudioEditSession: ObservableObject {
             if isAudioEdit {
                 if removedAudioClipCount > 0 { return "Deleted the selected audio clip in one undoable local edit. Its source remains available for Undo." }
                 if addedAudioClipCount > 0 && changedExistingAudioClipCount > 0 { return "Split the selected audio clip into two editable clips in one undoable local edit." }
+                if addedAudioClipCount > 1 { return "Added \(addedAudioClipCount) consecutive editable copies of the selected audio clip in one Undo step, reusing its original sound." }
                 if addedAudioClipCount > 0 { return "Duplicated the selected audio clip in one undoable local edit." }
                 return receipt.outcome == .unchanged
                     ? "The selected audio clip already matches this instruction. Nothing changed."
@@ -244,9 +295,14 @@ final class SpatterStudioEditSession: ObservableObject {
                 try check()
                 guard let studio else { throw SessionError.outsideStudio }
                 try self.requireCurrent(submissionID, captured: captured, studio: studio, currentScope: currentScope)
+                let isAudioTrack = SpatterAudioTrackInstruction.isInstruction(draft)
+                let isFrameCut = SpatterFrameCutInstruction.isInstruction(draft)
+                let isDrawingDuplicate = SpatterDrawingDuplicateInstruction.isInstruction(draft)
                 let isErasure = SpatterSelectedErasureInstruction.isInstruction(draft)
                 let isAudio = SpatterAudioInstruction.isAudioInstruction(draft)
                 let isLayerUpdate = SpatterLayerUpdateInstruction.isInstruction(draft)
+                let isNavigation = SpatterNavigationInstruction.isInstruction(draft)
+                let isLayerStructure = SpatterLayerStructureInstruction.isInstruction(draft)
                 let isRename = !isLayerUpdate && SpatterProjectRenameInstruction.isInstruction(draft)
                 let isExposure = !isLayerUpdate && !isRename && SpatterFrameExposureInstruction.isInstruction(draft)
                 let isLayerDuplicate = !isLayerUpdate && !isRename && SpatterLayerDuplicateInstruction.isInstruction(draft)
@@ -257,15 +313,42 @@ final class SpatterStudioEditSession: ObservableObject {
                 let isFrameAction = !isLayerUpdate && !isRename && SpatterFrameActionInstruction.isInstruction(draft)
                 let isOnion = !isLayerUpdate && !isRename && SpatterOnionInstruction.isInstruction(draft)
                 let isGrid = !isLayerUpdate && !isRename && SpatterGridInstruction.isInstruction(draft)
+                var exposureInstruction: SpatterFrameExposureInstruction?
+                var reverseInstruction: SpatterFrameReverseInstruction?
+                var duplicateRangeInstruction: SpatterFrameDuplicateRangeInstruction?
                 var gridInstruction: SpatterGridInstruction?
                 var onionInstruction: SpatterOnionInstruction?
                 var frameAction: SpatterFrameActionInstruction.Action?
+                var layerStructureAction: SpatterLayerStructureInstruction.Action?
+                var layerSettingsInstruction: SpatterLayerUpdateInstruction?
+                var navigationInstruction: SpatterNavigationInstruction?
                 var layerOrderUp: Bool?
                 var layerVisibility: Bool?
+                var audioTrackInstruction: SpatterAudioTrackInstruction?
                 var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if isGrid {
+                if SpatterFrameDuplicateRangeInstruction.isInstruction(draft) {
+                    guard !captured.isPlaying else { throw SpatterFrameDuplicateRangeInstruction.Failure.unsupported }
+                    let instruction = try SpatterFrameDuplicateRangeInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    duplicateRangeInstruction = instruction
+                } else if SpatterFrameReverseInstruction.isInstruction(draft) {
+                    guard !captured.isPlaying else { throw SpatterFrameReverseInstruction.Failure.unsupported }
+                    let instruction = try SpatterFrameReverseInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    reverseInstruction = instruction
+                } else if isNavigation {
+                    guard !captured.isPlaying else { throw SpatterNavigationInstruction.Failure.unsupported }
+                    let instruction = try SpatterNavigationInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    navigationInstruction = instruction
+                } else if isLayerStructure {
+                    guard !captured.isPlaying else { throw SpatterLayerStructureInstruction.Failure.unavailable }
+                    let instruction = try SpatterLayerStructureInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    layerStructureAction = instruction.action
+                } else if isGrid {
                     guard !captured.isPlaying else { throw SpatterGridInstruction.Failure.unavailable }
                     let instruction = try SpatterGridInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
@@ -284,6 +367,23 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterLayerOrderInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
                     layerOrderUp = instruction.up
+                } else if isAudioTrack {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before changing audio tracks.") }
+                    let instruction = try SpatterAudioTrackInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    audioTrackInstruction = instruction
+                } else if isFrameCut {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before cutting a frame.") }
+                    preparedRequest = try SpatterFrameCutInstruction.prepare(draft, in: document,
+                        requestID: submissionID, checkCancellation: check)
+                } else if isDrawingDuplicate {
+                    guard captured.selectedTool == .move, !captured.isPlaying,
+                          !captured.mixedArtwork, captured.selectedImage == nil,
+                          captured.selectedArtwork != nil, !captured.selectedElementIDs.isEmpty else {
+                        throw SpatterDrawingDuplicateInstruction.Failure.selection
+                    }
+                    preparedRequest = try SpatterDrawingDuplicateInstruction.parse(draft).prepare(in: document,
+                        selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
                 } else if isOrder {
                     let instruction = try SpatterArtworkOrderInstruction.parse(draft)
                     guard captured.selectedTool == .move, !captured.isPlaying else { throw SpatterArtworkOrderInstruction.Failure.selection }
@@ -321,12 +421,14 @@ final class SpatterStudioEditSession: ObservableObject {
                 } else if isRename {
                     preparedRequest = try SpatterProjectRenameInstruction.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
                 } else if isExposure {
-                    preparedRequest = try SpatterFrameExposureInstruction.parse(draft).prepare(in: document,
-                        requestID: submissionID, checkCancellation: check)
+                    let instruction = try SpatterFrameExposureInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    exposureInstruction = instruction
                 } else if isLayerUpdate {
                     let instruction = try SpatterLayerUpdateInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in:document,requestID:submissionID,checkCancellation:check)
                     layerVisibility = instruction.visible
+                    layerSettingsInstruction = instruction
                 } else if isLayerDuplicate {
                     preparedRequest = try SpatterLayerDuplicateInstruction.parse(draft).prepare(in:document, requestID:submissionID, checkCancellation:check)
                 } else if isGlow {
@@ -369,11 +471,12 @@ final class SpatterStudioEditSession: ObservableObject {
                 let currentMaskCount = studio.document.frames.reduce(0) { count, frame in
                     count + frame.elements.reduce(0) { $0 + ($1.selectionErasures?.count ?? 0) }
                 }
-                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, gridInstruction: gridInstruction, onionInstruction: onionInstruction, frameExposureTicks: isExposure ? studio.currentFrame.durationTicks : nil, frameAction:frameAction, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, layerVisibility:layerVisibility, layerOrderUp:layerOrderUp, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
+                let result = AppliedEdit(receipt: receipt, selectedErasureMaskCount: isErasure ? max(0, currentMaskCount - previousMaskCount) : 0, gridInstruction: gridInstruction, onionInstruction: onionInstruction, frameExposureTicks: exposureInstruction?.ticks, exposureFrames: exposureInstruction?.frames, reversedFrames: reverseInstruction?.frames, duplicatedFrameRange: duplicateRangeInstruction?.frames, frameAction:frameAction, layerStructureAction:layerStructureAction, layerSettingsInstruction:layerSettingsInstruction, navigationInstruction:navigationInstruction, isLayerGlowEdit: isGlow, isLayerDuplicate:isLayerDuplicate, isLayerUpdate:isLayerUpdate, layerVisibility:layerVisibility, layerOrderUp:layerOrderUp, artworkOrderForward: artworkOrderForward, imageReflectionAxis: imageReflectionAxis, isAudioEdit: isAudio, renamedProjectName: isRename ? studio.document.name : nil, addedAudioClipCount: addedAudioCount,
                     removedAudioClipCount: document.editableAudioClips.filter { old in !studio.audioClips.contains { $0.id == old.id } }.count,
                     changedExistingAudioClipCount: studio.audioClips.filter { new in document.editableAudioClips.contains { $0.id == new.id && $0 != new } }.count,
                     addedFrameCount: receipt.createdFrameIDs.count,
-                    fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps))
+                    fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps),
+                    audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0)
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {

@@ -369,11 +369,18 @@ struct StudioFrameRenderer {
                 // scale keeps thumbnails/non-square views geometrically correct.
                 picture.translateBy(x: rect.midX, y: rect.midY)
                 picture.scaleBy(x: size.width / canvasSize.width, y: size.height / canvasSize.height)
-                if let degrees = raster.rotationDegrees { picture.rotate(by: .degrees(degrees)) }
-                if let reflection = raster.reflection {
+                // R(a) F Q(q) = R(a + det(F) q) F. Compose the angles
+                // before applying them so equivalent full turns do not leave a
+                // floating-point residual (for example, 270 + 90 degrees).
+                let reflection = raster.reflection
+                let reversesOrientation = (reflection?.horizontal ?? false) != (reflection?.vertical ?? false)
+                var degrees = ((raster.rotationDegrees ?? 0) + Double(turns) * (reversesOrientation ? -90 : 90))
+                    .truncatingRemainder(dividingBy: 360)
+                if degrees > 180 { degrees -= 360 }; if degrees < -180 { degrees += 360 }
+                if degrees != 0 { picture.rotate(by: .degrees(degrees)) }
+                if let reflection {
                     picture.scaleBy(x: reflection.horizontal ? -1 : 1, y: reflection.vertical ? -1 : 1)
                 }
-                picture.rotate(by: .degrees(Double(turns) * 90))
                 let width = turns % 2 == 0 ? placement.width : placement.height
                 let height = turns % 2 == 0 ? placement.height : placement.width
                 drawImage(image.image, crop: raster.crop, regionMask: raster.regionMask, in: CGRect(x: -width / 2, y: -height / 2, width: width, height: height), context: &picture)

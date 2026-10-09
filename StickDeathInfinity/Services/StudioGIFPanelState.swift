@@ -7,6 +7,7 @@ import Combine
 @MainActor
 final class StudioGIFPanelState: ObservableObject {
     @Published private(set) var session: StudioGIFExportSession
+    @Published var maximumDimension: Int = 0
     private var observation: AnyCancellable?
     private let outputParent: URL
 
@@ -25,7 +26,7 @@ final class StudioGIFPanelState: ObservableObject {
             session = StudioGIFExportSession(outputParent: outputParent)
             observeSession()
         }
-        return session.start(from: vm, scope: scope)
+        return session.start(from: vm, scope: scope, maximumDimension: maximumDimension == 0 ? nil : maximumDimension)
     }
     private func observeSession() {
         observation = session.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }

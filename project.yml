@@ -34,7 +34,6 @@ targets:
           - Views/Messages/VideoCall
           - Views/Messages/WatchParty
           - Views/Collab/CreatorRoomView.swift
-          - Views/Collab/WatchTogetherView.swift
     settings:
       base:
         INFOPLIST_FILE: StickDeathInfinity/Info.plist

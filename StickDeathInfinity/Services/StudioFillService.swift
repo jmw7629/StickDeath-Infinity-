@@ -25,7 +25,7 @@ enum StudioFillService {
         var errorDescription: String? {
             switch self {
             case .unavailable: return "Fill needs an available frame and visible unlocked layer. Nothing has changed."
-            case .selection: return "Selected coverage needs visible independent drawings. Layers containing erasers, alpha-preserving paint or pixel effects cannot be used yet. Nothing has changed."
+            case .selection: return "Selected coverage needs visible independent artwork. Layers containing erasers, alpha-preserving paint or pixel effects cannot be used yet. Nothing has changed."
             case .limit: return "Fill supports canvases up to 4,194,304 pixels. Nothing has changed."
             case .missingRaster: return "The original image needed for fill is unavailable. Nothing has changed."
             case .render: return "Studio could not read the artwork for fill. Nothing has changed."
@@ -119,16 +119,21 @@ enum StudioFillService {
     private static func selectionCoverage(document: StudioDocument, frame: AnimationFrame,
                                           selectedIDs: Set<String>, imageLayerID: String? = nil, sources: [String: Data] = [:]) throws -> Data? {
         guard !selectedIDs.isEmpty || imageLayerID != nil else { return nil }
-        guard imageLayerID == nil || selectedIDs.isEmpty else { throw Failure.selection }
         guard selectedIDs.count <= 1024 else { throw Failure.selection }
         let elements = frame.elements.filter { selectedIDs.contains($0.id) }
         guard elements.count == selectedIDs.count else { throw Failure.selection }
-        let owners = imageLayerID.map { Set([$0]) } ?? Set(elements.compactMap(\.layerID))
+        var owners = Set(elements.compactMap(\.layerID))
+        if let imageLayerID { owners.insert(imageLayerID) }
         var layers = document.layers.filter { owners.contains($0.id) }
         guard layers.count == owners.count, elements.allSatisfy({ element in
             [.pencil, .pen, .brush, .marker, .crayon, .line, .rectangle, .circle, .text, .fill].contains(element.tool)
                 && element.layerID != nil
         }), layers.allSatisfy({ $0.visible && $0.opacity > 0 }) else { throw Failure.selection }
+        // Mixed selection must retain editable source owners, not acquire a
+        // hidden/locked drawing through a stale captured set of IDs.
+        if imageLayerID != nil && !selectedIDs.isEmpty {
+            guard layers.allSatisfy({ !$0.isFullyLocked && ["free", "position"].contains($0.lockMode) }) else { throw Failure.selection }
+        }
         // Replaying an isolated selection without these ordered operations would
         // fabricate source coverage that the user cannot currently see.
         guard !frame.elements.contains(where: { element in
@@ -144,7 +149,13 @@ enum StudioFillService {
             guard let instance = frame.rasterInstance(on: imageLayerID), instance.placement != nil,
                   let sourceID = frame.rasterAssetID(on: imageLayerID), sources[sourceID] != nil,
                   let projected = frame.projectedRasterFrame(on: imageLayerID) else { throw Failure.missingRaster }
-            isolated = projected; isolated.elements = []; isolated.rasterStackPosition = nil
+            isolated = projected; isolated.elements = elements
+            // Slots count persisted drawings on this image's layer. Keep only
+            // selected predecessors so filtering cannot move the image across
+            // retained artwork or leave an invalid slot in the projection.
+            let below = frame.elements.filter { $0.layerID == imageLayerID }.prefix(instance.stackPosition ?? 0)
+            let retainedBelow = below.reduce(0) { $0 + (selectedIDs.contains($1.id) ? 1 : 0) }
+            isolated.rasterStackPosition = retainedBelow == 0 ? nil : retainedBelow
         }
         let images = try StudioFrameRenderer.prepareRasters(frame: isolated, layers: layers, sourceData: sources, maximumDimension: 8192)
         let prepared = try StudioFrameRenderer.prepare(frame: isolated)

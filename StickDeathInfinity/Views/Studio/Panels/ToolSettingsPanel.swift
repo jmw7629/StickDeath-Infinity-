@@ -169,7 +169,7 @@ struct FloatingToolSettingsPanel: View {
     func toolSettingsContent(_ def: ToolDef, compactHeight: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             toolSpecificSettings(def, compactHeight: compactHeight)
-            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .move, .lasso].contains(def.tool) {
+            if [.pencil, .pen, .brush, .marker, .crayon, .eraser, .smudge, .blur, .sharpen, .dodge, .burn, .line, .rectangle, .circle, .text, .fill, .move, .lasso, .wand].contains(def.tool) {
                 Button("Reset this tool") { vm.resetCurrentDrawingToolPreferences() }
                     .font(.specialElite(10))
                     .foregroundColor(.sdStudioSecondaryText)
@@ -243,10 +243,10 @@ struct FloatingToolSettingsPanel: View {
         case .fill:
             VStack(alignment: .leading, spacing: 8) {
                 if vm.hasFillImageTarget {
-                    Text("Fill stays within the explicitly selected image’s alpha, crop and region mask. Original image bytes stay unchanged. Choose Move to deselect; mixed drawing and image coverage is not available.")
-                        .font(.caption).foregroundColor(.sdStudioSecondaryText)
+                    Text("Fill adds paint on the active image layer within the selected image’s alpha, crop and region mask, together with any selected drawings. Original artwork stays unchanged. Layer effects are excluded from coverage. Choose Move to deselect.")
+                        .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.sdStudioSecondaryText)
                 }
-                if !vm.selectedElementIDs.isEmpty {
+                if !vm.hasFillImageTarget && !vm.selectedElementIDs.isEmpty {
                     Text("Fill paints on the active layer within the selected drawings’ shapes, excluding layer glow and blending. Original objects stay editable. Deselect in Move or Lasso to fill the whole canvas region.")
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                         .accessibilityIdentifier("studio.fill.selection-coverage")
@@ -286,7 +286,7 @@ struct FloatingToolSettingsPanel: View {
                     ForEach(StudioEraserMode.allCases, id: \.self) { mode in
                         Button { vm.eraserMode = mode } label: {
                             Text(mode == .hard ? "◼ Hard" : "◐ Soft")
-                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .font(.specialElite(10))
                                 .foregroundColor(vm.eraserMode == mode ? accentColor : .sdStudioSecondaryText)
                                 .frame(maxWidth: .infinity)
                                 .frame(minHeight: 44)
@@ -622,10 +622,11 @@ struct FloatingToolSettingsPanel: View {
                     .tracking(2)
                 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
-                    ForEach(["📋 Copy", "✂️ Cut", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock layers", "✂️ Deselect"], id: \.self) { action in
+                    ForEach(["📋 Copy", "✂️ Cut", "📑 Duplicate", "🗑 Delete", "↔️ Flip H", "↕️ Flip V", "⬆ Fwd", "⬇ Back", "🔒 Lock layers", "✂️ Deselect"], id: \.self) { action in
                         Button(action: {
                             if action.contains("Copy") { _ = vm.copySelected() }
                             else if action.contains("Cut") { _ = vm.cutSelected() }
+                            else if action.contains("Duplicate") { _ = vm.duplicateSelected() }
                             else if action.contains("Delete") { vm.deleteSelected() }
                             else if action.contains("Deselect") { vm.clearElementSelection() }
                             else if action.contains("Flip H") { _ = vm.reflectSelected(axis: .horizontal) }
@@ -651,7 +652,7 @@ struct FloatingToolSettingsPanel: View {
                             .cornerRadius(8)
                         }
                         .accessibilityIdentifier("studio.selection." + String(action.dropFirst(2)).trimmingCharacters(in: .whitespaces).lowercased().replacingOccurrences(of: " ", with: "-"))
-                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
+                        .disabled(vm.selectedElementIDs.isEmpty || (action.contains("Cut") && !vm.canCutSelected) || (action.contains("Duplicate") && !vm.canDuplicateSelected) || (action.contains("Lock") && vm.prepareSelectionLayerLock() == nil))
                         .accessibilityHint(action.contains("Lock") ? "Lock layers affects all artwork on those layers in every frame. Unlock in Layers or Undo." : "")
                     }
                 }
@@ -664,8 +665,47 @@ struct FloatingToolSettingsPanel: View {
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                     .accessibilityIdentifier("studio.selection.lock-scope")
                 Divider().background(Color.white.opacity(0.08))
+                Text("POSITION").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                Picker("Nudge distance", selection: $vm.selectionNudgeDistance) {
+                    Text("1 px").tag(1.0); Text("10 px").tag(10.0); Text("100 px").tag(100.0)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.selection.nudge-distance")
+                HStack {
+                    Button("←") { _ = vm.positionSelected(dx: -vm.selectionNudgeDistance) }.accessibilityLabel("Move selection left")
+                    Button("→") { _ = vm.positionSelected(dx: vm.selectionNudgeDistance) }.accessibilityLabel("Move selection right")
+                    Button("↑") { _ = vm.positionSelected(dy: -vm.selectionNudgeDistance) }.accessibilityLabel("Move selection up")
+                    Button("↓") { _ = vm.positionSelected(dy: vm.selectionNudgeDistance) }.accessibilityLabel("Move selection down")
+                    Menu("Align") {
+                        ForEach(StudioViewModel.SelectionAlignment.allCases, id: \.rawValue) { alignment in
+                            Button(alignment.rawValue) { _ = vm.positionSelected(alignment: alignment) }
+                        }
+                    }.accessibilityIdentifier("studio.selection.align")
+                }.font(.specialElite(14)).frame(minHeight: 44).disabled(vm.beginSelectionHandle() == nil)
+                Text("Nudge uses canvas pixels. Align places the selected group against the canvas edges or center. Each action is one Undo step.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 Text("SCALE & ROTATE").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                SettingsSlider(label: "Scale", value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
+                if let explanation = vm.selectionTransformExplanation {
+                    Text(explanation).font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                        .accessibilityIdentifier("studio.selection.transform-reason")
+                }
+                if !vm.isSelectingMixedArtwork {
+                    Toggle("Keep proportions", isOn: $vm.selectionPreservesAspect)
+                        .font(.specialElite(12)).tint(.red)
+                        .accessibilityIdentifier("studio.selection.keep-proportions")
+                        .onChange(of: vm.selectionPreservesAspect) { _, _ in
+                            vm.selectionHeightPercent = vm.selectionScalePercent
+                        }
+                }
+                if !vm.selectionPreservesAspect && !vm.isSelectingMixedArtwork {
+                    Text("Drag a side handle to change only width or height. Small selections use the Width and Height controls below.")
+                        .font(.specialElite(10)).foregroundColor(.white.opacity(0.65))
+                }
+                SettingsSlider(label: vm.selectionPreservesAspect || vm.isSelectingMixedArtwork ? "Scale" : "Width",
+                               value: $vm.selectionScalePercent, range: 25...400, unit: "%", accent: .red)
+                if !vm.selectionPreservesAspect && !vm.isSelectingMixedArtwork {
+                    SettingsSlider(label: "Height", value: $vm.selectionHeightPercent, range: 25...400, unit: "%", accent: .red)
+                    Text("Corner handles now change width and height independently around the selection center.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                }
                 SettingsSlider(label: "Angle", value: $vm.selectionRotationDegrees, range: -180...180, unit: "°", accent: .red)
                 HStack {
                     Button(action: { _ = vm.transformSelected() }) {
@@ -673,7 +713,7 @@ struct FloatingToolSettingsPanel: View {
                             .foregroundColor(.white).background(Color.red.opacity(0.8)).cornerRadius(8)
                     }
                     .accessibilityIdentifier("studio.selection.transform-apply")
-                    .disabled(vm.selectedElementIDs.isEmpty)
+                    .disabled(vm.beginSelectionHandle() == nil)
                     Button(action: { vm.resetSelectionTransform() }) {
                         Text("Reset values").frame(maxWidth: .infinity, minHeight: 44)
                             .foregroundColor(.white.opacity(0.8)).background(Color.white.opacity(0.08)).cornerRadius(8)
@@ -689,14 +729,33 @@ struct FloatingToolSettingsPanel: View {
         // ── LASSO ──
         case .wand:
             VStack(alignment: .leading, spacing: 10) {
-                Text("Image pixels").font(.headline)
-                Text("Select an image layer, close this popup and tap its visible pixels. This version samples only that image, not composited artwork. Layers with drawings, effects, glow, blending or reduced opacity must be separated or restored to normal first.").font(.caption)
+                Text("Image pixels").font(.specialElite(16))
+                Text("Select an image layer, close this popup and tap its visible pixels. Sample the image colors or the visible canvas. Only the active image’s pixels are edited; other layers remain untouched. The active image layer must be normal and fully opaque, without drawings or effects.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                 Picker("Region", selection: $vm.wandMode) {
                     ForEach(StudioImageRegionService.Mode.allCases, id: \.self) { mode in Text(mode.rawValue).tag(mode) }
                 }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.mode")
                 HStack { Text("Tolerance"); Slider(value: $vm.wandTolerance, in: 0...128, step: 1); Text("\(Int(vm.wandTolerance))") }
                     .accessibilityIdentifier("studio.wand.tolerance")
+                Picker("Sample colors", selection: $vm.wandSampleVisibleCanvas) {
+                    Text("Active image").tag(false)
+                    Text("Visible canvas").tag(true)
+                }.pickerStyle(.segmented).accessibilityIdentifier("studio.wand.sampling")
                 Toggle("Connected pixels only", isOn: $vm.wandContiguous).accessibilityIdentifier("studio.wand.contiguous")
+                HStack {
+                    Button("Select all pixels") { Task { await vm.changeImageRegionMembership(.all) } }
+                        .accessibilityIdentifier("studio.wand.select-all")
+                    Button("Invert selection") { Task { await vm.changeImageRegionMembership(.invert) } }
+                        .accessibilityIdentifier("studio.wand.invert")
+                }.frame(minHeight: 44)
+                    .disabled(vm.wandWorking || (try? vm.captureImageRegion()) == nil)
+                HStack {
+                    Button("Grow 1 px") { Task { await vm.changeImageRegionMembership(.grow) } }
+                        .accessibilityIdentifier("studio.wand.grow")
+                    Button("Shrink 1 px") { Task { await vm.changeImageRegionMembership(.shrink) } }
+                        .accessibilityIdentifier("studio.wand.shrink")
+                }.frame(minHeight: 44).disabled(!vm.canEditImageRegion)
+                Text("Grow and Shrink adjust the boundary by one source-image pixel, including diagonal neighbors. Shrink can clear a thin selection. All and Invert stay within visible image pixels and the crop.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 Text("\(vm.wandSelectedPixels) source pixels selected").accessibilityIdentifier("studio.wand.count")
                 if let data = vm.wandPreviewPNG, let image = UIImage(data: data) {
                     Image(uiImage: image).resizable().scaledToFit().frame(height: 100)
@@ -706,10 +765,17 @@ struct FloatingToolSettingsPanel: View {
                 HStack {
                     Button("Copy pixels") { _ = vm.applyImageRegion(.copy) }.disabled(!vm.canEditImageRegion)
                         .accessibilityIdentifier("studio.wand.copy")
+                    Button("Cut pixels") { _ = vm.applyImageRegion(.cut) }.disabled(!vm.canEditImageRegion)
+                        .accessibilityIdentifier("studio.wand.cut")
                     Button("Delete pixels") { _ = vm.applyImageRegion(.delete) }.disabled(!vm.canEditImageRegion)
                         .accessibilityIdentifier("studio.wand.delete")
                 }.frame(minHeight: 44)
-                Text("Move selected pixels in canvas units. Original bytes and unselected images stay preserved.").font(.caption)
+                Button("Move on canvas") { _ = vm.applyImageRegion(.lift) }
+                    .frame(minHeight: 44).disabled(!vm.canEditImageRegion)
+                    .accessibilityIdentifier("studio.wand.lift")
+                Text("Lift selected pixels onto their own layer, then drag, resize or rotate with Move. Undo restores the original image.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                Text("Move selected pixels in canvas units. Original bytes and unselected images stay preserved.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption))
                 HStack {
                     TextField("X offset", value: $vm.wandMoveX, format: .number).keyboardType(.numbersAndPunctuation)
                         .accessibilityIdentifier("studio.wand.dx")
@@ -784,7 +850,7 @@ struct FloatingToolSettingsPanel: View {
                 }.font(.specialElite(11)).frame(minHeight: 44)
                     .disabled(vm.selectedElementIDs.isEmpty)
                 if vm.hasMixedArtworkSelection {
-                    Text("Choose Move to transform this group. Copy and Cut require drawings or an image selected separately.")
+                    Text("Move transforms the selected drawings and image together. Copy and Cut preserve the group; Cut requires unlocked layers.")
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 }
                 } else {
@@ -825,6 +891,8 @@ struct FloatingToolSettingsPanel: View {
                     zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
                     zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
                 }
+                Text("Use two fingers to pan and pinch to zoom. Hand also pans with one finger. FIT recenters the canvas.")
+                    .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
             }
         default:
             EmptyView()
@@ -833,9 +901,9 @@ struct FloatingToolSettingsPanel: View {
     
     private var areaSelectionGuidance: String {
         switch vm.areaSelectionTarget {
-        case .drawings: return "Enclose whole drawings, then choose Move to drag them. Lasso includes editable and historical text."
-        case .image: return "Enclose the whole image on the active visible, unlocked layer, then choose Move. This mode selects one image. Choose Drawings + image to select it together with drawings."
-        case .artwork: return "Enclose whole drawings and the image on its active visible, unlocked layer, then choose Move to transform them together. Hidden or locked artwork is excluded."
+        case .drawings: return "Enclose whole drawings. Move activates automatically: drag inside the selection box or use its resize and rotation handles. Lasso includes editable and historical text."
+        case .image: return "Enclose the whole image on the active visible, unlocked layer. Move activates automatically with image transform handles. Choose Drawings + image to include drawings."
+        case .artwork: return "Enclose whole drawings and the image on its active visible, unlocked layer. Move activates automatically to transform the group. Hidden or locked artwork is excluded."
         }
     }
     private var areaSelectionCount: String {
@@ -909,8 +977,8 @@ struct SettingsSlider: View {
     
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(label): \(displayedValue)\(unit)")
-                .font(.system(size: 10, design: .monospaced))
+            (Text(label + ": ").font(.specialElite(10)) +
+             Text(displayedValue + unit).font(.specialElite(10)))
                 .foregroundColor(.sdStudioSecondaryText)
             
             Slider(value: $value, in: range)
@@ -1042,12 +1110,12 @@ private struct StudioImagePlacementControls: View {
     }
     private func field(_ name: String, _ value: Binding<String>, focus: StudioImagePlacementField) -> some View {
         HStack {
-            Text(name).frame(width: 52, alignment: .leading)
+            Text(name).font(.specialElite(12)).frame(width: 52, alignment: .leading)
             TextField(name, text: value).keyboardType(.decimalPad).focused($fieldFocused, equals: focus)
                 .textFieldStyle(.roundedBorder).foregroundColor(.primary)
                 .accessibilityIdentifier("studio.image-placement." + name.lowercased())
             Text("px").foregroundColor(.sdStudioSecondaryText)
-        }.font(.system(size: 12, design: .monospaced))
+        }.font(.specialElite(12))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1108,12 +1176,12 @@ private struct StudioImageCropControls: View {
     }
     private func field(_ name: String, _ value: Binding<String>, _ key: StudioImagePlacementField) -> some View {
         HStack {
-            Text(name).frame(width: 52, alignment: .leading)
+            Text(name).font(.specialElite(12)).frame(width: 52, alignment: .leading)
             TextField(name, text: value).keyboardType(.decimalPad).focused($focused, equals: key)
                 .textFieldStyle(.roundedBorder).foregroundColor(.primary)
                 .accessibilityIdentifier("studio.image-crop." + name.lowercased())
             Text("%").foregroundColor(.sdStudioSecondaryText)
-        }.font(.system(size: 12, design: .monospaced))
+        }.font(.specialElite(12))
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -1124,7 +1192,7 @@ private struct StudioImageCropControls: View {
                 .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             Button("Full image") { x = "0"; y = "0"; width = "100"; height = "100" }
                 .frame(minHeight: 44).accessibilityIdentifier("studio.image-crop.full")
-            if proposed == nil { Text("Keep the crop inside 100%, at least 1% wide and high.").font(.caption).foregroundColor(.orange) }
+            if proposed == nil { Text("Keep the crop inside 100%, at least 1% wide and high.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.orange) }
             HStack {
                 Button("Apply crop") {
                     guard let crop = proposed else { return }
@@ -1135,7 +1203,7 @@ private struct StudioImageCropControls: View {
                 Button("Cancel", action: dismiss).accessibilityIdentifier("studio.image-crop.cancel")
             }.frame(minHeight: 44)
             if vm.prepareImagePlacement() != capture {
-                Text("Studio changed. Cancel and open Crop image again.").font(.caption).foregroundColor(.orange)
+                Text("Studio changed. Cancel and open Crop image again.").font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).foregroundColor(.orange)
             }
         }
     }

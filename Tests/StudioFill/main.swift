@@ -781,6 +781,137 @@ private struct Failure: Error { let message: String }
             "Tool handoff revived stale Lasso or silently fell back to whole-canvas Fill")
         pass("explicit transformed image-alpha Fill real session clips expansion preserves source Undo cold and PNG")
     }
+    static func mixedSelectionCoverageSession() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-mixed-fill-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let imageDocument = try document(shape("source", opacity: 0.5))
+        let png = try await StudioExportService().export(document: imageDocument, format: .pngSequence,
+            outputParent: root, background: .transparent)
+        let imported = try await StudioImageImportService().importImage(from: png.imageURLs[0], name: "Partial alpha source", scratchParent: root)
+        let store = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("projects"))
+        let vm = StudioViewModel(storage: store)
+        let made = await vm.createProject(name: "Mixed coverage", width: 128, height: 128, fps: 12)
+        try require(made, "Mixed Fill project")
+        let asset = try vm.attachImportedImage(imported, expectedProjectID: vm.document.id, expectedRevision: vm.document.revision,
+            frameID: vm.currentFrame.id, layerID: vm.activeLayerID)
+        let layer = vm.currentFrame.rasterLayerID!
+        vm.selectLayer(layer); vm.selectedTool = .move; await vm.flush()
+        guard let placement = vm.prepareImagePlacement() else { throw Failure(message: "Mixed image pose") }
+        try require(vm.placeImage(placement, at: .init(x: 16, y: 48, width: 32, height: 32), rotationDegrees: 30), "Mixed transformed image")
+        var drawing = shape(layer, opacity: 0.5)
+        drawing.points = [.init(x: 0, y: 0), .init(x: 16, y: 16)]; drawing.width = 2
+        drawing.transform = .init(a: 0, b: 1, c: -1, d: 0, tx: 104, ty: 56)
+        try require(vm.commitElement(drawing), "Mixed transformed drawing")
+        vm.selectedTool = .lasso; vm.areaSelectionTarget = .artwork; vm.areaSelectionKind = .rectangle
+        await vm.flush()
+        guard let area = vm.beginAreaSelection() else { throw Failure(message: "Mixed actual Lasso capture") }
+        try require(vm.finishAreaSelection(area, points: [.zero, .init(x: 128, y: 128)]) && vm.hasMixedArtworkSelection && vm.selectedElementIDs == [drawing.id], "Mixed actual Lasso selection")
+        vm.selectedTool = .fill; vm.strokeColor = .blue; vm.strokeOpacity = 0.6
+        vm.fillTolerance = 128; vm.fillContiguous = false; vm.fillExpand = 5; vm.fillAntiAlias = true
+        await vm.flush()
+        guard var context = StudioFillContext.current(vm) else { throw Failure(message: "Mixed Fill context") }
+        try require(context.selectedElementIDs == [drawing.id] && context.selectedImageLayerID == layer && context.selectedImageSelectionID != nil,
+            "Mixed Fill dropped captured selection authority")
+        let originalContext = context
+        vm.selectedTool = .lasso; await vm.flush()
+        guard let again = vm.beginAreaSelection() else { throw Failure(message: "Mixed reselection") }
+        try require(vm.finishAreaSelection(again, points: [.zero, .init(x:128,y:128)]), "Mixed reselection finish")
+        vm.selectedTool = .fill; await vm.flush()
+        guard let renewed = StudioFillContext.current(vm) else { throw Failure(message: "Mixed renewed context") }
+        try require(renewed.revision == originalContext.revision && renewed.selectedElementIDs == originalContext.selectedElementIDs &&
+            renewed.selectedImageSelectionID != originalContext.selectedImageSelectionID, "Mixed reselection did not change only authority token")
+        let before = vm.document, sources = vm.rasterSources(for: vm.currentFrame), session = StudioFillSession()
+        let oldAccepted = await session.fill(vm,context:originalContext,point:.init(x:32,y:64))
+        try require(!oldAccepted && vm.document == before, "Same-revision old mixed selection token accepted")
+        context = renewed
+        @MainActor
+        func capture(_ d: StudioDocument, ids: Set<String>? = nil, image: Bool = true, point: CGPoint = .init(x: 32,y: 64), data: [String:Data]? = nil) throws -> StudioFillService.Capture {
+            try StudioFillService.capture(document: d, frameID: d.activeFrameID, layerID: layer,
+                point: point, color: "#0000FF", opacity: 0.6, settings: context.settings,
+                sampleAllLayers: true, rasterDataByID: data ?? sources, selectedElementIDs: ids ?? [drawing.id], selectedImageLayerID: image ? layer : nil)
+        }
+        let captured = try capture(before), coverage = try capture(before).selectionCoverage!
+        try require(coverage[64*128+32] > 100 && coverage[64*128+32] < 200 && coverage[64*128+96] > 100 && coverage[64*128+96] < 200 &&
+            coverage[64*128+64] == 0, "Mixed partial alpha or separated geometry became bounding rectangle")
+        let element = try StudioFillService.element(from: captured)
+        try require(element.opacity == 0.6 && captured.settings == context.settings, "Mixed Fill settings ignored")
+        for span in element.fillMask!.spans { for x in span.start..<span.end {
+            try require(coverage[span.row*128+x] > 0 && span.alpha <= coverage[span.row*128+x], "Mixed expansion/AA crossed selected alpha")
+        } }
+        try rejects { _ = try StudioFillService.element(from: capture(before, point: .init(x:64,y:64))) }
+        try rejects { _ = try capture(before, ids: [drawing.id,"missing"]) }
+        try rejects { _ = try capture(before, data: [:]) }
+        // Image projection must retain only selected same-layer predecessors.
+        var ordered = try StudioDocumentEditor(document: before)
+        var unselected = shape(layer); unselected.points = [.init(x: 4,y: 4),.init(x: 8,y: 8)]
+        try ordered.commit(unselected, frameID: before.activeFrameID)
+        for _ in 0..<2 { try ordered.orderSelectedArtwork(frameID: before.activeFrameID, elementIDs: [], imageAssetID: asset, imageLayerID: layer, forward: true) }
+        try require(ordered.document.frames[0].rasterStackPosition == 2, "Mixed positive-stack fixture")
+        let orderedBefore = ordered.document
+        try require(capture(orderedBefore).selectionCoverage == coverage && ordered.document == orderedBefore, "Filtered stack/selection projection changed coverage or document")
+        var masked = before; masked.schemaVersion = max(masked.schemaVersion,32)
+        var instance = masked.frames[0].rasterInstance(on: layer)!
+        instance.crop = .init(x:0.25,y:0.25,width:0.5,height:0.5)
+        let geometry = StudioImageRegionMask.Geometry(instance)!
+        instance.regionMask = .init(width:imported.width,height:imported.height,
+            spans:(0..<imported.height).map { .init(row:$0,start:0,end:imported.width/2) },
+            sourceClip:instance.crop,samplingGeometry:geometry,placementGeometry:geometry)
+        try masked.frames[0].updateRasterInstance(instance); try masked.validate()
+        let mixedMask = try capture(masked).selectionCoverage!, imageMask = try capture(masked,ids:[]).selectionCoverage!, drawingMask = try capture(masked,image:false).selectionCoverage!
+        for i in 0..<mixedMask.count {
+            let union = 255 - ((255-Int(imageMask[i])) * (255-Int(drawingMask[i])) + 127) / 255
+            try require(abs(Int(mixedMask[i])-union) <= 1, "Mixed coverage dropped transformed crop/region/drawing alpha")
+        }
+        try require(mixedMask[64*128+64] == 0 && mixedMask[64*128+96] > 100 && imageMask != coverage, "Mixed mask fixture lost distinct islands")
+        for mode in 0..<5 {
+            var invalid = before; let index = invalid.layers.firstIndex { $0.id == layer }!
+            switch mode {
+            case 0: invalid.layers[index].locked = true
+            case 1: invalid.layers[index].lockMode = "alpha"
+            case 2: invalid.layers[index].visible = false
+            case 3: invalid.layers[index].opacity = 0
+            default: invalid.frames[0].elements.append(.init(id:UUID().uuidString,tool:.eraser,points:[.init(x:32,y:64)],color:"#000000",width:12,opacity:1,layerID:layer,eraser:.init()))
+            }
+            try rejects { _ = try capture(invalid) }
+        }
+        var crossLayer = before
+        let owner = CanvasLayer(id: UUID().uuidString, name: "Selected drawing owner")
+        crossLayer.layers.append(owner); crossLayer.frames[0].elements[0].layerID = owner.id
+        try require(capture(crossLayer).selectionCoverage == coverage, "Mixed coverage omitted another selected owner layer")
+        crossLayer.layers[crossLayer.layers.count-1].locked = true
+        try rejects { _ = try capture(crossLayer) }
+        let cancelledTask = Task { @MainActor in
+            withUnsafeCurrentTask { $0?.cancel() }
+            return await session.fill(vm, context: context, point: .init(x:32,y:64))
+        }
+        let cancelled = await cancelledTask.value
+        try require(!cancelled && vm.document == before && !session.isFilling && vm.activeStrokeID == nil,
+            "Cancelled mixed Fill changed history or retained worker ownership")
+        let didFill = await session.fill(vm, context: context, point: .init(x:32,y:64))
+        try require(didFill && vm.currentFrame.elements.first == drawing && vm.rasterData(asset) == imported.normalizedPNG &&
+            vm.originalImageSource(asset)?.originalData == imported.originalData &&
+            vm.message == "Added paint on the active layer within selected drawings and image coverage. Original artwork remains unchanged.", "Mixed fill failed or changed originals")
+        let painted = try render(vm.document, sources:sources)
+        try require(channel(painted,32,64,2) > 40 && channel(painted,96,64,2) > 40 && channel(painted,64,64) == 0,
+            "Real mixed fill omitted an island or painted empty gap")
+        vm.undo(); try require(vm.document.frames == before.frames, "Mixed one Undo changed source")
+        vm.redo(); try require(render(vm.document,sources:sources) == painted, "Mixed Redo pixels")
+        let saved = await vm.save(); try require(saved, "Mixed Fill save")
+        let cold = StudioViewModel(storage:store)
+        guard let stored = try store.loadAnimation(id:vm.document.id) else { throw Failure(message:"Mixed saved record") }
+        let opened = await cold.openProject(stored.metadata)
+        try require(opened && cold.document == vm.document && render(cold.document,sources:cold.rasterSources(for:cold.currentFrame)) == painted &&
+            cold.originalImageSource(asset)?.originalData == imported.originalData, "Mixed cold source or rendered output changed")
+        let exported = try await StudioExportService().export(document:cold.document,format:.pngSequence,outputParent:root,background:.transparent,rasterData:{cold.rasterData($0)})
+        let decoded = CGImageSourceCreateWithURL(exported.imageURLs[0] as CFURL,nil)!
+        try require(pixels(CGImageSourceCreateImageAtIndex(decoded,0,nil)!) == painted, "Mixed exported PNG pixels differ")
+        vm.clearElementSelection(); let stable = vm.document
+        let stale = await session.fill(vm,context:context,point:.init(x:32,y:64))
+        try require(!stale && vm.document == stable && !session.isFilling && vm.activeStrokeID == nil, "Stale mixed selection broadened Fill")
+        pass("actual mixed Lasso Fill coverage, transformed crop/mask/stack, gap and locks, one Undo cold and PNG")
+    }
+
     static func main() async throws {
         setbuf(stdout, nil)
         try await styledBrushShapeFillRoundtrip()
@@ -795,6 +926,7 @@ private struct Failure: Error { let message: String }
         try transformedSelectionCoverage()
         try await selectedCoverageSessionPersistence()
         try await selectedImageCoverageSession()
+        try await mixedSelectionCoverageSession()
         print("STUDIO_FILL_INTEGRATION=PASS groups=\(passed)")
     }
 }

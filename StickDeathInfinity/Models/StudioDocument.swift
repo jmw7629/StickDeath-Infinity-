@@ -481,6 +481,10 @@ struct StudioDocumentEditor {
     var canUndo: Bool { !undoDocuments.isEmpty }
     var canRedo: Bool { !redoDocuments.isEmpty }
     var canPaste: Bool { clipboard != nil }
+    var canPasteFrame: Bool {
+        if case .frame = clipboard { return true }
+        return false
+    }
     var clipboardElements: [DrawnElement]? {
         guard case .elements(let values) = clipboard else { return nil }
         return values
@@ -612,6 +616,33 @@ struct StudioDocumentEditor {
             sourceOffset: original.sourceOffset, isMuted: original.isMuted, fadeEnvelope: original.fadeEnvelope)
         try change { $0.audioClips.append(duplicate) }
         return duplicate
+    }
+
+    /// Track controls preserve clip/source identities and share full-document Undo.
+    mutating func updateAudioTrack(_ track: Int, volume: Double?, muted: Bool?) throws {
+        guard (1...4).contains(track), volume != nil || muted != nil,
+              volume.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
+            throw StudioDocumentError.invalid("Choose track 1–4 and volume 0–100% or a mute setting.")
+        }
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        let changesVolume = volume.map { $0 != document.audioTrackVolume(track) } ?? false
+        let changesMute = muted.map { $0 != document.isAudioTrackMuted(track) } ?? false
+        guard changesVolume || changesMute else { return }
+        try change { value in
+            if let volume, changesVolume {
+                value.schemaVersion = max(value.schemaVersion, 13)
+                var volumes = value.audioTrackVolumes ?? Array(repeating: 1, count: 4)
+                volumes[track - 1] = volume; value.audioTrackVolumes = volumes
+            }
+            if let muted, changesMute {
+                value.schemaVersion = max(value.schemaVersion, 12)
+                var tracks = Set(value.mutedAudioTracks ?? [])
+                if muted { tracks.insert(track) } else { tracks.remove(track) }
+                value.mutedAudioTracks = tracks.sorted()
+            }
+        }
     }
 
     /// Shared by manual controls and the bounded assistant command transport.
@@ -864,9 +895,25 @@ struct StudioDocumentEditor {
         }
         clipboard = .frame(frame); clipboardVersion = UUID()
     }
-    mutating func pasteFrame() throws {
-        guard case .frame(let source) = clipboard else { return }
-        try insertCopy(source)
+    /// Replace the clipboard only after the explicit removal succeeds. A
+    /// rejected cut must preserve both the document and the prior clipboard.
+    mutating func cutFrame(_ id: String) throws {
+        guard document.frames.count > 1 else {
+            throw StudioDocumentError.invalid("Keep at least one frame in the project.")
+        }
+        guard let source = document.frames.first(where: { $0.id == id }) else {
+            throw StudioDocumentError.invalid("The selected frame is no longer available to cut.")
+        }
+        try deleteFrame(id)
+        clipboard = .frame(source)
+        clipboardVersion = UUID()
+    }
+    mutating func pasteFrame() throws { try pasteFrame(after: document.activeFrameID) }
+    mutating func pasteFrame(after frameID: String) throws {
+        guard case .frame(let source) = clipboard else {
+            throw StudioDocumentError.invalid("Copy a frame before pasting a frame.")
+        }
+        try insertCopy(source, after: frameID)
     }
     /// The selection clipboard is an immutable, bounded snapshot. Copy changes
     /// neither document revision nor undo history and never uses the OS clipboard.
@@ -907,6 +954,36 @@ struct StudioDocumentEditor {
         try checkCancellation()
         clipboard = .elements(values)
         clipboardVersion = UUID()
+    }
+    /// Duplicate in place on each original layer without replacing the clipboard.
+    @discardableResult
+    mutating func duplicateElements(frameID: String, ids: Set<String>,
+                                   checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Set<String> {
+        var validator = self
+        try validator.copyElements(frameID: frameID, ids: ids, checkCancellation: checkCancellation)
+        guard let originals = validator.clipboardElements,
+              originals.allSatisfy({ element in
+                  element.tool != .eraser && document.layers.contains {
+                      $0.id == element.layerID && $0.lockMode == "free"
+                  }
+              }) else { throw StudioDocumentError.locked }
+        let duplicates = Self.freshFrameCopy(AnimationFrame(id: frameID, elements: originals)).elements
+        let byOriginal = Dictionary(uniqueKeysWithValues: zip(originals, duplicates).map { ($0.0.id, $0.1) })
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == frameID }),
+                  duplicates.count <= 20_000 - value.frames[index].elements.count else {
+                throw StudioDocumentError.invalid("Duplicating these drawings exceeds the frame limit.")
+            }
+            var elements: [DrawnElement] = []
+            for element in value.frames[index].elements {
+                try checkCancellation()
+                elements.append(element)
+                if let duplicate = byOriginal[element.id] { elements.append(duplicate) }
+            }
+            value.frames[index].elements = elements
+            try checkCancellation()
+        }
+        return Set(duplicates.map(\.id))
     }
     @discardableResult
     mutating func pasteElements(frameID: String, layerID: String,
@@ -961,15 +1038,39 @@ struct StudioDocumentEditor {
         guard let source = document.frames.first(where: { $0.id == document.activeFrameID }) else { return }
         try insertCopy(source)
     }
-    private mutating func insertCopy(_ source: AnimationFrame) throws {
-        try change { value in
-            let index = value.frames.firstIndex(where: { $0.id == value.activeFrameID })!
+    private static func freshFrameCopy(_ source: AnimationFrame) -> AnimationFrame {
             let elements = source.elements.map { element in
                 DrawnElement(id: UUID().uuidString, tool: element.tool, points: element.points, color: element.color,
                              width: element.width, opacity: element.opacity, fillColor: element.fillColor, layerID: element.layerID,
                              brush: element.brush, shape: element.shape, fillMask: element.fillMask, translation: element.translation, reflection: element.reflection, eraser: element.eraser, text: element.text, transform: element.transform, smudge: element.smudge, blur: element.blur, sharpen: element.sharpen, dodgeBurn: element.dodgeBurn, preservesLayerAlpha: element.preservesLayerAlpha, selectionErasures: element.selectionErasures)
             }
-            let frame = AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, rasterRotationDegrees: source.rasterRotationDegrees, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases, rasterRegionMask: source.rasterRegionMask, rasterStackPosition: source.rasterStackPosition)
+            return AnimationFrame(id: UUID().uuidString, elements: elements, rasterAssetID: source.rasterAssetID, rasterLayerID: source.rasterLayerID, rasterPlacement: source.rasterPlacement, rasterReflection: source.rasterReflection, rasterQuarterTurns: source.rasterQuarterTurns, rasterRotationDegrees: source.rasterRotationDegrees, holdTicks: source.holdTicks, rasterCrop: source.rasterCrop, rasterAliases: source.rasterAliases, rasterRegionMask: source.rasterRegionMask, rasterStackPosition: source.rasterStackPosition)
+    }
+    mutating func duplicateFrameRange(_ ids: [String],
+        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        guard (1...96).contains(ids.count), Set(ids).count == ids.count,
+              let first = document.frames.firstIndex(where: { $0.id == ids[0] }),
+              first + ids.count <= document.frames.count,
+              Array(document.frames[first..<(first+ids.count)]).map(\.id) == ids,
+              document.frames.count + ids.count <= 1000 else {
+            throw StudioDocumentError.invalid("Choose a current contiguous range of 1–96 frames within the project limit.")
+        }
+        let originals = Array(document.frames[first..<(first+ids.count)])
+        try change { value in
+            var copies: [AnimationFrame] = []
+            for source in originals { try checkCancellation(); copies.append(Self.freshFrameCopy(source)) }
+            value.frames.insert(contentsOf: copies, at: first+ids.count)
+            value.activeFrameID = copies[0].id
+            try checkCancellation()
+        }
+    }
+    private mutating func insertCopy(_ source: AnimationFrame, after frameID: String? = nil) throws {
+        try change { value in
+            guard let index = value.frames.firstIndex(where: { $0.id == (frameID ?? value.activeFrameID) }) else {
+                throw StudioDocumentError.invalid("The destination frame is no longer available. Nothing was pasted.")
+            }
+            let frame = Self.freshFrameCopy(source)
+            let elements = frame.elements
             value.frames.insert(frame, at: index + 1); value.activeFrameID = frame.id
             if elements.contains(where: { $0.selectionErasures != nil }) { value.schemaVersion = max(value.schemaVersion, 29) }
             if elements.contains(where: { $0.brush != nil }) { value.schemaVersion = max(value.schemaVersion, 2) }
@@ -1009,6 +1110,20 @@ struct StudioDocumentEditor {
             guard value.frames.count > 1, let index = value.frames.firstIndex(where: { $0.id == id }) else { return }
             value.frames.remove(at: index)
             if value.activeFrameID == id { value.activeFrameID = value.frames[min(index, value.frames.count - 1)].id }
+        }
+    }
+    /// Keep identities, exposures, raster references and the active frame;
+    /// only the explicitly captured contiguous range changes order.
+    mutating func reverseFrames(_ ids: [String]) throws {
+        guard (2...96).contains(ids.count), Set(ids).count == ids.count,
+              let first = document.frames.firstIndex(where: { $0.id == ids[0] }),
+              first + ids.count <= document.frames.count,
+              Array(document.frames[first..<(first + ids.count)].map(\.id)) == ids else {
+            throw StudioDocumentError.invalid("Select a current contiguous range of 2–96 frames to reverse.")
+        }
+        try change { value in
+            let range = first..<(first + ids.count)
+            value.frames.replaceSubrange(range, with: Array(value.frames[range].reversed()))
         }
     }
     mutating func moveFrame(_ id: String, offset: Int) throws {
@@ -1764,8 +1879,15 @@ enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
 }
 
 extension StudioDocumentEditor {
-    /// Endpoint drawings pair in their existing order. Equal styles and sample
-    /// topology make this explicit interpolation, never guessed object tracking.
+    private static func tweenImageReflectionMatches(_ start: StudioRasterLayerInstance, _ end: StudioRasterLayerInstance) -> Bool {
+        let a = start.reflection ?? .init(), b = end.reflection ?? .init()
+        let odd = abs((end.quarterTurns ?? 0) - (start.quarterTurns ?? 0)) % 2 == 1
+        return odd ? a.horizontal == b.vertical && a.vertical == b.horizontal : a == b
+    }
+
+    /// Drawings pair in existing order; managed images pair by layer and source.
+    /// Matching immutable styles/masks make this explicit interpolation, never
+    /// guessed tracking. Image endpoints normalize quarter turns into the starting source basis.
     @discardableResult
     mutating func tweenFrames(after frameID: String, to nextFrameID: String,
                               inbetweenCount: Int, easing: StudioTweenEasing,
@@ -1777,15 +1899,58 @@ extension StudioDocumentEditor {
             throw StudioDocumentError.invalid("Choose adjacent endpoint frames and 1–24 in-betweens within the 1,000-frame limit.")
         }
         let start = document.frames[index], end = document.frames[index + 1]
-        guard start.rasterAssetID == nil, end.rasterAssetID == nil,
-              !start.elements.isEmpty, start.elements.count == end.elements.count,
-              start.elements.count <= 1024 else {
-            throw StudioDocumentError.unavailable("Tween needs matching ordered drawings in both frames. Raster references and empty or unequal drawing sets are unsupported; nothing changed.")
+        let startImages = start.rasterLayerInstances, endImages = end.rasterLayerInstances
+        guard start.elements.count == end.elements.count,
+              !start.elements.isEmpty || !startImages.isEmpty,
+              start.elements.count <= 1024,
+              startImages.count == endImages.count,
+              Set(startImages.map(\.layerID)) == Set(endImages.map(\.layerID)),
+              (start.rasterAssetID == nil) == startImages.isEmpty,
+              (end.rasterAssetID == nil) == endImages.isEmpty else {
+            throw StudioDocumentError.unavailable("Tween needs matching drawings and image layers in both adjacent frames. Empty, historical or unmatched endpoints are unsupported; nothing changed.")
+        }
+        var imagePairs: [(StudioRasterLayerInstance, StudioRasterLayerInstance, String)] = []
+        for image in startImages {
+            try checkCancellation()
+            guard let layer = document.layers.first(where: { $0.id == image.layerID }),
+                  layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else {
+                throw StudioDocumentError.locked
+            }
+            guard let target = end.rasterInstance(on: image.layerID),
+                  let source = start.rasterAssetID(on: image.layerID),
+                  source.hasPrefix("image-"), UUID(uuidString: String(source.dropFirst(6))) != nil,
+                  end.rasterAssetID(on: image.layerID) == source,
+                  image.placement != nil, target.placement != nil,
+                  image.crop == target.crop, image.regionMask == target.regionMask,
+                  Self.tweenImageReflectionMatches(image, target),
+                  (image.stackPosition ?? 0) == (target.stackPosition ?? 0) else {
+                throw StudioDocumentError.unavailable("Image tween endpoints must use the same managed source on each layer, with matching crop, region mask, carried reflection and drawing order. Nothing changed.")
+            }
+            // R(angle) * F * Q: changing the quarter-turn basis swaps local
+            // width/height and reflection axes on odd turns. Keep world center.
+            var normalized = target
+            let turns = (target.quarterTurns ?? 0) - (image.quarterTurns ?? 0)
+            if abs(turns) % 2 == 1, let p = target.placement {
+                normalized.placement = .init(x: p.x + (p.width - p.height) / 2,
+                    y: p.y + (p.height - p.width) / 2, width: p.height, height: p.width)
+            }
+            normalized.rotationDegrees = (target.rotationDegrees ?? 0) + Double(turns) * 90
+            imagePairs.append((image, normalized, source))
         }
         let totalPoints = start.elements.reduce(0) { $0 + $1.points.count + ($1.fillMask?.spans.count ?? 0) + ($1.text?.content.utf8.count ?? 0) }
         guard totalPoints <= 65_536 / inbetweenCount,
-              start.elements.count <= 1024 / inbetweenCount else {
-            throw StudioDocumentError.unavailable("Tween is limited to 65,536 generated points and 1,024 generated drawings. Use fewer in-betweens or simpler poses.")
+              start.elements.count + startImages.count <= 1024 / inbetweenCount else {
+            throw StudioDocumentError.unavailable("Tween is limited to 65,536 generated points and 1,024 generated drawings and images. Use fewer in-betweens or simpler poses.")
+        }
+        let imageMaskSpans = startImages.reduce(0) { $0 + ($1.regionMask?.spans.count ?? 0) }
+        var existingMaskSpans = 0
+        for frame in document.frames {
+            try checkCancellation()
+            existingMaskSpans += frame.rasterLayerInstances.reduce(0) { $0 + ($1.regionMask?.spans.count ?? 0) }
+        }
+        guard existingMaskSpans <= StudioImageRegionMask.maximumDocumentSpans,
+              imageMaskSpans <= (StudioImageRegionMask.maximumDocumentSpans - existingMaskSpans) / inbetweenCount else {
+            throw StudioDocumentError.unavailable("These image regions exceed the project mask budget when tweened. Use fewer in-betweens; nothing changed.")
         }
         for (a, b) in zip(start.elements, end.elements) {
             try checkCancellation()
@@ -1822,12 +1987,34 @@ extension StudioDocumentEditor {
                     brush: a.brush, shape: a.shape, fillMask: a.fillMask, reflection: a.reflection,
                     text: a.text, transform: transform))
             }
-            generated.append(AnimationFrame(id: UUID().uuidString, elements: elements))
+            var frame = AnimationFrame(id: UUID().uuidString, elements: elements)
+            for (image, target, source) in imagePairs {
+                try checkCancellation()
+                // Copy immutable crop/mask/stack/source metadata. Only placement
+                // and additional angle change; endpoint exposure stays untouched.
+                var interpolated = image
+                guard let from = image.placement, let to = target.placement else {
+                    throw StudioDocumentError.invalid("Image tween placement disappeared.")
+                }
+                func mix(_ a: Double, _ b: Double) -> Double { a + (b - a) * t }
+                interpolated.placement = .init(x: mix(from.x, to.x), y: mix(from.y, to.y),
+                    width: mix(from.width, to.width), height: mix(from.height, to.height))
+                let fromAngle = image.rotationDegrees ?? 0
+                var delta = ((target.rotationDegrees ?? 0) - fromAngle).truncatingRemainder(dividingBy: 360)
+                if delta > 180 { delta -= 360 }; if delta < -180 { delta += 360 }
+                var angle = (fromAngle + delta * t).truncatingRemainder(dividingBy: 360)
+                if angle > 180 { angle -= 360 }; if angle < -180 { angle += 360 }
+                interpolated.rotationDegrees = angle == 0 ? nil : angle
+                try frame.appendRasterInstance(interpolated, assetID: source)
+            }
+            generated.append(frame)
         }
         let ids = generated.map(\.id)
         try checkCancellation()
         try change { value in
-            value.schemaVersion = max(value.schemaVersion, 11)
+            value.schemaVersion = max(value.schemaVersion, generated.contains { frame in
+                frame.rasterLayerInstances.contains { $0.rotationDegrees != nil }
+            } ? 30 : 11)
             value.frames.insert(contentsOf: generated, at: index + 1)
             value.activeFrameID = ids[0]
         }
@@ -1867,7 +2054,7 @@ private enum StudioTweenAffine {
 
 extension StudioDocumentEditor {
     /// Typed source-preserving region transaction; no codec dependency in models.
-    enum ImageRegionAction { case delete, move(dx: Double, dy: Double) }
+    enum ImageRegionAction { case delete, lift, move(dx: Double, dy: Double) }
     mutating func editImageRegion(frameID: String, layerID: String, sourceID: String,
                                   expected: StudioRasterLayerInstance, fragment: StudioRasterLayerInstance,
                                   remainderMask: StudioImageRegionMask, fragmentLayerID: String, action: ImageRegionAction,
@@ -1891,13 +2078,20 @@ extension StudioDocumentEditor {
         }
         try selectedMask.validate()
         var moved = fragment
+        let offset: (dx: Double, dy: Double)?
         switch action {
-        case .delete: break
+        case .delete: offset = nil
+        case .lift: offset = (0, 0)
         case .move(let dx, let dy):
-            guard dx.isFinite, dy.isFinite, dx != 0 || dy != 0,
-                  !document.layers.contains(where: { $0.id == fragmentLayerID }), !fragmentLayerID.isEmpty,
+            guard dx.isFinite, dy.isFinite, dx != 0 || dy != 0 else {
+                throw StudioDocumentError.invalid("Image-region movement is invalid.")
+            }
+            offset = (dx, dy)
+        }
+        if let offset {
+            guard !document.layers.contains(where: { $0.id == fragmentLayerID }), !fragmentLayerID.isEmpty,
                   let p = moved.placement else { throw StudioDocumentError.invalid("Image-region movement is invalid.") }
-            moved.placement = StudioRasterPlacement(x: p.x + dx, y: p.y + dy, width: p.width, height: p.height)
+            moved.placement = StudioRasterPlacement(x: p.x + offset.dx, y: p.y + offset.dy, width: p.width, height: p.height)
             try StudioImageRotationGeometry(placement: moved.placement!, degrees: moved.rotationDegrees ?? 0)
                 .validate(canvasWidth: document.width, canvasHeight: document.height)
         }
@@ -1907,7 +2101,7 @@ extension StudioDocumentEditor {
             value.schemaVersion = max(value.schemaVersion, 32)
             var remainder = expected; remainder.regionMask = remainderMask
             try value.frames[index].updateRasterInstance(remainder)
-            if case .move = action {
+            if offset != nil {
                 moved.layerID = fragmentLayerID; moved.assetID = nil; moved.stackPosition = nil
                 value.layers.insert(CanvasLayer(id: fragmentLayerID, name: "Wand pixels"), at: layerIndex)
                 try value.frames[index].appendRasterInstance(moved, assetID: sourceID)

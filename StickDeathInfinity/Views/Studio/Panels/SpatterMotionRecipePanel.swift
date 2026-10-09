@@ -23,14 +23,20 @@ struct SpatterMotionRecipePanel: View {
     private var isTwoActorDraft: Bool { SpatterTwoActorBrief.isBrief(draft) }
     private var isBriefDraft: Bool { SpatterSceneBrief.isBrief(draft) }
     private var isStickDraft: Bool { SpatterStickFigureRecipe.isStickFigureInstruction(draft) }
+    private var isDuplicateRangeDraft: Bool { SpatterFrameDuplicateRangeInstruction.isInstruction(draft) }
+    private var isReverseDraft: Bool { SpatterFrameReverseInstruction.isInstruction(draft) }
+    private var isNavigationDraft: Bool { SpatterNavigationInstruction.isInstruction(draft) }
+    private var isLayerStructureDraft: Bool { SpatterLayerStructureInstruction.isInstruction(draft) }
     private var isLayerUpdateDraft: Bool { SpatterLayerUpdateInstruction.isInstruction(draft) }
     private var isLayerDuplicateDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterLayerDuplicateInstruction.isInstruction(draft) }
     private var isLayerOrderDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterLayerOrderInstruction.isInstruction(draft) }
     private var isGridDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterGridInstruction.isInstruction(draft) }
     private var isOnionDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterOnionInstruction.isInstruction(draft) }
     private var isFrameActionDraft: Bool { !isLayerUpdateDraft && !SpatterProjectRenameInstruction.isInstruction(draft) && SpatterFrameActionInstruction.isInstruction(draft) }
-    private var isLayerDraft: Bool { isLayerUpdateDraft || isLayerDuplicateDraft || isLayerOrderDraft }
+    private var isLayerDraft: Bool { isLayerStructureDraft || isLayerUpdateDraft || isLayerDuplicateDraft || isLayerOrderDraft }
     private var isRenameDraft: Bool { !isLayerUpdateDraft && SpatterProjectRenameInstruction.isInstruction(draft) }
+    private var isAudioTrackDraft: Bool { SpatterAudioTrackInstruction.isInstruction(draft) }
+    private var isDrawingDuplicateDraft: Bool { SpatterDrawingDuplicateInstruction.isInstruction(draft) }
     private var isErasureDraft: Bool { SpatterSelectedErasureInstruction.isInstruction(draft) }
     private var isExposureDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterFrameExposureInstruction.isInstruction(draft) }
     private var isGlowDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterLayerGlowInstruction.isInstruction(draft) }
@@ -43,14 +49,26 @@ struct SpatterMotionRecipePanel: View {
         return image
     }
     private var exampleText: String {
+        if isAudioTrackDraft { return SpatterAudioTrackInstruction.volumeExample }
+        if SpatterFrameCutInstruction.isInstruction(draft) { return SpatterFrameCutInstruction.example }
+        if isDrawingDuplicateDraft { return SpatterDrawingDuplicateInstruction.example }
+        if isDuplicateRangeDraft { return SpatterFrameDuplicateRangeInstruction.example }
+        if isReverseDraft { return SpatterFrameReverseInstruction.example }
+        if isExposureDraft, let instruction = try? SpatterFrameExposureInstruction.parse(draft), let frames = instruction.frames {
+            return "Set frames \(frames.lowerBound) through \(frames.upperBound) exposure to \(instruction.ticks) ticks."
+        }
+        if isNavigationDraft { return (try? SpatterNavigationInstruction.parse(draft))?.example ?? SpatterNavigationInstruction.frameExample }
+        if isLayerStructureDraft { return (try? SpatterLayerStructureInstruction.parse(draft))?.example ?? SpatterLayerStructureInstruction.addExample }
         if isGridDraft { return SpatterGridInstruction.settingsExample }
         if isOnionDraft { return SpatterOnionInstruction.settingsExample }
-        if isFrameActionDraft { return (try? SpatterFrameActionInstruction.parse(draft))?.action.example ?? SpatterFrameActionInstruction.Action.duplicate.example }
+        if isFrameActionDraft { return (try? SpatterFrameActionInstruction.parse(draft))?.example ?? SpatterFrameActionInstruction.Action.duplicate.example }
         if isLayerOrderDraft { return SpatterLayerOrderInstruction.upExample }
         if isLayerUpdateDraft {
             let text = draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
             if text.hasPrefix("hide") { return SpatterLayerUpdateInstruction.hideExample }
             if text.hasPrefix("show") { return SpatterLayerUpdateInstruction.showExample }
+            if text.contains("lock") { return SpatterLayerUpdateInstruction.lockExample((try? SpatterLayerUpdateInstruction.parse(draft))?.lock ?? .position) }
+            if text.contains("blend") { return SpatterLayerUpdateInstruction.blendExample((try? SpatterLayerUpdateInstruction.parse(draft))?.blend ?? .multiply) }
         }
         if isOrderDraft { return SpatterArtworkOrderInstruction.forwardExample }
         if isImageDraft { return SpatterImageReflectionInstruction.horizontalExample }
@@ -58,23 +76,35 @@ struct SpatterMotionRecipePanel: View {
         isLayerDuplicateDraft ? SpatterLayerDuplicateInstruction.example : isLayerUpdateDraft ? (draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("rename") ? SpatterLayerUpdateInstruction.renameExample : SpatterLayerUpdateInstruction.opacityExample) : isExposureDraft ? SpatterFrameExposureInstruction.example : isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
+        if isAudioTrackDraft { return "Set volume or mute for one of the four audio tracks. Track gain combines with each clip's own gain in playback and export. Clips and source audio are preserved; one Undo restores the prior setting." }
+        if SpatterFrameCutInstruction.isInstruction(draft) { return "Cut the current frame captured when Spatter opens. It remains in the frame clipboard for pasting. One Undo restores it; at least one frame must remain. Audio timing is unchanged." }
+        if isDrawingDuplicateDraft { return "Duplicate the captured drawing selection on its original layers. Copies get fresh identities and remain selected for Move. One Undo removes the copies; the clipboard stays unchanged. Images and mixed selections are excluded." }
+        if isDuplicateRangeDraft { return "Duplicate a consecutive frame range after its originals, with fresh identities, preserved artwork and exposure, and one Undo step." }
+        if isReverseDraft { return "Reverse a consecutive frame range as one undoable edit. Frame artwork and exposures stay editable; audio times stay unchanged." }
+        if isNavigationDraft { return "Select an existing frame or layer using the same Studio commands. Numbers start at 1; layers follow the top-to-bottom Layers list. Artwork is unchanged." }
+        if isLayerStructureDraft { return "Create a named blank layer, or delete only the captured active layer and its contents across all frames using the same Layers commands. Existing original image files are preserved. One Undo restores the prior document." }
         if isGridDraft { return "Show or hide the canvas grid, or configure its spacing, opacity and tint. It is an editor guide, not a background image or exported artwork. One Undo restores the prior settings." }
         if isOnionDraft { return "Show or hide neighboring-frame guides, or configure their counts, opacity and tint. These persistent editor guides do not change frame timing, artwork or export pixels. One Undo restores the prior settings." }
-        if isFrameActionDraft { return "Duplicate, move, or delete only the captured active frame using the same timeline commands. One Undo restores the previous timeline. Frame movement preserves exposure; duplication adds its copied duration; deletion removes its duration." }
+        if isFrameActionDraft { return "Add blank frames, or duplicate, move and delete the captured active frame using the same timeline commands. One Undo restores the previous timeline. Frame movement preserves exposure; duplication adds its copied duration; deletion removes its duration." }
         if isLayerOrderDraft { return "Move the entire active layer one position up or down using the same Layers controls. Artwork, visibility and lock settings stay intact. One Undo restores layer order." }
         if isOrderDraft { return "Move selected drawings, an image, or mixed artwork one step forward or backward within each layer. Other layers keep their order. One Undo reverses the edit." }
         if isImageDraft { return "Flip the selected image horizontally or vertically using the same Move controls. Its original file, crop and other image instances stay intact. One Undo reverses the edit." }
         return
-        isLayerDuplicateDraft ? "Duplicate the active layer across existing frames with fresh artwork identities and linked original images. Layer appearance and locks follow the same Layers operation. One Undo removes the duplicate; no frames are added." : isLayerUpdateDraft ? "Rename the active layer, change its opacity, or hide/show it using the same Layers controls. Artwork stays editable; one Undo restores the prior settings. No frames are added." : isExposureDraft ? "Change the selected existing frame to 1–600 ticks. Duration is ticks divided by project FPS; no frames are added. One Undo restores its prior exposure." : isErasureDraft ? "Erase only the selected drawings along a straight path. Original geometry stays editable. Unselected drawings keep their original editable geometry. One Undo restores all selected drawings." : isGlowDraft ? "Change the active layer glow across its frames using the same Layers controls. One Undo reverses the complete style edit." : isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
+        isLayerDuplicateDraft ? "Duplicate the active layer across existing frames with fresh artwork identities and linked original images. Layer appearance and locks follow the same Layers operation. One Undo removes the duplicate; no frames are added." : isLayerUpdateDraft ? "Rename the active layer, change its opacity, blend mode or lock mode, or hide/show it using the same Layers controls. Artwork stays editable; one Undo restores the prior settings. No frames are added." : isExposureDraft ? "Change the selected frame or an explicit range of up to 96 existing frames to 1–600 ticks each. Duration is ticks divided by project FPS; no frames are added. One Undo restores its prior exposure." : isErasureDraft ? "Erase only the selected drawings along a straight path. Original geometry stays editable. Unselected drawings keep their original editable geometry. One Undo restores all selected drawings." : isGlowDraft ? "Change the active layer glow across its frames using the same Layers controls. One Undo reverses the complete style edit." : isRenameDraft ? "Rename the current project while keeping its identity, artwork and audio. One Undo restores the previous name." : isTwoActorDraft ? "Two independently editable actors share 8–24 frames, one distinct pose per project tick, with separate layers and one Undo. At 12 FPS, 2 seconds uses 24 frames. This is bounded local generation." : isAudioDraft
             ? "Edit the selected clip's volume, mute, fades, placement or source range, or duplicate, split or delete the selected clip. Original audio stays unchanged. One Undo reverses the edit."
             : isBriefDraft ? "A supported two-action brief makes 16–20 editable stick-figure poses with frame holds, in one Undo step. Color, direction, action order and duration follow the brief. This bounded local planner is not open-ended AI video generation."
             : isStickDraft ? "Procedural walking, running, jumping and waving append 8–20 editable stick-figure frames on a new layer. This is a local motion recipe, not open-ended AI video generation. Current project FPS and existing frames are preserved; one Undo reverses the edit."
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
+        if isDuplicateRangeDraft { return "Use Duplicate frames 1 through 12. Choose 1–96 existing frames. Stop playback, then Apply. Audio clips keep their current times." }
+        if isReverseDraft { return "Use Reverse frames 1 through 12. Choose 2–96 existing frames. Stop playback, then Apply to reverse the captured range." }
+        if isExposureDraft { return "Use Set selected frame exposure to 12 ticks. or Set frames 1 through 12 exposure to 2 ticks. Range numbers are one-based and must already exist. A batch contains at most 96 frames, with 1–600 ticks per frame. One Undo restores the whole timing edit." }
+        if isNavigationDraft { return "Stop playback. Select frame 1. or Select layer 1. chooses that existing target in this project. Missing numbers reject; selecting a locked layer does not unlock it. Examples fill the draft; Apply selects the target." }
+        if isLayerStructureDraft { return "Add layer named \"Foreground\". creates a blank layer. Delete active layer. removes the captured layer and its contents across all frames. Select the target before opening Spatter. Locked/last-layer deletion rejects. Examples only fill the draft; Apply performs the reversible edit." }
         if isGridDraft { return "Stop playback. Show/Hide preserves settings; configuring preserves visibility. Specify all three settings: 8–160 whole canvas points spacing, 5–60% opacity, and blue, gray or red tint. Onion skin is unchanged. Examples only fill the draft." }
         if isOnionDraft { return "Stop playback. Show/Hide preserves settings; configuring preserves visibility. Set all four settings explicitly: 0–2 previous and next frames, 5–80% opacity, tinted or untinted. Only existing neighboring frames appear. Examples fill the draft; Apply performs the edit." }
-        if isFrameActionDraft { return "Select the frame and stop playback before opening Spatter. Use one complete active-frame instruction. Moving past an end or deleting the last frame rejects without editing. Plural or arbitrary frame targets are unavailable. Choosing an example only fills the draft; Apply performs the edit." }
+        if isFrameActionDraft { return "Select the frame and stop playback before opening Spatter. Add blank frame. or Add 12 blank frames. inserts 1–96 blank frames after it in one Undo step. Duplicate active frame 12 times. adds up to 96 editable copies with the original exposure. Move and delete target only the active frame; moving past an end or deleting the last frame rejects. Choosing an example only fills the draft; Apply performs the edit." }
         if isLayerOrderDraft { return "Use Move active layer up. or Move active layer down. Select the target layer before opening Spatter. The top layer cannot move up and the bottom layer cannot move down; those requests reject without editing." }
         if isOrderDraft { return "Select artwork with Move before opening Spatter. Use Bring selected artwork forward. or Send selected artwork backward. Mixed selection must explicitly include its image. Selected layers must be visible and unlocked; Apply rechecks the exact selection." }
         if isImageDraft { return "Select one image with Move before opening Spatter. Deselect drawings and stop playback. Use Flip selected image horizontally. or Flip selected image vertically. The layer must be visible and unlocked. Apply checks the exact selection again; choosing an example only fills the draft." }
@@ -110,7 +140,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.system(.title3, design: .monospaced).bold())
                     Text(editDescription)
                         .font(.subheadline)
@@ -162,6 +192,23 @@ struct SpatterMotionRecipePanel: View {
                             .accessibilityIdentifier("spatter.layer.glow-disable-example")
                     }.frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.layer.glow-examples")
+                    Button("Use duplicate frame range example") { draft = SpatterFrameDuplicateRangeInstruction.example }
+                        .frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.frame.duplicate-range-example")
+                    Button("Use reverse frame range example") { draft = SpatterFrameReverseInstruction.example }
+                    Button("Use frame range timing example") { draft = SpatterFrameExposureInstruction.rangeExample }
+                        .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.frame.exposure-range-example")
+                    Menu("Use an audio track instruction") {
+                        Button("Track volume") { draft = SpatterAudioTrackInstruction.volumeExample }
+                        Button("Mute track") { draft = SpatterAudioTrackInstruction.muteExample }
+                        Button("Unmute track") { draft = SpatterAudioTrackInstruction.unmuteExample }
+                    }.frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.audio.track-examples")
+                    Button("Use cut current frame example") { draft = SpatterFrameCutInstruction.example }
+                    Button("Use duplicate selected drawings example") { draft = SpatterDrawingDuplicateInstruction.example }
+                        .frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.selection.duplicate-example")
                     Button("Use selected eraser example") { draft = SpatterSelectedErasureInstruction.example }
                         .disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.selection.erase-example")
@@ -170,12 +217,33 @@ struct SpatterMotionRecipePanel: View {
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                             .accessibilityIdentifier("spatter.selection.erase-targets")
                     }
+                    Menu("Use a frame or layer selection instruction") {
+                        Button("Select frame 1") { draft = SpatterNavigationInstruction.frameExample }
+                        Button("Select layer 1") { draft = SpatterNavigationInstruction.layerExample }
+                    }
+                    .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.navigation.examples")
                     Button("Use layer rename example") { draft = SpatterLayerUpdateInstruction.renameExample }
                         .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.layer.rename-example")
                     Button("Use layer opacity example") { draft = SpatterLayerUpdateInstruction.opacityExample }
                         .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.layer.opacity-example")
+                    Menu("Use a layer lock instruction") {
+                        Button("Unlock editing") { draft = SpatterLayerUpdateInstruction.lockExample(.free) }
+                        Button("Lock all artwork editing") { draft = SpatterLayerUpdateInstruction.lockExample(.full) }
+                        Button("Lock artwork position") { draft = SpatterLayerUpdateInstruction.lockExample(.position) }
+                        Button("Preserve existing alpha") { draft = SpatterLayerUpdateInstruction.lockExample(.alpha) }
+                    }
+                    .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.layer.lock-examples")
+                    Menu("Use a layer blend instruction") {
+                        ForEach(SpatterLayerUpdateInstruction.blendModes, id: \.rawValue) { mode in
+                            Button(mode.rawValue.capitalized) { draft = SpatterLayerUpdateInstruction.blendExample(mode) }
+                        }
+                    }
+                    .frame(minHeight:44).disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.layer.blend-examples")
                     Menu("Use a layer order instruction") {
                         Button("Move active layer up") { draft = SpatterLayerOrderInstruction.upExample }
                         Button("Move active layer down") { draft = SpatterLayerOrderInstruction.downExample }
@@ -204,7 +272,14 @@ struct SpatterMotionRecipePanel: View {
                         Button("Configure onion skin") { draft = SpatterOnionInstruction.settingsExample }
                     }.frame(minHeight:44).disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.onion.examples")
+                    Menu("Create or delete a layer") {
+                        Button(SpatterLayerStructureInstruction.addExample) { draft = SpatterLayerStructureInstruction.addExample }
+                        Button(SpatterLayerStructureInstruction.deleteExample) { draft = SpatterLayerStructureInstruction.deleteExample }
+                    }.frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
+                        .accessibilityIdentifier("spatter.layer.structure-examples")
                     Menu("Use an active frame instruction") {
+                        Button("Add 12 blank frames.") { draft = "Add 12 blank frames." }
+                        Button("Duplicate active frame 12 times.") { draft = "Duplicate active frame 12 times." }
                         ForEach(SpatterFrameActionInstruction.Action.allCases, id: \.rawValue) { action in
                             Button(action.example) { draft = action.example }
                         }

@@ -34,3 +34,7 @@ The control sizing/accessibility patch has source review and `git diff --check`.
 Device/VoiceOver and simulator interaction checks remain pending until explicitly
 recorded with native evidence. Rendering/persistence tests belong to their
 production suites and are not replaced by this checklist.
+
+## Current implementation mapping
+
+See [Studio control implementation index](STUDIO_CONTROL_IMPLEMENTATION_INDEX.md) for the October 9 selection, audio, asset-library and Spatter controls. Its verification status is deferred, not passed; earlier scoped evidence above does not cover that batch.
