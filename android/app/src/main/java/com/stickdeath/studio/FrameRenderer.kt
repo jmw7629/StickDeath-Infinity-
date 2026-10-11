@@ -97,6 +97,22 @@ object FrameRenderer {
                             TextArtwork.draw(canvas, stroke, paint)
                         } else if (stroke.tool == Tool.Pencil && stroke.brush != BrushFamily.Round) {
                             BrushRenderer.draw(canvas,stroke,paint,checkCancellation)
+                        } else if (stroke.swiftLegacyPath) {
+                            // Exact historical Swift path construction, not Android's polyline.
+                            if (stroke.points.size == 1) {
+                                canvas.drawCircle(stroke.points[0].x, stroke.points[0].y, maxOf(0.5f, stroke.width / 2), paint)
+                            } else {
+                                paint.style = Paint.Style.STROKE
+                                val path = Path().apply {
+                                    moveTo(stroke.points[0].x, stroke.points[0].y)
+                                    if (stroke.points.size > 2) for (i in 1 until stroke.points.size) {
+                                        val previous = stroke.points[i - 1]; val next = stroke.points[i]
+                                        quadTo(previous.x, previous.y, (previous.x + next.x) / 2, (previous.y + next.y) / 2)
+                                    }
+                                    lineTo(stroke.points.last().x, stroke.points.last().y)
+                                }
+                                canvas.drawPath(path, paint)
+                            }
                         } else if (stroke.points.size == 1 || stroke.points.all { it == stroke.points.first() }) {
                             canvas.drawCircle(stroke.points.first().x, stroke.points.first().y, stroke.width / 2, paint)
                         } else {

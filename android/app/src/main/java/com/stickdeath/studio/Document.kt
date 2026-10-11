@@ -14,7 +14,7 @@ data class Stroke(val id: String = newID(), val layerID: String, val points: Lis
                   val color: Int, val width: Float, val tool: Tool, val filled: Boolean = false, val opacity: Float = 1f,
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
-                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null)
+                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false)
 enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
     Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
     ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
@@ -34,7 +34,7 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v21 (reads v1–v21), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v22 (reads v1–v22), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
     val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {
@@ -66,6 +66,7 @@ data class Document(val id: String, val name: String, val width: Int, val height
             require(frame.hold in 1..600 && frame.strokes.map { it.id }.toSet().size == frame.strokes.size)
             var brushWork = 0
             frame.strokes.forEach { stroke ->
+                require(!stroke.swiftLegacyPath || (stroke.tool == Tool.Pencil && stroke.brush == BrushFamily.Round))
                 require(layers.any { it.id == stroke.layerID })
                 require(stroke.tool.isDrawing || stroke.tool == Tool.Text || stroke.tool == Tool.Image || stroke.tool == Tool.Fill)
                 require((stroke.tool == Tool.Fill) == (stroke.fill != null))

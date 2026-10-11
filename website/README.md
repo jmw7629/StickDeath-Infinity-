@@ -11,3 +11,15 @@ Source grounding: inspected issue #270 and #272 bodies on October 9, 2026; nativ
 Intentionally unconnected: account/authenticated support intake, receipt/status delivery, billing, application installers and editable cross-platform synchronization. Pricing is a factual status page until approved plans and services exist. Local report download is clearly not the authenticated support flow required for full #272 completion.
 
 Per the owner's implementation-first direction, no build, test, browser/accessibility review, dependency download, deployment or commit was performed. Later acceptance must include mobile/desktop, keyboard/VoiceOver, reduced motion, all links/help fragments, provider-independent download behavior, approved screenshots and final release/content review. Do not close #270/#272 based on this source alone.
+
+## October 9 help-navigation and Studio guidance update
+
+- Added task-based iOS guides for whole-artwork lasso/Move, image-pixel lifting, sound-library placement and Files/movie soundtrack import. Lasso guidance matches native Spatter guide revision `2026-10-09.5`; audio instructions were read against `AudioPanels.swift`. Guidance explicitly distinguishes current source from the user's installed build.
+- Each expanded topic has a shareable fragment link. Reopening the same fragment after filtering now clears filters and restores/focuses the topic; it no longer depends on a hash-change event that cannot occur for an unchanged URL. Modified clicks keep native browser behavior.
+- JavaScript syntax and whitespace checks are recorded by the coordinator. Browser interaction, VoiceOver, real device behavior, deployment and authenticated support intake remain deferred/unconnected. No issue completion is claimed.
+
+## Local support-summary review flow
+
+The form now collects bounded category, optional app version/build, expected result and reproduction steps. Review prepares an explicit “not submitted” summary; Download and Copy are separate user actions. Editing inputs invalidates the prepared summary to prevent exporting stale details. Unsupported downloads/clipboard operations preserve a selectable plain-text fallback. Clear removes form/preview state and outstanding Blob URLs; it explicitly does not erase downloaded files or the system clipboard. Leaving the page clears its draft. No local/session storage, attachments, identity collection or network submission was added.
+
+JavaScript syntax and whitespace checks passed for this slice. Actual browser copy/download/clear behavior and accessible mobile acceptance remain deferred. This local preparation flow does not satisfy the authenticated receipt/status, abuse limits or admin support backend gates in #272.

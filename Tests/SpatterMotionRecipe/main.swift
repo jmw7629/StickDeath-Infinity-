@@ -725,7 +725,7 @@ private final class NetworkTrap: URLProtocol {
                 let decoded = try StudioCommandExecutor.decode(JSONEncoder().encode(request))
                 guard case .apply(let commands) = decoded.action, commands.count == 1 else { throw Failure(message:"Frame action not one typed command") }
                 switch (action,commands[0]) {
-                case (.duplicate,.duplicateFrame),(.delete,.deleteFrame),(.earlier,.moveFrame),(.later,.moveFrame): break
+                case (.add,.addFrame),(.duplicate,.duplicateFrame),(.delete,.deleteFrame),(.earlier,.moveFrame),(.later,.moveFrame): break
                 default: throw Failure(message:"Wrong frame command")
                 }
                 do { _ = try instruction.prepare(in:StudioCommandContext(document:doc),checkCancellation:{throw CancellationError()}); throw Failure(message:"Frame preparation ignored cancellation") }

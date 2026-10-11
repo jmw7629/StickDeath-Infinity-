@@ -185,7 +185,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
         item { Text("StickDeath Studio", style = MaterialTheme.typography.headlineMedium) }
         item {
             Text("Local projects", style = MaterialTheme.typography.titleLarge)
-            TextButton({ importer.launch(arrayOf("application/json", "application/octet-stream")) }, enabled = !vm.busy) { Text("Restore Android project backup") }
+            TextButton({ importer.launch(arrayOf("application/json", "application/octet-stream")) }, enabled = !vm.busy) { Text("Restore project backup (.sdi / Android)") }
         }
         item {
             Card { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {

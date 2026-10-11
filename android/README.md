@@ -285,3 +285,24 @@ Export now offers Android Sharesheet actions for freshly rendered MP4, GIF, PNG 
 Each share receives a uniquely owned, correctly named file. Up to eight retained copies and 256 MiB combined are admitted. Copies older than 24 hours are removed on a later share; unexpired copies are retained for receiving apps. Android may evict cache earlier. If capacity is full, Files export stays available. Cancel/failure before handoff cleans the new copy; a completed chooser handoff retains it even after activity stop. Copies are not users' editable originals. Receiver-app, permission, cancellation and cache-lifetime acceptance is deferred.
 
 Uses Android's documented content-URI file-sharing approach: https://developer.android.com/training/secure-file-sharing
+
+### Swift portable import — first editable bridge
+
+Restore project backup now also recognizes the existing iOS `.sdi` binary envelope
+(`SDIPROJECT000001\n`, unsigned big-endian payload length, SHA-256 and Revision v1 JSON).
+The importer checks integrity before parsing the embedded editable archive, enforces
+24 MiB/depth/object-count limits, cross-checks project metadata, and lets the existing
+copy transaction allocate fresh identities. It never changes the supplied backup.
+
+This initial path imports **descriptor-free historical pen/pencil/brush drawings**,
+frame holds, normal layers, visibility/full locks/opacity and project dimensions/FPS.
+Android-local v22 preserves the historical Swift quadratic path and effective brush
+width through save/reopen; its renderer uses that path on the canvas and export.
+Unsupported descriptors, images, audio, effects, guide configurations, other tools,
+blend modes and unknown populated fields reject the complete import before saving.
+There is no partial or flattened fallback. Newer Swift projects generally use brush
+descriptors and therefore still require iOS. Android-to-iOS export is not implemented;
+Android backups remain `.sdiandroid.json`. Shared-format completion is not claimed.
+Compilation, actual iOS fixture import, pixel comparison and device cold-reopen checks
+for this bridge are deferred to the integration phase. Existing v1–v21 Android records
+remain readable; do not open a v22 backup with an older Android client.

@@ -890,6 +890,26 @@ private func rejects(_ action: () throws -> Void) throws {
             try require(!vm.finishImageRotation(fresh, start: start, current: end) && vm.document == locked,
                         "Position lock allowed old handle rotation")
         }
+        try await test("image lasso keeps Move handles through flip quarter-turn and crop") {
+            let (vm, _) = try await project(root); _ = try attach(image, to: vm)
+            vm.selectLayer(vm.currentFrame.rasterLayerID!)
+            vm.selectDrawingTool(.move)
+            try require(vm.placeImage(vm.prepareImagePlacement()!, at: .init(x: 40, y: 40, width: 60, height: 60)), "Selection fixture placement")
+            vm.selectDrawingTool(.lasso); vm.areaSelectionTarget = .image
+            vm.areaSelectionKind = .rectangle; vm.areaSelectionSmoothing = 0
+            try require(vm.finishAreaSelection(vm.beginAreaSelection()!, points: [CGPoint(x: 30, y: 30), CGPoint(x: 110, y: 110)]), "Image lasso")
+            guard let initial = vm.currentImageMoveCapture() else { throw Failure(message: "Initial lasso move capture") }
+            try require(vm.reflectImage(initial.placement, axis: .horizontal), "Selected image flip")
+            guard let flipped = vm.currentImageMoveCapture() else { throw Failure(message: "Flip discarded lasso handles") }
+            try require(vm.rotateImage(flipped.placement, direction: .clockwise), "Selected image quarter turn")
+            guard let rotated = vm.currentImageMoveCapture() else { throw Failure(message: "Quarter turn discarded lasso handles") }
+            try require(vm.cropImage(rotated.placement, crop: .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8)), "Selected image crop")
+            guard let cropped = vm.currentImageMoveCapture() else { throw Failure(message: "Crop discarded lasso handles") }
+            let beforeMove = vm.currentFrame
+            try require(vm.finishImageMove(cropped, delta: CGSize(width: 5, height: 3)), "Move after image toolbar edits")
+            vm.undo(); try require(vm.currentFrame == beforeMove, "Post-edit move Undo changed image edits")
+            try require(!vm.finishImageMove(initial, delta: CGSize(width: 1, height: 1)), "Old lasso revision gained fresh edit authority")
+        }
         try await test("active-layer image lasso uses rotated polygon enclosure and New Add Subtract without document edits") {
             let (vm, _) = try await project(root); _ = try attach(image, to: vm)
             vm.selectDrawingTool(.move)

@@ -2414,13 +2414,18 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
                 })
-            if let target = imageMoveTarget, target.areaRevision == capture.revision,
-               target.projectID == capture.projectID, target.frameID == capture.frameID,
-               target.assetID == capture.assetID, target.layerID == capture.layerID {
-                imageMoveTarget?.areaRevision = document.revision
-            }
+            retainImageSelection(after: capture)
             return true
         } catch { message = error.localizedDescription; return false }
+    }
+
+    /// Retain only the explicit image selection that authorized this edit.
+    /// Never upgrade an unrelated or already stale selection to a new revision.
+    private func retainImageSelection(after capture: ImagePlacementCapture) {
+        guard let target = imageMoveTarget, target.areaRevision == capture.revision,
+              target.projectID == capture.projectID, target.frameID == capture.frameID,
+              target.assetID == capture.assetID, target.layerID == capture.layerID else { return }
+        imageMoveTarget?.areaRevision = document.revision
     }
 
     @discardableResult
@@ -2435,6 +2440,7 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
                 })
+            retainImageSelection(after: capture)
             return true
         } catch { message = error.localizedDescription; return false }
     }
@@ -2452,6 +2458,7 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
                 })
+            retainImageSelection(after: capture)
             return true
         } catch { message = error.localizedDescription; return false }
     }
@@ -2469,6 +2476,7 @@ final class StudioViewModel: ObservableObject {
                     try checkCancellation()
                     guard self.prepareImagePlacement() == capture else { throw StudioCommandError.staleRevision }
                 })
+            retainImageSelection(after: capture)
             return true
         } catch { message = error.localizedDescription; return false }
     }

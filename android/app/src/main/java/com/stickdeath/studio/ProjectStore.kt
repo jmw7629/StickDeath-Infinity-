@@ -63,6 +63,7 @@ class ProjectStore(context: Context) {
             output.write(buffer, 0, count)
         }
         val bytes = output.toByteArray()
+        if (SwiftProjectImport.recognizes(bytes)) return SwiftProjectImport.decode(bytes)
         val text = String(bytes, Charsets.UTF_8)
         var depth = 0; var quoted = false; var escaped = false
         text.forEach { character ->
@@ -78,7 +79,7 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..21) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..22) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
@@ -142,7 +143,11 @@ class ProjectStore(context: Context) {
                     if (s.has("assetCredit")) {
                         require(j.getInt("version") >= 21)
                         AssetCredit.decode(s.getJSONObject("assetCredit"))
-                    } else null)
+                    } else null,
+                    if (s.has("swiftLegacyPath")) {
+                        require(j.getInt("version") >= 22)
+                        s.getBoolean("swiftLegacyPath")
+                    } else false)
             }, f.getInt("hold"))
         }
         val onion = if (j.has("onion")) j.getJSONObject("onion").let {
@@ -184,7 +189,7 @@ class ProjectStore(context: Context) {
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 21)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 22)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
@@ -197,6 +202,7 @@ class ProjectStore(context: Context) {
         j.put("frames", JSONArray(d.frames.map { f -> JSONObject().put("id", f.id).put("hold", f.hold)
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
+                .put("swiftLegacyPath", s.swiftLegacyPath)
                 .put("brushTransform", JSONArray(listOf(s.brushTransform.a,s.brushTransform.b,s.brushTransform.c,s.brushTransform.d)))
                 .apply { s.image?.let { put("image", it.encoded) }; s.assetCredit?.let { put("assetCredit", it.json()) } }
                 .apply { s.text?.let { put("text", JSONObject().put("content", it.content).put("fontSize", it.fontSize)) } }
