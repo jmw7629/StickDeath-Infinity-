@@ -41,9 +41,9 @@ data class ArtworkTransform(val dx: Float = 0f, val dy: Float = 0f, val scale: F
                     center.y-s*scale*center.x-c*heightScale*center.y+dy)
             } else {
                 val width = stroke.width * sqrt(scale * heightScale)
-                if (stroke.brush != BrushFamily.Round) require(width in 1f..128f) { "Transformed brush width must remain 1–128 pixels." }
+                if (stroke.brush != BrushFamily.Round || stroke.swiftRoundBrush != null) require(width in 1f..128f) { "Transformed brush width must remain 1–128 pixels." }
                 stroke.copy(width = width.coerceIn(1f,128f),
-                    brushTransform = if (stroke.brush == BrushFamily.Round) stroke.brushTransform else stroke.brushTransform.then(c*scale,s*scale,-s*heightScale,c*heightScale), points = stroke.points.map {
+                    brushTransform = if (stroke.brush == BrushFamily.Round && stroke.swiftRoundBrush == null) stroke.brushTransform else stroke.brushTransform.then(c*scale,s*scale,-s*heightScale,c*heightScale), points = stroke.points.map {
                 val x = (it.x-center.x)*scale; val y = (it.y-center.y)*heightScale
                 Point(center.x + x*c-y*s+dx, center.y + x*s+y*c+dy)
             })

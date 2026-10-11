@@ -294,15 +294,36 @@ The importer checks integrity before parsing the embedded editable archive, enfo
 24 MiB/depth/object-count limits, cross-checks project metadata, and lets the existing
 copy transaction allocate fresh identities. It never changes the supplied backup.
 
-This initial path imports **descriptor-free historical pen/pencil/brush drawings**,
+This path imports **descriptor-free historical pen/pencil/brush drawings** and bounded
+**Swift round-brush descriptors** (smoothing and pressure retained),
 frame holds, normal layers, visibility/full locks/opacity and project dimensions/FPS.
-Android-local v22 preserves the historical Swift quadratic path and effective brush
+Android-local v24 preserves the historical Swift quadratic path and effective brush
 width through save/reopen; its renderer uses that path on the canvas and export.
-Unsupported descriptors, images, audio, effects, guide configurations, other tools,
+Other brush descriptors, images, audio, effects, guide configurations, other tools,
 blend modes and unknown populated fields reject the complete import before saving.
-There is no partial or flattened fallback. Newer Swift projects generally use brush
-descriptors and therefore still require iOS. Android-to-iOS export is not implemented;
+There is no partial or flattened fallback. Projects using other Swift brush families still require iOS. Android-to-iOS export is not implemented;
 Android backups remain `.sdiandroid.json`. Shared-format completion is not claimed.
 Compilation, actual iOS fixture import, pixel comparison and device cold-reopen checks
-for this bridge are deferred to the integration phase. Existing v1–v21 Android records
-remain readable; do not open a v22 backup with an older Android client.
+for this bridge are deferred to the integration phase. Existing v1–v23 Android records
+remain readable; do not open a v24 backup with an older Android client.
+
+
+Portable-import fixture acceptance (deferred): `app/src/androidTest/assets/swift-legacy.sdi`
+is an independently constructed contract fixture following the actual Swift Codable
+fields and portable envelope. It is **not** a captured native export. It contains pen,
+pencil and brush paths with a four-tick exposure. `SwiftProjectImportTest` exercises
+production envelope decoding, actual collision-safe AtomicFile restore/cold reload,
+pencil butt-cap preservation, corruption, length mismatch and unsupported descriptors.
+Run on a dedicated Android test device with `gradle :app:connectedDebugAndroidTest
+-Pandroid.testInstrumentationRunnerArguments.class=com.stickdeath.studio.SwiftProjectImportTest`
+from `android/`. AndroidX runner and JUnit are test-only dependencies; no release dependency is added. The tests
+remove only their own freshly allocated projects. A real iOS-generated fixture and
+same-size pixel comparison remain separate open acceptance gates; this fixture cannot
+prove either. Source inspection found and corrected the historical pencil's butt cap
+(the pen/brush cap is round); v23 records that distinction instead of changing all
+Android pencil drawing.
+
+Swift round geometry uses the source smoothing, arc-length spacing and pressure dabs,
+with a retained nib transform for resize/rotation/reflection. v24 persists the descriptor
+and samples. This port has not yet passed Android compilation or same-size native
+pixel comparison; no full interoperability or visual parity claim is made.

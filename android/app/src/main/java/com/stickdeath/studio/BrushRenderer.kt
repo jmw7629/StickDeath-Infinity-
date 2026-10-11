@@ -20,7 +20,7 @@ data class BrushTransform(val a: Float = 1f, val b: Float = 0f, val c: Float = 0
         BrushTransform(aa*a+cc*b, bb*a+dd*b, aa*c+cc*d, bb*c+dd*d).also { it.validate() }
     fun inverse(point: Point): Point = Point((d*point.x-c*point.y)/determinant, (-b*point.x+a*point.y)/determinant)
 }
-fun Stroke.textureRadius(): Float = if (brush == BrushFamily.Round) width/2 else
+fun Stroke.textureRadius(): Float = if (brush == BrushFamily.Round && swiftRoundBrush == null) width/2 else
     width/(2*brushTransform.meanScale)*max(hypot(brushTransform.a,brushTransform.c),hypot(brushTransform.b,brushTransform.d))
 
 /** Original procedural marks. A saved seed and arc-length sampling make redraw/export repeatable. */

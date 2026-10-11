@@ -1458,7 +1458,8 @@ private final class NetworkTrap: URLProtocol {
                 await vm.flush(); let beforeNoOp = vm.document
                 try require(session.submit(instruction,in:vm,accountID:nil,currentScope:{guest}),"Layer no-op submission")
                 await session.waitForCompletion()
-                try require(session.appliedEdit?.receipt.outcome == .unchanged && vm.document == beforeNoOp && session.notice == "The active layer settings already match. Nothing changed.","Layer no-op created history or false receipt")
+                try require(session.appliedEdit?.receipt.outcome == .unchanged && vm.document == beforeNoOp,"Layer no-op created history or false receipt")
+                try require(session.notice == "The active layer already matches the requested setting. Nothing changed.","Layer no-op notice differs from current typed settings result")
                 let record = try store.loadAnimation(id:vm.document.id)!, cold = StudioViewModel(storage:store)
                 try require(await cold.openProject(record.metadata),"Layer settings cold open")
                 try require(cold.layers == vm.layers && erasurePixels(cold.document) == manualPixels,"Layer settings cold pixels")
@@ -1475,7 +1476,7 @@ private final class NetworkTrap: URLProtocol {
                 await session.waitForCompletion()
                 try require(session.status == .applied && vm.layers.first{$0.id == target}?.name == name && vm.frames == before.frames && vm.layers.count == before.layers.count && vm.document.name == before.name,
                     "Quoted name selected another parser or executed content")
-                try require(session.notice == "Updated the active layer settings in one undoable local edit.","Quoted name produced another command receipt")
+                try require(session.notice == "Set the active layer name to \(name) in one undoable local edit.","Quoted name produced another command receipt")
                 vm.undo(); try require(vm.layers == before.layers && vm.frames == before.frames,"Reserved-name Undo altered artwork")
                 await vm.flush()
             }

@@ -14,7 +14,7 @@ data class Stroke(val id: String = newID(), val layerID: String, val points: Lis
                   val color: Int, val width: Float, val tool: Tool, val filled: Boolean = false, val opacity: Float = 1f,
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
-                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false)
+                  val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false, val swiftLegacyButtCap: Boolean = false, val swiftRoundBrush: SwiftRoundBrush? = null)
 enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
     Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
     ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
@@ -34,7 +34,7 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v22 (reads v1–v22), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v24 (reads v1–v24), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
     val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {
@@ -66,6 +66,12 @@ data class Document(val id: String, val name: String, val width: Int, val height
             require(frame.hold in 1..600 && frame.strokes.map { it.id }.toSet().size == frame.strokes.size)
             var brushWork = 0
             frame.strokes.forEach { stroke ->
+                if (stroke.swiftRoundBrush != null) {
+                    require(stroke.tool == Tool.Pencil && stroke.brush == BrushFamily.Round && !stroke.swiftLegacyPath)
+                    stroke.swiftRoundBrush.validate(stroke.points.size)
+                    brushWork += stroke.swiftRoundBrush.dabs(stroke).size
+                }
+                require(!stroke.swiftLegacyButtCap || stroke.swiftLegacyPath)
                 require(!stroke.swiftLegacyPath || (stroke.tool == Tool.Pencil && stroke.brush == BrushFamily.Round))
                 require(layers.any { it.id == stroke.layerID })
                 require(stroke.tool.isDrawing || stroke.tool == Tool.Text || stroke.tool == Tool.Image || stroke.tool == Tool.Fill)
@@ -102,7 +108,7 @@ data class Document(val id: String, val name: String, val width: Int, val height
                 require(stroke.tool == Tool.Pencil || stroke.brush == BrushFamily.Round)
                 require(stroke.nibAngle.isFinite() && stroke.nibAngle in -180f..180f)
                 stroke.brushTransform.validate()
-                require(stroke.brush != BrushFamily.Round || stroke.brushTransform == BrushTransform())
+                require(stroke.brush != BrushFamily.Round || stroke.swiftRoundBrush != null || stroke.brushTransform == BrushTransform())
                 require(stroke.opacity.isFinite() && stroke.opacity in 0f..1f)
                 require(!stroke.filled || stroke.tool.isClosedShape)
                 if (stroke.tool == Tool.Line) require(stroke.points.size == 2)
@@ -242,7 +248,7 @@ fun Stroke.mirrored(canvasWidth: Int, canvasHeight: Int, mode: MirrorMode): List
     fun reflect(horizontal: Boolean, vertical: Boolean) {
         val reflected = points.map { Point(if (horizontal) canvasWidth - it.x else it.x, if (vertical) canvasHeight - it.y else it.y) }
         // Avoid double opacity for artwork lying exactly on a mirror axis.
-        if (result.none { it.points == reflected || it.points == reflected.asReversed() }) result += copy(id = newID(), points = reflected, brushTransform = if (brush == BrushFamily.Round) brushTransform else brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (vertical) -1f else 1f))
+        if (result.none { it.points == reflected || it.points == reflected.asReversed() }) result += copy(id = newID(), points = reflected, brushTransform = if (brush == BrushFamily.Round && swiftRoundBrush == null) brushTransform else brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (vertical) -1f else 1f))
     }
     if (mode == MirrorMode.Vertical || mode == MirrorMode.Both) reflect(true, false)
     if (mode == MirrorMode.Horizontal || mode == MirrorMode.Both) reflect(false, true)

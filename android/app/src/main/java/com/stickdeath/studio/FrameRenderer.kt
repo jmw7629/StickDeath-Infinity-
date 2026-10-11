@@ -95,9 +95,13 @@ object FrameRenderer {
                             requireNotNull(stroke.image).draw(canvas, stroke, paint)
                         } else if (stroke.tool == Tool.Text) {
                             TextArtwork.draw(canvas, stroke, paint)
+                        } else if (stroke.swiftRoundBrush != null) {
+                            stroke.swiftRoundBrush.draw(canvas, stroke, paint, checkCancellation)
                         } else if (stroke.tool == Tool.Pencil && stroke.brush != BrushFamily.Round) {
                             BrushRenderer.draw(canvas,stroke,paint,checkCancellation)
                         } else if (stroke.swiftLegacyPath) {
+                            // Historical Swift pencil uses a butt cap; pen/brush use round caps.
+                            paint.strokeCap = if (stroke.swiftLegacyButtCap) Paint.Cap.BUTT else Paint.Cap.ROUND
                             // Exact historical Swift path construction, not Android's polyline.
                             if (stroke.points.size == 1) {
                                 canvas.drawCircle(stroke.points[0].x, stroke.points[0].y, maxOf(0.5f, stroke.width / 2), paint)

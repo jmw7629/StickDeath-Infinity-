@@ -84,12 +84,13 @@ internal object SwiftProjectImport {
             strokeCount += elements.length(); require(strokeCount <= 10_000)
             Frame(frame.getString("id"), (0 until elements.length()).map { n ->
                 val element = elements.getJSONObject(n)
-                element.only("id", "tool", "points", "color", "width", "opacity", "layerID", "fillColor")
+                element.only("id", "tool", "points", "color", "width", "opacity", "layerID", "fillColor", "brush")
                 if (!element.isNull("fillColor")) unsupported()
                 val tool = when (element.getString("tool")) {
                     "pen", "pencil", "brush" -> Tool.Pencil
                     else -> unsupported()
                 }
+                val descriptor = if (element.isNull("brush")) null else element.getJSONObject("brush")
                 val strokeID = element.getString("id")
                 require(allIDs.add(strokeID)) { "Duplicate Swift artwork identity." }
                 val points = element.getJSONArray("points")
@@ -102,8 +103,12 @@ internal object SwiftProjectImport {
                     // Historical renderer uses constant width for descriptor-free strokes.
                     Point(point.getDouble("x").toFloat(), point.getDouble("y").toFloat())
                 }, (0xff000000L or hex.substring(1).toLong(16)).toInt(), element.getDouble("width").toFloat(), tool,
-                    opacity = element.getDouble("opacity").toFloat(), swiftLegacyPath = true).let { stroke ->
-                    val multiplier = when (element.getString("tool")) { "pencil" -> 0.8f; "brush" -> 1.5f; else -> 1f }
+                    opacity = element.getDouble("opacity").toFloat(), swiftLegacyPath = descriptor == null, swiftLegacyButtCap = descriptor == null && element.getString("tool") == "pencil",
+                    swiftRoundBrush = descriptor?.let { SwiftRoundBrush(it.toString(), (0 until points.length()).map { p ->
+                        val point = points.getJSONObject(p)
+                        if (point.isNull("pressure")) 1.0 else point.getDouble("pressure")
+                    }).also { it.validate(points.length()) } }).let { stroke ->
+                    val multiplier = if (descriptor != null) 1f else when (element.getString("tool")) { "pencil" -> 0.8f; "brush" -> 1.5f; else -> 1f }
                     stroke.copy(width = stroke.width * multiplier)
                 }
             }, if (frame.isNull("holdTicks")) 1 else frame.getInt("holdTicks"))

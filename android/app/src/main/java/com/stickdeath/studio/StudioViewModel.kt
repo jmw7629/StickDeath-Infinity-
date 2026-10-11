@@ -729,7 +729,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                     f.copy(strokes = f.strokes.map { s -> if (s.id !in ids) s else if (s.tool == Tool.Fill) s.transformFill(
                         if (horizontal) -1f else 1f, 0f, 0f, if (horizontal) 1f else -1f,
                         if (horizontal) bounds.left+bounds.right else 0f, if (horizontal) 0f else bounds.top+bounds.bottom) else s.copy(
-                        brushTransform = if (s.brush == BrushFamily.Round) s.brushTransform else s.brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (horizontal) 1f else -1f), points = s.points.map { p ->
+                        brushTransform = if (s.brush == BrushFamily.Round && s.swiftRoundBrush == null) s.brushTransform else s.brushTransform.then(if (horizontal) -1f else 1f,0f,0f,if (horizontal) 1f else -1f), points = s.points.map { p ->
                         if (horizontal) Point(bounds.left+bounds.right-p.x,p.y) else Point(p.x,bounds.top+bounds.bottom-p.y)
                     }) }) })
             }
@@ -947,9 +947,9 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             val offsetY = (height - d.height * factor) / 2f
             d.frames.map { f -> f.copy(strokes = f.strokes.map { s ->
                 if (s.tool == Tool.Fill) s.transformFill(factor,0f,0f,factor,offsetX,offsetY) else {
-                val strokeWidth = if (s.brush == BrushFamily.Round) s.width else s.width * factor
+                val strokeWidth = if (s.brush == BrushFamily.Round && s.swiftRoundBrush == null) s.width else s.width * factor
                 require(strokeWidth in 1f..128f) { "Fitting would exceed the supported textured brush width." }
-                s.copy(width = strokeWidth, brushTransform = if (s.brush == BrushFamily.Round) s.brushTransform else s.brushTransform.then(factor,0f,0f,factor), points = s.points.map { p ->
+                s.copy(width = strokeWidth, brushTransform = if (s.brush == BrushFamily.Round && s.swiftRoundBrush == null) s.brushTransform else s.brushTransform.then(factor,0f,0f,factor), points = s.points.map { p ->
                 Point((p.x * factor + offsetX).coerceIn(0f, width.toFloat()),
                     (p.y * factor + offsetY).coerceIn(0f, height.toFloat()))
             }) } }) }
