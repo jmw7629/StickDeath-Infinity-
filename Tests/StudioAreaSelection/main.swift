@@ -56,6 +56,38 @@ private struct Failure: Error { let message: String }
     static func channel(_ pixels: [UInt8], _ x: Int, _ y: Int, _ c: Int = 3, width: Int = 128) -> UInt8 {
         pixels[(y * width + x) * 4 + c]
     }
+    static func moveIgnoresEraserRecords() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("sdi-move-eraser-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("Documents"), cachesDirectory: root.appendingPathComponent("Cache"))
+        let vm = StudioViewModel(storage: storage)
+        let created = await vm.createProject(name: "Move visible artwork", width: 128, height: 128, fps: 12)
+        try require(created, "Move eraser fixture creation")
+        let artwork = shape(vm.activeLayerID)
+        let eraser = DrawnElement(id: UUID().uuidString, tool: .eraser,
+            points: [.init(x: 30, y: 30), .init(x: 90, y: 90)], color: "#000000",
+            width: 4, opacity: 1, layerID: vm.activeLayerID)
+        try require(vm.commitElement(artwork) && vm.commitElement(eraser), "Move eraser fixture commits")
+        await vm.flush()
+        let before = vm.document
+        vm.selectDrawingTool(.move); vm.selectionMode = .new
+        guard let direct = vm.beginMove(at: .init(x: 40, y: 40)) else { throw Failure(message: "Direct Move unavailable") }
+        try require(direct.artwork == nil, "Fixture did not reach direct Move branch")
+        let undoBefore = vm.canUndo, redoBefore = vm.canRedo
+        try require(!vm.finishMove(direct, delta: .init(width: 4, height: 4), checkCancellation: { throw CancellationError() })
+            && vm.document == before && vm.canUndo == undoBefore && vm.canRedo == redoBefore,
+            "Cancelled direct Move committed artwork or history")
+        try require(vm.selectElement(at: .init(x: 40, y: 40)) == artwork.id
+            && vm.selectedElementIDs == [artwork.id], "Invisible eraser intercepted artwork selection")
+        try require(vm.beginSelectionHandle() != nil, "Visible artwork has no selection handles")
+        guard let move = vm.beginMove(at: .init(x: 40, y: 40)) else { throw Failure(message: "Move capture unavailable") }
+        try require(vm.finishMove(move, delta: .init(width: 4, height: 4)), "Visible artwork move failed")
+        try require(vm.currentFrame.elements.first(where: { $0.id == eraser.id }) == eraser, "Move changed the layer eraser")
+        vm.undo()
+        try require(vm.frames == before.frames, "Move Undo did not restore artwork and eraser")
+        await vm.flush()
+        pass("Move hit testing skips eraser masks and retains editable artwork handles")
+    }
     static func restoredSelectionPreferencesDriveActualSelection() async throws {
         let suite = "sdi-selection-settings-" + UUID().uuidString
         let defaults = UserDefaults(suiteName: suite)!
@@ -449,6 +481,7 @@ private struct Failure: Error { let message: String }
         try require(locksOpened && locksReopened.layers == lockedDocument.layers && (try render(locksReopened.document)) == lockPixels,
                     "Cold reopen lost locks or changed pixels")
         pass("explicit selected whole-layer locking is atomic reversible cancellation-safe and persistent without changing artwork")
+        try await moveIgnoresEraserRecords()
         try await restoredSelectionPreferencesDriveActualSelection()
         print("PASS \(passed) production area-selection groups")
     }

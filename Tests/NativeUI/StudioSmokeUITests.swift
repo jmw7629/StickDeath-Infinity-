@@ -120,6 +120,14 @@ final class StudioSmokeUITests: XCTestCase {
         try pickerRailControl("studio.tool.lasso", app: app, forward: true).tap()
         let selectAll = app.buttons["studio.selection.all"]
         XCTAssertTrue(selectAll.waitForExistence(timeout: 5)); selectAll.tap()
+        let move = app.buttons["studio.tool.move"]
+        XCTAssertTrue(move.waitForExistence(timeout: 5) && move.isSelected,
+                      "Selecting artwork must hand off to Move")
+        XCTAssertFalse(app.buttons["studio.tool-settings.close"].exists,
+                       "Selection must dismiss the old options popup")
+        // Count belongs to the dismissed options. Reopen explicitly before
+        // checking it; automatic Move must remain the production behavior.
+        try selectToolbarTool("lasso", app: app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
         app.buttons["studio.tool-settings.close"].tap()
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
@@ -208,7 +216,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["Rename current project"].exists)
         try localMotionControl("spatter.motion.apply",app:app).tap()
         let renamed = try localMotionControl("spatter.motion.result",app:app)
-        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Updated the active layer settings in one undoable local edit."),evaluatedWith:renamed).waitUntilFulfilled(timeout:8))
+        XCTAssertTrue(expectation(for:NSPredicate(format:"label == %@","Set the active layer name to Frame exposure in one undoable local edit."),evaluatedWith:renamed).waitUntilFulfilled(timeout:8))
         app.buttons["spatter.motion.back"].tap()
         let close = app.buttons["spatter.studio.close"]
         XCTAssertTrue(close.waitForExistence(timeout:5)); close.tap()
@@ -267,6 +275,14 @@ final class StudioSmokeUITests: XCTestCase {
         try pickerRailControl("studio.tool.lasso", app: app, forward: true).tap()
         let selectAll = app.buttons["studio.selection.all"]
         XCTAssertTrue(selectAll.waitForExistence(timeout: 5)); selectAll.tap()
+        let move = app.buttons["studio.tool.move"]
+        XCTAssertTrue(move.waitForExistence(timeout: 5) && move.isSelected,
+                      "Selecting artwork must hand off to Move")
+        XCTAssertFalse(app.buttons["studio.tool-settings.close"].exists,
+                       "Selection must dismiss the old options popup")
+        // Count belongs to the dismissed options. Reopen explicitly before
+        // checking it; automatic Move must remain the production behavior.
+        try selectToolbarTool("lasso", app: app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
         app.buttons["studio.tool-settings.close"].tap()
         app.buttons["studio.menu.open"].tap()
@@ -1171,7 +1187,13 @@ final class StudioSmokeUITests: XCTestCase {
         try reveal(sd, in: library, application: app); sd.tap()
         let fps24 = app.buttons["studio.project.fps.24"]
         try reveal(fps24, in: library, application: app); fps24.tap()
-        XCTAssertTrue(sd.isSelected && fps24.isSelected, "Creation chips did not retain chosen SD/24")
+        XCTAssertTrue(fps24.isSelected, "Creation frame rate did not retain 24 FPS")
+        // Preset chips are in a lazy grid and leave the accessibility tree
+        // when the frame-rate row scrolls into view. Reveal before querying.
+        try reveal(sd, in: library, application: app, upward: false)
+        XCTAssertTrue(sd.isSelected, "Creation canvas did not retain SD after changing FPS")
+        try reveal(fps24, in: library, application: app)
+        XCTAssertTrue(fps24.isSelected, "Revealing the canvas preset changed the frame rate")
         capture(app, name: "owner-project-create-reference-card")
         let create = app.buttons["studio.create-project"]
         try reveal(create, in: library, application: app); create.tap()
@@ -2473,14 +2495,21 @@ final class StudioSmokeUITests: XCTestCase {
         defer { app.terminate() }
         XCTAssertFalse(button("Messages", in: app).exists)
         try waitForButton("Rooms", in: app).tap()
-        XCTAssertTrue(app.descendants(matching: .any)["rooms.unavailable"].firstMatch.waitForExistence(timeout: 5))
+        let guestRooms = app.staticTexts["Sign in to create or join rooms"]
+        XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
+        XCTAssertFalse(button("Create room", in: app).exists)
+        XCTAssertFalse(button("Review invitation", in: app).exists)
         let warRoom = app.descendants(matching: .any)["rooms.warRoom"].firstMatch
         XCTAssertTrue(warRoom.isHittable)
         warRoom.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["warRoom.unavailable"].firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Sign in to participate"].waitForExistence(timeout: 5))
         XCTAssertFalse(button("Find Match", in: app).exists)
-        try waitForButton("Back to Rooms", in: app).tap()
-        XCTAssertTrue(app.descendants(matching: .any)["rooms.unavailable"].firstMatch.exists)
+        // War Room uses native stack navigation rather than the retired
+        // placeholder's custom Back to Rooms button.
+        let back = app.navigationBars.buttons.firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 5) && back.isHittable)
+        back.tap()
+        XCTAssertTrue(guestRooms.waitForExistence(timeout: 5))
         try waitForButton("Studio", in: app).tap()
         XCTAssertTrue(app.buttons["studio.new-project"].waitForExistence(timeout: 5))
         capture(app, name: "rooms-back-to-studio")
@@ -3410,6 +3439,14 @@ final class StudioSmokeUITests: XCTestCase {
         try pickerRailControl("studio.tool.lasso", app: app, forward: true).tap()
         let selectAll = app.buttons["studio.selection.all"]
         XCTAssertTrue(selectAll.waitForExistence(timeout: 5)); selectAll.tap()
+        let move = app.buttons["studio.tool.move"]
+        XCTAssertTrue(move.waitForExistence(timeout: 5) && move.isSelected,
+                      "Selecting artwork must hand off to Move")
+        XCTAssertFalse(app.buttons["studio.tool-settings.close"].exists,
+                       "Selection must dismiss the old options popup")
+        // Count belongs to the dismissed options. Reopen explicitly before
+        // checking it; automatic Move must remain the production behavior.
+        try selectToolbarTool("lasso", app: app)
         XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
         app.buttons["studio.tool-settings.close"].tap()
         try pickerRailControl("studio.tool.eraser", app: app, forward: false).tap()
@@ -4293,7 +4330,7 @@ final class StudioSmokeUITests: XCTestCase {
         // SwiftUI localizes numeric interpolation; the verified en_US UI uses
         // grouping separators while retaining the exact1080×1920 canvas.
         XCTAssertTrue(app.staticTexts["Original canvas · 1,080 × 1,920"].exists)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 frames")).firstMatch.exists)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Lossless PNG · 7 project frames")).firstMatch.exists)
         try exportControl("studio.export.start", app: app).tap()
         let status = app.staticTexts["studio.export.status"]
         XCTAssertTrue(expectation(for: NSPredicate(format: "label CONTAINS %@", "exceeds the current safe"),
@@ -5564,7 +5601,7 @@ final class StudioSmokeUITests: XCTestCase {
         @MainActor func packButton(_ label: String) throws -> XCUIElement {
             let action = label == "Remove download" ? "remove" : "download"
             let button = app.buttons["studio.image-library.pack." + action + "." + packID]
-            let scroll = app.scrollViews["studio.image-library.pack-list"]
+            let scroll = app.scrollViews["studio.image-library.scroll"]
             guard scroll.waitForExistence(timeout: 5) else {
                 captureHierarchy(app, name: "micro-pack-list-missing")
                 XCTFail("Optional pack list must expose its real scroll view")
@@ -5598,7 +5635,7 @@ final class StudioSmokeUITests: XCTestCase {
         // Start with this optional pack absent; other installed packs are retained.
         let existing = app.buttons["studio.image-library.pack.remove." + packID]
         let available = app.buttons["studio.image-library.pack.download." + packID]
-        let packList = app.scrollViews["studio.image-library.pack-list"]
+        let packList = app.scrollViews["studio.image-library.scroll"]
         XCTAssertTrue(packList.waitForExistence(timeout: 5))
         for _ in 0..<5 {
             if existing.exists || available.exists { break }
@@ -5687,6 +5724,16 @@ final class StudioSmokeUITests: XCTestCase {
                                 "One Redo did not remove the image again")
         XCTAssertEqual(paste.label, "Paste image")
         XCTAssertTrue(paste.isEnabled && paste.isHittable); paste.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        // Paste selects the new image for immediate transforms. Inspect that
+        // handoff, then hide editor handles before comparing artwork pixels.
+        XCTAssertTrue(app.buttons["studio.tool.move"].isSelected)
+        try selectToolbarTool("move", app: app)
+        let pastedTarget = try fillPreferenceControl("studio.image-move.target", app: app)
+        XCTAssertEqual(pastedTarget.value as? String, "Image")
+        pastedTarget.tap()
+        XCTAssertEqual(pastedTarget.value as? String, "Drawings")
+        app.buttons["studio.tool-settings.close"].tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
                                 "Cut image Paste did not restore the original rendered pixels")
@@ -6018,6 +6065,16 @@ final class StudioSmokeUITests: XCTestCase {
         let paste = app.buttons["studio.paste"]
         XCTAssertEqual(paste.label, "Paste image")
         XCTAssertTrue(paste.isEnabled && paste.isHittable); paste.tap()
+        try settlePickerCanvasAfterSave(app, canvas: canvas)
+        // Paste selects the new image for immediate transforms. Inspect that
+        // handoff, then hide editor handles before comparing artwork pixels.
+        XCTAssertTrue(app.buttons["studio.tool.move"].isSelected)
+        try selectToolbarTool("move", app: app)
+        let pastedTarget = try fillPreferenceControl("studio.image-move.target", app: app)
+        XCTAssertEqual(pastedTarget.value as? String, "Image")
+        pastedTarget.tap()
+        XCTAssertEqual(pastedTarget.value as? String, "Drawings")
+        app.buttons["studio.tool-settings.close"].tap()
         try settlePickerCanvasAfterSave(app, canvas: canvas)
         XCTAssertLessThanOrEqual(try changedPixelCount(original, pixels(canvas.screenshot().image)), 4,
                                 "Pasted region and remainder did not restore the original image")

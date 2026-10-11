@@ -39,12 +39,23 @@ private struct StudioAudioWorkspace: View {
         GeometryReader { geometry in
             // Keyboard presentation changes the available height. Keep the
             // same view hierarchy so the active search field retains focus.
-            ScrollView(.vertical) {
-                workspace(height: geometry.size.height)
-                    .frame(minHeight: geometry.size.height, alignment: .top)
+            ScrollViewReader { workspaceScroll in
+                ScrollView(.vertical) {
+                    workspace(height: geometry.size.height)
+                        .frame(minHeight: geometry.size.height, alignment: .top)
+                        .id("studio.audio.workspace.top")
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .accessibilityIdentifier("studio.audio.compact.scroll")
+                .onChange(of: searchFocused) { _, focused in
+                    // Keyboard avoidance can scroll the entire workspace above
+                    // the screen. Restore its library header after submission;
+                    // the inner catalogue retains its own scroll position.
+                    if !focused {
+                        workspaceScroll.scrollTo("studio.audio.workspace.top", anchor: .top)
+                    }
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("studio.audio.compact.scroll")
         }
         .frame(maxWidth: 900, maxHeight: .infinity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -207,6 +218,7 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityIdentifier("studio.audio.library.close")
             }.padding(.horizontal, 12)
             TextField("Search sounds, tags, categories…", text: $search)
+                .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .focused($searchFocused).submitLabel(.search)
                 .onSubmit { searchFocused = false }
                 .font(.specialElite(14)).padding(14).background(Color(hex: "1B1B28"))

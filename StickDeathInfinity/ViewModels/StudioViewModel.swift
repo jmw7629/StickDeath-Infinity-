@@ -2512,7 +2512,7 @@ final class StudioViewModel: ObservableObject {
         var hit: String?
         for layer in layers where layer.visible && layer.opacity > 0 && !layer.isFullyLocked {
             if let element = currentFrame.elements.reversed().first(where: { element in
-                guard element.layerID == layer.id, element.opacity > 0,
+                guard element.layerID == layer.id, element.tool != .eraser, element.opacity > 0,
                       let rect = try? StudioSelectionRegion.drawingBounds(element) else { return false }
                 if let mask = element.fillMask {
                     guard let placed = try? element.transform?.inversePoint(point) ?? point else { return false }
@@ -2633,7 +2633,10 @@ final class StudioViewModel: ObservableObject {
         do {
             _ = try applyStudioCommands(.init(requestID: UUID(), projectID: capture.projectID,
                 expectedRevision: capture.revision, action: .apply([.translateElements(.init(frame: .id(capture.frameID),
-                    elementIDs: capture.ids.sorted(), dx: delta.width, dy: delta.height))])))
+                    elementIDs: capture.ids.sorted(), dx: delta.width, dy: delta.height))])), checkCancellation: {
+                    try checkCancellation()
+                    guard self.moveIsCurrent(capture) else { throw StudioCommandError.staleRevision }
+                })
             editor.selectedElementIDs = capture.ids
             return true
         } catch { message = error.localizedDescription; return false }

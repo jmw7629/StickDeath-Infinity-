@@ -22,7 +22,7 @@ No user-to-user text chat, phone or video calling is included. Spatter assistanc
 
 ## Interchange remains an explicit delivery requirement
 
-The current `sdi-android-local` envelope is an Android backup format. It is not the Swift `.sdi` codec and must not be advertised as opening native projects. PNG/MP4/GIF exchange is rendered media, not editable project interchange.
+The current `sdi-android-local` envelope is an Android backup format. It is not the Swift `.sdi` codec. Android now has a separate, bounded Swift import path described in [PROJECT_INTERCHANGE.md](PROJECT_INTERCHANGE.md); general native-project compatibility must not be advertised. PNG/MP4/GIF exchange is rendered media, not editable project interchange.
 
 A shared codec must preserve stable identities, layer order/locks/blends, frame exposure/FPS, canvas/background, vector and raster content, asset ownership/provenance, audio source-time trims/fades/mix, schema migration and reversible command semantics. Unsupported data must be retained or rejected with the original preserved; no silent flattening or dropped effects. Cross-platform golden fixtures must be opened and re-exported by both production clients, with timing/pixel/audio comparisons and corrupted/unknown-version preservation. Those fixtures and the production interchange codec remain unfinished under #286; implementation of local Android documents does not complete that checkbox.
 
