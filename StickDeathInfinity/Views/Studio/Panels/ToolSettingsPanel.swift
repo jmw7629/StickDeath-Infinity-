@@ -1095,6 +1095,7 @@ private struct ToolSettingsContentLayout<Content: View>: View {
                 })
         }
         .scrollBounceBehavior(.basedOnSize)
+        .accessibilityIdentifier("studio.tool-settings.scroll")
         .frame(height: min(maximumHeight, contentHeight ?? maximumHeight))
         .onPreferenceChange(ToolSettingsContentHeight.self) { height in
             // A transient/default zero preference is not the content's size.

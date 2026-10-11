@@ -32,6 +32,7 @@ private struct StudioAudioWorkspace: View {
     @State private var libraryTrack = 1
     @State private var trimCapture: StudioViewModel.AudioTrimCapture?
     @State private var fadeCapture: StudioViewModel.AudioFadeCapture?
+    @State private var focusedEditorField: String?
     @State private var timelineZoom = 1.0
     private let background = Color(hex: "0D0D12")
 
@@ -47,6 +48,26 @@ private struct StudioAudioWorkspace: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .accessibilityIdentifier("studio.audio.compact.scroll")
+                .onChange(of: fadeCapture) { _, capture in
+                    if capture != nil {
+                        workspaceScroll.scrollTo("studio.audio.fades.editor", anchor: .bottom)
+                    }
+                }
+                .onChange(of: trimCapture) { _, capture in
+                    if capture != nil {
+                        workspaceScroll.scrollTo("studio.audio.trim.editor", anchor: .bottom)
+                    }
+                }
+                .onChange(of: focusedEditorField) { _, field in
+                    if let field { workspaceScroll.scrollTo(field, anchor: .center) }
+                }
+                .onChange(of: geometry.size.height) { _, _ in
+                    // Reposition after keyboard avoidance changes the viewport,
+                    // not only before the keyboard starts appearing.
+                    if let field = focusedEditorField {
+                        workspaceScroll.scrollTo(field, anchor: .center)
+                    }
+                }
                 .onChange(of: searchFocused) { _, focused in
                     // Keyboard avoidance can scroll the entire workspace above
                     // the screen. Restore its library header after submission;
@@ -227,8 +248,12 @@ private struct StudioAudioWorkspace: View {
             ScrollViewReader { libraryScroll in
             ScrollView {
                 VStack(spacing: 10) {
-                    AudioFilesImportControls(vm: vm, audio: audio, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
-                    AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
+                    // Stable section IDs reorder these stateful controls without
+                    // recreating import drafts or the active clip audition.
+                    ForEach(search.isEmpty ? [0, 1] : [1, 0], id: \.self) { section in
+                    if section == 0 {
+                        projectAudioSources
+                    } else {
                     if let catalogue {
                         Text("\(catalogue.sounds.count) offline sounds · CC0")
                             .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
@@ -279,6 +304,8 @@ private struct StudioAudioWorkspace: View {
                             .font(.custom("SpecialElite-Regular", size: 12, relativeTo: .caption)).tint(.sdRed).padding(16)
                             .accessibilityIdentifier("studio.audio.catalogue.loading")
                     }
+                    }
+                    }
                 }.padding(.bottom, 12).id("studio.audio.library.start")
             }
             .accessibilityIdentifier("studio.audio.library.scroll")
@@ -291,6 +318,12 @@ private struct StudioAudioWorkspace: View {
             .onChange(of: favoritesOnly) { _, _ in libraryScroll.scrollTo("studio.audio.library.start", anchor: .top) }
             .onChange(of: browseAllSounds) { _, _ in libraryScroll.scrollTo("studio.audio.library.start", anchor: .top) }
             }
+        }
+    }
+    private var projectAudioSources: some View {
+        VStack(spacing: 10) {
+            AudioFilesImportControls(vm: vm, audio: audio, stopPlayback: { timeline.stop(); audio.stop(); vm.stopPlayback() })
+            AudioProjectClips(vm: vm, audio: audio, timeline: timeline)
         }
     }
     private func catalogueRows(_ catalogue: StudioSoundCatalogue) -> some View {
@@ -604,12 +637,14 @@ private struct StudioAudioWorkspace: View {
                     .accessibilityIdentifier("studio.audio.fades.status")
             }
             if let fadeCapture {
-                StudioAudioFadeEditor(vm: vm, capture: fadeCapture) { self.fadeCapture = nil }
+                StudioAudioFadeEditor(vm: vm, capture: fadeCapture, focusedField: $focusedEditorField) { self.fadeCapture = nil }
                     .id(fadeCapture.selection.clip.id + ":" + String(fadeCapture.selection.revision))
+                    .id("studio.audio.fades.editor")
             }
             if let trimCapture {
-                StudioAudioNumericTrimEditor(vm: vm, capture: trimCapture) { self.trimCapture = nil }
+                StudioAudioNumericTrimEditor(vm: vm, capture: trimCapture, focusedField: $focusedEditorField) { self.trimCapture = nil }
                     .id(trimCapture.selection.clip.id + ":" + String(trimCapture.selection.revision))
+                    .id("studio.audio.trim.editor")
             }
         }.padding(.horizontal, 12).padding(.bottom, 8)
             .background(Color.white.opacity(0.02))
@@ -711,14 +746,16 @@ private struct StudioAudioFadeEditor: View {
     @ObservedObject var vm: StudioViewModel
     let capture: StudioViewModel.AudioFadeCapture
     let dismiss: () -> Void
+    @Binding private var focusedField: String?
     @State private var incoming: String
     @State private var outgoing: String
     @State private var notice: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case incoming, outgoing }
 
-    init(vm: StudioViewModel, capture: StudioViewModel.AudioFadeCapture, dismiss: @escaping () -> Void) {
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioFadeCapture, focusedField: Binding<String?>, dismiss: @escaping () -> Void) {
         self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        _focusedField = focusedField
         let envelope = capture.selection.clip.fadeEnvelope, rate = StudioAudioTimelineGeometry.sampleRate
         _incoming = State(initialValue: String(Double(envelope?.fadeInFrames ?? 0) / rate))
         _outgoing = State(initialValue: String(Double(envelope?.fadeOutFrames ?? 0) / rate))
@@ -754,6 +791,10 @@ private struct StudioAudioFadeEditor: View {
                     .accessibilityIdentifier("studio.audio.fades.apply")
             }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
         }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+        .onChange(of: focused) { _, field in
+            focusedField = field.map { $0 == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out" }
+        }
+        .onDisappear { focusedField = nil }
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -762,6 +803,7 @@ private struct StudioAudioFadeEditor: View {
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
                 .font(.specialElite(14)).padding(10).frame(minHeight: 44)
                 .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .id(field == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out")
                 .accessibilityIdentifier(field == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out")
         }.frame(maxWidth: .infinity)
     }
@@ -771,14 +813,16 @@ private struct StudioAudioNumericTrimEditor: View {
     @ObservedObject var vm: StudioViewModel
     let capture: StudioViewModel.AudioTrimCapture
     let dismiss: () -> Void
+    @Binding private var focusedField: String?
     @State private var source: String
     @State private var duration: String
     @State private var notice: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case source, duration }
 
-    init(vm: StudioViewModel, capture: StudioViewModel.AudioTrimCapture, dismiss: @escaping () -> Void) {
+    init(vm: StudioViewModel, capture: StudioViewModel.AudioTrimCapture, focusedField: Binding<String?>, dismiss: @escaping () -> Void) {
         self.vm = vm; self.capture = capture; self.dismiss = dismiss
+        _focusedField = focusedField
         _source = State(initialValue: String(capture.selection.clip.sourceOffset))
         _duration = State(initialValue: String(capture.selection.clip.duration))
     }
@@ -813,14 +857,19 @@ private struct StudioAudioNumericTrimEditor: View {
                     .accessibilityIdentifier("studio.audio.trim.apply")
             }.font(.specialElite(12)).foregroundColor(.sdStudioActionText).frame(minHeight: 44)
         }.padding(10).background(Color.white.opacity(0.04)).cornerRadius(12)
+        .onChange(of: focused) { _, field in
+            focusedField = field.map { $0 == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration" }
+        }
+        .onDisappear { focusedField = nil }
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
             TextField(title, text: text).keyboardType(.decimalPad).focused($focused, equals: field)
                 .textInputAutocapitalization(.never).autocorrectionDisabled()
-                .font(.specialElite(14)).padding(10)
+                .font(.specialElite(14)).padding(10).frame(minHeight: 44)
                 .background(Color.white.opacity(0.06)).cornerRadius(8)
+                .id(field == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration")
                 .accessibilityIdentifier(field == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration")
         }.frame(maxWidth: .infinity)
     }

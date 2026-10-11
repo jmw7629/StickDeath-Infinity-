@@ -128,7 +128,8 @@ final class StudioSmokeUITests: XCTestCase {
         // Count belongs to the dismissed options. Reopen explicitly before
         // checking it; automatic Move must remain the production behavior.
         try selectToolbarTool("lasso", app: app)
-        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,
+                       "1 artwork items selected · 1 drawings, 0 image")
         app.buttons["studio.tool-settings.close"].tap()
         try pickerRailControl("studio.tool.fill", app: app, forward: false).tap()
         XCTAssertTrue(app.staticTexts["studio.fill.selection-coverage"].waitForExistence(timeout: 5))
@@ -283,7 +284,8 @@ final class StudioSmokeUITests: XCTestCase {
         // Count belongs to the dismissed options. Reopen explicitly before
         // checking it; automatic Move must remain the production behavior.
         try selectToolbarTool("lasso", app: app)
-        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,
+                       "1 artwork items selected · 1 drawings, 0 image")
         app.buttons["studio.tool-settings.close"].tap()
         app.buttons["studio.menu.open"].tap()
         let open = app.buttons["studio.spatter.open"]
@@ -2815,6 +2817,9 @@ final class StudioSmokeUITests: XCTestCase {
         try waitForStableCanvas(canvas,expected:frame)
         XCTAssertFalse(app.descendants(matching:.any)["studio.status"].firstMatch.exists,"Copy or Paste inserted a resizing success banner")
         let duplicated = try pixels(canvas.screenshot().image), duplicatedInk = exportInkMask(duplicated)
+        // Preserve the actual failed pixels too; an assertion aborts this test
+        // before its normal success capture under continueAfterFailure=false.
+        capture(app, name: "selected-artwork-copy-paste-before-pixel-assertions")
         XCTAssertGreaterThan(Double(duplicatedInk.count)/Double(originalInk.count),1.75,"Paste failed to retain both original and copied artwork in one frame")
         XCTAssertLessThan(Double(duplicatedInk.count)/Double(originalInk.count),2.25)
         XCTAssertGreaterThanOrEqual(originalInk.intersection(duplicatedInk).count,originalInk.count-4,"Moving the pasted selection moved or removed the original")
@@ -3447,7 +3452,8 @@ final class StudioSmokeUITests: XCTestCase {
         // Count belongs to the dismissed options. Reopen explicitly before
         // checking it; automatic Move must remain the production behavior.
         try selectToolbarTool("lasso", app: app)
-        XCTAssertEqual(app.staticTexts["studio.selection.count"].label, "1 drawings selected")
+        XCTAssertEqual(app.staticTexts["studio.selection.count"].label,
+                       "1 artwork items selected · 1 drawings, 0 image")
         app.buttons["studio.tool-settings.close"].tap()
         try pickerRailControl("studio.tool.eraser", app: app, forward: false).tap()
         let hard = app.buttons["studio.eraser.mode.hard"], soft = app.buttons["studio.eraser.mode.soft"]
@@ -3548,7 +3554,9 @@ final class StudioSmokeUITests: XCTestCase {
         if exerciseNativeTextAlpha {
             let picker = app.descendants(matching: .any)["studio.text.color"].firstMatch
             let popup = app.descendants(matching: .any)["studio.tool-settings"].firstMatch
-            let scroll = popup.scrollViews.firstMatch
+            // Resolve by stable identity after keyboard-driven popup layout;
+            // a frame-bound anonymous ScrollView can become a stale AX query.
+            let scroll = app.scrollViews["studio.tool-settings.scroll"]
             XCTAssertTrue(picker.waitForExistence(timeout: 5) && scroll.exists)
             for _ in 0..<5 {
                 let viewport = scroll.frame.intersection(app.frame)
@@ -4375,6 +4383,9 @@ final class StudioSmokeUITests: XCTestCase {
         search.tap(); search.typeText("collision\n")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "128 matching sounds"), evaluatedWith: resultCount).waitUntilFulfilled(timeout: 5))
         search.tap(); search.typeText(" zzzz-no-sound\n")
+        XCTAssertEqual(search.value as? String, "collision zzzz-no-sound",
+                       "The query must remain literal before interpreting catalogue results")
+        capture(app, name: "sound-library-no-match-query")
         XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "0 matching sounds"), evaluatedWith: resultCount).waitUntilFulfilled(timeout: 5))
         XCTAssertTrue(app.staticTexts["studio.audio.search.empty"].exists)
         try audioLibraryButton("studio.audio.search.clear", app: app).tap()
