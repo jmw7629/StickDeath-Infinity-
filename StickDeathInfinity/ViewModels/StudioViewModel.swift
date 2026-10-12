@@ -3846,7 +3846,10 @@ final class StudioViewModel: ObservableObject {
                 value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
                 if copied.rasterRotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
                 if let primary = value.frames[index].rasterAssetID { value.schemaVersion = max(value.schemaVersion, primary == assetID ? 27 : 31) }
-                value.layers.insert(layer, at: 0)
+                // Appended, not inserted on top: complementary Wand fragments are
+                // reconstructed exactly only while they sit adjacent to their source
+                // layer (StudioFrameRenderer.imageRegionReconstructionPairs).
+                value.layers.append(layer)
                 value.activeLayerID = layer.id
                 try value.frames[index].appendRasterInstance(.init(layerID: layer.id,
                     placement: copied.rasterPlacement, reflection: copied.rasterReflection,
