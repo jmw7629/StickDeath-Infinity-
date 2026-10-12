@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...33
+    static let supportedSchemaVersions = 1...34
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -20,6 +20,10 @@ struct StudioDocument: Codable, Equatable {
     // Four numbered bus levels, independent of each clip's own gain/mute.
     // Absent in historical projects means unity gain on every track.
     var audioTrackVolumes: [Double]?
+    // Schema 34 SoundCraft mixer state: four balance positions (-1...1) and
+    // soloed tracks. Absent means centred and no solo, matching older mixes.
+    var audioTrackPans: [Double]?
+    var soloedAudioTracks: [Int]?
     var gridEnabled = false
     var gridSettings: StudioGridSettings?
     var onionEnabled = false
@@ -45,7 +49,7 @@ struct StudioDocument: Codable, Equatable {
             width: width, height: height, fps: fps, frames: frames, layers: layers,
             activeFrameID: activeFrameID, activeLayerID: activeLayerID,
             audioClips: audioClips, mutedAudioTracks: mutedAudioTracks, audioTrackVolumes: audioTrackVolumes,
-            gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
+            audioTrackPans: audioTrackPans, soloedAudioTracks: soloedAudioTracks, gridEnabled: gridEnabled, gridSettings: gridSettings, onionEnabled: onionEnabled,
             onionSettings: onionSettings, createdAt: date, modifiedAt: date, revision: 0)
         try copy.validate()
         return copy
@@ -83,6 +87,16 @@ struct StudioDocument: Codable, Equatable {
         guard (1...4).contains(track), let audioTrackVolumes, audioTrackVolumes.count == 4 else { return 1 }
         return audioTrackVolumes[track - 1]
     }
+    func audioTrackPan(_ track: Int) -> Double {
+        guard (1...4).contains(track), let audioTrackPans, audioTrackPans.count == 4 else { return 0 }
+        return audioTrackPans[track - 1]
+    }
+    func isAudioTrackSoloed(_ track: Int) -> Bool { soloedAudioTracks?.contains(track) == true }
+    /// SoundCraft rule: muted tracks are silent, and any solo silences every
+    /// track that is not soloed. Per-clip mute is applied separately.
+    func isAudioTrackAudible(_ track: Int) -> Bool {
+        StudioCraftAudio.isTrackAudible(track, muted: Set(mutedAudioTracks ?? []), soloed: Set(soloedAudioTracks ?? []))
+    }
     var referencedRasterAssetIDs: Set<String> { frames.reduce(into: Set<String>()) { $0.formUnion($1.referencedRasterAssetIDs) } }
 
     static func validatedProjectName(_ proposed: String) throws -> String {
@@ -112,6 +126,11 @@ struct StudioDocument: Codable, Equatable {
             }
             guard !layer.name.isEmpty, layer.name.count <= 120, layer.opacity.isFinite, (0...1).contains(layer.opacity) else {
                 throw StudioDocumentError.invalid("A layer has invalid settings.")
+            }
+            if StudioLayerBlendMode(stored: layer.blendMode)?.isExtended == true {
+                guard schemaVersion >= StudioLayerBlendMode.extendedSchemaVersion else {
+                    throw StudioDocumentError.invalid("This layer blend mode needs project version 34.")
+                }
             }
         }
         var elementIDs = Set<String>(); var pointCount = 0
@@ -329,6 +348,19 @@ struct StudioDocument: Codable, Equatable {
                 throw StudioDocumentError.invalid("Audio track volumes are invalid or need a newer project version.")
             }
         }
+        if let audioTrackPans {
+            guard schemaVersion >= 34, audioTrackPans.count == 4,
+                  audioTrackPans.allSatisfy({ $0.isFinite && (-1...1).contains($0) }) else {
+                throw StudioDocumentError.invalid("Audio track pan settings are invalid or need project version 34.")
+            }
+        }
+        if let soloedAudioTracks {
+            guard schemaVersion >= 34, soloedAudioTracks.count <= 4,
+                  soloedAudioTracks.allSatisfy({ (1...4).contains($0) }),
+                  soloedAudioTracks == Array(Set(soloedAudioTracks)).sorted() else {
+                throw StudioDocumentError.invalid("Audio track solo settings are invalid or need project version 34.")
+            }
+        }
         guard Set(audioClips.map(\.id)).count == audioClips.count else { throw StudioDocumentError.invalid("Audio clip identities are invalid.") }
         guard audioClips.filter({ $0.assetID != nil }).count <= 128 else { throw StudioDocumentError.invalid("This project exceeds the 128 imported audio clip limit.") }
         for clip in audioClips {
@@ -337,6 +369,9 @@ struct StudioDocument: Codable, Equatable {
                     throw StudioDocumentError.invalid("Audio fades require managed audio and project version14.")
                 }
                 try envelope.validate()
+                guard !envelope.hasCurveShapes || schemaVersion >= 34 else {
+                    throw StudioDocumentError.invalid("Shaped audio fades need project version 34.")
+                }
             }
             guard clip.sourceOffset.isFinite, clip.sourceOffset >= 0, clip.sourceOffset <= 300,
                   (clip.sourceOffset + clip.duration).isFinite,
@@ -460,8 +495,11 @@ extension StudioAudioClipSettings {
             let start = Int((result.sourceOffset * rate).rounded())
             let count = Int(((result.startTime + result.duration) * rate).rounded() - (result.startTime * rate).rounded())
             let inFrames = Int((incoming * rate).rounded()), outFrames = Int((outgoing * rate).rounded())
+            let inShape = fades.fadeInShape == .linear ? nil : fades.fadeInShape
+            let outShape = fades.fadeOutShape == .linear ? nil : fades.fadeOutShape
             result.fadeEnvelope = inFrames == 0 && outFrames == 0 ? nil : .init(
-                sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames)
+                sourceStartFrame: start, frameCount: count, fadeInFrames: inFrames, fadeOutFrames: outFrames,
+                fadeInShape: inFrames == 0 ? nil : inShape, fadeOutShape: outFrames == 0 ? nil : outShape)
             try result.fadeEnvelope?.validate()
         }
         return result
@@ -619,17 +657,20 @@ struct StudioDocumentEditor {
     }
 
     /// Track controls preserve clip/source identities and share full-document Undo.
-    mutating func updateAudioTrack(_ track: Int, volume: Double?, muted: Bool?) throws {
-        guard (1...4).contains(track), volume != nil || muted != nil,
-              volume.map({ $0.isFinite && (0...1).contains($0) }) ?? true else {
-            throw StudioDocumentError.invalid("Choose track 1–4 and volume 0–100% or a mute setting.")
+    mutating func updateAudioTrack(_ track: Int, volume: Double?, muted: Bool?, pan: Double? = nil, soloed: Bool? = nil) throws {
+        guard (1...4).contains(track), volume != nil || muted != nil || pan != nil || soloed != nil,
+              volume.map({ $0.isFinite && (0...1).contains($0) }) ?? true,
+              pan.map({ $0.isFinite && (-1...1).contains($0) }) ?? true else {
+            throw StudioDocumentError.invalid("Choose track 1–4 with volume 0–100%, pan L100–R100, mute or solo.")
         }
         guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
             throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
         }
         let changesVolume = volume.map { $0 != document.audioTrackVolume(track) } ?? false
         let changesMute = muted.map { $0 != document.isAudioTrackMuted(track) } ?? false
-        guard changesVolume || changesMute else { return }
+        let changesPan = pan.map { $0 != document.audioTrackPan(track) } ?? false
+        let changesSolo = soloed.map { $0 != document.isAudioTrackSoloed(track) } ?? false
+        guard changesVolume || changesMute || changesPan || changesSolo else { return }
         try change { value in
             if let volume, changesVolume {
                 value.schemaVersion = max(value.schemaVersion, 13)
@@ -641,6 +682,17 @@ struct StudioDocumentEditor {
                 var tracks = Set(value.mutedAudioTracks ?? [])
                 if muted { tracks.insert(track) } else { tracks.remove(track) }
                 value.mutedAudioTracks = tracks.sorted()
+            }
+            if let pan, changesPan {
+                value.schemaVersion = max(value.schemaVersion, 34)
+                var pans = value.audioTrackPans ?? Array(repeating: 0, count: 4)
+                pans[track - 1] = pan; value.audioTrackPans = pans
+            }
+            if let soloed, changesSolo {
+                value.schemaVersion = max(value.schemaVersion, 34)
+                var tracks = Set(value.soloedAudioTracks ?? [])
+                if soloed { tracks.insert(track) } else { tracks.remove(track) }
+                value.soloedAudioTracks = tracks.sorted()
             }
         }
     }
@@ -656,6 +708,7 @@ struct StudioDocumentEditor {
         guard updated != original else { return }
         try change { value in
             value.schemaVersion = max(value.schemaVersion, original.fadeEnvelope != updated.fadeEnvelope ? 14 : 4)
+            if updated.fadeEnvelope?.hasCurveShapes == true { value.schemaVersion = max(value.schemaVersion, 34) }
             value.audioClips[index] = updated
         }
     }
@@ -1652,6 +1705,9 @@ struct StudioDocumentEditor {
             try operation(&value.layers[index])
             if value.layers[index].glowRadius != nil || value.layers[index].glowStrength != nil {
                 value.schemaVersion = max(value.schemaVersion, 28)
+            }
+            if StudioLayerBlendMode(stored: value.layers[index].blendMode)?.isExtended == true {
+                value.schemaVersion = max(value.schemaVersion, StudioLayerBlendMode.extendedSchemaVersion)
             }
         }
     }

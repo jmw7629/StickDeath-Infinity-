@@ -415,6 +415,35 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                     catch is StudioCommandError { }
                 }
             }
+            try test("ArtCraft mixer and layer wire fields round-trip and apply, and unknown values are rejected") {
+                var editor = try audioEditor()
+                let wire = """
+                {"schemaVersion":1,"requestID":"\(UUID().uuidString)","projectID":"\(editor.document.id.uuidString)",
+                 "expectedRevision":\(editor.document.revision),"action":{"apply":[
+                   {"updateAudioTrack":{"track":2,"pan":-0.25,"soloed":true}},
+                   {"updateAudioClip":{"clipID":"first-audio","settings":{"fades":{"fadeIn":0.2,"fadeOut":0.1,"fadeInShape":"equalPower","fadeOutShape":"logarithmic"}}}},
+                   {"updateLayer":{"layer":{"id":"\(editor.document.activeLayerID)"},"settings":{"blend":"color-burn"}}}]}}
+                """
+                _ = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(Data(wire.utf8)), editor: &editor)
+                let document = editor.document
+                guard document.schemaVersion == 34, document.audioTrackPan(2) == -0.25, document.soloedAudioTracks == [2],
+                      document.audioClips[0].fadeEnvelope?.fadeInShape == .equalPower,
+                      document.audioClips[0].fadeEnvelope?.fadeOutShape == .logarithmic,
+                      document.layers.first(where: { $0.id == document.activeLayerID })?.blendMode == "color-burn" else {
+                    throw Failure(message: "ArtCraft wire fields were not applied")
+                }
+                for bad in [#"{"updateAudioTrack":{"track":2,"pan":1.5}}"#, #"{"updateAudioTrack":{"track":2,"soloed":"yes"}}"#,
+                            #"{"updateAudioTrack":{"track":2,"gainDB":3}}"#,
+                            #"{"updateAudioClip":{"clipID":"first-audio","settings":{"fades":{"fadeIn":0.2,"fadeOut":0,"fadeInShape":"execute"}}}}"#,
+                            #"{"updateLayer":{"layer":{"id":"x"},"settings":{"blend":"dissolve"}}}"#] {
+                    let before = editor.document
+                    let object = #"{"schemaVersion":1,"requestID":""# + UUID().uuidString + #"","projectID":""# + editor.document.id.uuidString
+                        + #"","expectedRevision":"# + String(editor.document.revision) + #","action":{"apply":["# + bad + "]}}"
+                    var rejected = false
+                    do { _ = try StudioCommandExecutor.execute(StudioCommandExecutor.decode(Data(object.utf8)), editor: &editor) } catch { rejected = true }
+                    guard rejected, editor.document == before else { throw Failure(message: "Malformed ArtCraft field accepted: \(bad)") }
+                }
+            }
             try test("cancelled audio batches preserve history and reject replay and foreign projects") {
                 var editor = try audioEditor()
                 let original = editor.document, undo = editor.canUndo, redo = editor.canRedo

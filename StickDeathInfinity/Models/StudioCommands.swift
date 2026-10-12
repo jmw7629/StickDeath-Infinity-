@@ -90,7 +90,8 @@ enum StudioCommandDirection: String, Codable { case earlier, later
     var offset: Int { self == .earlier ? -1 : 1 }
 }
 enum StudioCommandLock: String, Codable { case free, full, position, alpha }
-enum StudioCommandBlend: String, Codable { case normal, multiply, screen, overlay, darken, lighten }
+/// Commands accept every PhotoCraft mode the native compositor renders.
+typealias StudioCommandBlend = StudioLayerBlendMode
 
 struct StudioCommandLayerSettings: Codable {
     var name: String? = nil
@@ -157,7 +158,7 @@ enum StudioCommand: Codable {
     struct SplitAudioClip: Codable { let clipID: String; let seconds: Double; let newClipID: String }
     struct DeleteAudioClip: Codable { let clipID: String }
     struct DuplicateAudioClip: Codable { let clipID: String; let newClipID: String }
-    struct UpdateAudioTrack: Codable { let track: Int; var volume: Double? = nil; var muted: Bool? = nil }
+    struct UpdateAudioTrack: Codable { let track: Int; var volume: Double? = nil; var muted: Bool? = nil; var pan: Double? = nil; var soloed: Bool? = nil }
     struct UpdateAudioClip: Codable { let clipID: String; let settings: StudioAudioClipSettings }
     struct CanvasOptions: Codable {
         let grid: Bool?
@@ -455,7 +456,7 @@ enum StudioCommandExecutor {
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
             "duplicateAudioClip": ["clipID", "newClipID"],
-            "updateAudioTrack": ["track", "volume", "muted"],
+            "updateAudioTrack": ["track", "volume", "muted", "pan", "soloed"],
             "updateAudioClip": ["clipID", "settings"],
             "rotateImage": ["layer", "frame", "assetID", "direction"],
             "reflectImage": ["layer", "frame", "assetID", "axis"],
@@ -512,7 +513,7 @@ enum StudioCommandExecutor {
                     _ = try object(placement, keys: ["startTime", "track"])
                 }
                 if let fades = values["fades"] {
-                    _ = try object(fades, keys: ["fadeIn", "fadeOut"])
+                    _ = try object(fades, keys: ["fadeIn", "fadeOut", "fadeInShape", "fadeOutShape"])
                 }
             }
             if kind == "cropImage" {
@@ -713,7 +714,7 @@ enum StudioCommandExecutor {
         case .duplicateAudioClip(let value):
             try editor.duplicateAudioClip(value.clipID, newClipID: value.newClipID)
         case .updateAudioTrack(let value):
-            try editor.updateAudioTrack(value.track, volume: value.volume, muted: value.muted)
+            try editor.updateAudioTrack(value.track, volume: value.volume, muted: value.muted, pan: value.pan, soloed: value.soloed)
         case .updateAudioClip(let value):
             try editor.updateAudioClip(value.clipID, settings: value.settings)
         case .eraseSelectedElements(let value):

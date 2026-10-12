@@ -336,7 +336,7 @@ final class StudioExportService {
         guard document.frames.count <= Self.maximumFrames, pixels <= Self.maximumFramePixels,
               pixels * document.frames.count <= Self.maximumTotalPixels else { throw ExportError.limitExceeded }
         let tools: Set<DrawingTool> = [.pencil, .pen, .brush, .marker, .crayon, .eraser, .line, .rectangle, .circle, .text, .fill, .smudge, .blur, .sharpen, .dodge, .burn]
-        let blends: Set<String> = ["normal", "multiply", "screen", "overlay", "darken", "lighten"]
+        let blends = Set(StudioLayerBlendMode.allCases.map(\.rawValue))
         func validColor(_ value: String) -> Bool {
             let hex = value.hasPrefix("#") ? String(value.dropFirst()) : value
             return hex.utf8.count == 6 && hex.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }

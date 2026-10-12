@@ -417,6 +417,67 @@ private actor Barrier {
             print("BOUND120_SECONDS=\(Date().timeIntervalSince(start)) OUTPUT_BYTES=\(out.receipt.bytes)")
             try out.cleanup();try empty()
         }
+        try await test("ArtCraft SoundCraft track pan applies the balance law to actual samples and centre is bit-exact") {
+            let base = try document([clip(stereo, track: 1), clip(stereo, track: 2)])
+            let centred = try await StudioAudioMixService().mix(document: base, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let reference = try read(centred); try centred.cleanup()
+            var editor = try StudioDocumentEditor(document: base)
+            try editor.updateAudioTrack(1, volume: nil, muted: nil, pan: -1)
+            try editor.updateAudioTrack(2, volume: nil, muted: nil, pan: 0.5)
+            try check(editor.document.schemaVersion == 34 && editor.document.audioTrackPans == [-1, 0.5, 0, 0], "pan persisted in schema 34")
+            let panned = try await StudioAudioMixService().mix(document: editor.document, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(panned)
+            for n in stride(from: 0, to: 4800, by: 7) {
+                let l = Float(sin(Double(n)*2*Double.pi*480/48000))*0.2, r = Float(cos(Double(n)*2*Double.pi*960/48000))*0.3
+                // Track 1 hard left keeps only L; track 2 at R50 keeps half of L and all of R.
+                try near(pcm[0][n], l + l * 0.5); try near(pcm[1][n], r)
+                try near(reference[0][n], 2 * l); try near(reference[1][n], 2 * r)
+            }
+            try panned.cleanup(); try empty()
+            var bad = editor.document; bad.audioTrackPans = [0, 0, 2, 0]
+            do { try bad.validate(); throw ProbeError.failed("out-of-range pan accepted") } catch is ProbeError { throw ProbeError.failed("out-of-range pan accepted") } catch {}
+            var old = editor.document; old.schemaVersion = 33
+            do { try old.validate(); throw ProbeError.failed("schema 33 pan accepted") } catch is ProbeError { throw ProbeError.failed("schema 33 pan accepted") } catch {}
+        }
+        try await test("ArtCraft SoundCraft solo silences unsoloed tracks, mute still wins, and undo restores the mix") {
+            let base = try document([clip(stereo, volume: 0.5, track: 1), clip(stereo, volume: 0.25, track: 3)])
+            var editor = try StudioDocumentEditor(document: base)
+            try editor.updateAudioTrack(3, volume: nil, muted: nil, soloed: true)
+            try check(editor.document.soloedAudioTracks == [3] && editor.document.isAudioTrackAudible(3) && !editor.document.isAudioTrackAudible(1), "solo state")
+            let soloed = try await StudioAudioMixService().mix(document: editor.document, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(soloed); try soloed.cleanup()
+            for n in stride(from: 0, to: 4800, by: 11) {
+                try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000))*0.2*0.25)
+            }
+            try editor.updateAudioTrack(3, volume: nil, muted: true)
+            let silent = try await StudioAudioMixService().mix(document: editor.document, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            try check(try read(silent).allSatisfy { $0.allSatisfy { $0 == 0 } }, "muted soloed track must be silent and others stay soloed out"); try silent.cleanup()
+            editor.undo(); editor.undo()
+            try check(editor.document.soloedAudioTracks == nil && editor.document.mutedAudioTracks == nil, "undo restored mixer")
+            try empty()
+        }
+        try await test("ArtCraft SoundCraft fade curves shape actual samples and survive encoding") {
+            var editor = try StudioDocumentEditor(document: try document([clip(stereo, track: 1)]))
+            let id = editor.document.audioClips[0].id
+            try editor.updateAudioClip(id, settings: .init(fades: .init(fadeIn: 0.05, fadeOut: 0.025, fadeInShape: .equalPower, fadeOutShape: .sCurve)))
+            try check(editor.document.audioClips[0].fadeEnvelope?.fadeInShape == .equalPower, "shape stored")
+            try check(editor.document.schemaVersion == 34 && editor.document.audioClips[0].fadeEnvelope?.fadeOutShape == .sCurve, "schema 34 shaped fade")
+            let encoded = try JSONEncoder().encode(editor.document)
+            try check(try JSONDecoder().decode(StudioDocument.self, from: encoded) == editor.document, "round trip")
+            let out = try await StudioAudioMixService().mix(document: editor.document, retainedAudioTracks: [stereo], durationSeconds: 0.1, outputParent: scratch)
+            let pcm = try read(out)
+            for n in stride(from: 0, to: 4800, by: 13) {
+                let incoming = StudioFadeShape.equalPower.gain(min(1, Double(n) / 2400))
+                let outgoing = StudioFadeShape.sCurve.gain(min(1, Double(4799 - n) / 1200))
+                try near(pcm[0][n], Float(sin(Double(n)*2*Double.pi*480/48000))*0.2*Float(min(incoming, outgoing)))
+            }
+            try out.cleanup()
+            // Linear choice keeps the historical encoding byte-for-byte (no shape keys).
+            try editor.updateAudioClip(id, settings: .init(fades: .init(fadeIn: 0.05, fadeOut: 0.025)))
+            let linear = String(decoding: try JSONEncoder().encode(editor.document.audioClips[0].fadeEnvelope!), as: UTF8.self)
+            try check(!linear.contains("Shape"), "linear fades must not write shape keys")
+            try empty()
+        }
 
         try check(originalHashes==[digest(stereo.audioData!),digest(mono.audioData!)],"source originals changed")
         print("STUDIO_AUDIO_MIX_TESTS=PASS \(count)/\(count)")

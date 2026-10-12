@@ -239,7 +239,7 @@ struct SpatterMotionRecipePanel: View {
                     .accessibilityIdentifier("spatter.layer.lock-examples")
                     Menu("Use a layer blend instruction") {
                         ForEach(SpatterLayerUpdateInstruction.blendModes, id: \.rawValue) { mode in
-                            Button(mode.rawValue.capitalized) { draft = SpatterLayerUpdateInstruction.blendExample(mode) }
+                            Button(mode.title) { draft = SpatterLayerUpdateInstruction.blendExample(mode) }
                         }
                     }
                     .frame(minHeight:44).disabled(session.isWorking || session.isClosed)

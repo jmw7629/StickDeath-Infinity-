@@ -451,8 +451,11 @@ private struct StudioAudioWorkspace: View {
                     Color.clear.frame(width: 44, height: 26)
                     ForEach(1...4, id: \.self) { track in
                         let muted = vm.document.isAudioTrackMuted(track)
+                        let soloed = vm.document.isAudioTrackSoloed(track)
                         VStack(spacing: 0) {
-                            Text("\(track)").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+                            Text(soloed ? "\(track) S" : "\(track)").font(.specialElite(10))
+                                .foregroundColor(soloed ? StudioCraftTheme.solo : .sdStudioSecondaryText)
+                                .accessibilityIdentifier("studio.audio.track-number.\(track)")
                             Button {
                                 timeline.stop(); audio.stop(); vm.stopPlayback()
                                 do { try vm.setAudioTrackMuted(track, muted: !muted, expectedRevision: vm.document.revision) }
@@ -520,6 +523,11 @@ private struct StudioAudioWorkspace: View {
         let duplication = vm.prepareAudioDuplication()
         let split = vm.prepareAudioSplit()
         return VStack(spacing: 6) {
+            if !vm.document.isAudioTrackMuted(clip.track) && !vm.document.isAudioTrackAudible(clip.track) {
+                Text("Another track is soloed, so track \(clip.track) is silent")
+                    .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(StudioCraftTheme.solo)
+                    .accessibilityIdentifier("studio.audio.selected-track-solo-silenced")
+            }
             if vm.document.isAudioTrackMuted(clip.track) {
                 Text("Track \(clip.track) is muted")
                     .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioActionText)
@@ -558,6 +566,10 @@ private struct StudioAudioWorkspace: View {
                 timeline.stop(); audio.stop(); vm.stopPlayback()
             }
             .id("\(vm.document.id):\(vm.document.revision):\(clip.track)")
+            StudioAudioTrackMixControl(vm: vm, track: clip.track) {
+                timeline.stop(); audio.stop(); vm.stopPlayback()
+            }
+            .id("mix:\(vm.document.id):\(vm.document.revision):\(clip.track)")
             HStack {
                 Text(String(format: "Start %.2fs · Source %.2fs · %.2fs", clip.startTime, clip.sourceOffset, clip.duration))
                     .font(.specialElite(11)).foregroundColor(.sdStudioSecondaryText)
@@ -742,6 +754,74 @@ private struct StudioAudioTrackVolumeControl: View {
     }
 }
 
+/// SoundCraft-style mixer strip for one track: balance pan and solo.
+private struct StudioAudioTrackMixControl: View {
+    @ObservedObject var vm: StudioViewModel
+    let track: Int
+    let stopPlayback: () -> Void
+    @State private var pan: Double
+    @State private var revision: Int?
+
+    init(vm: StudioViewModel, track: Int, stopPlayback: @escaping () -> Void) {
+        self.vm = vm; self.track = track; self.stopPlayback = stopPlayback
+        _pan = State(initialValue: vm.document.audioTrackPan(track))
+    }
+    private var editable: Bool {
+        !vm.isSaving && vm.document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil })
+    }
+    var body: some View {
+        HStack(spacing: 10) {
+            Text("Pan").font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
+            Slider(value: $pan, in: -1...1, onEditingChanged: { editing in
+                if editing { stopPlayback(); revision = vm.document.revision; return }
+                defer { revision = nil; pan = vm.document.audioTrackPan(track) }
+                guard let revision else { return }
+                // Snap near-centre to exact centre, as SoundCraft's pan knob does.
+                let value = abs(pan) < 0.04 ? 0 : (pan * 100).rounded() / 100
+                do { try vm.setAudioTrackPan(track, pan: value, expectedRevision: revision) }
+                catch { vm.message = error.localizedDescription }
+            }).tint(StudioCraftTheme.accent)
+                .disabled(!editable)
+                .accessibilityLabel("Track \(track) pan")
+                .accessibilityValue(StudioCraftAudio.panLabel(pan))
+                .accessibilityIdentifier("studio.audio.track-pan.\(track)")
+            Text(StudioCraftAudio.panLabel(pan)).font(.specialElite(11)).frame(width: 38, alignment: .trailing)
+                .accessibilityIdentifier("studio.audio.track-pan-value.\(track)")
+            let soloed = vm.document.isAudioTrackSoloed(track)
+            Button {
+                stopPlayback()
+                do { try vm.setAudioTrackSoloed(track, soloed: !soloed, expectedRevision: vm.document.revision) }
+                catch { vm.message = error.localizedDescription }
+            } label: {
+                Text("S").font(.system(size: 13, weight: .bold))
+                    .foregroundColor(soloed ? .black : StudioCraftTheme.solo)
+                    .frame(width: 44, height: 44)
+                    .background(soloed ? StudioCraftTheme.solo : Color.white.opacity(0.06))
+                    .clipShape(RoundedRectangle(cornerRadius: StudioCraftTheme.radiusSmall))
+            }.disabled(!editable)
+                .accessibilityLabel(soloed ? "Unsolo track \(track)" : "Solo track \(track)")
+                .accessibilityValue(soloed ? "Soloed" : "Not soloed")
+                .accessibilityIdentifier("studio.audio.track-solo.\(track)")
+        }.frame(minHeight: 44)
+    }
+}
+
+/// Small preview of a SoundCraft fade-in curve.
+struct StudioFadeCurveGlyph: View {
+    let shape: StudioFadeShape
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            for step in 0...24 {
+                let t = Double(step) / 24
+                let point = CGPoint(x: t * size.width, y: size.height * (1 - shape.gain(t)))
+                if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
+            }
+            context.stroke(path, with: .color(StudioCraftTheme.accent), lineWidth: 1.5)
+        }.accessibilityHidden(true)
+    }
+}
+
 private struct StudioAudioFadeEditor: View {
     @ObservedObject var vm: StudioViewModel
     let capture: StudioViewModel.AudioFadeCapture
@@ -749,6 +829,8 @@ private struct StudioAudioFadeEditor: View {
     @Binding private var focusedField: String?
     @State private var incoming: String
     @State private var outgoing: String
+    @State private var incomingShape: StudioFadeShape
+    @State private var outgoingShape: StudioFadeShape
     @State private var notice: String?
     @FocusState private var focused: Field?
     private enum Field: Hashable { case incoming, outgoing }
@@ -759,12 +841,18 @@ private struct StudioAudioFadeEditor: View {
         let envelope = capture.selection.clip.fadeEnvelope, rate = StudioAudioTimelineGeometry.sampleRate
         _incoming = State(initialValue: String(Double(envelope?.fadeInFrames ?? 0) / rate))
         _outgoing = State(initialValue: String(Double(envelope?.fadeOutFrames ?? 0) / rate))
+        _incomingShape = State(initialValue: envelope?.fadeInShape ?? .linear)
+        _outgoingShape = State(initialValue: envelope?.fadeOutShape ?? .linear)
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 input("Fade in (sec)", text: $incoming, field: .incoming)
                 input("Fade out (sec)", text: $outgoing, field: .outgoing)
+            }
+            HStack(spacing: 12) {
+                shapePicker("Fade in curve", selection: $incomingShape, id: "studio.audio.fades.in-shape")
+                shapePicker("Fade out curve", selection: $outgoingShape, id: "studio.audio.fades.out-shape")
             }
             Text("Fades follow the source through Trim and Split. Apply resets them to this clip.")
                 .font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
@@ -775,7 +863,7 @@ private struct StudioAudioFadeEditor: View {
             HStack {
                 Button { focused = nil; dismiss() } label: { Text("Cancel").frame(minHeight: 44) }
                     .accessibilityIdentifier("studio.audio.fades.cancel")
-                Button { incoming = "0"; outgoing = "0"; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
+                Button { incoming = "0"; outgoing = "0"; incomingShape = .linear; outgoingShape = .linear; notice = nil } label: { Text("Clear fades").frame(minHeight: 44) }
                     .accessibilityIdentifier("studio.audio.fades.clear")
                 Spacer()
                 Button {
@@ -784,7 +872,8 @@ private struct StudioAudioFadeEditor: View {
                           let fadeOut = StudioViewModel.audioTrimSeconds(outgoing) else {
                         notice = "Enter a valid number of seconds in both fields."; return
                     }
-                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut); dismiss() }
+                    do { try vm.setAudioFades(capture, fadeIn: fadeIn, fadeOut: fadeOut,
+                                              fadeInShape: incomingShape, fadeOutShape: outgoingShape); dismiss() }
                     catch { notice = error.localizedDescription }
                 } label: { Text("Apply fades").frame(minHeight: 44) }
                     .disabled(vm.prepareAudioFades() != capture)
@@ -795,6 +884,27 @@ private struct StudioAudioFadeEditor: View {
             focusedField = field.map { $0 == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out" }
         }
         .onDisappear { focusedField = nil }
+    }
+    private func shapePicker(_ title: String, selection: Binding<StudioFadeShape>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.custom("SpecialElite-Regular", size: 11, relativeTo: .caption2)).foregroundColor(.sdStudioSecondaryText)
+            Menu {
+                Picker(title, selection: selection) {
+                    ForEach(StudioFadeShape.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+            } label: {
+                HStack {
+                    StudioFadeCurveGlyph(shape: selection.wrappedValue).frame(width: 22, height: 14)
+                    Text(selection.wrappedValue.title).font(.specialElite(12)).lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 10))
+                }.padding(.horizontal, 10).frame(minHeight: 44)
+                    .background(Color.white.opacity(0.06)).cornerRadius(8)
+            }.foregroundColor(.sdStudioActionText)
+                .accessibilityLabel(title)
+                .accessibilityValue(selection.wrappedValue.title)
+                .accessibilityIdentifier(id)
+        }.frame(maxWidth: .infinity)
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -921,10 +1031,10 @@ private struct StudioAudioTimelineClip: View {
                 .gesture(moveGesture)
             if clip.duration * pointsPerSecond >= 88 { handle(leading: false) }
         }.frame(width: width, height: 58)
-            .background(Color.sdRed.opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.05 : 0.16))
+            .background(Color(hex: StudioCraftAudio.trackColor(clip.track)).opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.08 : 0.30))
             .clipShape(RoundedRectangle(cornerRadius: radius))
             .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(vm.selectedCurrentAudioClip?.id == clip.id ? Color.white.opacity(0.5) : Color.sdRed.opacity(0.5)))
-            .opacity(clip.isMuted || vm.document.isAudioTrackMuted(clip.track) ? 0.55 : 1)
+            .opacity(clip.isMuted || !vm.document.isAudioTrackAudible(clip.track) ? 0.55 : 1)
             .frame(width: clip.duration * pointsPerSecond, height: 58, alignment: .leading)
             .offset(previewOffset)
     }

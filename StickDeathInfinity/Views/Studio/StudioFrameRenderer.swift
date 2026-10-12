@@ -466,14 +466,28 @@ struct StudioFrameRenderer {
         context.draw(Text("Render unavailable: \(error.localizedDescription)").font(.system(size: 11)).foregroundColor(.red),
                      in: CGRect(origin: .zero, size: size))
     }
-    private static func blend(_ name: String) -> GraphicsContext.BlendMode {
-        switch name.lowercased() {
-        case "multiply": return .multiply
-        case "screen": return .screen
-        case "overlay": return .overlay
-        case "darken": return .darken
-        case "lighten": return .lighten
-        default: return .normal
+    /// PhotoCraft layer modes on the native compositor. Unknown historical
+    /// strings keep drawing as Normal.
+    static func blend(_ name: String) -> GraphicsContext.BlendMode {
+        switch StudioLayerBlendMode(stored: name) {
+        case .normal, .none: return .normal
+        case .darken: return .darken
+        case .multiply: return .multiply
+        case .colorBurn: return .colorBurn
+        case .linearBurn: return .plusDarker
+        case .lighten: return .lighten
+        case .screen: return .screen
+        case .colorDodge: return .colorDodge
+        case .linearDodge: return .plusLighter
+        case .overlay: return .overlay
+        case .softLight: return .softLight
+        case .hardLight: return .hardLight
+        case .difference: return .difference
+        case .exclusion: return .exclusion
+        case .hue: return .hue
+        case .saturation: return .saturation
+        case .color: return .color
+        case .luminosity: return .luminosity
         }
     }
     private static func drawElement(context: inout GraphicsContext, element: DrawnElement, size: CGSize, canvasSize: CGSize,

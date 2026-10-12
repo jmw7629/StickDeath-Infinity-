@@ -1026,7 +1026,7 @@ struct SpatterLayerUpdateInstruction: Equatable {
     var lock: StudioCommandLock? = nil
     static let lockModes: [StudioCommandLock] = [.free, .full, .position, .alpha]
     static func lockExample(_ mode: StudioCommandLock) -> String { "Set active layer lock to \(mode.rawValue)." }
-    static let blendModes: [StudioCommandBlend] = [.normal, .multiply, .screen, .overlay, .darken, .lighten]
+    static let blendModes: [StudioCommandBlend] = StudioLayerBlendMode.allCases
     static func blendExample(_ mode: StudioCommandBlend) -> String { "Set active layer blend to \(mode.rawValue)." }
     static let renameExample = "Rename active layer to \"Foreground\"."
     static let hideExample = "Hide active layer."
@@ -1054,7 +1054,7 @@ struct SpatterLayerUpdateInstruction: Equatable {
            let mode = StudioCommandLock(rawValue: text[value].lowercased()) {
             return .init(name: nil, opacity: nil, lock: mode)
         }
-        let blendExpression = try NSRegularExpression(pattern: #"\A\s*set\s+active\s+layer\s+blend\s+to\s+(normal|multiply|screen|overlay|darken|lighten)\.\s*\z"#, options: [.caseInsensitive])
+        let blendExpression = try NSRegularExpression(pattern: #"\A\s*set\s+active\s+layer\s+blend\s+to\s+(normal|darken|multiply|color-burn|linear-burn|lighten|screen|color-dodge|linear-dodge|overlay|soft-light|hard-light|difference|exclusion|hue|saturation|color|luminosity)\.\s*\z"#, options: [.caseInsensitive])
         if let match = blendExpression.firstMatch(in: text, range: range),
            let value = Range(match.range(at: 1), in: text),
            let mode = StudioCommandBlend(rawValue: text[value].lowercased()) {

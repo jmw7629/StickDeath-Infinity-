@@ -107,6 +107,9 @@ actor StudioAudioMixService {
         var end: Int
         let sourceStart: Int
         let volume: Float
+        /// SoundCraft balance-law channel gains for the clip's track pan.
+        let left: Float
+        let right: Float
         let fadeEnvelope: AudioFadeEnvelope?
     }
     private func perform(document: StudioDocument, tracks: [AudioTrack], duration: Double,
@@ -155,9 +158,11 @@ actor StudioAudioMixService {
                     throw MixError.invalidTimeline
                 }
             }
+            let balance = StudioCraftAudio.balanceGains(pan: document.audioTrackPan(clip.track))
             clips.append(.init(assetID: id, start: start, end: end, sourceStart: sourceStart,
-                               volume: clip.isMuted || document.isAudioTrackMuted(clip.track) ? 0
+                               volume: clip.isMuted || !document.isAudioTrackAudible(clip.track) ? 0
                                    : Float(clip.volume * document.audioTrackVolume(clip.track)),
+                               left: Float(balance.left), right: Float(balance.right),
                                fadeEnvelope: clip.fadeEnvelope))
         }
         guard Set(clips.map(\.assetID)) == Set(trackMap.keys) else { throw MixError.unresolvedLegacyAudio }
@@ -205,8 +210,8 @@ actor StudioAudioMixService {
                         for frame in first..<end {
                             let src = (clip.sourceStart + frame - clip.start) * 2, dst = (frame - offset) * 2
                             let gain = clip.volume * Float(clip.fadeEnvelope?.gain(atSourceFrame: clip.sourceStart + frame - clip.start) ?? 1)
-                            buffer[dst] += source[src] * gain
-                            buffer[dst + 1] += source[src + 1] * gain
+                            buffer[dst] += source[src] * gain * clip.left
+                            buffer[dst + 1] += source[src + 1] * gain * clip.right
                         }
                     }
                     for sample in buffer {

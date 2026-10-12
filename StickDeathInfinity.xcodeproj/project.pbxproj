@@ -19,6 +19,9 @@
 		8B1C8066B49EB1158BD7E095 /* StudioAudioTimelineSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */; };
 		5A46746AFB21DB5DE23B56D7 /* StudioAudioMixService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */; };
 		74828B77A638B05ADA09CE91 /* StudioToolbarLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */; };
+		62C967D2F55822EC4821C814 /* StudioCraftTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD6D88CC65365AC550BBB3E0 /* StudioCraftTheme.swift */; };
+		587F1E0BDD2CD74335112916 /* StudioCraftLayers.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB1A102C06B1127E94ECBBB2 /* StudioCraftLayers.swift */; };
+		90B6A7418685E03385D766FA /* StudioCraftAudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBEB67137A1161FEE4FD5A3F /* StudioCraftAudio.swift */; };
 		9B73D78C1D654E66B99099A2 /* SpatterBackendClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */; };
 		C5642734BE308D75EA71656D /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F0641C2912938924BF6012F /* AppConfig.swift */; };
 		D7FC858751F69D65296D596F /* AppFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCCB50A611A602BCFD47486E /* AppFlowView.swift */; };
@@ -103,6 +106,7 @@
 		C3A050C18E554630851AAE5F /* SpecialElite-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */; };
 		83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */ = {isa = PBXBuildFile; fileRef = 9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */; };
 		FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */; };
+		4DBFA2BAC7C292E9747070AD /* ArtCraft-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 9622701874DB5F99913CA0C9 /* ArtCraft-NOTICE.txt */; };
 		3F59A945D2FE64768DFAFDFC /* StudioAudioImportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */; };
 		04DFFEF0B038FACE7FEF2659 /* StudioAudioPreviewSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */; };
 		7AB2F0DE170F4B7AB035BBE1 /* StudioVoiceSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AB2F0DE170F4B7AB035BBE2 /* StudioVoiceSession.swift */; };
@@ -189,6 +193,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		08704F33721686EFD75B7B7B /* StudioAudioTimelineSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioTimelineSession.swift"; sourceTree = SOURCE_ROOT; };
 		29A6CDCE3BA827425C15BDC0 /* StudioAudioMixService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Services/StudioAudioMixService.swift"; sourceTree = SOURCE_ROOT; };
 		F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioToolbarLayout.swift"; sourceTree = SOURCE_ROOT; };
+		DD6D88CC65365AC550BBB3E0 /* StudioCraftTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Extensions/StudioCraftTheme.swift"; sourceTree = SOURCE_ROOT; };
+		AB1A102C06B1127E94ECBBB2 /* StudioCraftLayers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioCraftLayers.swift"; sourceTree = SOURCE_ROOT; };
+		EBEB67137A1161FEE4FD5A3F /* StudioCraftAudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Models/StudioCraftAudio.swift"; sourceTree = SOURCE_ROOT; };
 		2F172737E88E4B9C9ED44A20 /* SpatterBackendClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpatterBackendClient.swift; sourceTree = "<group>"; };
 		C6B8D0FBCA83EB527FC1B843 /* StickDeathInfinity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = StickDeathInfinity.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3F0641C2912938924BF6012F /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
@@ -287,6 +294,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = StickDeathInfinity/Resources/Fonts/SpecialElite-Regular.ttf; sourceTree = SOURCE_ROOT; };
 		9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-Apache-2.0.txt; sourceTree = SOURCE_ROOT; };
 		838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/SpecialElite-NOTICE.txt; sourceTree = SOURCE_ROOT; };
+		9622701874DB5F99913CA0C9 /* ArtCraft-NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = StickDeathInfinity/Resources/Licenses/ArtCraft-NOTICE.txt; sourceTree = SOURCE_ROOT; };
 		5129B474A6397D64F5CCE559 /* StudioAudioImportService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioAudioImportService.swift; sourceTree = SOURCE_ROOT; };
 		8A0C55C18667ED2E21A956D5 /* StudioAudioPreviewSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioAudioPreviewSession.swift; sourceTree = SOURCE_ROOT; };
 		7AB2F0DE170F4B7AB035BBE2 /* StudioVoiceSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StickDeathInfinity/Services/StudioVoiceSession.swift; sourceTree = SOURCE_ROOT; };
@@ -461,6 +469,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				BC83D8E81EBA4936AF0E9ED4 /* StudioCommands.swift */,
 				3A825FFE562998F1F6A18B6E /* StudioDocument.swift */,
 				F708E65C59E4E7C6EF29C404 /* StudioToolbarLayout.swift */,
+				DD6D88CC65365AC550BBB3E0 /* StudioCraftTheme.swift */,
+				AB1A102C06B1127E94ECBBB2 /* StudioCraftLayers.swift */,
+				EBEB67137A1161FEE4FD5A3F /* StudioCraftAudio.swift */,
 				62D2F0EA2FB3C1485B089D1F /* Models.swift */,
 				A20C7402174E59B03BF6C78C /* StudioSmudgeDescriptor.swift */,
 				B6F4F980B4D4B68646A49765 /* StudioBlurDescriptor.swift */,
@@ -479,6 +490,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			isa = PBXGroup;
 			children = (
 				838FCAF6A2DD4B6EAFF4B8B8 /* SpecialElite-NOTICE.txt */,
+				9622701874DB5F99913CA0C9 /* ArtCraft-NOTICE.txt */,
 				9C4D03955B2A4D5C9827681A /* SpecialElite-Apache-2.0.txt */,
 				3B6D1C1722F947B082B625D5 /* SpecialElite-Regular.ttf */,
 				DF8A49DA661223CB2CEF4177 /* SpatterBrain */,
@@ -936,6 +948,7 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 			buildActionMask = 2147483647;
 			files = (
 				FD4BEEC696394E638FB7B441 /* SpecialElite-NOTICE.txt in Resources */,
+				4DBFA2BAC7C292E9747070AD /* ArtCraft-NOTICE.txt in Resources */,
 				58E595DEE29F48DC6C574164 /* StudioSounds in Resources */,
 				4911D5FFF30EDAA2918B5350 /* StudioImages in Resources */,
 				83CE46FCED4A45DDB9CA54BC /* SpecialElite-Apache-2.0.txt in Resources */,
@@ -1025,6 +1038,9 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				019439ABDC4F476CA5D84F3B /* StudioFrameRenderer.swift in Sources */,
 				9CAD63238FECA9CD84730364 /* StudioDocument.swift in Sources */,
 				74828B77A638B05ADA09CE91 /* StudioToolbarLayout.swift in Sources */,
+				62C967D2F55822EC4821C814 /* StudioCraftTheme.swift in Sources */,
+				587F1E0BDD2CD74335112916 /* StudioCraftLayers.swift in Sources */,
+				90B6A7418685E03385D766FA /* StudioCraftAudio.swift in Sources */,
 				BD9FBB848F6A4C3B9EB8DD80 /* DeviceStorageManager.swift in Sources */,
 				B8D6D4525549C7A6A17368D6 /* FlowLayout.swift in Sources */,
 				6D3F591B404BDCD5F2216548 /* SpatterBrainLoader.swift in Sources */,

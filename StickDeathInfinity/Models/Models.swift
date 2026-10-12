@@ -1089,6 +1089,10 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
     let frameCount: Int
     let fadeInFrames: Int
     let fadeOutFrames: Int
+    /// Schema 34 SoundCraft curve shapes. Nil preserves the historical linear ramp.
+    var fadeInShape: StudioFadeShape? = nil
+    var fadeOutShape: StudioFadeShape? = nil
+    var hasCurveShapes: Bool { fadeInShape != nil || fadeOutShape != nil }
     enum Failure: Error, LocalizedError {
         case invalid
         var errorDescription: String? { "Audio fades must fit within the selected clip and contain finite nonnegative durations." }
@@ -1109,7 +1113,7 @@ struct AudioFadeEnvelope: Codable, Equatable, Sendable {
         let relative = frame - sourceStartFrame
         let incoming = fadeInFrames == 0 ? 1 : min(1, Double(relative) / Double(fadeInFrames))
         let outgoing = fadeOutFrames == 0 ? 1 : min(1, Double(frameCount - 1 - relative) / Double(fadeOutFrames))
-        return min(incoming, outgoing)
+        return min((fadeInShape ?? .linear).gain(incoming), (fadeOutShape ?? .linear).gain(outgoing))
     }
 }
 
@@ -1129,6 +1133,9 @@ struct StudioAudioClipSettings: Codable, Equatable {
     struct Fades: Codable, Equatable {
         let fadeIn: Double
         let fadeOut: Double
+        /// Optional SoundCraft curve shapes; nil keeps the linear ramp.
+        var fadeInShape: StudioFadeShape? = nil
+        var fadeOutShape: StudioFadeShape? = nil
     }
     var volume: Double? = nil
     var isMuted: Bool? = nil

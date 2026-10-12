@@ -2,8 +2,8 @@ import SwiftUI
 
 // ═══════════════════════════════════════════════════════════════════
 // Tool Strip — Floating white rail with red active-tool selection
-// ⋮⋮ drag | [color] | Move Lasso Pencil Pen Brush Marker Crayon
-//   Line Rect Circle Fill Picker Eraser Smudge Text Hand Zoom
+// ⋮⋮ drag | [color] | ArtCraft PhotoCraft sections: selection & sampling |
+//   painting & retouching | type & shapes | navigation
 // Each tool: unique topColor/bottomColor/glowColor
 // ═══════════════════════════════════════════════════════════════════
 
@@ -23,30 +23,42 @@ struct StudioToolStrip: View {
     var handleGesture = AnyGesture(DragGesture(minimumDistance: 5))
     var onDock: (StudioToolbarLayout.Dock) -> Void = { _ in }
     
-    static let tools: [ToolDef] = [
-        ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   topColor: "555566", bottomColor: "333344", glowColor: "777788"),
-        ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  topColor: "555566", bottomColor: "333344", glowColor: "777788"),
-        ToolDef(tool: .wand, icon: "wand.and.stars", emoji: "✦", label: "Wand", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
-        ToolDef(tool: .pencil,    icon: "pencil",           emoji: "✏️",  label: "Pencil", topColor: "DC2626", bottomColor: "991B1B", glowColor: "EF4444"),
-        ToolDef(tool: .pen,       icon: "pencil.tip",       emoji: "🖊️", label: "Pen",    topColor: "C53030", bottomColor: "7F1D1D", glowColor: "DC2626"),
-        ToolDef(tool: .brush,     icon: "paintbrush",       emoji: "🖌️", label: "Brush",  topColor: "E03030", bottomColor: "B91C1C", glowColor: "F43F5E"),
-        ToolDef(tool: .marker,    icon: "highlighter",      emoji: "🖍️", label: "Marker", topColor: "E83E8C", bottomColor: "A21CAF", glowColor: "D946EF"),
-        ToolDef(tool: .crayon,    icon: "pencil.and.outline",emoji: "🖍", label: "Crayon", topColor: "F59E0B", bottomColor: "B45309", glowColor: "FBBF24"),
-        ToolDef(tool: .line,      icon: "line.diagonal",    emoji: "╱",  label: "Line",   topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .rectangle, icon: "rectangle",        emoji: "▭",  label: "Rect",   topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .circle,    icon: "circle",           emoji: "◯",  label: "Circle", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
-        ToolDef(tool: .fill,      icon: "drop.fill",        emoji: "🪣",  label: "Fill",   topColor: "22C55E", bottomColor: "15803D", glowColor: "4ADE80"),
-        ToolDef(tool: .eyedropper,icon: "eyedropper",       emoji: "💧",  label: "Picker", topColor: "06B6D4", bottomColor: "0E7490", glowColor: "22D3EE"),
-        ToolDef(tool: .eraser,    icon: "eraser",           emoji: "◻️",  label: "Eraser", topColor: "F97316", bottomColor: "C2410C", glowColor: "FB923C"),
-        ToolDef(tool: .smudge,    icon: "hand.point.up.left",emoji: "👆", label: "Smudge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .blur,      icon: "drop.halffull", emoji: "◌", label: "Blur", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .sharpen,      icon: "triangle", emoji: "◌", label: "Sharpen", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .dodge,      icon: "sun.max", emoji: "◌", label: "Dodge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .burn,      icon: "sun.min", emoji: "◌", label: "Burn", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
-        ToolDef(tool: .text,      icon: "textformat",       emoji: "T",  label: "Text",   topColor: "E879F9", bottomColor: "A21CAF", glowColor: "D946EF"),
-        ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
-        ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
+    /// ArtCraft PhotoCraft toolbar order (crates/ui-egui/src/panels.rs
+    /// TOOL_SECTIONS): selection & sampling, painting & retouching, type &
+    /// shapes, then navigation. `label` uses PhotoCraft's tool names.
+    static let sections: [[ToolDef]] = [
+        [
+            ToolDef(tool: .move,      icon: "arrow.up.and.down.and.arrow.left.and.right", emoji: "☠⇕", label: "Move",   topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+            ToolDef(tool: .lasso,     icon: "lasso",            emoji: "☠◎", label: "Lasso",  topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+            ToolDef(tool: .wand, icon: "wand.and.stars", emoji: "✦", label: "Magic Wand", topColor: "555566", bottomColor: "333344", glowColor: "777788"),
+            ToolDef(tool: .eyedropper,icon: "eyedropper",       emoji: "💧",  label: "Eyedropper", topColor: "06B6D4", bottomColor: "0E7490", glowColor: "22D3EE"),
+        ],
+        [
+            ToolDef(tool: .brush,     icon: "paintbrush",       emoji: "🖌️", label: "Brush",  topColor: "E03030", bottomColor: "B91C1C", glowColor: "F43F5E"),
+            ToolDef(tool: .pencil,    icon: "pencil",           emoji: "✏️",  label: "Pencil", topColor: "DC2626", bottomColor: "991B1B", glowColor: "EF4444"),
+            ToolDef(tool: .pen,       icon: "pencil.tip",       emoji: "🖊️", label: "Pen",    topColor: "C53030", bottomColor: "7F1D1D", glowColor: "DC2626"),
+            ToolDef(tool: .marker,    icon: "highlighter",      emoji: "🖍️", label: "Marker", topColor: "E83E8C", bottomColor: "A21CAF", glowColor: "D946EF"),
+            ToolDef(tool: .crayon,    icon: "pencil.and.outline",emoji: "🖍", label: "Crayon", topColor: "F59E0B", bottomColor: "B45309", glowColor: "FBBF24"),
+            ToolDef(tool: .eraser,    icon: "eraser",           emoji: "◻️",  label: "Eraser", topColor: "F97316", bottomColor: "C2410C", glowColor: "FB923C"),
+            ToolDef(tool: .fill,      icon: "drop.fill",        emoji: "🪣",  label: "Paint Bucket", topColor: "22C55E", bottomColor: "15803D", glowColor: "4ADE80"),
+            ToolDef(tool: .blur,      icon: "drop.halffull", emoji: "◌", label: "Blur", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+            ToolDef(tool: .sharpen,      icon: "triangle", emoji: "◌", label: "Sharpen", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+            ToolDef(tool: .smudge,    icon: "hand.point.up.left",emoji: "👆", label: "Smudge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+            ToolDef(tool: .dodge,      icon: "sun.max", emoji: "◌", label: "Dodge", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+            ToolDef(tool: .burn,      icon: "flame", emoji: "◌", label: "Burn", topColor: "A78BFA", bottomColor: "6D28D9", glowColor: "C4B5FD"),
+        ],
+        [
+            ToolDef(tool: .text,      icon: "textformat",       emoji: "T",  label: "Type",   topColor: "E879F9", bottomColor: "A21CAF", glowColor: "D946EF"),
+            ToolDef(tool: .line,      icon: "line.diagonal",    emoji: "╱",  label: "Line",   topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+            ToolDef(tool: .rectangle, icon: "rectangle",        emoji: "▭",  label: "Rectangle", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+            ToolDef(tool: .circle,    icon: "circle",           emoji: "◯",  label: "Ellipse", topColor: "888899", bottomColor: "555566", glowColor: "999AAA"),
+        ],
+        [
+            ToolDef(tool: .hand,      icon: "hand.raised",      emoji: "✋",  label: "Hand",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
+            ToolDef(tool: .zoom,      icon: "magnifyingglass",  emoji: "🔍",  label: "Zoom",   topColor: "78716C", bottomColor: "57534E", glowColor: "A8A29E"),
+        ],
     ]
+    static let tools: [ToolDef] = sections.flatMap { $0 }
     
     var body: some View {
         railLayout {
@@ -93,10 +105,15 @@ struct StudioToolStrip: View {
                 .accessibilityValue(vm.strokeColorHex.uppercased())
                 .accessibilityIdentifier("studio.color.open")
                 
-                // Tools
+                // Tools, with a PhotoCraft hairline between sections.
                 ForEach(Self.tools.indices, id: \.self) { i in
                     let def = Self.tools[i]
                     let isSelected = vm.selectedTool == def.tool
+                    if i > 0, Self.sectionStarts.contains(i) {
+                        Rectangle().fill(Color.black.opacity(0.12))
+                            .frame(width: axis == .vertical ? 36 : 1, height: axis == .vertical ? 1 : 36)
+                            .accessibilityHidden(true)
+                    }
                     
                     Button(action: {
                         if isSelected && hasSettings(def.tool) {
@@ -115,6 +132,7 @@ struct StudioToolStrip: View {
                                 .font(.system(size: 16))
                             Text(def.label)
                                 .font(.specialElite(7))
+                                .lineLimit(1).minimumScaleFactor(0.7)
                                 .fontWeight(isSelected ? .bold : .regular)
                         }
                         .foregroundColor(isSelected ? .white : .black.opacity(0.75))
@@ -176,6 +194,13 @@ struct StudioToolStrip: View {
         .accessibilityValue(axis == .vertical ? "Vertical" : "Horizontal")
     }
     
+    /// Indices in `tools` where a new PhotoCraft section begins.
+    static let sectionStarts: Set<Int> = {
+        var starts = Set<Int>(), index = 0
+        for section in sections { starts.insert(index); index += section.count }
+        return starts
+    }()
+
     private struct VisibilityRequest: Equatable {
         let tool: String
         let vertical: Bool

@@ -2738,6 +2738,9 @@ final class StudioViewModel: ObservableObject {
             if let strength { layer.glowStrength = strength }
         } }
     }
+    func setLayerLabel(_ id: String, label: StudioLayerLabelColor) {
+        command { try $0.updateLayer(id) { $0.colorLabel = label.hex } }
+    }
     func setLayerColor(_ id: String, color: Color) {
         let hex = Self.hex(color); command { try $0.updateLayer(id) { $0.colorLabel = hex } }
     }
@@ -3085,6 +3088,7 @@ final class StudioViewModel: ObservableObject {
     }
     /// Apply/reset one immutable envelope in one reversible document command.
     func setAudioFades(_ capture: AudioFadeCapture, fadeIn: Double, fadeOut: Double,
+                       fadeInShape: StudioFadeShape = .linear, fadeOutShape: StudioFadeShape = .linear,
                        checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
         try checkCancellation()
         guard prepareAudioFades() == capture else {
@@ -3095,7 +3099,8 @@ final class StudioViewModel: ObservableObject {
             throw StudioDocumentError.unavailable("The selected audio clip is no longer available.")
         }
         var candidate = editor
-        try candidate.updateAudioClip(clip.id, settings: .init(fades: .init(fadeIn: fadeIn, fadeOut: fadeOut)))
+        try candidate.updateAudioClip(clip.id, settings: .init(fades: .init(fadeIn: fadeIn, fadeOut: fadeOut,
+            fadeInShape: fadeInShape, fadeOutShape: fadeOutShape)))
         guard candidate.document != document else { return }
         try preflightRasterDocument(candidate.document); _ = try audioTracksForSave(candidate.document)
         try checkCancellation()
@@ -3208,6 +3213,43 @@ final class StudioViewModel: ObservableObject {
         guard document.isAudioTrackMuted(track) != muted else { return }
         _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
             expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, muted: muted))])),
+            checkCancellation: checkCancellation)
+        message = nil
+    }
+    /// SoundCraft solo: any soloed track silences every other unsoloed track.
+    func setAudioTrackSoloed(_ track: Int, soloed: Bool, expectedRevision: Int,
+                             checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard canMutateAudioDocument,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("Stop playback before soloing this track.")
+        }
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.isAudioTrackSoloed(track) != soloed else { return }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+            expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, soloed: soloed))])),
+            checkCancellation: checkCancellation)
+        message = nil
+    }
+    /// One balance change per finished gesture; -1 is hard left, 1 hard right.
+    func setAudioTrackPan(_ track: Int, pan: Double, expectedRevision: Int,
+                          checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws {
+        try checkCancellation()
+        guard pan.isFinite, (-1...1).contains(pan) else {
+            throw StudioDocumentError.invalid("Track pan must be between L100 and R100.")
+        }
+        guard canMutateAudioDocument,
+              expectedRevision == document.revision, (1...4).contains(track) else {
+            throw StudioDocumentError.unavailable("The project or track changed. Stop playback before panning this track.")
+        }
+        guard document.audioClips.filter({ $0.track == track }).allSatisfy({ $0.assetID != nil }) else {
+            throw StudioDocumentError.unavailable("This track includes historical audio with unavailable source bytes.")
+        }
+        guard document.audioTrackPan(track) != pan else { return }
+        _ = try applyStudioCommands(.init(requestID: UUID(), projectID: document.id,
+            expectedRevision: expectedRevision, action: .apply([.updateAudioTrack(.init(track: track, pan: pan))])),
             checkCancellation: checkCancellation)
         message = nil
     }

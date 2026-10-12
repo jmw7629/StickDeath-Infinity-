@@ -50,6 +50,33 @@ private struct Failure: Error, CustomStringConvertible {
         return Array(bytes[offset..<offset + 4])
     }
 
+    /// W3C Compositing Level 1 non-separable modes (PhotoCraft uses the same).
+    private static func nonSeparable(_ mode: StudioLayerBlendMode, backdrop cb: [Double], source cs: [Double]) -> [Double] {
+        func lum(_ c: [Double]) -> Double { 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2] }
+        func clip(_ c: [Double]) -> [Double] {
+            let l = lum(c), n = c.min()!, x = c.max()!
+            var c = c
+            if n < 0 { c = c.map { l + ($0 - l) * l / (l - n) } }
+            if x > 1 { c = c.map { l + ($0 - l) * (1 - l) / (x - l) } }
+            return c
+        }
+        func setLum(_ c: [Double], _ l: Double) -> [Double] { let d = l - lum(c); return clip(c.map { $0 + d }) }
+        func sat(_ c: [Double]) -> Double { c.max()! - c.min()! }
+        func setSat(_ c: [Double], _ s: Double) -> [Double] {
+            let order = c.indices.sorted { c[$0] < c[$1] }
+            var out = [0.0, 0, 0]
+            let (lo, mid, hi) = (order[0], order[1], order[2])
+            if c[hi] > c[lo] { out[mid] = (c[mid] - c[lo]) * s / (c[hi] - c[lo]); out[hi] = s }
+            return out
+        }
+        switch mode {
+        case .hue: return setLum(setSat(cs, sat(cb)), lum(cb))
+        case .saturation: return setLum(setSat(cb, sat(cs)), lum(cb))
+        case .color: return setLum(cs, lum(cb))
+        default: return setLum(cb, lum(cs))
+        }
+    }
+
     private static func requirePixel(_ name: String, _ actual: [UInt8], _ expected: [UInt8]) throws {
         guard actual.count == expected.count,
               zip(actual, expected).allSatisfy({ abs(Int($0.0) - Int($0.1)) <= 1 }) else {
@@ -225,6 +252,23 @@ private struct Failure: Error, CustomStringConvertible {
                     foreground.blendMode = mode
                     try requirePixel("analytical \(mode) at \(edge)", centerPixel(layers: [foreground, backdrop], elements: blendStrokes, edge: edge), expected)
                 }
+                // Every ArtCraft PhotoCraft mode offered by the layer panel, checked
+                // against PhotoCraft's CPU reference (separable) or W3C
+                // non-separable math, on the actual production compositor.
+                let cb = [128.0, 64, 32].map { $0 / 255 }, cs = [64.0, 128, 192].map { $0 / 255 }
+                for mode in StudioLayerBlendMode.allCases {
+                    foreground.blendMode = mode.rawValue
+                    let expected = (mode.separable(backdrop: 0, source: 0) != nil
+                        ? zip(cb, cs).map { mode.separable(backdrop: $0, source: $1)! }
+                        : nonSeparable(mode, backdrop: cb, source: cs)).map { UInt8(($0 * 255).rounded()) } + [255]
+                    let actual = try centerPixel(layers: [foreground, backdrop], elements: blendStrokes, edge: edge)
+                    guard zip(actual, expected).allSatisfy({ abs(Int($0.0) - Int($0.1)) <= 2 }) else {
+                        throw Failure(description: "PhotoCraft \(mode.title) at \(edge): decoded RGBA \(actual), expected \(expected)")
+                    }
+                    print("PASS PhotoCraft \(mode.title) at \(edge): decoded RGBA \(actual)")
+                }
+                foreground.blendMode = "etc."
+                try requirePixel("unknown legacy blend string draws Normal at \(edge)", centerPixel(layers: [foreground, backdrop], elements: blendStrokes, edge: edge), [64,128,192,255])
                 foreground.blendMode = "normal"
                 try requirePixel("reversed colored layer golden at \(edge)", centerPixel(layers: [backdrop, foreground], elements: blendStrokes, edge: edge), [128,64,32,255])
                 var halo = CanvasLayer(id: "halo", name: "Halo", glowEnabled: true, glowColor: "#00FF00", glowRadius: 12, glowStrength: 1)

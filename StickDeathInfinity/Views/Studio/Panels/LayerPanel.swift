@@ -183,52 +183,68 @@ struct LayerRow: View {
             }
             .frame(width: 12)
             
-            // Visibility toggle (🚫 when hidden)
+            // PhotoCraft visibility cell: 30 pt, tinted by the layer label.
             Button(action: { vm.toggleLayerVisibility(layer.id) }) {
                 Image(systemName: layer.visible ? "eye.fill" : "eye.slash.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(layer.visible ? .white.opacity(0.5) : .red.opacity(0.6))
+                    .foregroundColor(layer.visible ? StudioCraftTheme.icon : StudioCraftTheme.textFaint)
+                    .frame(width: 30, height: StudioCraftTheme.layerThumbnail)
+                    .background(StudioLayerLabelColor(hex: layer.colorLabel).map { Color(hex: $0.cellHex) } ?? Color.clear)
+                    .clipShape(RoundedRectangle(cornerRadius: StudioCraftTheme.radiusSmall))
             }
-            .frame(width: 24)
-            
+            .frame(width: 30)
+            // UI journeys address this control by its historical symbol identifier.
+            .accessibilityIdentifier(layer.visible ? "eye.fill" : "eye.slash.fill")
+
             // Thumbnail
             StudioFrameThumbnail(vm: vm, frame: vm.currentFrame, isolatedLayerID: layer.id)
-                .frame(width: 36, height: 36)
+                .frame(width: StudioCraftTheme.layerThumbnail, height: StudioCraftTheme.layerThumbnail)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)
                 .overlay(
                     RoundedRectangle(cornerRadius: 4)
-                        .stroke(Color.white.opacity(0.15), lineWidth: 0.5)
+                        .stroke(StudioCraftTheme.fieldBorder, lineWidth: 1)
                 )
-            
-            // Layer name (red text)
-            Text(layer.name)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .font(.specialElite(14))
-                .foregroundColor(Color(hex: "DC2626"))
-            
+
+            // Name with PhotoCraft's blend sub-label; hidden layers use faint text.
+            VStack(alignment: .leading, spacing: 1) {
+                Text(layer.name)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .font(.specialElite(14))
+                    .foregroundColor(layer.visible ? Color(hex: "DC2626") : StudioCraftTheme.textFaint)
+                if StudioLayerBlendMode(stored: layer.blendMode).map({ $0 != .normal }) == true {
+                    Text(StudioLayerBlendMode.title(forStored: layer.blendMode))
+                        .font(.system(size: 11))
+                        .foregroundColor(StudioCraftTheme.textDim)
+                        .lineLimit(1)
+                }
+            }
+
             Spacer()
-            
+
             // Lock icon
             Image(systemName: lockIcon(for: layer.lockMode))
                 .font(.system(size: 12))
-                .foregroundColor(layer.lockMode == "full" ? Color.yellow : .white.opacity(0.4))
-            
+                .foregroundColor(layer.lockMode == "full" ? StudioCraftTheme.warning : StudioCraftTheme.textFaint)
+
             // Opacity percentage
             Text("\(Int(layer.opacity * 100))%")
                 .font(.specialElite(12))
-                .foregroundColor(.white.opacity(0.5))
-            
+                .foregroundColor(StudioCraftTheme.textDim)
+
             // Chevron
             Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 10))
-                .foregroundColor(.white.opacity(0.3))
+                .foregroundColor(StudioCraftTheme.textFaint)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(vm.activeLayerID == layer.id ? Color.red.opacity(0.1) : Color.clear)
+        .padding(.horizontal, 10)
+        .frame(minHeight: StudioCraftTheme.layerRowHeight)
+        .background(vm.activeLayerID == layer.id ? StudioCraftTheme.hover : Color.clear)
+        .overlay(RoundedRectangle(cornerRadius: StudioCraftTheme.radius)
+            .stroke(vm.activeLayerID == layer.id ? StudioCraftTheme.fieldBorder : Color.clear, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: StudioCraftTheme.radius))
         .contentShape(Rectangle())
     }
     
@@ -320,12 +336,23 @@ struct LayerDetailView: View {
                     .tracking(2)
                 
                 Menu {
-                    ForEach(["normal", "multiply", "screen", "overlay", "darken", "lighten"], id: \.self) { mode in
-                        Button(mode.capitalized) { vm.setLayerBlend(layer.id, mode: mode) }
+                    // PhotoCraft menu order, divided into its effect groups.
+                    ForEach(0...5, id: \.self) { group in
+                        Section {
+                            ForEach(StudioLayerBlendMode.allCases.filter { $0.group == group }, id: \.self) { mode in
+                                Button {
+                                    vm.setLayerBlend(layer.id, mode: mode.rawValue)
+                                } label: {
+                                    if StudioLayerBlendMode(stored: layer.blendMode) == mode {
+                                        Label(mode.title, systemImage: "checkmark")
+                                    } else { Text(mode.title) }
+                                }.accessibilityIdentifier("studio.layer.blend-option." + mode.rawValue)
+                            }
+                        }
                     }
                 } label: {
                     HStack {
-                        Text(layer.blendMode.capitalized)
+                        Text(StudioLayerBlendMode.title(forStored: layer.blendMode))
                         Spacer()
                         Image(systemName: "chevron.up.chevron.down")
                     }.font(.specialElite(12)).foregroundColor(.white)
@@ -391,20 +418,23 @@ struct LayerDetailView: View {
                     .font(.specialElite(11))
                     .foregroundColor(.white.opacity(0.4))
                 
-                ForEach([
-                    Color.red, Color.orange, Color.yellow, Color.green,
-                    Color(hex: "38BDF8"), Color.purple, Color.pink, Color.gray
-                ], id: \.self) { color in
-                    Circle()
-                        .fill(color)
-                        .frame(width: 20, height: 20)
-                        .overlay(
-                            Circle()
-                                .stroke(Color(hex: layer.colorLabel ?? "#FF0000") == color ? Color.white : Color.white.opacity(0.1), lineWidth: Color(hex: layer.colorLabel ?? "#FF0000") == color ? 2 : 0.5)
-                        )
-                        .onTapGesture {
-                            vm.setLayerColor(layer.id, color: color)
+                // PhotoCraft label colours; scroll so all eleven fit any width.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(StudioLayerLabelColor.allCases, id: \.self) { label in
+                            let selected = layer.colorLabel?.uppercased() == label.hex
+                            Button { vm.setLayerLabel(layer.id, label: label) } label: {
+                                Circle()
+                                    .fill(Color(hex: label.hex))
+                                    .frame(width: 20, height: 20)
+                                    .overlay(Circle().stroke(selected ? Color.white : Color.white.opacity(0.1), lineWidth: selected ? 2 : 0.5))
+                                    .frame(minWidth: 28, minHeight: 44)
+                            }.buttonStyle(.plain)
+                                .accessibilityLabel("Label " + label.title)
+                                .accessibilityAddTraits(selected ? .isSelected : [])
+                                .accessibilityIdentifier("studio.layer.label." + label.rawValue)
                         }
+                    }
                 }
             }
             
