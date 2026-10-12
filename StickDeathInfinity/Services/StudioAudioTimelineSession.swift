@@ -2,6 +2,23 @@ import Foundation
 import AVFoundation
 import Combine
 
+/// Why a project clip would be inaudible in the mixed preview (#180). Mirrors
+/// the mixer's gain rules, including SoundCraft solo, so the hint never claims
+/// sound that the mix cannot produce.
+enum StudioAudioPreviewSilence {
+    static func reason(clipMuted: Bool, clipVolume: Double, trackMuted: Bool, trackVolume: Double, trackAudible: Bool) -> String? {
+        if clipMuted || trackMuted { return "Preview is silent: clip or track is muted" }
+        if !trackAudible { return "Preview is silent: another track is soloed" }
+        if clipVolume == 0 || trackVolume == 0 { return "Preview is silent: clip or track volume is zero" }
+        return nil
+    }
+    static func reason(for clip: AudioClip, in document: StudioDocument) -> String? {
+        reason(clipMuted: clip.isMuted, clipVolume: clip.volume,
+               trackMuted: document.isAudioTrackMuted(clip.track), trackVolume: document.audioTrackVolume(clip.track),
+               trackAudible: document.isAudioTrackAudible(clip.track))
+    }
+}
+
 /// A bounded, real offline mix followed by one actual player clock. No network,
 /// microphone or rendered-video export. Immutable owned bytes outlive the player.
 @MainActor
@@ -77,6 +94,11 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
                 self.output = result
                 try Task.checkCancellation()
                 guard self.generation == token, stillCurrent() else { throw TimelineError.stale }
+                // Activate the playback session before the player exists so the
+                // ring switch cannot silence the mix (#180); failure is reported.
+                try StudioAudioSessionController.shared.begin(owner: self.ownerID) { [weak self] event in
+                    self?.handleSessionEvent(event)
+                }
                 let next = try AVAudioPlayer(contentsOf: result.checkedURL())
                 guard next.duration.isFinite, abs(next.duration - length) <= 0.01 else { throw TimelineError.playback }
                 next.delegate = self; next.numberOfLoops = loop ? -1 : 0
@@ -134,10 +156,17 @@ final class StudioAudioTimelineSession: NSObject, ObservableObject, AVAudioPlaye
         generation = UUID(); work?.cancel()
         releasePlayerAndOutput()
     }
+    /// System interruption or lost output route: stop and say so (#180).
+    func handleSessionEvent(_ event: StudioAudioSessionController.Event) {
+        guard player != nil || isPreparing else { return }
+        stop()
+        notice = StudioAudioSessionController.message(for: event)
+    }
     private func releasePlayerAndOutput() {
         timer?.invalidate(); timer = nil
         awaitingCompletionSince = nil
         player?.stop(); player?.delegate = nil; player = nil
+        StudioAudioSessionController.shared.end(owner: ownerID)
         isPlaying = false
         let callback = playbackBegan ? onTime : nil
         playbackBegan = false; onTime = nil; stillCurrent = nil

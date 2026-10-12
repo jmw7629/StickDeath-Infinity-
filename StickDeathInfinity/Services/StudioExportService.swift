@@ -79,6 +79,8 @@ final class StudioExportService {
         var imageCredits: [ImageCredit]? = nil
         var sheetColumns: Int? = nil
         var cellPadding: Int? = nil
+        /// Sanitized project-name base used for the image filenames (nil = legacy names).
+        var filenameBase: String? = nil
     }
     struct Output {
         let directory: URL
@@ -151,13 +153,18 @@ final class StudioExportService {
     func export(document original: StudioDocument, format: Format, outputParent: URL,
                 background: Background = .white,
                 sheetColumns: Int? = nil, cellPadding: Int = 0, frameIDs: Set<String>? = nil,
-                imageCredits: [String: ImageCredit] = [:],
+                imageCredits: [String: ImageCredit] = [:], filenameBase: String? = nil,
                 rasterData: (String) throws -> Data? = { _ in nil },
                 progress: (Int, Int) -> Void = { _, _ in }) async throws -> Output {
         try Task.checkCancellation()
         guard !Self.exportInProgress else { throw ExportError.alreadyExporting }
         Self.exportInProgress = true
         defer { Self.exportInProgress = false }
+        if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw ExportError.invalidFilename } }
+        // Legacy names stay when no base is supplied; the panel passes the
+        // sanitized project name so shared files are recognizable (#185).
+        let sheetName = filenameBase.map { $0 + "_spritesheet.png" } ?? "spritesheet.png"
+        let frameFormat = filenameBase.map { $0 + "_%06d.png" } ?? "frame_%06d.png"
         try original.validate()
         var document = original
         let originalIndices = Dictionary(uniqueKeysWithValues: original.frames.enumerated().map { ($0.element.id, $0.offset) })
@@ -217,7 +224,7 @@ final class StudioExportService {
             var outputBytes = 0
             for (index, frame) in document.frames.enumerated() {
                 try Task.checkCancellation()
-                let name = format == .pngSequence ? String(format: "frame_%06d.png", index) : "spritesheet.png"
+                let name = format == .pngSequence ? String(format: frameFormat, index) : sheetName
                 let x = format == .spritesheet ? (index % columns) * cellWidth + cellPadding : 0
                 let y = format == .spritesheet ? (index / columns) * cellHeight + cellPadding : 0
                 try autoreleasepool {
@@ -245,10 +252,10 @@ final class StudioExportService {
             if let sheet {
                 try autoreleasepool {
                     guard let image = sheet.makeImage() else { throw ExportError.renderFailed }
-                    outputBytes = try writePNG(image, to: staging.appendingPathComponent("spritesheet.png"))
+                    outputBytes = try writePNG(image, to: staging.appendingPathComponent(sheetName))
                     guard outputBytes <= Self.maximumOutputBytes else { throw ExportError.limitExceeded }
                 }
-                filenames = ["spritesheet.png"]
+                filenames = [sheetName]
             }
             let renderedCredits = try Self.renderedImageCredits(document: document, creditsByRasterID: imageCredits)
             let customLayout = format == .spritesheet && (sheetColumns != nil || cellPadding != 0)
@@ -257,7 +264,8 @@ final class StudioExportService {
                 canvasWidth: document.width, canvasHeight: document.height,
                 imageWidth: width, imageHeight: height, audioIncluded: false,
                 editorGuidesIncluded: false, frames: records, imageCredits: renderedCredits.isEmpty ? nil : renderedCredits,
-                sheetColumns: customLayout ? columns : nil, cellPadding: customLayout ? cellPadding : nil)
+                sheetColumns: customLayout ? columns : nil, cellPadding: customLayout ? cellPadding : nil,
+                filenameBase: filenameBase)
             let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let manifestBytes = try encoder.encode(manifest)
             guard manifestBytes.count <= 8 * 1024 * 1024,
@@ -327,7 +335,28 @@ final class StudioExportService {
         guard CGImageDestinationFinalize(destination) else { throw ExportError.encodeFailed }
         let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
         guard size > 0 else { throw ExportError.encodeFailed }
+        // Reopen the file that was actually written and prove it decodes back to
+        // the rendered pixel size (#184). A finalized-but-damaged PNG fails here.
+        try Self.verifyPNG(at: url, expectedWidth: image.width, expectedHeight: image.height)
         return size
+    }
+
+    /// Decode-back check for one written PNG: exactly one complete PNG image
+    /// whose declared and decoded sizes equal the rendered bitmap.
+    static func verifyPNG(at url: URL, expectedWidth: Int, expectedHeight: Int) throws {
+        try autoreleasepool {
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                  CGImageSourceGetType(source) as String? == UTType.png.identifier,
+                  CGImageSourceGetCount(source) == 1,
+                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                  let width = properties[kCGImagePropertyPixelWidth] as? Int,
+                  let height = properties[kCGImagePropertyPixelHeight] as? Int,
+                  width == expectedWidth, height == expectedHeight else { throw ExportError.verificationFailed }
+            guard let decoded = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
+                  decoded.width == expectedWidth, decoded.height == expectedHeight,
+                  CGImageSourceGetStatus(source) == .statusComplete,
+                  CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete else { throw ExportError.verificationFailed }
+        }
     }
 
     func validate(_ document: StudioDocument) throws {
@@ -380,10 +409,12 @@ final class StudioExportService {
 
     enum ExportError: LocalizedError {
         case limitExceeded, unsafeDestination, renderFailed, encodeFailed, missingRaster, invalidRaster, unsupportedContent, invalidColor, alreadyExporting
-        case invalidImageCredit
+        case invalidImageCredit, verificationFailed, invalidFilename
         case cleanupFailed(URL)
         var errorDescription: String? {
             switch self {
+            case .verificationFailed: return "A written PNG did not decode back to the rendered size. No export was published."
+            case .invalidFilename: return "The export filename must use ASCII letters, digits, '-' or '_' (at most 40 characters)."
             case .limitExceeded: return "This PNG export exceeds the current safe frame, image or output size limit. Use a smaller project; no partial export was published."
             case .unsafeDestination: return "Choose an existing app-owned export directory without symbolic links."
             case .renderFailed: return "Studio could not render the requested image. No export was published."
@@ -397,5 +428,125 @@ final class StudioExportService {
             case .cleanupFailed: return "Export failed and its temporary output could not be removed. Temporary export cleanup is required."
             }
         }
+    }
+}
+
+/// Export file naming shared by MP4, GIF, PNG and spritesheet outputs (#185).
+/// The project name becomes an ASCII-only base every destination accepts; the
+/// manifest keeps the project ID and revision, so the name is never identity.
+enum StudioExportFilename {
+    static let fallback = "animation"
+    static let maximumLength = 40
+
+    /// ASCII letters, digits, '-' and '_' are kept; every other run of
+    /// characters (spaces, punctuation, emoji, accents) collapses to one '-'.
+    /// Leading/trailing '-' are trimmed, the result is cut to 40 characters and
+    /// an empty result falls back to "animation".
+    static func base(for projectName: String?) -> String {
+        guard let projectName else { return fallback }
+        var result = "", separatorPending = false
+        for scalar in projectName.unicodeScalars {
+            if isAllowed(scalar.value) {
+                if separatorPending && !result.isEmpty { result.append("-") }
+                separatorPending = false
+                result.unicodeScalars.append(scalar)
+            } else {
+                separatorPending = true
+            }
+            if result.count >= maximumLength { break }
+        }
+        if result.count > maximumLength { result = String(result.prefix(maximumLength)) }
+        while result.hasSuffix("-") { result.removeLast() }
+        while result.hasPrefix("-") { result.removeFirst() }
+        return result.isEmpty ? fallback : result
+    }
+
+    static func isValid(_ base: String) -> Bool {
+        !base.isEmpty && base.count <= maximumLength && !base.hasPrefix("-") && !base.hasSuffix("-")
+            && base.unicodeScalars.allSatisfy { isAllowed($0.value) }
+    }
+    private static func isAllowed(_ value: UInt32) -> Bool {
+        (48...57).contains(value) || (65...90).contains(value) || (97...122).contains(value) || value == 95 || value == 45
+    }
+}
+
+/// Pre-export resource check (#202): free space on the destination volume must
+/// cover twice the estimated output, and a device in the critical thermal
+/// state refuses to start rendering. Estimates are documented heuristics, not
+/// measurements; an unknown capacity never blocks an export.
+enum StudioExportPreflight {
+    enum Thermal: Equatable { case nominal, fair, serious, critical, unknown }
+    static let requiredMultiple: Int64 = 2
+    enum Failure: LocalizedError, Equatable {
+        case thermalCritical
+        case insufficientStorage(requiredBytes: Int64, availableBytes: Int64)
+        var errorDescription: String? {
+            switch self {
+            case .thermalCritical:
+                return "This device is too hot to render safely right now. Let it cool down, then export again. Nothing was exported."
+            case .insufficientStorage(let required, let available):
+                return "Not enough free space for this export: about \(Self.megabytes(required)) MB is needed (twice the estimated output) but \(Self.megabytes(available)) MB is available. Nothing was exported."
+            }
+        }
+        private static func megabytes(_ bytes: Int64) -> Int64 { max(1, (bytes + 1_048_575) / 1_048_576) }
+    }
+
+    /// Pure decision used by the device check and by tests.
+    static func decide(availableBytes: Int64?, estimatedOutputBytes: Int, thermal: Thermal) throws {
+        guard thermal != .critical else { throw Failure.thermalCritical }
+        guard let availableBytes else { return }
+        let required = Int64(max(0, estimatedOutputBytes)) * requiredMultiple
+        guard availableBytes >= required else {
+            throw Failure.insufficientStorage(requiredBytes: required, availableBytes: max(0, availableBytes))
+        }
+    }
+
+    /// Reads the destination volume's important-usage capacity and the process
+    /// thermal state, then applies `decide`. Missing values are treated as unknown.
+    static func check(estimatedOutputBytes: Int, destination: URL) throws {
+        try decide(availableBytes: availableCapacity(destination), estimatedOutputBytes: estimatedOutputBytes, thermal: currentThermal())
+    }
+
+    static func availableCapacity(_ destination: URL) -> Int64? {
+        #if canImport(Darwin)
+        guard destination.isFileURL,
+              let values = try? destination.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+              let capacity = values.volumeAvailableCapacityForImportantUsage else { return nil }
+        return capacity
+        #else
+        return nil
+        #endif
+    }
+    static func currentThermal() -> Thermal {
+        #if canImport(Darwin)
+        switch ProcessInfo.processInfo.thermalState {
+        case .nominal: return .nominal
+        case .fair: return .fair
+        case .serious: return .serious
+        case .critical: return .critical
+        @unknown default: return .unknown
+        }
+        #else
+        return .unknown
+        #endif
+    }
+
+    // Heuristics (documented in docs/STUDIO_EXPORT_PREFLIGHT.md):
+    // PNG ≈ 1 byte per rendered pixel per frame; GIF ≈ 0.5 byte per pixel per
+    // frame; MP4 ≈ configured video bit rate × duration, doubled when audio is
+    // mixed (the video component and final file coexist) plus the float CAF
+    // mix (8 bytes per 48 kHz frame) and the AAC track, plus 1 MiB overhead.
+    static func estimatedPNGBytes(width: Int, height: Int, frames: Int) -> Int {
+        max(1, width) * max(1, height) * max(1, frames) + 65_536
+    }
+    static func estimatedGIFBytes(width: Int, height: Int, frames: Int) -> Int {
+        (max(1, width) * max(1, height) * max(1, frames)) / 2 + 65_536
+    }
+    static func estimatedMovieBytes(width: Int, height: Int, fps: Int, durationSeconds: Double, includesAudio: Bool) -> Int {
+        let bitrate = min(12_000_000, max(2_000_000, max(1, width) * max(1, height) * max(1, fps) * 2))
+        let duration = durationSeconds.isFinite ? max(0, durationSeconds) : 0
+        let video = Int((Double(bitrate) / 8 * duration).rounded(.up))
+        let audio = includesAudio ? Int((48_000 * 8 * duration).rounded(.up)) + Int((24_000.0 * duration).rounded(.up)) : 0
+        return (includesAudio ? video * 2 : video) + audio + 1_048_576
     }
 }

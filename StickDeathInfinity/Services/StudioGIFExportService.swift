@@ -16,11 +16,12 @@ final class StudioGIFExportService {
         }
     }
 
-    func export(_ snapshot: StudioGIFEncoder.Snapshot, outputParent: URL,
+    func export(_ snapshot: StudioGIFEncoder.Snapshot, outputParent: URL, filenameBase: String? = nil,
                 progress: (StudioGIFEncoder.Progress) throws -> Void = { _ in }) async throws -> Output {
+        if let filenameBase { guard StudioExportFilename.isValid(filenameBase) else { throw Failure.destination } }
         let encoded = try await StudioGIFEncoder().encode(snapshot, progress: progress)
         try Task.checkCancellation()
-        let output = try Output(encoded: encoded, parent: outputParent)
+        let output = try Output(encoded: encoded, parent: outputParent, gifFilename: (filenameBase ?? StudioExportFilename.fallback) + ".gif")
         do { try Task.checkCancellation(); return output }
         catch { try output.cleanup(); throw error }
     }
@@ -48,12 +49,14 @@ final class StudioGIFExportService {
         private var directoryIdentity: Identity?
         private var files: [String: File] = [:]
         private(set) var isCleaned = false
+        let gifFilename: String
         var directory: URL { parent.appendingPathComponent(name, isDirectory: true) }
-        var gifURL: URL { directory.appendingPathComponent("animation.gif") }
+        var gifURL: URL { directory.appendingPathComponent(gifFilename) }
         var manifestURL: URL { directory.appendingPathComponent("manifest.json") }
 
-        fileprivate init(encoded: StudioGIFEncoder.Encoded, parent: URL) throws {
+        fileprivate init(encoded: StudioGIFEncoder.Encoded, parent: URL, gifFilename: String = "animation.gif") throws {
             self.parent = parent.standardizedFileURL
+            self.gifFilename = gifFilename
             receipt = encoded.receipt
             let id = UUID().uuidString
             name = ".sdi-gif-" + id + ".partial"
@@ -77,7 +80,7 @@ final class StudioGIFExportService {
                       encoded.data.count == receipt.encodedBytes,
                       encoded.data.count <= StudioGIFEncoder.maximumBytes,
                       manifest.count <= StudioGIFEncoder.maximumBytes + 128 * 1024 - encoded.data.count else { throw Failure.write }
-                try create("animation.gif", data: encoded.data)
+                try create(gifFilename, data: encoded.data)
                 try create("manifest.json", data: manifest)
                 try validate(allowMissing: false)
                 let published = "SDI-GIF-" + receipt.projectID.uuidString + "-" + id

@@ -533,6 +533,66 @@ private func require(_ condition: @autoclosure () throws -> Bool, _ message: Str
                     "Optional credits broke historical manifest decoding")
             }
         }
+        await test("export filename base is ASCII-only, bounded and falls back to animation") {
+            try require(StudioExportFilename.base(for: "My Animation") == "My-Animation", "spaces collapse to one dash")
+            try require(StudioExportFilename.base(for: "  Stick!! Death  (final) ") == "Stick-Death-final", "punctuation runs collapse and edges trim")
+            try require(StudioExportFilename.base(for: "épée 🎬 scène") == "p-e-sc-ne", "non-ASCII drops to separators")
+            try require(StudioExportFilename.base(for: "🎬🎬") == "animation", "all-symbol names fall back")
+            try require(StudioExportFilename.base(for: "") == "animation" && StudioExportFilename.base(for: nil) == "animation", "empty falls back")
+            try require(StudioExportFilename.base(for: "keep_under-score9") == "keep_under-score9", "allowed characters are preserved")
+            let long = StudioExportFilename.base(for: String(repeating: "a", count: 90) + " tail")
+            try require(long.count == 40 && long == String(repeating: "a", count: 40), "base is cut to 40 characters")
+            try require(StudioExportFilename.base(for: String(repeating: "b", count: 39) + " c") == String(repeating: "b", count: 39), "trailing separator after the cut is trimmed")
+            try require(StudioExportFilename.isValid("Stick-Death_1") && !StudioExportFilename.isValid("") && !StudioExportFilename.isValid("a b") && !StudioExportFilename.isValid("-a") && !StudioExportFilename.isValid(String(repeating: "a", count: 41)), "validator mismatch")
+        }
+        await test("project-named PNG and spritesheet files keep manifest records and legacy names stay without a base") {
+            let folder = try parent(root, "named")
+            var doc = try document(); doc.name = "Scene 2: Café fight"
+            let base = StudioExportFilename.base(for: doc.name)
+            try require(base == "Scene-2-Caf-fight", "unexpected base \(base)")
+            let sequence = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: base)
+            try require(sequence.imageURLs.map(\.lastPathComponent) == ["Scene-2-Caf-fight_000000.png", "Scene-2-Caf-fight_000001.png", "Scene-2-Caf-fight_000002.png"], "named sequence files")
+            try require(sequence.manifest.frames.map(\.filename) == sequence.imageURLs.map(\.lastPathComponent) && sequence.manifest.filenameBase == base, "manifest filenames diverge")
+            let sheet = try await service.export(document: doc, format: .spritesheet, outputParent: folder, filenameBase: base)
+            try require(sheet.imageURLs.map(\.lastPathComponent) == ["Scene-2-Caf-fight_spritesheet.png"] && sheet.manifest.frames.allSatisfy { $0.filename == "Scene-2-Caf-fight_spritesheet.png" }, "named sheet file")
+            let legacy = try await service.export(document: doc, format: .pngSequence, outputParent: folder)
+            try require(legacy.imageURLs.first?.lastPathComponent == "frame_000000.png" && legacy.manifest.filenameBase == nil, "legacy names changed")
+            try await rejects { _ = try await service.export(document: doc, format: .pngSequence, outputParent: folder, filenameBase: "bad name") }
+            let decoded = try JSONDecoder().decode(StudioExportService.Manifest.self, from: Data(contentsOf: sequence.manifestURL))
+            try require(decoded.filenameBase == base, "manifest does not round-trip the base")
+        }
+        await test("written PNGs are decoded back and a damaged file fails verification") {
+            let folder = try parent(root, "verify-png")
+            let output = try await service.export(document: document(), format: .pngSequence, outputParent: folder)
+            for url in output.imageURLs { try StudioExportService.verifyPNG(at: url, expectedWidth: 64, expectedHeight: 32) }
+            do { try StudioExportService.verifyPNG(at: output.imageURLs[0], expectedWidth: 65, expectedHeight: 32); throw Failure(message: "size mismatch passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+            let damaged = folder.appendingPathComponent("damaged.png")
+            let bytes = try Data(contentsOf: output.imageURLs[0])
+            try bytes.prefix(bytes.count / 2).write(to: damaged)
+            do { try StudioExportService.verifyPNG(at: damaged, expectedWidth: 64, expectedHeight: 32); throw Failure(message: "truncated PNG passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+            let notPNG = folder.appendingPathComponent("not.png")
+            try Data("plain text".utf8).write(to: notPNG)
+            do { try StudioExportService.verifyPNG(at: notPNG, expectedWidth: 64, expectedHeight: 32); throw Failure(message: "non-image passed") }
+            catch StudioExportService.ExportError.verificationFailed {}
+        }
+        await test("export preflight refuses critical thermal state and insufficient free space without blocking unknown capacity") {
+            try StudioExportPreflight.decide(availableBytes: 2_000, estimatedOutputBytes: 1_000, thermal: .nominal)
+            try StudioExportPreflight.decide(availableBytes: nil, estimatedOutputBytes: 1_000_000_000, thermal: .serious)
+            do { try StudioExportPreflight.decide(availableBytes: 1_999, estimatedOutputBytes: 1_000, thermal: .nominal); throw Failure(message: "space accepted") }
+            catch let failure as StudioExportPreflight.Failure {
+                try require(failure == .insufficientStorage(requiredBytes: 2_000, availableBytes: 1_999) && failure.errorDescription?.contains("Nothing was exported") == true, "wrong storage failure \(failure)")
+            }
+            do { try StudioExportPreflight.decide(availableBytes: nil, estimatedOutputBytes: 1, thermal: .critical); throw Failure(message: "critical accepted") }
+            catch let failure as StudioExportPreflight.Failure { try require(failure == .thermalCritical, "wrong thermal failure") }
+            try require(StudioExportPreflight.estimatedPNGBytes(width: 64, height: 32, frames: 3) == 64 * 32 * 3 + 65_536, "PNG estimate rule")
+            try require(StudioExportPreflight.estimatedGIFBytes(width: 64, height: 32, frames: 3) == 64 * 32 * 3 / 2 + 65_536, "GIF estimate rule")
+            let movie = StudioExportPreflight.estimatedMovieBytes(width: 1920, height: 1080, fps: 24, durationSeconds: 10, includesAudio: false)
+            try require(movie == 12_000_000 / 8 * 10 + 1_048_576, "movie estimate rule \(movie)")
+            // The real device check only adds measured inputs; it must not throw here for a tiny estimate.
+            try StudioExportPreflight.check(estimatedOutputBytes: 1, destination: root)
+        }
         print("STUDIO_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         print("GENERATED_EXPORT_FIXTURES=\(root.path)")
         if failed > 0 { exit(1) }

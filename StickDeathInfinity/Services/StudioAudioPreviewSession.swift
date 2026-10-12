@@ -4,9 +4,87 @@ import Combine
 import CryptoKit
 import Darwin
 
+/// One process-wide owner of the system audio session for Studio playback (#180).
+/// Playback sets `.playback`/`.default` and activates the session so the ring
+/// switch does not silence previews; interruptions and a lost output route stop
+/// every registered owner honestly instead of letting a stalled player poll.
+/// The session is deactivated with `notifyOthersOnDeactivation` when the last
+/// owner ends. On platforms without AVAudioSession this is a no-op.
+@MainActor
+final class StudioAudioSessionController {
+    enum Event: Equatable { case interruptionBegan, routeLost }
+    static let shared = StudioAudioSessionController()
+    private var owners: [UUID: @MainActor (Event) -> Void] = [:]
+    private var observers: [NSObjectProtocol] = []
+    private(set) var isActive = false
+    private(set) var lastEvent: Event?
+    private init() {}
+    var activeOwnerCount: Int { owners.count }
+
+    enum Failure: LocalizedError {
+        case unavailable(String)
+        var errorDescription: String? {
+            if case .unavailable(let detail) = self { return "The audio session could not be activated for playback: \(detail)" }
+            return nil
+        }
+    }
+
+    /// Register `owner` and make the shared session active for playback.
+    func begin(owner: UUID, onEvent: @escaping @MainActor (Event) -> Void) throws {
+        #if os(iOS) || os(tvOS)
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true, options: [])
+        } catch { throw Failure.unavailable(error.localizedDescription) }
+        if observers.isEmpty {
+            let center = NotificationCenter.default
+            observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: session, queue: .main) { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+                Task { @MainActor in self?.dispatch(.interruptionBegan) }
+            })
+            observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: .main) { [weak self] note in
+                guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                      AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+                Task { @MainActor in self?.dispatch(.routeLost) }
+            })
+        }
+        #endif
+        owners[owner] = onEvent
+        isActive = true
+    }
+
+    /// Unregister `owner`; the last owner deactivates the session.
+    func end(owner: UUID) {
+        guard owners.removeValue(forKey: owner) != nil else { return }
+        guard owners.isEmpty else { return }
+        #if os(iOS) || os(tvOS)
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+        // Deactivation can legitimately fail while another app's audio is
+        // still being torn down; the next `begin` re-activates regardless.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+        isActive = false
+    }
+
+    /// Test and system entry point: stops every owner with the given event.
+    func dispatch(_ event: Event) {
+        lastEvent = event
+        for handler in owners.values { handler(event) }
+    }
+    static func message(for event: Event) -> String {
+        switch event {
+        case .interruptionBegan: return "Audio playback was interrupted by another app or a call and has stopped. Play again when ready."
+        case .routeLost: return "The audio output device was disconnected, so playback stopped."
+        }
+    }
+}
+
 /// Owns one panel's Files import, derived waveform cache and single-clip audition.
 /// No microphone, cloud, mixed timeline or export operation is implemented here.
-/// The app's existing audio-session policy remains in charge of audible routing.
+/// `StudioAudioSessionController` owns the playback category and interruption policy.
 @MainActor
 final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayerDelegate {
     struct Measurement: Equatable {
@@ -42,6 +120,7 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     private var playbackTimer: Timer?
     private let importer: StudioAudioImportService
     private let scratchParent: URL
+    private let sessionOwnerID = UUID()
     static let maximumCachedMeasurements = 32
 
     init(importer: StudioAudioImportService = .shared,
@@ -228,6 +307,12 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
             state = .failed("Analyze this saved audio before previewing it. Its data may be unavailable."); return false
         }
         do {
+            // Playback category + activation before the player (#180); an
+            // interruption or lost route stops this audition with a notice.
+            try StudioAudioSessionController.shared.begin(owner: sessionOwnerID) { [weak self] event in
+                guard let self, self.player != nil else { return }
+                self.stop(); self.state = .failed(StudioAudioSessionController.message(for: event))
+            }
             let next = try AVAudioPlayer(data: data)
             guard next.duration.isFinite, next.duration > 0,
                   abs(next.duration - measurement.duration) <= max(0.1, measurement.duration * 0.01) else { throw SessionError.invalidPlayback }
@@ -240,6 +325,9 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
                 Task { @MainActor in self?.readPlaybackTime() }
             }
             return true
+        } catch let failure as StudioAudioSessionController.Failure {
+            stop(); state = .failed(failure.localizedDescription)
+            return false
         } catch {
             stop(); state = .failed("Audio preview could not start on this device. No playback success was recorded.")
             return false
@@ -252,6 +340,7 @@ final class StudioAudioPreviewSession: NSObject, ObservableObject, AVAudioPlayer
     func stop() {
         playbackTimer?.invalidate(); playbackTimer = nil
         player?.stop(); player?.delegate = nil; player = nil; playerIdentity = nil
+        StudioAudioSessionController.shared.end(owner: sessionOwnerID)
         playingClipID = nil; currentTime = 0; playbackDuration = 0
         if state == .playing { state = .stopped }
     }

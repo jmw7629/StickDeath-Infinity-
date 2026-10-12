@@ -34,6 +34,7 @@ private struct StudioAudioWorkspace: View {
     @State private var fadeCapture: StudioViewModel.AudioFadeCapture?
     @State private var focusedEditorField: String?
     @State private var timelineZoom = 1.0
+    @State private var pendingDeleteClipID: String?
     private let background = Color(hex: "0D0D12")
 
     var body: some View {
@@ -100,7 +101,7 @@ private struct StudioAudioWorkspace: View {
         }
         .onChange(of: search) { if search.count > 256 { search = String(search.prefix(256)) } }
         .onDisappear { audio.close(); timeline.close(); vm.stopPlayback(); fadeCapture = nil }
-        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil }
+        .onChange(of: vm.document.id) { _, _ in audio.close(); timeline.close(); trimCapture = nil; fadeCapture = nil; pendingDeleteClipID = nil }
         .onChange(of: vm.playbackLoops) { _, _ in timeline.stop() }
         .onChange(of: vm.document.revision) { _, _ in
             timeline.stop(); audio.stop()
@@ -546,9 +547,25 @@ private struct StudioAudioWorkspace: View {
                     timeline.stop(); audio.stop(); vm.stopPlayback()
                 }
                 .id("\(vm.document.id):\(vm.document.revision):\(clip.id)")
-                Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); vm.deleteAudioClip(clip.id) }
+                // Deleting a clip is reversible through Undo but still asks first
+                // (#178): the sheet names the clip and nothing changes on Cancel.
+                Button("Delete") { timeline.stop(); audio.stop(); vm.stopPlayback(); pendingDeleteClipID = clip.id }
                     .foregroundColor(.sdStudioActionText).font(.specialElite(11)).frame(minHeight: 44)
                     .accessibilityIdentifier("studio.audio.delete")
+                    .confirmationDialog("Delete \"\(clip.soundName)\" from track \(clip.track)?",
+                                        isPresented: Binding(get: { pendingDeleteClipID == clip.id },
+                                                             set: { if !$0 && pendingDeleteClipID == clip.id { pendingDeleteClipID = nil } }),
+                                        titleVisibility: .visible) {
+                        Button("Delete clip", role: .destructive) {
+                            pendingDeleteClipID = nil
+                            guard vm.audioClips.contains(where: { $0.id == clip.id }) else { return }
+                            vm.deleteAudioClip(clip.id)
+                        }.accessibilityIdentifier("studio.audio.delete-clip.confirm")
+                        Button("Cancel", role: .cancel) { pendingDeleteClipID = nil }
+                            .accessibilityIdentifier("studio.audio.delete-clip.cancel")
+                    } message: {
+                        Text("The saved sound stays in the project library; only this placement is removed. Undo restores it.")
+                    }
             }
             if let id = clip.assetID, let measurement = audio.measurements[id] {
                 MeasuredAudioWaveform(peaks: measurement.peaks, sourceDuration: measurement.duration,
@@ -1311,12 +1328,11 @@ private struct AudioProjectClips: View {
                                 .font(.specialElite(11)).foregroundColor(.sdStudioSecondaryText)
                             Text(String(format: "Source %.2f–%.2fs", clip.sourceOffset, clip.sourceOffset + clip.duration))
                                 .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
-                            if clip.isMuted || vm.document.isAudioTrackMuted(clip.track) {
-                                Text("Preview is silent: clip or track is muted")
+                            // Mirrors the mixer's gain rules, including solo (#180).
+                            if let reason = StudioAudioPreviewSilence.reason(for: clip, in: vm.document) {
+                                Text(reason)
                                     .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
-                            } else if clip.volume == 0 || vm.document.audioTrackVolume(clip.track) == 0 {
-                                Text("Preview is silent: clip or track volume is zero")
-                                    .font(.specialElite(10)).foregroundColor(.sdStudioActionText)
+                                    .accessibilityIdentifier("studio.audio.project.silent." + clip.id)
                             }
                             if auditionID == clip.id {
                                 if timeline.isPreparing {
