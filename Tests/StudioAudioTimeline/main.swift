@@ -1236,6 +1236,35 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             }
             await local.flush()
         }
+        try await test("preview silence hint follows the mixer's mute, solo and zero-volume rules") {
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: true) == nil, "audible clip has no hint")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: true, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: true) == "Preview is silent: clip or track is muted", "clip mute")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: true, trackVolume: 1, trackAudible: false) == "Preview is silent: clip or track is muted", "track mute wins over solo wording")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: false) == "Preview is silent: another track is soloed", "solo hint")
+            try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 0, trackMuted: false, trackVolume: 1, trackAudible: true) == "Preview is silent: clip or track volume is zero", "zero volume")
+            var doc = vm.document
+            doc.schemaVersion = max(doc.schemaVersion, 34)
+            doc.soloedAudioTracks = [2]
+            let clip = doc.audioClips[0]
+            try check(clip.track == 1 && StudioAudioPreviewSilence.reason(for: clip, in: doc) == "Preview is silent: another track is soloed", "document solo evaluation")
+            doc.soloedAudioTracks = [1]
+            try check(StudioAudioPreviewSilence.reason(for: clip, in: doc) == nil, "soloing the clip's own track keeps it audible")
+        }
+        try await test("audio session controller stops registered owners on interruption and releases on last end") {
+            let controller = StudioAudioSessionController.shared
+            let a = UUID(), b = UUID()
+            var events: [String] = []
+            try controller.begin(owner: a) { events.append("a:\($0)") }
+            try controller.begin(owner: b) { events.append("b:\($0)") }
+            try check(controller.isActive && controller.activeOwnerCount == 2, "owners registered")
+            controller.dispatch(.interruptionBegan)
+            try check(events.sorted() == ["a:interruptionBegan", "b:interruptionBegan"] && controller.lastEvent == .interruptionBegan, "handlers invoked")
+            controller.end(owner: a)
+            try check(controller.isActive && controller.activeOwnerCount == 1, "session stays active while an owner remains")
+            controller.end(owner: b); controller.end(owner: b)
+            try check(!controller.isActive && controller.activeOwnerCount == 0, "last owner deactivates")
+            try check(StudioAudioSessionController.message(for: .routeLost).contains("disconnected") && StudioAudioSessionController.message(for: .interruptionBegan).contains("interrupted"), "truthful messages")
+        }
         print("AUDIO_TIMELINE_TESTS_PASSED=\(passed)")
     }
 }

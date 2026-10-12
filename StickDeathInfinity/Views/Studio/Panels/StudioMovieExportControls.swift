@@ -17,7 +17,12 @@ struct StudioMovieExportControls: View {
     @StateObject private var presentationScope = StudioMoviePresentationScope()
     @StateObject private var preview = StudioMoviePreviewState()
     @State private var isVisible = false
-    @State private var background: StudioMovieExportService.Background = .white
+    // H.264/HEVC MP4 has no alpha channel; the former "Transparent (unsupported)"
+    // choice was removed (#185). White is the only truthful background.
+    private let background: StudioMovieExportService.Background = .white
+    @State private var codec: StudioMovieExportService.Codec = .h264
+    @State private var preset: StudioMovieExportService.RenderPreset = .original
+    @State private var normalizeAudio = false
     @State private var shareAccountID: String?
     @State private var shareRequest: StudioMovieExportSession.ShareRequest?
     @State private var reviewExport: SDIRenderUploadExport?
@@ -37,14 +42,40 @@ struct StudioMovieExportControls: View {
             Text("VIDEO QUALITY").font(.specialElite(9)).foregroundColor(.white.opacity(0.4)).tracking(1)
             Text("Original canvas · \(vm.document.width) × \(vm.document.height)")
                 .font(.system(size: 12, weight: .bold, design: .monospaced))
-            Text("H.264 MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. White background only. Saved audio is mixed as stereo AAC. Trim audio within the animation duration; missing sources and overloaded mixes report an error. Editor grid and onion skin are not included.")
-                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
-            Picker("MP4 background", selection: $background) {
-                Text("White").tag(StudioMovieExportService.Background.white)
-                Text("Transparent (unsupported)").tag(StudioMovieExportService.Background.transparent)
+            Picker("MP4 resolution", selection: $preset) {
+                Text("Original").tag(StudioMovieExportService.RenderPreset.original)
+                ForEach(ExportQuality.allCases, id: \.rawValue) { quality in
+                    Text(quality.resolution).tag(StudioMovieExportService.RenderPreset(quality: quality))
+                }
             }
             .pickerStyle(.segmented).disabled(movie.isBusy)
-            .accessibilityIdentifier("studio.export.movie.background")
+            .accessibilityIdentifier("studio.export.movie.resolution")
+            if let plan = try? StudioMovieExportService.RenderPlan.make(canvasWidth: vm.document.width, canvasHeight: vm.document.height, preset: preset) {
+                Text("Output \(plan.outputWidth) × \(plan.outputHeight)" + (plan.paddingRight + plan.paddingBottom > 0 ? " · 1 white pixel added on the \(plan.paddingRight > 0 ? "right" : "")\(plan.paddingRight > 0 && plan.paddingBottom > 0 ? " and " : "")\(plan.paddingBottom > 0 ? "bottom" : "") so the encoder gets even dimensions" : "") + (plan.scale != 1 ? String(format: " · scaled ×%.3f", plan.scale) : ""))
+                    .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
+                    .accessibilityIdentifier("studio.export.movie.output-size")
+            }
+            Picker("MP4 codec", selection: $codec) {
+                ForEach(StudioMovieExportService.Codec.allCases, id: \.rawValue) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented).disabled(movie.isBusy)
+            .accessibilityIdentifier("studio.export.movie.codec")
+            Text("\(codec.label) MP4 · \(vm.document.frames.count) frames · \(vm.document.fps) fps · \(String(format: "%.2f", vm.document.durationSeconds))s with frame exposures. White background (MP4 cannot store transparency). Saved audio is mixed as stereo AAC; audio that ends after the animation holds the last frame until it finishes. Missing sources report an error. HEVC is refused with a message if this device's encoder cannot apply it. Editor grid and onion skin are not included.")
+                .font(.specialElite(10)).foregroundColor(.white.opacity(0.6))
+                .accessibilityIdentifier("studio.export.movie.background")
+            if !vm.document.audioClips.isEmpty {
+                Toggle(isOn: $normalizeAudio) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Normalize audio to −1 dBFS").font(.specialElite(12))
+                        Text(normalizeAudio
+                             ? "The whole mix is scaled by one gain so its loudest sample sits at −1 dBFS; the gain is written to the manifest. Clip volumes are unchanged."
+                             : "Off: levels are exported exactly as mixed. A mix that exceeds full scale is refused with a message instead of being changed.")
+                            .font(.specialElite(9)).foregroundColor(.white.opacity(0.6))
+                    }
+                }
+                .tint(Color(hex: "#DC2626")).disabled(movie.isBusy)
+                .accessibilityIdentifier("studio.export.movie.normalize")
+            }
             if let pending = shareLifetime.pendingMessage {
                 Text(pending).foregroundColor(.white.opacity(0.75))
                     .font(.specialElite(11))
@@ -76,7 +107,8 @@ struct StudioMovieExportControls: View {
                     .accessibilityIdentifier("studio.export.cancel")
             } else {
                 Button {
-                    _ = movie.start(from: vm, background: background, scope: scope)
+                    _ = movie.start(from: vm, background: background, scope: scope,
+                                    options: .init(render: .init(codec: codec, preset: preset), normalizeAudio: normalizeAudio))
                 } label: {
                     Text("EXPORT MP4").font(.specialElite(14))
                         .foregroundColor(.white).frame(maxWidth: .infinity).padding(.vertical, 14)
@@ -102,6 +134,15 @@ struct StudioMovieExportControls: View {
                     Text("\(output.manifest.width) × \(output.manifest.height) · \(output.manifest.frameIDs.count) frames · \(output.manifest.fps) fps · revision \(output.manifest.documentRevision)")
                         .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("studio.export.movie.receipt")
+                    if let rule = output.manifest.renderRule, output.manifest.renderPlan.map({ $0.scale != 1 || $0.paddingRight + $0.paddingBottom > 0 }) == true {
+                        Text(rule).font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.export.movie.render-rule")
+                    }
+                    if let gain = output.audioAppliedGain {
+                        Text(String(format: "Audio normalized to −1 dBFS · gain ×%.3f recorded in manifest", gain))
+                            .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.export.movie.normalized")
+                    }
                     if let credits = output.manifest.imageCredits, !credits.isEmpty {
                         Text("\(credits.count) image \(credits.count == 1 ? "credit" : "credits") included in manifest")
                             .font(.specialElite(10))

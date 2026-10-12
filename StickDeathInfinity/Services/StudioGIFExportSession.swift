@@ -85,6 +85,13 @@ final class StudioGIFExportSession: ObservableObject {
             return false
         }
         let snapshot = StudioGIFEncoder.Snapshot(document: document, rasterDataByID: rasters, maximumDimension: maximumDimension, imageCredits: imageCredits)
+        // Preflight (#202): free space and thermal state before any rendering.
+        do {
+            let size = try StudioGIFEncoder.outputSize(document: document, maximumDimension: maximumDimension)
+            let estimate = StudioExportPreflight.estimatedGIFBytes(width: size.width, height: size.height, frames: document.frames.count)
+            try StudioExportPreflight.check(estimatedOutputBytes: estimate, destination: outputParent)
+        } catch { errorMessage = error.localizedDescription; notice = nil; return false }
+        let filenameBase = StudioExportFilename.base(for: document.name)
         editor = vm; accountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision, name: document.name)
         errorMessage = nil; notice = nil; completedFrames = 0
@@ -95,7 +102,7 @@ final class StudioGIFExportSession: ObservableObject {
         task = Task { [self, snapshot] in
             do {
                 try checkContext()
-                let result = try await StudioGIFExportService().export(snapshot, outputParent: outputParent) { [self] progress in
+                let result = try await StudioGIFExportService().export(snapshot, outputParent: outputParent, filenameBase: filenameBase) { [self] progress in
                     try checkContext()
                     phase = progress.phase; completedFrames = progress.completed; totalFrames = progress.total
                     try checkContext()

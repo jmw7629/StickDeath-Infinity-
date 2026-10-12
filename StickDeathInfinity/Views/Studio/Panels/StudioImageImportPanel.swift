@@ -220,8 +220,9 @@ struct StudioImageImportPanel: View {
                     }
                     Divider().overlay(Color.white.opacity(0.2))
                     if videoFrameMode {
-                        Text("Camera recording and whole-video timeline import are not available yet.")
+                        Text("Available here: still reference frames decoded from a video at the times you choose, and the video's soundtrack imported as a project sound from the Audio panel. The movie itself is not copied into the project, there is no live video layer, and camera recording is not offered.")
                             .font(.caption).foregroundColor(.white.opacity(0.6))
+                            .accessibilityIdentifier("studio.video.availability")
                     } else {
                     AddImageOption(icon: "camera.fill", title: "Take Photo", subtitle: "Capture a still photo, preview it, then add it") { beginCamera() }
                         .disabled(session.isClosed || session.isWorking || session.status == .picking)

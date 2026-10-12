@@ -45,9 +45,12 @@ import Darwin
         fileprivate var cancelled = false
         private var currentURL: URL { parentURL.appendingPathComponent(name, isDirectory: true) }
 
-        init(parent: URL, staging: URL, movieDigest: SHA256.Digest,
+        private let movieFilename: String
+
+        init(parent: URL, staging: URL, movieFilename: String = "animation.mp4", movieDigest: SHA256.Digest,
              movieBytes: Int, manifestData: Data, original: StudioMuxPublicationIdentity) throws {
-            guard Set(original.files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw StudioAudioVideoMuxService.MuxError.unsafeDestination }
+            guard Set(original.files.keys) == Set([movieFilename, "manifest.json"]) else { throw StudioAudioVideoMuxService.MuxError.unsafeDestination }
+            self.movieFilename = movieFilename
             parentURL = parent; name = staging.lastPathComponent
             var parentInfo = stat()
             guard lstat(parent.path, &parentInfo) == 0, Self.directory(parentInfo) else { throw StudioAudioVideoMuxService.MuxError.unsafeDestination }
@@ -69,7 +72,7 @@ import Darwin
             parentIdentity = Identity(parentOpenedInfo); directoryIdentity = Identity(directoryInfo)
             do {
                 let expected: [(String, Int64, SHA256.Digest)] = [
-                    ("animation.mp4", Int64(movieBytes), movieDigest),
+                    (movieFilename, Int64(movieBytes), movieDigest),
                     ("manifest.json", Int64(manifestData.count), SHA256.hash(data: manifestData))
                 ]
                 for (filename, size, digest) in expected {
@@ -113,7 +116,7 @@ import Darwin
                 // An unexpected nested item leaves everything intact. Already
                 // missing owned files are allowed so partial cleanup is retryable.
                 try validateFiles(allowMissing: true)
-                for filename in ["animation.mp4", "manifest.json"] {
+                for filename in [movieFilename, "manifest.json"] {
                     try confirmDirectories()
                     guard let record = files[filename] else { throw StudioAudioVideoMuxService.MuxError.unsafeDestination }
                     if try fileStillOwned(filename, record: record, allowMissing: true) {
@@ -259,10 +262,10 @@ import Darwin
         }
         /// Call immediately after startWriting succeeds, before any await,
         /// render or user callback. Only that explicit output is captured.
-        func captureStartedMovie() throws {
+        func captureStartedMovie(named filename: String = "animation.mp4") throws {
             try confirmDirectories()
-            let fd = openat(directoryFD, "animation.mp4", O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
-            try retainCreatedFile(fd, name: "animation.mp4")
+            let fd = openat(directoryFD, filename, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            try retainCreatedFile(fd, name: filename)
         }
         func writeManifest(_ data: Data) throws {
             try confirmDirectories()
@@ -345,9 +348,9 @@ import Darwin
         /// exclusive manifest creation, then carry those same identities into
         /// the final owner's reopened descriptors. No callback or suspension
         /// occurs during this transfer, and the constructor rechecks identity.
-        func publicationIdentity() throws -> StudioMuxPublicationIdentity {
+        func publicationIdentity(movieFilename: String = "animation.mp4") throws -> StudioMuxPublicationIdentity {
             try confirmDirectories()
-            guard Set(files.keys) == Set(["animation.mp4", "manifest.json"]) else { throw StudioAudioVideoMuxService.MuxError.cleanupFailed(stagingURL) }
+            guard Set(files.keys) == Set([movieFilename, "manifest.json"]) else { throw StudioAudioVideoMuxService.MuxError.cleanupFailed(stagingURL) }
             var parent = stat(), directory = stat()
             guard fstat(parentFD, &parent) == 0, Identity(parent) == parentIdentity,
                   fstat(directoryFD, &directory) == 0, Identity(directory) == directoryIdentity else { throw StudioAudioVideoMuxService.MuxError.cleanupFailed(stagingURL) }

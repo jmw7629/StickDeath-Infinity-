@@ -174,13 +174,14 @@ struct ExportPanel: View {
                     }
                     }
                     VStack(alignment: .leading, spacing: 8) {
-                        sectionLabel("SHARE TO")
-                        exportDestination("📱", "Camera Roll", "Use the iOS share sheet when supported")
-                        exportDestination("🎵", "TikTok", "Direct publishing unavailable")
-                        exportDestination("▶️", "YouTube", "Official channel publishing unavailable")
-                        exportDestination("📷", "Instagram", "Direct publishing unavailable")
+                        sectionLabel("SHARING")
+                        // One truthful destination: the iOS share sheet. Studio has no
+                        // direct TikTok/YouTube/Instagram publishing (#185).
+                        exportDestination("📤", "Share via system sheet",
+                            "After an export is ready, Share hands the files to the iOS share sheet. Save to Files, Photos (for MP4/GIF) or any installed app that accepts them. Studio does not post to TikTok, YouTube or Instagram itself.")
+                            .accessibilityIdentifier("studio.export.share-explanation")
                     }
-                    Text("No watermark is added. PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF uses reduced colors, a white background and no audio. Official channel publishing remains unfinished.")
+                    Text("No watermark is added. Files are named after the project (ASCII letters, digits, '-' and '_'; otherwise \"animation\"). PNG exports do not include sound. MP4 uses a white background and includes saved project audio as stereo AAC. GIF uses reduced colors, a white background and no audio.")
                         .font(.specialElite(10))
                         .foregroundColor(.white.opacity(0.5))
                 }
@@ -306,12 +307,22 @@ final class StudioExportSession: ObservableObject {
         guard !isRunning, !isSharing, !isClosed else { return }
         errorMessage = nil; notice = nil
         guard removeOutput() else { return }
-        isRunning = true; completedFrames = 0; totalFrames = frameIDs?.count ?? document.frames.count
+        // Preflight (#202) before any rendering: free space for twice the
+        // estimated PNG output and a non-critical thermal state.
+        let frameCount = frameIDs?.count ?? document.frames.count
+        let outputParent = FileManager.default.temporaryDirectory
+        do {
+            try StudioExportPreflight.check(estimatedOutputBytes: StudioExportPreflight.estimatedPNGBytes(
+                width: document.width, height: document.height, frames: frameCount), destination: outputParent)
+        } catch { errorMessage = error.localizedDescription; return }
+        let filenameBase = StudioExportFilename.base(for: document.name)
+        isRunning = true; completedFrames = 0; totalFrames = frameCount
         task = Task { [self] in
             do {
                 let result = try await StudioExportService().export(document: document, format: format,
-                    outputParent: FileManager.default.temporaryDirectory, background: background,
+                    outputParent: outputParent, background: background,
                     sheetColumns: sheetColumns, cellPadding: cellPadding, frameIDs: frameIDs, imageCredits: imageCredits,
+                    filenameBase: filenameBase,
                     rasterData: { rasters[$0] }, progress: { [self] completed, total in
                         completedFrames = completed; totalFrames = total
                     })

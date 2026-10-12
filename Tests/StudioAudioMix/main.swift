@@ -479,6 +479,39 @@ private actor Barrier {
             try empty()
         }
 
+        try await test("opt-in normalization measures the real summed peak, scales to -1 dBFS and records the gain; default leaves levels") {
+            let loud = try fixture { _, _ in 0.8 }
+            let doc = try document([clip(loud), clip(loud)])
+            // Default: no level change, over-range preserved and reported.
+            let plain = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [loud], durationSeconds: 0.1, outputParent: scratch)
+            try near(plain.receipt.peakAbsoluteSample, 1.6); try near(plain.receipt.appliedGain, 1)
+            try check(!plain.receipt.normalizedToMinusOneDBFS && plain.receipt.overRangeSampleCount == 9600, "default mix changed levels")
+            try near(plain.receipt.measuredPeakBeforeGain, 1.6)
+            try plain.cleanup()
+            // Opt-in: the same sum is scaled by exactly one gain.
+            let normalized = try await StudioAudioMixService().mix(document: doc, retainedAudioTracks: [loud], durationSeconds: 0.1,
+                outputParent: scratch, options: .init(normalizeToMinusOneDBFS: true))
+            let pcm = try read(normalized)
+            try near(normalized.receipt.peakAbsoluteSample, StudioAudioMixService.normalizationTargetPeak, 0.00001)
+            try near(normalized.receipt.appliedGain, StudioAudioMixService.normalizationTargetPeak / 1.6, 0.00001)
+            try near(normalized.receipt.measuredPeakBeforeGain, 1.6)
+            try check(normalized.receipt.normalizedToMinusOneDBFS && normalized.receipt.overRangeSampleCount == 0, "normalized mix still over range")
+            try near(pcm[0][0], StudioAudioMixService.normalizationTargetPeak, 0.00001); try near(pcm[1][4799], StudioAudioMixService.normalizationTargetPeak, 0.00001)
+            try normalized.cleanup()
+            // A quiet mix is raised to the same target; silence keeps gain 1.
+            let quiet = try fixture { _, _ in 0.1 }
+            let raised = try await StudioAudioMixService().mix(document: try document([clip(quiet)]), retainedAudioTracks: [quiet], durationSeconds: 0.1,
+                outputParent: scratch, options: .init(normalizeToMinusOneDBFS: true))
+            try near(raised.receipt.peakAbsoluteSample, StudioAudioMixService.normalizationTargetPeak, 0.00001)
+            try near(raised.receipt.appliedGain, StudioAudioMixService.normalizationTargetPeak / 0.1, 0.0001)
+            try raised.cleanup()
+            var mutedClip = clip(quiet); mutedClip.isMuted = true
+            let silent = try await StudioAudioMixService().mix(document: try document([mutedClip]), retainedAudioTracks: [quiet], durationSeconds: 0.1,
+                outputParent: scratch, options: .init(normalizeToMinusOneDBFS: true))
+            try check(silent.receipt.appliedGain == 1 && silent.receipt.peakAbsoluteSample == 0 && silent.receipt.normalizedToMinusOneDBFS, "silence must not be amplified")
+            try silent.cleanup(); try empty()
+        }
+
         try check(originalHashes==[digest(stereo.audioData!),digest(mono.audioData!)],"source originals changed")
         print("STUDIO_AUDIO_MIX_TESTS=PASS \(count)/\(count)")
     }
