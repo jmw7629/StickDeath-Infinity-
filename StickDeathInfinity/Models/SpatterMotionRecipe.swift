@@ -1617,7 +1617,9 @@ struct SpatterSelectionTranslateInstruction: Equatable {
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
         guard SpatterGrammarSupport.requireSelection(selectedElementIDs, in: context) else { throw Failure.selection }
-        let dx = dxPercent / 100 * Double(context.width), dy = dyPercent / 100 * Double(context.height)
+        // Multiply before dividing so whole-percent offsets land on the correctly
+        // rounded pixel value (10% of 128 is exactly 12.8, not 12.8 + 1 ulp).
+        let dx = dxPercent * Double(context.width) / 100, dy = dyPercent * Double(context.height) / 100
         try StudioElementTranslation(x: dx, y: dy).validate()
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.translateElements(.init(frame: .id(context.activeFrameID), elementIDs: selectedElementIDs.sorted(), dx: dx, dy: dy))]))
@@ -1813,7 +1815,8 @@ struct SpatterImagePlacementInstruction: Equatable {
     }
     func placement(canvasWidth: Int, canvasHeight: Int) -> StudioRasterPlacement {
         let w = Double(canvasWidth), h = Double(canvasHeight)
-        return .init(x: xPercent / 100 * w, y: yPercent / 100 * h, width: widthPercent / 100 * w, height: heightPercent / 100 * h)
+        // Multiply first so whole-percent values round to the exact pixel literal.
+        return .init(x: xPercent * w / 100, y: yPercent * h / 100, width: widthPercent * w / 100, height: heightPercent * h / 100)
     }
     func prepare(in context: StudioCommandContext, frameID: String, layerID: String, assetID: String, requestID: UUID = UUID(),
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
