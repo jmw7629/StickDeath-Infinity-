@@ -15,11 +15,34 @@ data class Stroke(val id: String = newID(), val layerID: String, val points: Lis
                   val brush: BrushFamily = BrushFamily.Round, val brushSeed: Int = id.hashCode(), val brushTransform: BrushTransform = BrushTransform(),
                   val nibAngle: Float = if (brush == BrushFamily.Hatch) -45f else 45f, val text: EditableText? = null,
                   val fill: List<FillSpan>? = null, val fillGeometry: FillGeometry? = null, val image: ImageArtwork? = null, val assetCredit: AssetCredit? = null, val swiftLegacyPath: Boolean = false, val swiftLegacyButtCap: Boolean = false, val swiftRoundBrush: SwiftRoundBrush? = null)
-enum class LayerBlend(val label: String, val needsModernBlend: Boolean = false) {
-    Normal("Normal"), Multiply("Multiply", true), Screen("Screen"), Overlay("Overlay"), Darken("Darken"), Lighten("Lighten"),
-    ColorDodge("Color Dodge", true), ColorBurn("Color Burn", true), HardLight("Hard Light", true), SoftLight("Soft Light", true),
-    Difference("Difference", true), Exclusion("Exclusion", true), Hue("Hue", true), Saturation("Saturation", true),
-    Color("Color", true), Luminosity("Luminosity", true)
+/** [swiftName] is the iOS `StudioLayerBlendMode` raw value (lowercase, hyphenated). The local
+ * v25 envelope persists it; v1–v24 records hold the enum name and both remain readable. */
+enum class LayerBlend(val label: String, val swiftName: String, val needsModernBlend: Boolean = false) {
+    Normal("Normal", "normal"), Multiply("Multiply", "multiply", true), Screen("Screen", "screen"), Overlay("Overlay", "overlay"),
+    Darken("Darken", "darken"), Lighten("Lighten", "lighten"),
+    ColorDodge("Color Dodge", "color-dodge", true), ColorBurn("Color Burn", "color-burn", true),
+    HardLight("Hard Light", "hard-light", true), SoftLight("Soft Light", "soft-light", true),
+    Difference("Difference", "difference", true), Exclusion("Exclusion", "exclusion", true),
+    Hue("Hue", "hue", true), Saturation("Saturation", "saturation", true),
+    Color("Color", "color", true), Luminosity("Luminosity", "luminosity", true),
+    /** PhotoCraft Linear Dodge (Add): Android `BlendMode.PLUS`, API 29+. */
+    LinearDodge("Linear Dodge (Add)", "linear-dodge", true),
+    /** PhotoCraft Linear Burn has no exact Android compositing mode; FrameRenderer rejects it explicitly. */
+    LinearBurn("Linear Burn", "linear-burn", true);
+
+    /** True for PhotoCraft modes beyond the six every historical Studio build stored (iOS schema ≥ 34). */
+    val isExtended get() = this !in historical
+
+    companion object {
+        /** The six modes every historical Studio build renders and exports. */
+        val historical = setOf(Normal, Multiply, Screen, Overlay, Darken, Lighten)
+        /** Case-insensitive iOS raw-value lookup. Unknown legacy strings stay unrecognised (null) so
+         * callers decide: iOS draws them as Normal, Android project transfer rejects them. */
+        fun fromSwift(stored: String): LayerBlend? = entries.firstOrNull { it.swiftName.equals(stored, ignoreCase = true) }
+        /** Local envelope reader: v1–v24 enum names or the v25 iOS raw value; anything else is rejected. */
+        fun fromStored(stored: String): LayerBlend = entries.firstOrNull { it.name == stored } ?: fromSwift(stored)
+            ?: throw IllegalArgumentException("Unsupported layer blend \"$stored\"; original preserved.")
+    }
 }
 data class Layer(val id: String = newID(), val name: String, val visible: Boolean = true,
                  val locked: Boolean = false, val opacity: Float = 1f, val blend: LayerBlend = LayerBlend.Normal)
@@ -34,7 +57,7 @@ data class GridSettings(val enabled: Boolean = false, val spacing: Int = 32, val
 }
 data class Frame(val id: String = newID(), val strokes: List<Stroke> = emptyList(), val hold: Int = 1)
 /** Front-to-back layer ordering matches the native Swift document convention.
- * The storage envelope is Android-local v24 (reads v1–v24), not an advertised .sdi interchange codec. */
+ * The storage envelope is Android-local v25 (reads v1–v25), not an advertised .sdi interchange codec. */
 data class Document(val id: String, val name: String, val width: Int, val height: Int, val fps: Int,
     val frames: List<Frame>, val layers: List<Layer>, val activeFrameID: String,
     val activeLayerID: String, val revision: Long = 0, val modified: Long = System.currentTimeMillis(), val onion: OnionSettings = OnionSettings(), val backgroundColor: Int = -1, val grid: GridSettings = GridSettings(), val audioClips: List<AudioClip> = emptyList(), val audioTracks: List<AudioTrackMix> = List(4) { AudioTrackMix() }) {

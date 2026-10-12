@@ -31,6 +31,8 @@ android {
     kotlinOptions { jvmTarget = "17" }
 }
 dependencies {
+    // Plain JVM unit tests (app/src/test) cover the pure mixing/blend-name math; no Android runtime needed.
+    testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("junit:junit:4.13.2")
     implementation("androidx.core:core-ktx:1.15.0")

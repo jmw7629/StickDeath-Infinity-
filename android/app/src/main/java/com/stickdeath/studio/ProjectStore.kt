@@ -79,17 +79,20 @@ class ProjectStore(context: Context) {
         }
         require(!quoted && depth == 0) { "Incomplete project file." }
         val j = JSONObject(text)
-        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..24) { "Unsupported project format; original preserved." }
+        require(j.getString("format") == "sdi-android-local" && j.getInt("version") in 1..25) { "Unsupported project format; original preserved." }
         fun array(a: JSONArray): List<JSONObject> = (0 until a.length()).map { a.getJSONObject(it) }
         require(j.getJSONArray("layers").length() in 1..32 && j.getJSONArray("frames").length() in 1..500)
         var strokeCount = 0; var pointCount = 0
         var imageBytes = 0L; var imagePixels = 0L
         val images = mutableMapOf<String, ImageArtwork>()
         val layers = array(j.getJSONArray("layers")).map {
+            // v1–v24 stored the enum name; v25 stores the iOS raw value. Both read; unknown names reject.
             Layer(it.getString("id"), it.getString("name"), it.getBoolean("visible"), it.getBoolean("locked"), it.getDouble("opacity").toFloat(),
-                if (it.has("blend")) LayerBlend.valueOf(it.getString("blend")) else LayerBlend.Normal)
+                if (it.has("blend")) LayerBlend.fromStored(it.getString("blend")) else LayerBlend.Normal)
         }
-        require(layers.all { FrameRenderer.supports(it.blend) }) { "This project uses a blend mode that requires Android 10 or later. Original preserved." }
+        layers.firstOrNull { !FrameRenderer.supports(it.blend) }?.let { layer ->
+            throw IllegalArgumentException(FrameRenderer.unavailableReason(layer.blend) ?: "This project uses a blend mode this device cannot render. Original preserved.")
+        }
         val frames = array(j.getJSONArray("frames")).map { f ->
             strokeCount += f.getJSONArray("strokes").length()
             require(strokeCount <= 10_000) { "Project has too many strokes." }
@@ -174,6 +177,9 @@ class ProjectStore(context: Context) {
             (0 until clips.length()).map { index ->
                 require(!clips.getJSONObject(index).has("fade") || j.getInt("version") >= 18)
                 require(!clips.getJSONObject(index).has("assetCredit") || j.getInt("version") >= 21)
+                clips.getJSONObject(index).optJSONObject("fade")?.let { fade ->
+                    require((!fade.has("inShape") && !fade.has("outShape")) || j.getInt("version") >= 25) { "Shaped audio fades need Android-local v25; original preserved." }
+                }
                 val encoded = clips.getJSONObject(index).getString("wav")
                 val source = sources[encoded] ?: AudioSource.decode(encoded).also { sources[encoded] = it }
                 AudioClip.decode(clips.getJSONObject(index), source).also {
@@ -186,7 +192,11 @@ class ProjectStore(context: Context) {
             require(j.getInt("version") >= 19)
             val values = j.getJSONArray("audioTracks")
             require(values.length() == 4)
-            (0 until 4).map { AudioTrackMix.decode(values.getJSONObject(it)) }
+            (0 until 4).map { index ->
+                val track = values.getJSONObject(index)
+                require((!track.has("pan") && !track.has("soloed")) || j.getInt("version") >= 25) { "Track pan/solo settings need Android-local v25; original preserved." }
+                AudioTrackMix.decode(track)
+            }
         } else {
             require(j.getInt("version") < 19) { "Missing audio track settings; original preserved." }
             List(4) { AudioTrackMix() }
@@ -197,7 +207,7 @@ class ProjectStore(context: Context) {
     }
     fun encode(document: Document): ByteArray {
         val d = document.validated()
-        val j = JSONObject().put("format", "sdi-android-local").put("version", 24)
+        val j = JSONObject().put("format", "sdi-android-local").put("version", 25)
             .put("id", d.id).put("name", d.name).put("width", d.width).put("height", d.height).put("fps", d.fps)
             .put("activeFrameID", d.activeFrameID).put("activeLayerID", d.activeLayerID).put("revision", d.revision).put("modified", d.modified).put("backgroundColor", d.backgroundColor)
         j.put("audioClips", JSONArray(d.audioClips.map { it.json() }))
@@ -206,7 +216,7 @@ class ProjectStore(context: Context) {
         j.put("onion", JSONObject().put("enabled", d.onion.enabled).put("previous", d.onion.previous)
             .put("next", d.onion.next).put("opacity", d.onion.opacity).put("tinted", d.onion.tinted))
         j.put("layers", JSONArray(d.layers.map { l -> JSONObject().put("id", l.id).put("name", l.name)
-            .put("visible", l.visible).put("locked", l.locked).put("opacity", l.opacity).put("blend", l.blend.name) }))
+            .put("visible", l.visible).put("locked", l.locked).put("opacity", l.opacity).put("blend", l.blend.swiftName) }))
         j.put("frames", JSONArray(d.frames.map { f -> JSONObject().put("id", f.id).put("hold", f.hold)
             .put("strokes", JSONArray(f.strokes.map { s -> JSONObject().put("id", s.id).put("layerID", s.layerID)
                 .put("color", s.color).put("width", s.width).put("tool", s.tool.name).put("filled", s.filled).put("opacity", s.opacity).put("brush", s.brush.name).put("brushSeed", s.brushSeed).put("nibAngle", s.nibAngle)
