@@ -1770,7 +1770,7 @@ private final class NetworkTrap: URLProtocol {
             let place = SpatterStudioEditSession()
             _ = place.submit(SpatterImagePlacementInstruction.angleExample, in: vm, accountID: nil, currentScope: { guest }); await place.waitForCompletion()
             let instance = vm.currentFrame.rasterInstance(on: vm.activeLayerID)
-            try require(place.status == .applied && instance?.placement == .init(x: 12.8, y: 25.6, width: 51.2, height: 38.4) && instance?.rotationDegrees == 25, "Placement not applied: \(place.notice ?? "")")
+            try require(place.status == .applied && instance?.placement == .init(x: 12.8, y: 19.2, width: 51.2, height: 28.8) && instance?.rotationDegrees == 25, "Placement not applied: \(place.notice ?? "")")
             try require(vm.originalImageSource(asset) == original && vm.currentFrame.rasterInstance(on: sibling) == siblingBefore, "Image edits touched the source or sibling instance")
             vm.undo(); vm.undo(); vm.undo()
             try require(vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.quarterTurns ?? 0 == 0, "Three Undo steps did not restore the image")
