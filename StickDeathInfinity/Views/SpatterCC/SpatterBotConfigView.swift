@@ -1,3 +1,4 @@
+// RETIRED (2026-10-12): this Spatter Command Center surface is unmounted from the app. It is kept for reference only; it must not collect provider credentials, show seeded queues as live data or be re-mounted without owner-authorized backend scope. See backend/spatter/README.md.
 // ═══════════════════════════════════════════════════════════════════
 // SpatterBotConfigView — Per-platform bot configuration
 // Matches: spatter-admin /bots/{platform} exactly
@@ -109,13 +110,15 @@ struct SpatterBotConfigView: View {
     }
 
     // MARK: - Credentials Section
+    /// Retired: credential entry is quarantined. `credentialFields` is empty, so no
+    /// secure field is rendered; the honest notice replaces the form.
     private var credentialsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("API Credentials")
                 .font(.system(size: 18, weight: .bold))
                 .foregroundColor(.sdTextPrimary)
 
-            VStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                 ForEach(platform.credentialFields) { field in
                     CCSecureField(
                         label: field.label,
@@ -126,6 +129,10 @@ struct SpatterBotConfigView: View {
                         placeholder: field.placeholder
                     )
                 }
+                Text(BotPlatform.credentialUnavailableNotice)
+                    .font(.system(size: 13))
+                    .foregroundColor(.sdTextSecondary)
+                    .accessibilityIdentifier("spattercc.credentials.unavailable")
             }
             .padding(16)
             .background(Color.sdSurface)
@@ -263,11 +270,13 @@ struct SpatterBotConfigView: View {
     }
 
     private func saveConfig() {
+        // Credentials are never sent: BotConfiguration discards them and this view
+        // no longer renders fields for them (quarantined 2026-10-12).
         let config = BotConfiguration(
             id: self.config?.id,
             platform: platform.rawValue,
             isActive: isActive,
-            credentials: credentials,
+            credentials: [:],
             selectedSchedule: selectedSchedule,
             enabledFeatures: Array(enabledFeatures)
         )

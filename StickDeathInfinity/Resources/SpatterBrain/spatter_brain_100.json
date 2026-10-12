@@ -1973,7 +1973,9 @@
           "Messenger unmount must not end call",
           "Studio opens while call continues"
         ]
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2005,7 +2007,9 @@
           "update presence",
           "clear timers"
         ]
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2026,7 +2030,9 @@
           "no duplicate streams",
           "call overlay persists"
         ]
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2048,7 +2054,9 @@
           "Spatter commentary"
         ],
         "foundation": "Use LiveKit data channels or backend realtime events."
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2076,7 +2084,9 @@
           "viewer",
           "moderator"
         ]
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2431,7 +2441,9 @@
           "watch together",
           "creator rooms"
         ]
-      }
+      },
+      "retired": true,
+      "retiredReason": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
     },
     {
       "schema": "spatter_brain_pack_v1",
@@ -2722,5 +2734,6 @@
         "successMetric": "Users say: 'Me and Spatter made this.'"
       }
     }
-  ]
+  ],
+  "retiredScope": "Retired by the September 19, 2026 product scope: user-to-user messaging, text chat, voice and video calls were removed. Preserved for provenance; excluded from Spatter prompts."
 }

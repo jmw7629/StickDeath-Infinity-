@@ -1716,6 +1716,148 @@ private final class NetworkTrap: URLProtocol {
                 try require(session.status == (change == "selection" ? .stale : .cancelled) && vm.document == captured && session.appliedEdit == nil, "Order stale/cancel mutated artwork")
             } }
         }
+        try await test("selection move scale and flip apply through the captured Move selection with a revision-fenced Spatter undo offer") {
+            let (vm, _) = try await fixture("selection-transform")
+            try erasureArtwork(vm); await vm.flush(); vm.activePanel = .spatterAI
+            let before = vm.document
+            let move = SpatterStudioEditSession()
+            _ = move.submit(SpatterSelectionTranslateInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await move.waitForCompletion()
+            guard move.status == .applied, let moved = move.appliedEdit, moved.selectionTranslate != nil else { throw Failure(message: "Selection move not applied: \(move.notice ?? "")") }
+            let element = vm.currentFrame.elements.first { $0.id == "selected-red" }!
+            try require(element.translation == .init(x: 12.8, y: -4.8) && vm.document.revision == before.revision + 1
+                && vm.currentFrame.elements.first { $0.id == "lower-blue" }!.translation == nil, "Move did not apply canvas-percent offsets to only the selection")
+            try require(moved.summary.contains("Moved the selected drawings by (10%, -5%)"), "Move receipt not factual")
+            try require(move.canUndoAppliedEdit(in: vm, currentScope: guest), "Spatter undo not offered at the receipt revision")
+            // Any later document change withdraws the offer with an explanation; nothing is popped blindly.
+            vm.setFrameHold(vm.currentFrame.id, ticks: 3)
+            try require(!move.canUndoAppliedEdit(in: vm, currentScope: guest) && !move.undoAppliedEdit(in: vm, currentScope: guest)
+                && move.notice?.contains("document changed") == true && vm.currentFrame.durationTicks == 3
+                && vm.currentFrame.elements.first { $0.id == "selected-red" }!.translation == .init(x: 12.8, y: -4.8), "Stale Spatter undo was offered or executed")
+            vm.undo(); vm.undo(); await vm.flush()
+            try require(content(vm.document) == content(before), "Manual history did not restore the original")
+            _ = vm.selectElement(at: CGPoint(x: 64, y: 48)); await vm.flush()
+            let scale = SpatterStudioEditSession()
+            _ = scale.submit(SpatterSelectionTransformInstruction.scaleExample, in: vm, accountID: nil, currentScope: { guest }); await scale.waitForCompletion()
+            guard scale.status == .applied, scale.appliedEdit?.selectionTransform == .init(scalePercent: 50, rotationDegrees: 0) else { throw Failure(message: "Scale not applied: \(scale.notice ?? "")") }
+            try require(vm.currentFrame.elements.first { $0.id == "selected-red" }!.transform != nil, "Scale left no transform")
+            let scaled = vm.document
+            try require(scale.undoAppliedEdit(in: vm, currentScope: guest) && scale.appliedEdit == nil && scale.notice?.contains("Reverted") == true
+                && content(vm.document) == content(before) && vm.canRedo, "Spatter undo did not revert exactly the applied edit")
+            vm.redo(); try require(content(vm.document) == content(scaled), "Redo after Spatter undo lost the edit")
+            vm.undo(); await vm.flush()
+            _ = vm.selectElement(at: CGPoint(x: 64, y: 48)); await vm.flush()
+            let flip = SpatterStudioEditSession()
+            _ = flip.submit(SpatterSelectionReflectInstruction.horizontalExample, in: vm, accountID: nil, currentScope: { guest }); await flip.waitForCompletion()
+            try require(flip.status == .applied && flip.appliedEdit?.selectionReflectAxis == .horizontal
+                && vm.currentFrame.elements.first { $0.id == "selected-red" }!.reflection?.horizontal == true, "Flip not applied: \(flip.notice ?? "")")
+            vm.clearElementSelection(); await vm.flush()
+            let captured = vm.document, none = SpatterStudioEditSession()
+            _ = none.submit(SpatterSelectionTranslateInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await none.waitForCompletion()
+            try require(none.status == .rejected && vm.document == captured && none.notice?.contains("Select 1–1,024 drawings") == true, "Missing selection did not fail closed")
+        }
+        try await test("image rotate crop and placement apply through the captured selected image") {
+            let (vm, _, asset, sibling) = try await imageReflectionFixture("image-edit")
+            let original = vm.originalImageSource(asset), siblingBefore = vm.currentFrame.rasterInstance(on: sibling)
+            let rotate = SpatterStudioEditSession()
+            _ = rotate.submit(SpatterImageRotationInstruction.clockwiseExample, in: vm, accountID: nil, currentScope: { guest }); await rotate.waitForCompletion()
+            try require(rotate.status == .applied && rotate.appliedEdit?.imageRotation == .clockwise
+                && vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.quarterTurns == 1, "Quarter turn not applied: \(rotate.notice ?? "")")
+            try require(vm.setImageCanvasMove(true), "Reselection after rotation failed"); await vm.flush()
+            let crop = SpatterStudioEditSession()
+            _ = crop.submit(SpatterImageCropInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await crop.waitForCompletion()
+            try require(crop.status == .applied && vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.crop == .init(x: 0.1, y: 0.1, width: 0.8, height: 0.8), "Crop not applied: \(crop.notice ?? "")")
+            try require(vm.setImageCanvasMove(true), "Reselection after crop failed"); await vm.flush()
+            let place = SpatterStudioEditSession()
+            _ = place.submit(SpatterImagePlacementInstruction.angleExample, in: vm, accountID: nil, currentScope: { guest }); await place.waitForCompletion()
+            let instance = vm.currentFrame.rasterInstance(on: vm.activeLayerID)
+            try require(place.status == .applied && instance?.placement == .init(x: 12.8, y: 25.6, width: 51.2, height: 38.4) && instance?.rotationDegrees == 25, "Placement not applied: \(place.notice ?? "")")
+            try require(vm.originalImageSource(asset) == original && vm.currentFrame.rasterInstance(on: sibling) == siblingBefore, "Image edits touched the source or sibling instance")
+            vm.undo(); vm.undo(); vm.undo()
+            try require(vm.currentFrame.rasterInstance(on: vm.activeLayerID)?.quarterTurns ?? 0 == 0, "Three Undo steps did not restore the image")
+            vm.deselectAreaImage(); await vm.flush()
+            let captured = vm.document, none = SpatterStudioEditSession()
+            _ = none.submit(SpatterImageCropInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await none.waitForCompletion()
+            try require(none.status == .rejected && vm.document == captured, "Image edit without a selected image did not fail closed")
+        }
+        try await test("text update changes one selected text box and rejects drawing selections") {
+            let (vm, _) = try await fixture("text-update")
+            let textID = "text-box"
+            try require(vm.commitElement(.init(id: textID, tool: .text, points: [.init(x: 12, y: 12)], color: "#00FF00", width: 1, opacity: 1,
+                layerID: vm.activeLayerID, text: .init(content: "Old words", style: .init(size: 20, boxWidth: 104, boxHeight: 60)))), "Text fixture rejected")
+            vm.selectedTool = .move; vm.selectionMode = .new
+            try require(vm.selectElement(at: CGPoint(x: 30, y: 30)) == textID, "Text box selection missed")
+            vm.activePanel = .spatterAI; await vm.flush()
+            let before = vm.document, session = SpatterStudioEditSession()
+            _ = session.submit(SpatterTextUpdateInstruction.colorExample, in: vm, accountID: nil, currentScope: { guest }); await session.waitForCompletion()
+            let element = vm.currentFrame.elements.first { $0.id == textID }!
+            try require(session.status == .applied && element.text?.content == "Hello" && element.color == "#FF0000"
+                && element.text?.style == before.frames[0].elements[0].text?.style && vm.document.revision == before.revision + 1, "Text update not applied: \(session.notice ?? "")")
+            vm.undo(); try require(content(vm.document) == content(before), "Text Undo failed")
+            try erasureArtwork(vm); await vm.flush()
+            let captured = vm.document, drawing = SpatterStudioEditSession()
+            _ = drawing.submit(SpatterTextUpdateInstruction.example, in: vm, accountID: nil, currentScope: { guest }); await drawing.waitForCompletion()
+            try require(drawing.status == .rejected && vm.document == captured && drawing.notice?.contains("exactly one text box") == true, "Drawing selection was treated as text")
+        }
+        try await test("audio track pan and solo reach the editor as one undoable track edit") {
+            let (vm, _) = try await fixture("track-pan-solo")
+            let before = vm.document
+            let pan = SpatterStudioEditSession()
+            _ = pan.submit(SpatterAudioTrackInstruction.panExample, in: vm, accountID: nil, currentScope: { guest }); await pan.waitForCompletion()
+            try require(pan.status == .applied && vm.document.audioTrackPan(2) == -0.4 && pan.appliedEdit?.summary.contains("Panned audio track 2 to L40") == true, "Pan not applied: \(pan.notice ?? "")")
+            let solo = SpatterStudioEditSession()
+            _ = solo.submit(SpatterAudioTrackInstruction.soloExample, in: vm, accountID: nil, currentScope: { guest }); await solo.waitForCompletion()
+            try require(solo.status == .applied && vm.document.isAudioTrackSoloed(3) && !vm.document.isAudioTrackSoloed(2), "Solo not applied: \(solo.notice ?? "")")
+            let again = SpatterStudioEditSession()
+            _ = again.submit(SpatterAudioTrackInstruction.soloExample, in: vm, accountID: nil, currentScope: { guest }); await again.waitForCompletion()
+            try require(again.status == .applied && again.appliedEdit?.receipt.outcome == .unchanged, "Repeated solo was not a no-op")
+            vm.undo(); vm.undo(); try require(content(vm.document) == content(before), "Track Undo failed")
+        }
+        try await test("quality report measures blank frozen out-of-canvas timing and limb findings without judging") {
+            var doc = try StudioDocument.new(name: "Quality", width: 128, height: 96, fps: 12)
+            let layer = doc.activeLayerID, stick = UUID().uuidString
+            doc.layers.append(CanvasLayer(id: stick, name: "Generated"))
+            func line(_ id: String, _ x0: CGFloat, _ x1: CGFloat, layerID: String = layer) -> DrawnElement {
+                .init(id: id, tool: .line, points: [.init(x: x0, y: 10), .init(x: x1, y: 10)], color: "#000000", width: 2, opacity: 1, layerID: layerID)
+            }
+            doc.frames = [
+                AnimationFrame(id: "f1", elements: [line("a", 10, 40), line("limb1", 0, 10, layerID: stick)]),
+                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 20, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
+                AnimationFrame(id: "f3", elements: []),                                                          // blank
+                AnimationFrame(id: "f4", elements: [line("c", 10, 500)]),                                        // out of canvas
+                AnimationFrame(id: "f5", elements: [line("d", 10, 40)], holdTicks: 4),
+                AnimationFrame(id: "f6", elements: [line("e", 10, 40)])                                           // deliberate hold before it
+            ]
+            doc.activeFrameID = "f1"
+            let report = SpatterQualityReport.analyze(doc, requestedTicks: 12, generatedLayerIDs: [stick])
+            try require(report.frameCount == 6 && report.actualTicks == 9 && report.durationSeconds == 0.75, "Tick accounting wrong")
+            try require(report.blankFrameCount == 1 && report.findings.contains { $0.kind == .blankFrame && $0.frameIndex == 2 }, "Blank frame missed")
+            try require(report.frozenFrameCount == 1 && report.findings.contains { $0.kind == .frozenFrame && $0.frameIndex == 1 }, "Unintended freeze missed or deliberate hold flagged")
+            try require(report.outOfCanvasCount == 1 && report.findings.contains { $0.kind == .outOfCanvas && $0.frameIndex == 3 }, "Out-of-canvas point missed")
+            try require(report.findings.contains { $0.kind == .limbVariance }, "Limb-length variance missed")
+            try require(report.findings.contains { $0.kind == .timingMismatch && $0.detail.contains("Requested 12 ticks") }, "Timing mismatch missed")
+            try require(report.unmeasured == ["decodedMovieFrameCount", "decodedMovieDuration", "audioOffsetSeconds"], "Unmeasured items must be declared")
+            let clean = SpatterQualityReport.analyze(try StudioDocument.new(name: "Clean", width: 64, height: 64, fps: 12))
+            try require(clean.blankFrameCount == 1 && clean.frozenFrameCount == 0 && clean.requestedTicks == nil, "Fresh project report wrong")
+        }
+        try await test("export receipt hashes the real file and refuses mismatched or missing output") {
+            try require(SpatterSHA256.hexDigest(of: Data()) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                && SpatterSHA256.hexDigest(of: Data("abc".utf8)) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+                && SpatterSHA256.hexDigest(of: Data(String(repeating: "a", count: 1_000_000).utf8)) == "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "SHA-256 vectors failed")
+            let file = root.appendingPathComponent("receipt-\(UUID().uuidString).mp4")
+            try Data("abc".utf8).write(to: file)
+            let id = UUID()
+            let receipt = try SpatterExportReceipt.make(editRequestID: id, revision: 7, fileURL: file, expectedByteCount: 3, durationSeconds: 0.5, frameCount: 6)
+            try require(receipt == .init(editRequestID: id, revision: 7, byteCount: 3, durationSeconds: 0.5, frameCount: 6,
+                sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") && receipt.summary.contains("3 bytes"), "Receipt not measured from the file")
+            let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(receipt)) as! [String: Any]
+            try require(Set(encoded.keys) == ["editRequestID", "revision", "byteCount", "durationSeconds", "frameCount", "sha256"], "Receipt fields drifted")
+            do { _ = try SpatterExportReceipt.make(editRequestID: id, revision: 7, fileURL: file, expectedByteCount: 4, durationSeconds: 0.5, frameCount: 6); throw Failure(message: "Byte mismatch accepted") }
+            catch SpatterExportReceipt.Failure.mismatch { }
+            do { _ = try SpatterExportReceipt.make(editRequestID: id, revision: 7, fileURL: root.appendingPathComponent("missing.mp4"), expectedByteCount: 3, durationSeconds: 0.5, frameCount: 6); throw Failure(message: "Missing file accepted") }
+            catch SpatterExportReceipt.Failure.missingFile { }
+            do { _ = try SpatterExportReceipt.make(editRequestID: id, revision: 7, fileURL: file, expectedByteCount: 3, durationSeconds: 0, frameCount: 6); throw Failure(message: "Zero duration accepted") }
+            catch SpatterExportReceipt.Failure.mismatch { }
+        }
         try await test("image order rejects unavailable layer and fences same-revision reselection") {
             for mode in ["locked", "hidden", "none", "reselect"] {
                 let (vm, _, asset, _) = try await imageReflectionFixture("order-denied-" + mode)

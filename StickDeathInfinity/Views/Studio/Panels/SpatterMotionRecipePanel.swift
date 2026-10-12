@@ -9,6 +9,10 @@ struct SpatterMotionRecipePanel: View {
     let onPictureImport: () -> Void
     let onExport: () -> Void
     let onMovieExport: (StudioMoviePanelState.DirectRequest) -> Void
+    /// Optional: the Export panel's movie state, so a completed direct export that
+    /// this panel handed off can show its factual receipt here. Nil keeps the
+    /// existing call site valid; the receipt is then shown only in the Export panel.
+    var movieState: StudioMoviePanelState? = nil
     @EnvironmentObject private var authVM: AuthViewModel
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = SpatterStudioEditSession()
@@ -40,7 +44,17 @@ struct SpatterMotionRecipePanel: View {
     private var isErasureDraft: Bool { SpatterSelectedErasureInstruction.isInstruction(draft) }
     private var isExposureDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterFrameExposureInstruction.isInstruction(draft) }
     private var isGlowDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterLayerGlowInstruction.isInstruction(draft) }
-    private var isAudioDraft: Bool { !isLayerDraft && SpatterAudioInstruction.isAudioInstruction(draft) }
+    // Selection/image/text grammars take precedence over the broad audio first-word classifier.
+    private var isSelectionTranslateDraft: Bool { SpatterSelectionTranslateInstruction.isInstruction(draft) }
+    private var isSelectionTransformDraft: Bool { SpatterSelectionTransformInstruction.isInstruction(draft) }
+    private var isSelectionReflectDraft: Bool { SpatterSelectionReflectInstruction.isInstruction(draft) }
+    private var isSelectionDraft: Bool { isSelectionTranslateDraft || isSelectionTransformDraft || isSelectionReflectDraft }
+    private var isImageRotationDraft: Bool { SpatterImageRotationInstruction.isInstruction(draft) }
+    private var isImageCropDraft: Bool { SpatterImageCropInstruction.isInstruction(draft) }
+    private var isImagePlacementDraft: Bool { SpatterImagePlacementInstruction.isInstruction(draft) }
+    private var isImageEditDraft: Bool { isImageRotationDraft || isImageCropDraft || isImagePlacementDraft }
+    private var isTextUpdateDraft: Bool { SpatterTextUpdateInstruction.isInstruction(draft) }
+    private var isAudioDraft: Bool { !isLayerDraft && !isSelectionDraft && !isImageEditDraft && !isTextUpdateDraft && SpatterAudioInstruction.isAudioInstruction(draft) }
     private var isOrderDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterArtworkOrderInstruction.isInstruction(draft) }
     private var isImageDraft: Bool { !isLayerDraft && !isRenameDraft && SpatterImageReflectionInstruction.isInstruction(draft) }
     private var selectedImage: StudioViewModel.ImageMoveCapture? {
@@ -49,7 +63,19 @@ struct SpatterMotionRecipePanel: View {
         return image
     }
     private var exampleText: String {
-        if isAudioTrackDraft { return SpatterAudioTrackInstruction.volumeExample }
+        if isSelectionTranslateDraft { return SpatterSelectionTranslateInstruction.example }
+        if isSelectionTransformDraft { return SpatterSelectionTransformInstruction.example }
+        if isSelectionReflectDraft { return SpatterSelectionReflectInstruction.horizontalExample }
+        if isImageRotationDraft { return SpatterImageRotationInstruction.clockwiseExample }
+        if isImageCropDraft { return SpatterImageCropInstruction.example }
+        if isImagePlacementDraft { return SpatterImagePlacementInstruction.angleExample }
+        if isTextUpdateDraft { return SpatterTextUpdateInstruction.colorExample }
+        if isAudioTrackDraft {
+            let text = draft.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if text.hasPrefix("pan") { return SpatterAudioTrackInstruction.panExample }
+            if text.hasPrefix("solo") || text.hasPrefix("unsolo") { return SpatterAudioTrackInstruction.soloExample }
+            return SpatterAudioTrackInstruction.volumeExample
+        }
         if SpatterFrameCutInstruction.isInstruction(draft) { return SpatterFrameCutInstruction.example }
         if isDrawingDuplicateDraft { return SpatterDrawingDuplicateInstruction.example }
         if isDuplicateRangeDraft { return SpatterFrameDuplicateRangeInstruction.example }
@@ -76,7 +102,10 @@ struct SpatterMotionRecipePanel: View {
         isLayerDuplicateDraft ? SpatterLayerDuplicateInstruction.example : isLayerUpdateDraft ? (draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("rename") ? SpatterLayerUpdateInstruction.renameExample : SpatterLayerUpdateInstruction.opacityExample) : isExposureDraft ? SpatterFrameExposureInstruction.example : isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
-        if isAudioTrackDraft { return "Set volume or mute for one of the four audio tracks. Track gain combines with each clip's own gain in playback and export. Clips and source audio are preserved; one Undo restores the prior setting." }
+        if isSelectionDraft { return "Move, scale/rotate or flip the captured drawing selection with the same Move commands. Geometry stays editable, images and mixed artwork are excluded, and one Undo restores the prior placement." }
+        if isImageEditDraft { return "Rotate a quarter turn, crop to a source rectangle, or position/size/angle the selected image using the same Move controls. The original file and other instances stay intact. One Undo reverses the edit." }
+        if isTextUpdateDraft { return "Replace the selected text box's content and optionally its color. Typography, size, box and position are unchanged. One Undo restores the previous text." }
+        if isAudioTrackDraft { return "Set volume, mute, pan or solo for one of the four audio tracks. Track gain and pan combine with each clip's own gain in playback and export; solo silences the other tracks during playback. Clips and source audio are preserved; one Undo restores the prior setting." }
         if SpatterFrameCutInstruction.isInstruction(draft) { return "Cut the current frame captured when Spatter opens. It remains in the frame clipboard for pasting. One Undo restores it; at least one frame must remain. Audio timing is unchanged." }
         if isDrawingDuplicateDraft { return "Duplicate the captured drawing selection on its original layers. Copies get fresh identities and remain selected for Move. One Undo removes the copies; the clipboard stays unchanged. Images and mixed selections are excluded." }
         if isDuplicateRangeDraft { return "Duplicate a consecutive frame range after its originals, with fresh identities, preserved artwork and exposure, and one Undo step." }
@@ -97,6 +126,10 @@ struct SpatterMotionRecipePanel: View {
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
+        if isSelectionDraft { return "Select 1–1,024 drawings with Move before opening Spatter; deselect images. Use Move selected drawings by (10%, -5%). (canvas percentages, -100 to 100), Scale selected drawings to 150% and rotate 45 degrees. (10–1,000%, -180 to 180 degrees) or Flip selected drawings horizontally. Selected layers must be visible and unlocked; Apply rechecks the exact selection." }
+        if isImageEditDraft { return "Select one image with Move before opening Spatter. Deselect drawings and stop playback. Use Rotate selected image clockwise., Crop selected image to (10%, 10%, 80%, 80%). (source percentages: x, y, width, height) or Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees. (canvas percentages; the box must fit). The layer must be visible and unlocked." }
+        if isTextUpdateDraft { return "Select exactly one text box with Move before opening Spatter. Use Set selected text to \"Hello\". or add in #RRGGBB for a color. Quoted text is content only (1–2,048 characters); it is never read as another instruction." }
+        if isAudioTrackDraft { return "Use Set audio track 1 volume to 40%., Mute/Unmute audio track 1., Pan audio track 2 to L40. (L100–R100 or center) or Solo/Unsolo audio track 3. Tracks are 1–4. Stop playback, then Apply; one Undo restores the prior setting." }
         if isDuplicateRangeDraft { return "Use Duplicate frames 1 through 12. Choose 1–96 existing frames. Stop playback, then Apply. Audio clips keep their current times." }
         if isReverseDraft { return "Use Reverse frames 1 through 12. Choose 2–96 existing frames. Stop playback, then Apply to reverse the captured range." }
         if isExposureDraft { return "Use Set selected frame exposure to 12 ticks. or Set frames 1 through 12 exposure to 2 ticks. Range numbers are one-based and must already exist. A batch contains at most 96 frames, with 1–600 ticks per frame. One Undo restores the whole timing edit." }
@@ -140,7 +173,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(isSelectionDraft ? "Transform selected drawings" : isImageEditDraft ? "Edit selected image" : isTextUpdateDraft ? "Edit selected text" : isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
                         .font(.specialElite(20, relativeTo: .title3))
                     Text(editDescription)
                         .font(.subheadline)
@@ -169,12 +202,45 @@ struct SpatterMotionRecipePanel: View {
                     .frame(minHeight: 44)
                     .disabled(session.isWorking || session.isClosed || selectedImage == nil)
                     .accessibilityIdentifier("spatter.image.examples")
-                    if isImageDraft || selectedImage == nil {
+                    if isImageDraft || isImageEditDraft || selectedImage == nil {
                         Text(selectedImage.map { image in
                             "Selected image on " + (vm.layers.first { $0.id == image.placement.layerID }?.name ?? "Unavailable layer")
-                        } ?? "For image flips, select one image with Move before opening Spatter.")
+                        } ?? "For image edits, select one image with Move before opening Spatter.")
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("spatter.image.target")
+                    }
+                    Menu("Use an image edit instruction") {
+                        Button("Rotate selected image clockwise") { draft = SpatterImageRotationInstruction.clockwiseExample }
+                        Button("Rotate selected image counterclockwise") { draft = SpatterImageRotationInstruction.counterclockwiseExample }
+                        Button("Crop selected image") { draft = SpatterImageCropInstruction.example }
+                        Button("Place selected image") { draft = SpatterImagePlacementInstruction.example }
+                        Button("Place selected image with angle") { draft = SpatterImagePlacementInstruction.angleExample }
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed || selectedImage == nil)
+                    .accessibilityIdentifier("spatter.image.edit-examples")
+                    Menu("Use a selected drawings instruction") {
+                        Button("Move selected drawings") { draft = SpatterSelectionTranslateInstruction.example }
+                        Button("Scale and rotate selected drawings") { draft = SpatterSelectionTransformInstruction.example }
+                        Button("Scale selected drawings") { draft = SpatterSelectionTransformInstruction.scaleExample }
+                        Button("Rotate selected drawings") { draft = SpatterSelectionTransformInstruction.rotateExample }
+                        Button("Flip selected drawings horizontally") { draft = SpatterSelectionReflectInstruction.horizontalExample }
+                        Button("Flip selected drawings vertically") { draft = SpatterSelectionReflectInstruction.verticalExample }
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.selection.transform-examples")
+                    Menu("Use a selected text instruction") {
+                        Button("Set selected text") { draft = SpatterTextUpdateInstruction.example }
+                        Button("Set selected text and color") { draft = SpatterTextUpdateInstruction.colorExample }
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed)
+                    .accessibilityIdentifier("spatter.text.examples")
+                    if isSelectionDraft || isTextUpdateDraft {
+                        Text("Selected drawings: \(vm.selectedElementIDs.count)")
+                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .accessibilityIdentifier("spatter.selection.transform-targets")
                     }
                     Menu("Use an audio instruction") {
                         ForEach(SpatterAudioInstruction.Example.allCases) { example in
@@ -203,6 +269,10 @@ struct SpatterMotionRecipePanel: View {
                         Button("Track volume") { draft = SpatterAudioTrackInstruction.volumeExample }
                         Button("Mute track") { draft = SpatterAudioTrackInstruction.muteExample }
                         Button("Unmute track") { draft = SpatterAudioTrackInstruction.unmuteExample }
+                        Button("Pan track") { draft = SpatterAudioTrackInstruction.panExample }
+                        Button("Center track pan") { draft = SpatterAudioTrackInstruction.centerExample }
+                        Button("Solo track") { draft = SpatterAudioTrackInstruction.soloExample }
+                        Button("Unsolo track") { draft = SpatterAudioTrackInstruction.unsoloExample }
                     }.frame(minHeight: 44).disabled(session.isWorking || session.isClosed)
                         .accessibilityIdentifier("spatter.audio.track-examples")
                     Button("Use cut current frame example") { draft = SpatterFrameCutInstruction.example }
@@ -346,7 +416,7 @@ struct SpatterMotionRecipePanel: View {
                             .accessibilityIdentifier("spatter.motion.cancel")
                     }
                     if let notice = session.notice {
-                        Text(notice).font(.subheadline)
+                        Text(notice).font(.specialElite(15, relativeTo: .subheadline))
                             .accessibilityIdentifier("spatter.motion.result")
                     }
                     if session.appliedEdit != nil {
@@ -356,6 +426,16 @@ struct SpatterMotionRecipePanel: View {
                         Button("Save project") { Task { _ = await vm.save() } }
                             .disabled(!receiptIsCurrent || vm.isSaving)
                             .accessibilityIdentifier("spatter.motion.save")
+                        // Offered only while the document revision still equals the receipt
+                        // revision; otherwise the session explains that the document changed.
+                        Button("Undo Spatter edit") { session.undoAppliedEdit(in: vm, currentScope: scope) }
+                            .disabled(!session.canUndoAppliedEdit(in: vm, currentScope: scope))
+                            .accessibilityIdentifier("spatter.motion.undo")
+                        if let edit = session.appliedEdit, vm.document.id == edit.receipt.projectID, vm.document.revision != edit.receipt.revision {
+                            Text("The document changed after this Spatter edit (revision \(vm.document.revision) vs \(edit.receipt.revision)). Use Studio's Undo history to step back through later changes.")
+                                .font(.caption).foregroundColor(.white.opacity(0.7))
+                                .accessibilityIdentifier("spatter.motion.undo-unavailable")
+                        }
                         Button("Export this edit as MP4") {
                             guard let request = session.prepareMovieExport(in: vm, currentScope: scope) else { return }
                             session.close(); onMovieExport(request)
@@ -371,13 +451,14 @@ struct SpatterMotionRecipePanel: View {
                         Text("Export opens Studio's PNG sequence / spritesheet controls. Choose MP4 there for video with saved project audio, or GIF for an animated image. A file is created only when export finishes. Direct publishing is unfinished.")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                     }
+                    if let movieState { SpatterExportReceiptView(state: movieState) }
                     if let message = vm.message {
                         Text(message).font(.caption).foregroundColor(.white.opacity(0.8))
                             .accessibilityIdentifier("spatter.motion.project-status")
                     }
                     Divider().overlay(Color.white.opacity(0.2)).padding(.top, 8)
                     Text("Other Studio actions")
-                        .font(.headline)
+                        .font(.specialElite(17, relativeTo: .headline))
                     Button("Open Add Picture…") {
                         draftFocused = false
                         onPictureImport()
@@ -407,5 +488,42 @@ struct SpatterMotionRecipePanel: View {
             if !isForeground { session.cancel() }
         }
         .onChange(of: authVM.userId) { _ in session.close() }
+    }
+}
+
+// MARK: - Export receipt from the real movie session (#215)
+
+extension SpatterExportReceipt {
+    /// Builds a receipt only for a still-owned, verified direct export whose
+    /// manifest matches the Spatter request. Nil means "no factual receipt",
+    /// never a placeholder. The GIF session has no direct-request path yet.
+    @MainActor
+    static func make(from state: StudioMoviePanelState) -> SpatterExportReceipt? {
+        guard let request = state.directSource, let output = state.session.output,
+              !state.session.isRunning, !state.session.needsCleanup, !state.session.isClosed, !output.isCleaned,
+              output.manifest.projectID == request.projectID, output.manifest.documentRevision == request.revision,
+              output.manifest.durationDenominator > 0, let urls = try? output.checkedURLs(), let movieURL = urls.first else { return nil }
+        let duration = Double(output.manifest.durationNumerator) / Double(output.manifest.durationDenominator)
+        return try? SpatterExportReceipt.make(editRequestID: request.editRequestID, revision: request.revision, fileURL: movieURL,
+            expectedByteCount: output.manifest.encodedBytes, durationSeconds: duration, frameCount: output.manifest.frameIDs.count)
+    }
+}
+
+/// Read-only display of the last verified direct export receipt.
+struct SpatterExportReceiptView: View {
+    @ObservedObject var state: StudioMoviePanelState
+    var body: some View {
+        if let receipt = SpatterExportReceipt.make(from: state) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Verified MP4 receipt").font(.specialElite(12, relativeTo: .caption))
+                Text(receipt.summary).font(.caption).textSelection(.enabled)
+                Text("Measured from the real output file. Export creates a device file only; nothing was published.")
+                    .font(.caption2).foregroundColor(.white.opacity(0.6))
+            }
+            .accessibilityIdentifier("spatter.motion.export-receipt")
+        } else if let error = state.directError {
+            Text(error).font(.caption).foregroundColor(.white.opacity(0.8))
+                .accessibilityIdentifier("spatter.motion.export-receipt-error")
+        }
     }
 }

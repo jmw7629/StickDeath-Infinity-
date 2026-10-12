@@ -164,7 +164,7 @@ struct SpatterClientTests {
                     try require(request.timeoutInterval == 30, "unbounded timeout")
                     try require(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-session", "missing auth")
                     let body = try JSONSerialization.jsonObject(with: request.httpBody!) as! [String: Any]
-                    try require(Set(body.keys) == Set(["messages", "max_tokens", "temperature"]), "unexpected body field")
+                    try require(Set(body.keys) == Set(["schemaVersion", "messages", "max_tokens", "temperature"]) && body["schemaVersion"] as? Int == 1, "unexpected body field")
                     try require(!String(decoding: request.httpBody!, as: UTF8.self).contains("test-session"), "token in body")
                     return (valid, http())
                 })
@@ -258,6 +258,41 @@ struct SpatterClientTests {
                 catch is CancellationError { }
                 let (data, _) = try await fixture("/ok").run()
                 try require(data == valid, "next request stalled")
+            }
+            try await test("versioned provider-neutral reply decodes budget and usage without inventing missing fields") {
+                let full = Data("""
+                {"schemaVersion":1,"reply":"hold the pose two frames","usage":{"units":42},"budget":{"remaining":17,"resetsAt":"2026-10-13T00:00:00Z"},"provider":"ignored"}
+                """.utf8)
+                let reply = try SpatterBackendClient.decodeReply(full)
+                try require(reply.schemaVersion == 1 && reply.reply == "hold the pose two frames" && reply.usageUnits == 42, "versioned fields lost")
+                try require(reply.budget?.remaining == 17 && reply.budget?.displayText == "Remaining today: 17", "budget not surfaced")
+                try require(reply.budget?.resetsAt == ISO8601DateFormatter().date(from: "2026-10-13T00:00:00Z"), "reset time not decoded")
+                let noBudget = try SpatterBackendClient.decodeReply(Data("{\"schemaVersion\":1,\"reply\":\"ok\"}".utf8))
+                try require(noBudget.budget == nil && noBudget.usageUnits == nil, "absent budget was invented")
+                let badBudget = try SpatterBackendClient.decodeReply(Data("{\"schemaVersion\":1,\"reply\":\"ok\",\"budget\":{\"remaining\":-4}}".utf8))
+                try require(badBudget.budget == nil, "negative remaining accepted")
+                let legacy = try SpatterBackendClient.decodeReply(valid)
+                try require(legacy.schemaVersion == 0 && legacy.reply == "draw a pose" && legacy.budget == nil, "legacy shape changed")
+                let client = SpatterBackendClient(endpoint: { url }, sessionToken: { "test-session" }, transport: { _ in (full, http()) })
+                let transported = try await client.completeReply(messages: message)
+                try require(transported.budget?.remaining == 17 && transported.reply == "hold the pose two frames", "transport dropped contract fields")
+                let legacyAccessor = try await client.complete(messages: message)
+                try require(legacyAccessor == "hold the pose two frames", "legacy accessor diverged")
+            }
+            try await test("unsupported schema versions and empty versioned replies are truthful errors") {
+                for text in ["{\"schemaVersion\":2,\"reply\":\"future\"}", "{\"schemaVersion\":0,\"reply\":\"zero\"}", "{\"schemaVersion\":\"1\",\"reply\":\"text\"}"] {
+                    try await expect(.invalidResponse) { _ = try SpatterBackendClient.decodeReply(Data(text.utf8)) }
+                }
+                for text in ["{\"schemaVersion\":1}", "{\"schemaVersion\":1,\"reply\":\"  \"}"] {
+                    try await expect(.emptyResponse) { _ = try SpatterBackendClient.decodeReply(Data(text.utf8)) }
+                }
+            }
+            try await test("server not-configured status is reported as unavailable, never as advice") {
+                let body = Data("{\"schemaVersion\":1,\"error\":\"not configured\"}".utf8)
+                let client = SpatterBackendClient(endpoint: { url }, sessionToken: { "test-session" }, transport: { _ in (body, http(503)) })
+                try await expect(.httpStatus(503)) { _ = try await client.completeReply(messages: message) }
+                try require(SpatterClientError.httpStatus(503).localizedDescription.contains("not configured on the server"), "503 message misleading")
+                try require(SpatterClientError.httpStatus(429).localizedDescription.contains("daily Spatter budget"), "429 message omits budget")
             }
             print("SPATTER_CLIENT_TESTS=PASS \(passed)/\(passed)")
         } catch {
