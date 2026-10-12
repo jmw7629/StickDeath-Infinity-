@@ -392,6 +392,15 @@ struct FramesViewerPanel: View {
                                         StudioFrameThumbnail(vm: vm, frame: frame)
                                         .frame(height: 80)
                                         .clipShape(RoundedRectangle(cornerRadius: 6))
+                                        if frame.durationTicks > 1 {
+                                            Text("×\(frame.durationTicks)")
+                                                .font(.specialElite(9)).foregroundColor(.white)
+                                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                                .background(Color.black.opacity(0.65), in: Capsule())
+                                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                                .padding(4)
+                                                .accessibilityHidden(true)
+                                        }
                                     }
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
@@ -406,6 +415,33 @@ struct FramesViewerPanel: View {
                             .accessibilityIdentifier("studio.frames-viewer.frame." + frame.id)
                             .accessibilityLabel("Frame \(i + 1)")
                             .accessibilityValue(vm.currentFrame.id == frame.id ? "Selected" : "Not selected")
+                            .accessibilityHint("Exposure: \(frame.durationTicks) ticks")
+                            .contextMenu {
+                                // The same document operations the timeline strip offers.
+                                Button("Copy frame") { vm.copyFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.copy")
+                                Button("Paste frame after this") { vm.pasteFrame(after: frame.id) }
+                                    .disabled(!vm.canPasteTimelineFrame)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.paste-after")
+                                Button("Duplicate frame") { vm.duplicateFrame(frame.id) }
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.duplicate")
+                                Button("Move earlier") { vm.moveFrame(frame.id, offset: -1) }
+                                    .disabled(i == 0)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.move-earlier")
+                                Button("Move later") { vm.moveFrame(frame.id, offset: 1) }
+                                    .disabled(i + 1 >= vm.frames.count)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.move-later")
+                                Menu("Frame exposure") {
+                                    ForEach([1, 2, 3, 6, 12, 24, 60], id: \.self) { ticks in
+                                        Button("\(ticks) ticks (\(String(format: "%.2f", Double(ticks) / Double(vm.fps)))s)") {
+                                            vm.setFrameHold(frame.id, ticks: ticks)
+                                        }.accessibilityIdentifier("studio.frames-viewer.menu.hold.\(ticks)")
+                                    }
+                                }
+                                Button("Delete frame", role: .destructive) { vm.deleteFrame(frame.id) }
+                                    .disabled(vm.frames.count <= 1)
+                                    .accessibilityIdentifier("studio.frames-viewer.menu.delete")
+                            }
                         }
                         
                         // Add frame button
