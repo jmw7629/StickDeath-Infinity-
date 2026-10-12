@@ -115,13 +115,6 @@ struct SpatterClientTests {
                 values.removeValue(forKey: "SUPABASE_PUBLISHABLE_KEY")
                 try require(AppConfig.supabaseConfiguration(from: values) == nil, "removed config cached")
             }
-            try await test("LiveKit requires a secure configured endpoint without credentials") {
-                try require(AppConfig.liveKitWSURL(from: ["LIVEKIT_WS_URL": "wss://calls.example"])?.host == "calls.example", "secure LiveKit URL rejected")
-                try require(AppConfig.liveKitWSURL(from: [:]) == nil, "missing LiveKit defaulted")
-                for endpoint in ["", "$(LIVEKIT_WS_URL)", "${LIVEKIT_WS_URL}", "https://calls.example", "ws://calls.example", "wss://user:pass@calls.example", "wss://calls.example?token=test", "wss://calls.example#token", "wss://calls.example:7880", "wss://calls.example/\npath"] {
-                    try require(AppConfig.liveKitWSURL(from: ["LIVEKIT_WS_URL": endpoint]) == nil, "unsafe LiveKit endpoint accepted")
-                }
-            }
             try await test("subscription family order is independent of prices") {
                 let tiers = AppConfig.SubscriptionTier.allCases
                 try require(tiers.map(\.rawValue) == ["free", "creator", "pro", "studio"], "existing product families changed")

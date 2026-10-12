@@ -1464,34 +1464,6 @@ struct Challenge: Codable, Identifiable {
     }
 }
 
-// MARK: - Tip
-struct Tip: Codable, Identifiable {
-    let id: Int
-    var senderID: String
-    var receiverID: String
-    var amount: Double
-    var type: String?
-    var createdAt: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, amount, type
-        case senderID = "sender_id"
-        case receiverID = "receiver_id"
-        case createdAt = "created_at"
-    }
-}
-
-// MARK: - R3 Call State
-struct R3CallState {
-    var isActive = false
-    var rateTier: AppConfig.CallRateTier = .standard
-    var duration: TimeInterval = 0
-    var currentCost: Double = 0
-    var spendLimit: Double = 50.0
-    var isIdle = false
-    var personalityLine: String? = nil
-}
-
 /// Geometry shared by image editing, viewport input and validation. Placement
 /// dimensions remain editable source axes; only the displayed bounds rotate.
 struct StudioImageRotationGeometry {
