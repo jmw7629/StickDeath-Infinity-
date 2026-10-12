@@ -94,7 +94,7 @@ Exports list the credits of licensed images actually used in a render
 ## Software dependencies
 
 - **supabase-swift** (`https://github.com/supabase-community/supabase-swift.git`, `upToNextMajorVersion` from 2.0.0, declared in `StickDeathInfinity.xcodeproj/project.pbxproj`). No `Package.resolved` is committed, so the exact resolved version and its license text must be read from the resolved checkout on the build Mac before release; the upstream repository publishes an MIT license at the time of writing — verify, do not assume.
-- `Package.swift` still lists `livekit/client-sdk-swift`; it is **not** linked by the Xcode project and `scripts/verify_retired_communications.py` fails if it reappears. No notice is owed for an unlinked package, but the stale manifest entry should be removed in a separate change.
+- `Package.swift` no longer lists `livekit/client-sdk-swift` (removed 2026-10-12 with the retired call configuration); `scripts/verify_retired_communications.py` fails if LiveKit reappears in the Xcode project. No notice is owed.
 - Apple frameworks (SwiftUI, AVFoundation, PhotosUI, StoreKit) are covered by the Apple SDK license.
 
 ## Owner-authored and other content

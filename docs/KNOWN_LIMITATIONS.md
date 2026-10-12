@@ -62,7 +62,7 @@ limitations list, not a claim that everything else is verified.
 | Profile: "Projects counts saved animations on this device. Published, followers and likes are unavailable." / "Analytics unavailable" / "Plan unavailable" | `Views/Profile/ProfileView.swift:82,131,63,102` |
 | "Avatar and portfolio editing are not available here." | `Views/Profile/EditProfileView.swift:25` |
 | "Uploading is unavailable until the private service and current publishing terms are configured." | `Views/Profile/ProfileView.swift:583` |
-| Price copy outside the owner's scope: `ChoosePlanView.swift:27-33` lists `$19.99` "Studio" and `SubscriptionView.swift:22-24` lists `$79.99` annual and `$19.99`. Neither view is instantiated from any navigation path at `e48e789` (only `ProfileSettingsView` and `SpatterCCSettingsView` are presented), but both compile into the target. Remove or correct before release; only USD 4.99 and USD 9.99 monthly are requested. | `Views/Onboarding/ChoosePlanView.swift`, `Views/Settings/SubscriptionView.swift` |
+| Billing views compile but are not mounted: `ChoosePlanView` and `SubscriptionView` now show only the two approved monthly plans with Apple's display price or an honest "not configured" state (see `docs/BILLING_CONTRACT.md`), but no navigation path presents them yet and the StoreKit product identifiers are labelled placeholders until the owner configures App Store Connect. | `Views/Onboarding/ChoosePlanView.swift`, `Views/Settings/SubscriptionView.swift`, `Services/Stripe/StripeService.swift` |
 
 ## Rooms, War Room, feed, challenges, calendar
 

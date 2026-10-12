@@ -59,6 +59,8 @@ jobs:
         run: python3 scripts/verify_native_compile_sources.py
       - name: Verify retired messaging and calls cannot enter the native target
         run: python3 scripts/verify_retired_communications.py
+      - name: Verify control evidence map matches source and native UI tests
+        run: python3 scripts/verify_control_index.py
   native-production-tests:
     # Fail fast before allocating the long native suite; the final aggregate
     # still requires every production and simulator gate to succeed.
