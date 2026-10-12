@@ -3,33 +3,47 @@
   const menu = document.querySelector('.menu');
   const nav = document.querySelector('#navigation');
   const compact = matchMedia('(max-width:580px)');
-  function layoutNav() { menu.hidden = !compact.matches; nav.hidden = compact.matches && menu.getAttribute('aria-expanded') !== 'true'; }
-  menu.addEventListener('click', () => { menu.setAttribute('aria-expanded', String(menu.getAttribute('aria-expanded') !== 'true')); layoutNav(); });
-  nav.addEventListener('click', event => { if (event.target.closest('a') && compact.matches) { menu.setAttribute('aria-expanded','false'); layoutNav(); } });
-  document.addEventListener('keydown', event => { if (event.key === 'Escape' && compact.matches && !nav.hidden) { menu.setAttribute('aria-expanded','false'); layoutNav(); menu.focus(); } });
-  compact.addEventListener('change', layoutNav); layoutNav();
+  // Menu/nav visibility is CSS-driven per viewport (styles.css), so this script never changes layout on load.
+  const expanded = () => menu.getAttribute('aria-expanded') === 'true';
+  function setExpanded(open) { menu.setAttribute('aria-expanded', String(open)); nav.classList.toggle('open', open); }
+  menu.addEventListener('click', () => setExpanded(!expanded()));
+  nav.addEventListener('click', event => { if (event.target.closest('a') && compact.matches) setExpanded(false); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape' && compact.matches && expanded()) { setExpanded(false); menu.focus(); } });
+  compact.addEventListener('change', () => setExpanded(false));
   const input = document.querySelector('#query');
   const results = document.querySelector('#help-results');
   const count = document.querySelector('#help-count');
   const filters = [...document.querySelectorAll('[data-filter]')];
   let category = 'all';
+  // Articles come from help/articles.json through help/help-data.js and help.js.
   const articles = window.STUDIO_HELP || [];
+  const STATUS_LABELS = {
+    'source-implemented': 'Source-implemented · device verification deferred',
+    'verified-on-device': 'Verified on device',
+    'unavailable': 'Unavailable until configured'
+  };
   function node(tag, text, className) { const element = document.createElement(tag); element.textContent = text; if(className) element.className = className; return element; }
   function render() {
     const tokens = input.value.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
-    const matches = articles.filter(article => (category === 'all' || article.category === category) && tokens.every(token => [article.title,article.platform,article.terms,...article.steps,article.note].join(' ').toLocaleLowerCase().includes(token)));
+    const matches = articles.filter(article => (category === 'all' || article.category === category) && tokens.every(token => [article.title,article.platform,article.keywords,...article.steps,...article.limits].join(' ').toLocaleLowerCase().includes(token)));
     results.replaceChildren();
     matches.forEach(article => {
-      const details = document.createElement('details'); details.id = `article-${article.id}`;
+      const details = document.createElement('details'); details.id = `article-${article.id}`; details.dataset.category = article.category;
       details.append(node('summary',article.title));
-      const answer = node('div','','answer'); answer.append(node('p',article.platform,'eyebrow'));
-      const steps = document.createElement('ol'); article.steps.forEach(step => steps.append(node('li',step))); answer.append(steps,node('p',article.note),node('p','Source: native Studio and Android foundation source · Editorial date: October 9, 2026. Prerelease guidance; not a runtime verification receipt.','source'));
-      const permalink = node('a','Link to this topic'); permalink.href = `#help/${article.id}`;
+      const answer = node('div','','answer');
+      const head = node('p','','eyebrow'); head.append(node('span',article.platform), node('span',STATUS_LABELS[article.status] || article.status,`badge badge-${article.status}`)); answer.append(head);
+      const steps = document.createElement('ol'); article.steps.forEach(step => steps.append(node('li',step))); answer.append(steps);
+      if (article.limits.length) { answer.append(node('p','Limits','limits-title')); const limits = document.createElement('ul'); limits.className = 'limits'; article.limits.forEach(limit => limits.append(node('li',limit))); answer.append(limits); }
+      const source = node('p','','source');
+      source.append(`Reviewed ${article.reviewed} against guide revision ${article.guideRevision}. Current source behavior, not a runtime verification receipt. Sources: `);
+      article.sources.forEach((path,index) => { if (index) source.append(', '); source.append(node('code',path)); });
+      answer.append(source);
+      const permalink = node('a','Link to this topic','permalink'); permalink.href = `#help/${article.id}`;
       answer.append(permalink);
       details.append(answer); results.append(details);
     });
-    count.textContent = `${matches.length} ${matches.length === 1 ? 'topic' : 'topics'}${tokens.length ? ' found' : ''}.`;
-    if (!matches.length) results.append(node('p','No matching topic. Try fewer words, choose All topics, or prepare a local problem summary below.'));
+    count.textContent = articles.length ? `${matches.length} ${matches.length === 1 ? 'topic' : 'topics'}${tokens.length ? ' found' : ''}.` : 'Help topics could not be loaded. Reload the page, or use the native Studio notes below.';
+    if (articles.length && !matches.length) results.append(node('p','No matching topic. Try fewer words, choose All topics, or prepare a local problem summary below.'));
   }
   input.addEventListener('input',render);
   document.querySelector('#help-search').addEventListener('submit',event => {event.preventDefault();render();});
