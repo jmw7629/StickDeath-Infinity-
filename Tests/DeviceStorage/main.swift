@@ -548,8 +548,13 @@ private final class RevisionSpaceFailureStore: DeviceStorageManager {
             try require(try store.listRecoverableAnimations().animations.isEmpty, "Rollback store listed as a recoverable project")
         }
         test("storage scan counts unselected revision files as recoverable unsaved data") {
-            // The scan must see only this fixture: an isolated caches root, not the host's.
-            let (_, root) = try fixture(); let store = CommitFailureStore(documentsDirectory: root, cachesDirectory: root.appendingPathComponent("Caches")); let p = project()
+            // The scan must see only this fixture: a sibling caches root (never
+            // nested in Documents, which the scan rejects) instead of the host's.
+            let (_, root) = try fixture()
+            let caches = root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + "-caches", isDirectory: true)
+            try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: caches) }
+            let store = CommitFailureStore(documentsDirectory: root, cachesDirectory: caches); let p = project()
             try store.saveAnimation(p)
             var usage = try store.storageScanRequest.scan()
             try require(usage.recoverableUnsavedData.files == 0 && usage.projects.files > 0, "Committed save counted as unsaved")
