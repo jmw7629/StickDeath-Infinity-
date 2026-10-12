@@ -22,6 +22,8 @@ No user-to-user text chat, phone or video calling is included. Spatter assistanc
 
 ## Studio parity matrix (iOS schema 34 vs Android-local v25)
 
+iOS moved to schema 35 on the same day (text layers may use the bundled Special Elite face). Android's Swift import still accepts 1–34 and rejects Swift text elements outright, so a schema-35 project is reported as unsupported with the original preserved; raising the range and importing text is a listed follow-up, not a regression.
+
 Status is implementation status only. Every Android row is unverified in this batch: the implementation container has no Android SDK, emulator or device, so compilation and behaviour are deferred to the CI compile/unit-test job (`.github/workflows/android-build.yml`) and a later emulator or device run of `app/src/androidTest`. "Done" means the code exists and is covered by tests that have not yet run; it is not a pass.
 
 | Area | Feature | Android status | Notes |
