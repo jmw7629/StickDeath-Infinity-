@@ -88,11 +88,10 @@ enum StudioLayerBlendMode: String, Codable, CaseIterable, Sendable {
         case .linearDodge: return min(1, cb + cs)
         case .overlay: return Self.hardLight(cs, cb)
         case .softLight:
-            // W3C/Core Graphics soft light. PhotoCraft's Photoshop variant differs
-            // only in the upper half; the native compositor implements this one.
-            if cs <= 0.5 { return cb - (1 - 2 * cs) * cb * (1 - cb) }
-            let d = cb <= 0.25 ? ((16 * cb - 12) * cb + 4) * cb : cb.squareRoot()
-            return cb + (2 * cs - 1) * (d - cb)
+            // The native compositor's soft light, measured on macOS CI: the
+            // continuous "Pegtop" curve. PhotoCraft's Photoshop variant differs
+            // slightly; this is the formula the app actually renders and exports.
+            return (1 - 2 * cs) * cb * cb + 2 * cs * cb
         case .hardLight: return Self.hardLight(cb, cs)
         case .difference: return abs(cb - cs)
         case .exclusion: return cb + cs - 2 * cb * cs

@@ -90,7 +90,9 @@ struct StudioCraftSuiteTests {
         } }
         check(StudioLayerBlendMode.colorBurn.separable(backdrop: 1, source: 0) == 1 && StudioLayerBlendMode.colorBurn.separable(backdrop: 0.5, source: 0) == 0, "color burn edges")
         check(StudioLayerBlendMode.colorDodge.separable(backdrop: 0, source: 1) == 0 && StudioLayerBlendMode.colorDodge.separable(backdrop: 0.5, source: 1) == 1, "color dodge edges")
-        check(near(StudioLayerBlendMode.softLight.separable(backdrop: 0.25, source: 0.75)!, 0.375), "W3C soft light: D(0.25) = 0.5, so 0.25 + 0.5 * 0.25")
+        check(near(StudioLayerBlendMode.softLight.separable(backdrop: 0.25, source: 0.75)!, 0.34375), "Pegtop soft light: -0.5 * 0.0625 + 1.5 * 0.25")
+        // Measured native pixel: backdrop #804020 under source #4080C0 decodes to [96, 64, 46].
+        check(zip([128.0, 64, 32], [64.0, 128, 192]).map { Int((StudioLayerBlendMode.softLight.separable(backdrop: $0 / 255, source: $1 / 255)! * 255).rounded()) } == [96, 64, 46], "soft light matches the measured native pixel")
         check(StudioLayerBlendMode.hue.separable(backdrop: 0.5, source: 0.5) == nil, "hue is non-separable")
     }
 
