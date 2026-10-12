@@ -15,7 +15,7 @@ struct WelcomeView: View {
 
     private let features: [(icon: String, title: String, detail: String)] = [
         ("pencil.and.outline", "Animation Studio", "Draw, layer, animate and export"),
-        ("square.stack.3d.up", "Rooms & War Room", "Collaboration and voting · not connected yet"),
+        ("square.stack.3d.up", "Rooms & War Room", "Invitation-based collaboration and video voting · sign-in required"),
         ("waveform", "Sound Library", "Search, preview and mix licensed sounds"),
         ("sparkles", "Spatter", "Local help and editable motion recipes"),
     ]

@@ -1,7 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════
 // AppTutorialView — First-run tutorial overlay
 // Matches: src/components/AppTutorial.tsx
-// Shows once on first launch with tab highlights and tips
+// Shows once on first launch with tab highlights and tips. Copy describes only
+// shipped behavior: no comments, prizes, chat or calls are promised.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -14,11 +15,11 @@ private struct TutorialStep {
 }
 
 private let tutorialSteps: [TutorialStep] = [
-    TutorialStep(icon: "🏠", title: "Home Feed", description: "Browse animations from the community. Like, comment, and share your favorites.", tab: "home"),
-    TutorialStep(icon: "⚔️", title: "Challenges", description: "Enter weekly animation battles. Vote on entries and win prizes.", tab: "challenges"),
-    TutorialStep(icon: "🎨", title: "Studio", description: "Create stick figure animations with brushes, layers, and frames. Your creative playground.", tab: "studio"),
-    TutorialStep(icon: "🤝", title: "Rooms", description: "Studio collaboration by invitation is coming next. Rooms will share only projects you choose, with no chat or calls.", tab: "rooms"),
-    TutorialStep(icon: "👤", title: "Profile", description: "Your portfolio. Edit your profile, view achievements, and manage settings.", tab: "profile"),
+    TutorialStep(icon: "🏠", title: "Home Feed", description: "Browse approved animations from other creators. Nothing you make is published without your explicit approval.", tab: "home"),
+    TutorialStep(icon: "⚔️", title: "Challenges", description: "See scheduled animation challenges and submit a finished video when one is open. Entries are moderated before they appear.", tab: "challenges"),
+    TutorialStep(icon: "🎨", title: "Studio", description: "Create stick figure animations with brushes, layers, frames and sound. Projects save on this device and work offline.", tab: "studio"),
+    TutorialStep(icon: "🤝", title: "Rooms", description: "Rooms are invitation-based and need sign-in. Both creators must agree before a project is shared, and there is no chat or calling. War Room lets viewers pick their favorite video.", tab: "rooms"),
+    TutorialStep(icon: "👤", title: "Profile", description: "Your account, verified records and settings. Guests can keep working on this device and sign in later from Profile.", tab: "profile"),
 ]
 
 struct AppTutorialView: View {

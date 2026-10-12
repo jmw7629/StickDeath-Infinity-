@@ -34,15 +34,14 @@ struct OnboardingView: View {
         ),
         OnboardingPage(
             title: "Collaborate & Compete",
-            subtitle: "Planned next · not connected in this build",
+            subtitle: "Invitation-based rooms · sign-in required",
             icon: "⚔️",
             features: [
-                "Room invites will require both creators to agree",
-                "War Room will let viewers pick their favorite",
-                "Shared projects only — no chat or calls",
+                "Rooms share only the projects you choose, by invitation code",
+                "Both creators must agree before anything is shared — no chat or calls",
+                "War Room: viewers choose their favorite submitted video",
             ],
-            gradient: [Color(hex: "#FF8800"), Color(hex: "#FFCC00")],
-            available: false
+            gradient: [Color(hex: "#FF8800"), Color(hex: "#FFCC00")]
         ),
         OnboardingPage(
             title: "Spatter AI Assistant",

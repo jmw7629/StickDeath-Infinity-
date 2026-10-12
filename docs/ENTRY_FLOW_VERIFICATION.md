@@ -8,12 +8,28 @@ guessed asset counts and provider claims are not shipped as facts.
 
 ## Behavior
 
-- Splash follows the existing authentication restoration state. It has no fixed
-  loading timer, and Open Studio Offline remains available during restoration.
-  A late result cannot navigate away from an explicit offline choice.
+- Splash shows the actual authentication restoration state (restoring, retryable
+  failure, sign-in required, ready). It holds for a minimum of one second as
+  intentional branding (`AppFlowView.minimumBrandingPresentation`, #136); this
+  is a presentation floor, not a fake loading indicator: Open Studio Offline,
+  Retry and Sign In are enabled throughout, an explicit action cancels the hold,
+  and restoration itself is never delayed by it. A late result cannot navigate
+  away from an explicit offline choice.
 - Guest access opens the existing Studio tab directly without requesting an anonymous
   cloud account or swallowing a failed sign-in. Projects use the existing local
-  production storage; no data migration or deletion is introduced.
+  production storage; no data migration or deletion is introduced. The guest
+  choice is remembered (`sdi.guest.chosen.v1`): later launches skip Welcome and
+  open the app, where Rooms, Calendar and Profile offer a Sign In button for
+  guests. That button flushes the open Studio project, presents Login, and Back
+  or success returns to the app with the same project (#137).
+- Deep links are classified by `DeepLinkRouter` before any navigation (#138):
+  `stickdeath://auth/callback` is rejected as unsolicited, `stickdeath://auth/reset`
+  is completed only when this device holds the matching reset verifier, and every
+  other URL shows an "Unsupported link" notice. No messaging, call or invite links exist.
+- The first-run tutorial reads and writes the same `tutorial_completed` key, so
+  completing or skipping it once persists. Tutorial and guide copy describe only
+  shipped behavior: Rooms are invitation-based, both creators approve, sign-in is
+  required, and there are no chat, call, comment or prize claims.
 - Missing account configuration is disclosed on Welcome. Existing sign-in and
   signup forms remain reachable, with accessible Back controls.
 - Studio Guide can be opened again from Welcome. Back, Next, page dots, Skip and
