@@ -69,7 +69,6 @@ struct StudioImageLibraryView: View {
                             VStack(alignment: .leading, spacing: 12) {
                                 ForEach(Array(packs.dropFirst()), id: \.id) { item in packRow(item) }
                             }.padding(.vertical, 8)
-                            .accessibilityIdentifier("studio.image-library.pack-list")
                         }.font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.8))
                         if packBusy { ProgressView("Downloading and verifying pictures…").font(.specialElite(12, relativeTo: .caption)).tint(.red) }
                         if let packNotice { Text(packNotice).font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7)) }

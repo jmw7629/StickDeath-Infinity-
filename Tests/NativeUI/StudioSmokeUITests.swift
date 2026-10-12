@@ -8146,29 +8146,28 @@ final class StudioSmokeUITests: XCTestCase {
     private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true,
                                waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
-        if waitForExistence {
+        if waitForExistence && !identifier.hasPrefix("studio.export.format.") {
             XCTAssertTrue(element.waitUntilPresent(timeout: 8), "Missing export control: \(identifier)")
         }
-        // iOS prunes scrolled-offscreen format buttons from AX after sharing.
-        // Locate the unique actual ancestor of the requested export control.
-        let panels = app.scrollViews.containing(.any, identifier: identifier)
+        // Format cards are lazy: scrolling after an export error can remove
+        // them from AX entirely. Find the actual panel without requiring its
+        // offscreen child, then reveal that child with bounded real gestures.
+        let panels = app.scrollViews.matching(identifier: "studio.export.scroll")
         let panelCount = panels.count
-        if panelCount != 1 {
-            captureHierarchy(app, name: "export-control-ancestor-failed-" + identifier)
-        }
-        XCTAssertEqual(panelCount, 1, "The requested export control has no unique ScrollView ancestor")
+        if panelCount != 1 { captureHierarchy(app, name: "export-control-ancestor-failed-" + identifier) }
+        XCTAssertEqual(panelCount, 1, "The actual export ScrollView must be unique")
         let panel = panels.firstMatch
         // Each AX query can take a second on CI. Return as soon as the actual
         // element is fully visible; never re-evaluate a satisfied loop filter.
         for attempt in 0...8 {
             let panelFrame = panel.frame
-            let elementFrame = element.frame
-            if !elementFrame.isEmpty && panelFrame.insetBy(dx: 0, dy: 2).contains(elementFrame) {
+            let elementFrame = element.exists ? element.frame : CGRect.null
+            if !elementFrame.isNull && !elementFrame.isEmpty && panelFrame.insetBy(dx: 0, dy: 2).contains(elementFrame) {
                 XCTAssertTrue(element.isHittable, "Export control is obstructed: \(identifier)")
                 return element
             }
             guard attempt < 8 else { break }
-            let upward = elementFrame.isEmpty ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
+            let upward = (elementFrame.isNull || elementFrame.isEmpty) ? scrollUp : elementFrame.maxY > panelFrame.maxY - 2
             // The centre can land on the background segmented control, which
             // consumes this drag. Use the panel's 16pt content padding instead.
             let start = panel.coordinate(withNormalizedOffset: CGVector(dx: 0.98, dy: upward ? 0.7 : 0.3))
@@ -8176,7 +8175,7 @@ final class StudioSmokeUITests: XCTestCase {
             start.press(forDuration: 0.1, thenDragTo: end)
         }
         captureHierarchy(app, name: "export-control-unreachable-" + identifier)
-        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.frame); hittable: \(element.isHittable)")
+        let bounds = XCTAttachment(string: "Panel: \(panel.frame); control: \(element.exists ? element.frame : CGRect.null); hittable: \(element.exists && element.isHittable)")
         bounds.name = "export-control-bounds-" + identifier; bounds.lifetime = .keepAlways; add(bounds)
         XCTFail("Export control is not fully reachable after eight scrolls: \(identifier)")
         throw NSError(domain: "NativeExportSmoke", code: 1)

@@ -186,6 +186,7 @@ struct ExportPanel: View {
                 }
                 .padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 20)
             }
+            .accessibilityIdentifier("studio.export.scroll")
             .frame(maxHeight: UIScreen.main.bounds.height * 0.6)
             }
         }
