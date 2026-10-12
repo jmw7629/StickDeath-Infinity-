@@ -450,12 +450,12 @@ struct BackgroundLibraryPanel: View {
                     cancel(); vm.activePanel = .none
                 }
                 Text("Adds to this frame behind drawings. Original images are never replaced. Undo removes the added background.")
-                    .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 12)
-                if let notice { Text(notice).font(.caption).foregroundStyle(.red).padding(8)
+                    .font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.secondary).padding(.horizontal, 12)
+                if let notice { Text(notice).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.red).padding(8)
                     .accessibilityIdentifier("studio.background.notice") }
                 if requestID != nil {
                     HStack { ProgressView(); Text("Preparing background…"); Button("Cancel", action: cancel) }
-                        .font(.caption).padding(8)
+                        .font(.specialElite(12, relativeTo: .caption)).padding(8)
                 }
                 HStack(spacing: 0) {
                     ScrollView(.vertical, showsIndicators: false) {
@@ -463,7 +463,7 @@ struct BackgroundLibraryPanel: View {
                             ForEach(categories, id: \.self) { category in
                                 Button(action: { selectedCategory = category }) {
                                     Text("\(category) (\(presets.filter { $0.category == category }.count))")
-                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(10)).fontWeight(.bold)
                                         .foregroundColor(selectedCategory == category ? .white : .white.opacity(0.4))
                                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                                         .background(selectedCategory == category ? Color.red : Color(hex: "1A1A24"))
@@ -480,7 +480,7 @@ struct BackgroundLibraryPanel: View {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(LinearGradient(colors: [Color(hex: preset.startHex), Color(hex: preset.endHex)],
                                                 startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 80)
-                                        Text(preset.name).font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        Text(preset.name).font(.specialElite(10)).fontWeight(.medium)
                                             .foregroundColor(.white.opacity(0.6))
                                     }
                                 }.disabled(requestID != nil)
@@ -761,17 +761,17 @@ struct AIVoiceMakerSheet: View {
             Color(hex: "1A0A2E").ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Text("Voice Maker").font(.system(size: 18, weight: .bold, design: .monospaced))
+                    Text("Voice Maker").font(.specialElite(18)).fontWeight(.bold)
                     Spacer()
-                    Button("Done") { invalidate(); dismiss() }
+                    Button("Done") { invalidate(); dismiss() }.font(.specialElite(17))
                 }
                 .foregroundColor(Color(hex: "A78BFA"))
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         Text("On-device system voices · no microphone or cloud AI")
-                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7))
                         Text("Script / Dialogue · \(scriptText.count)/1,500")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .font(.specialElite(12)).fontWeight(.bold)
                         TextEditor(text: $scriptText)
                             .font(.system(size: 14)).foregroundColor(.white)
                             .scrollContentBackground(.hidden).frame(height: 110)
@@ -779,7 +779,7 @@ struct AIVoiceMakerSheet: View {
                             .accessibilityLabel("Voiceover script")
                             .accessibilityIdentifier("studio.voice.script")
                         if voice.voices.isEmpty {
-                            Text("No system voices are available on this device.").font(.caption)
+                            Text("No system voices are available on this device.").font(.specialElite(12, relativeTo: .caption))
                         } else {
                             Picker("Installed voice", selection: $selectedVoice) {
                                 Text("Choose a voice").tag("")
@@ -789,12 +789,12 @@ struct AIVoiceMakerSheet: View {
                             }.tint(Color(hex: "A78BFA"))
                         }
                         HStack {
-                            Text("Speed")
+                            Text("Speed").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $speed, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", speed))
                         }.font(.caption)
                         HStack {
-                            Text("Pitch")
+                            Text("Pitch").font(.specialElite(12, relativeTo: .caption))
                             Slider(value: $pitch, in: 0.5...2).tint(Color(hex: "A78BFA"))
                             Text(String(format: "%.1fx", pitch))
                         }.font(.caption)
@@ -802,22 +802,23 @@ struct AIVoiceMakerSheet: View {
                             ForEach(1...4, id: \.self) { Text("Track \($0)").tag($0) }
                         }.tint(Color(hex: "A78BFA"))
                         Text("Adds at the selected frame. Audio stays in your project and can be trimmed, moved, mixed, exported or undone. Up to 2 minutes / 15 MB per voice clip.")
-                            .font(.caption).foregroundColor(.white.opacity(0.7))
+                            .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.white.opacity(0.7))
                         if voice.isBusy {
                             HStack {
                                 ProgressView().tint(.white)
-                                Text("Generating voice…")
+                                Text("Generating voice…").font(.specialElite(17))
                                 Spacer()
-                                Button("Cancel") { invalidate() }
+                                Button("Cancel") { invalidate() }.font(.specialElite(17))
                             }
                         } else {
                             Button(voice.prepared == nil ? "Generate voice" : "Regenerate voice", action: generate)
+                                .font(.specialElite(17))
                                 .disabled(selectedVoice.isEmpty || scriptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                     || scriptText.count > 1_500 || !vm.isEditing || vm.isSaving)
                                 .accessibilityIdentifier("studio.voice.generate")
                         }
                         if let notice = error ?? voice.notice {
-                            Text(notice).font(.caption).accessibilityIdentifier("studio.voice.notice")
+                            Text(notice).font(.specialElite(12, relativeTo: .caption)).accessibilityIdentifier("studio.voice.notice")
                         }
                     }
                 }
@@ -830,7 +831,7 @@ struct AIVoiceMakerSheet: View {
                         .disabled(voice.prepared == nil || !targetIsCurrent)
                         .accessibilityIdentifier("studio.voice.add")
                 }
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .font(.specialElite(14)).fontWeight(.bold)
                 .buttonStyle(.borderedProminent).tint(Color(hex: "7C3AED"))
             }
             .foregroundColor(.white).padding(16)

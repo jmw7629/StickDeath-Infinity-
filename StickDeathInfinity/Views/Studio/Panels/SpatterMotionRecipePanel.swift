@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Explicit local editing. Advice and provider responses cannot enter this
 /// surface or execute its commands without a separate user submission.
@@ -138,6 +139,7 @@ struct SpatterMotionRecipePanel: View {
             }
             .foregroundColor(.red).padding(16)
 
+            ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     Text(isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
@@ -327,6 +329,7 @@ struct SpatterMotionRecipePanel: View {
                         .accessibilityLabel("Local Studio instruction")
                         .accessibilityIdentifier("spatter.motion.input")
                         .focused($draftFocused)
+                        .id("spatter-instruction-editor")
                     Text("\(draft.utf8.count) / 1,024 bytes · " + (isFrameActionDraft ? "Active frame" : isOrderDraft ? "Selected artwork" : isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
                     Button("Apply local edit") {
@@ -391,6 +394,15 @@ struct SpatterMotionRecipePanel: View {
                 .foregroundColor(.white).padding(16)
             }
             .accessibilityIdentifier("spatter.motion.scroll")
+            .onChange(of: draftFocused) { focused in
+                if focused { proxy.scrollTo("spatter-instruction-editor", anchor: .top) }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
+                // The containing Studio can retain its full-height geometry while
+                // the keyboard covers it. Keep the focused editor above the keys.
+                if draftFocused { proxy.scrollTo("spatter-instruction-editor", anchor: .top) }
+            }
+            }
         }
         .background(Color(hex: "0A0A0F"))
         .toolbar {
