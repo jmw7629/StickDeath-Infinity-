@@ -45,13 +45,12 @@ internal object SwiftProjectImport {
         archive.only("document", "rasterFrameIndices"); archive.emptyObject("rasterFrameIndices")
         val source = archive.getJSONObject("document")
         source.only("schemaVersion", "id", "name", "width", "height", "fps", "frames", "layers", "activeFrameID", "activeLayerID",
-            "audioClips", "mutedAudioTracks", "audioTrackVolumes", "gridEnabled", "gridSettings", "onionEnabled", "onionSettings", "createdAt", "modifiedAt", "revision")
-        require(source.getInt("schemaVersion") in 1..33) { "Unsupported Swift document version." }
-        source.emptyArray("audioClips"); source.emptyArray("mutedAudioTracks")
-        if (!source.isNull("audioTrackVolumes")) {
-            val levels = source.getJSONArray("audioTrackVolumes")
-            if (levels.length() != 4 || (0 until 4).any { levels.getDouble(it) != 1.0 }) unsupported()
-        }
+            "audioClips", "mutedAudioTracks", "audioTrackVolumes", "audioTrackPans", "soloedAudioTracks",
+            "gridEnabled", "gridSettings", "onionEnabled", "onionSettings", "createdAt", "modifiedAt", "revision")
+        val schemaVersion = source.getInt("schemaVersion")
+        require(schemaVersion in 1..34) { "Unsupported Swift document version." }
+        source.emptyArray("audioClips")
+        val tracks = audioTracks(source, schemaVersion)
         // Guide settings have differing limits/defaults. Do not silently replace a configured guide.
         if (source.optBoolean("gridEnabled") || source.optBoolean("onionEnabled") ||
             !source.isNull("gridSettings") || !source.isNull("onionSettings")) unsupported()
@@ -69,11 +68,15 @@ internal object SwiftProjectImport {
         val layers = (0 until layersJSON.length()).map { index ->
             val layer = layersJSON.getJSONObject(index)
             layer.only("id", "name", "visible", "locked", "opacity", "lockMode", "blendMode", "glowEnabled", "glowColor", "glowRadius", "glowStrength", "colorLabel")
-            if (layer.optBoolean("glowEnabled") || layer.optString("blendMode", "normal") != "normal" ||
+            if (layer.optBoolean("glowEnabled") ||
                 layer.optString("lockMode", "free") !in listOf("free", "full") ||
                 listOf("glowColor", "glowRadius", "glowStrength", "colorLabel").any { !layer.isNull(it) }) unsupported()
+            // iOS draws unknown legacy blend strings as Normal; project transfer rejects them instead of guessing.
+            val blend = LayerBlend.fromSwift(layer.optString("blendMode", "normal")) ?: unsupported()
+            require(!blend.isExtended || schemaVersion >= 34) { "This layer blend mode needs Swift project version 34; original preserved." }
+            require(FrameRenderer.supports(blend)) { FrameRenderer.unavailableReason(blend) ?: "Unsupported blend: ${blend.label}" }
             Layer(layer.getString("id"), layer.getString("name"), layer.optBoolean("visible", true),
-                layer.optBoolean("locked") || layer.optString("lockMode") == "full", layer.optDouble("opacity", 1.0).toFloat())
+                layer.optBoolean("locked") || layer.optString("lockMode") == "full", layer.optDouble("opacity", 1.0).toFloat(), blend)
         }
         var pointCount = 0; var strokeCount = 0
         val allIDs = mutableSetOf<String>()
@@ -120,7 +123,42 @@ internal object SwiftProjectImport {
             "Swift backup metadata does not match its editable document."
         }
         return Document(id, source.getString("name"), source.getInt("width"), source.getInt("height"), source.getInt("fps"),
-            frames, layers, source.getString("activeFrameID"), source.getString("activeLayerID")).validated()
+            frames, layers, source.getString("activeFrameID"), source.getString("activeLayerID"), audioTracks = tracks).validated()
+    }
+    /** Four numbered track settings validated exactly like StudioDocument.validate(): volumes are four
+     * finite values in 0…1 (schema ≥ 13), pans four finite values in -1…1 (schema ≥ 34), mute/solo lists
+     * are sorted unique track numbers 1…4 (schema ≥ 12 / ≥ 34). Absent means unity, centred, no mute/solo. */
+    private fun audioTracks(source: JSONObject, schemaVersion: Int): List<AudioTrackMix> {
+        val volumes = FloatArray(4) { 1f }; val pans = FloatArray(4)
+        val muted = BooleanArray(4); val soloed = BooleanArray(4)
+        fun levels(name: String, minimumSchema: Int, range: ClosedFloatingPointRange<Double>, into: FloatArray) {
+            if (source.isNull(name)) return
+            val values = source.getJSONArray(name)
+            require(schemaVersion >= minimumSchema && values.length() == 4 && (0 until 4).all { values.getDouble(it).isFinite() && values.getDouble(it) in range }) {
+                "Swift audio track settings ($name) are invalid or need a newer project version; original preserved."
+            }
+            for (index in 0 until 4) into[index] = values.getDouble(index).toFloat()
+        }
+        fun trackSet(name: String, minimumSchema: Int, into: BooleanArray) {
+            if (source.isNull(name)) return
+            val values = source.getJSONArray(name)
+            val numbers = (0 until values.length()).map { index ->
+                // Strict integer tokens only: iOS decodes [Int], so 1.5 must not truncate to 1.
+                val value = values.get(index)
+                require(value is Int) { "Swift audio track settings ($name) are invalid; original preserved." }
+                require(value in 1..4) { "Swift audio track settings ($name) are invalid; original preserved." }
+                value
+            }
+            require(schemaVersion >= minimumSchema && numbers.size <= 4 && numbers == numbers.toSet().sorted()) {
+                "Swift audio track settings ($name) are invalid or need a newer project version; original preserved."
+            }
+            numbers.forEach { into[it - 1] = true }
+        }
+        levels("audioTrackVolumes", 13, 0.0..1.0, volumes)
+        levels("audioTrackPans", 34, -1.0..1.0, pans)
+        trackSet("mutedAudioTracks", 12, muted)
+        trackSet("soloedAudioTracks", 34, soloed)
+        return (0 until 4).map { AudioTrackMix(volumes[it], muted[it], pans[it], soloed[it]).also { mix -> mix.validate() } }
     }
     private fun json(bytes: ByteArray): JSONObject {
         val text = Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()

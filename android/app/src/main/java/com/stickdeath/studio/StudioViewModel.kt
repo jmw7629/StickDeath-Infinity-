@@ -191,15 +191,17 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun previewAudio(captured: Document, id: String) {
         if (closing || document != captured) return
         val clip = captured.audioClips.firstOrNull { it.id == id } ?: return
-        previewAudioSource(captured) { clip.copy(
-            volume = clip.volume * captured.audioTracks[clip.track - 1].volume,
-            muted = clip.muted || captured.audioTracks[clip.track - 1].muted) }
+        val track = captured.audioTracks[clip.track - 1]
+        // Same SoundCraft mute/solo rule and balance law as AudioMixer, so clip preview matches the mix.
+        previewAudioSource(captured, track.pan) { clip.copy(
+            volume = clip.volume * track.volume,
+            muted = clip.muted || !StudioCraftAudio.isTrackAudible(clip.track, captured.audioTracks)) }
     }
     fun previewBundledSound(captured: Document, sound: BundledSound) {
         if (closing || document != captured) return
         previewAudioSource(captured) { AudioClip(name = sound.title.take(80), source = BundledSounds.source(getApplication<Application>(), sound)) }
     }
-    private fun previewAudioSource(captured: Document, load: suspend () -> AudioClip) {
+    private fun previewAudioSource(captured: Document, pan: Float = 0f, load: suspend () -> AudioClip) {
         stopAudioPreview(); previewingAudio = true
         audioPreviewJob = viewModelScope.launch {
             val owner = currentCoroutineContext()[Job]
@@ -217,7 +219,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                             require(document == captured && !closing) { "Project changed before sound preview." }
                         }
                         currentCoroutineContext().ensureActive()
-                        kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip) }
+                        kotlinx.coroutines.withTimeout((clip.duration * 1000).toLong() + 5000) { clip.source.preview(clip, pan) }
                     }
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) { report("Audio output timed out. Preview stopped.") }
@@ -1192,7 +1194,7 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun updateLayer(id: String, visible: Boolean? = null, locked: Boolean? = null, opacity: Float? = null, blend: LayerBlend? = null) = change { d ->
         require(d.layers.any { it.id == id }) { "The layer is unavailable." }
-        require(blend == null || FrameRenderer.supports(blend)) { "${blend?.label ?: "This blend"} requires Android 10 or later." }
+        require(blend == null || FrameRenderer.supports(blend)) { blend?.let { FrameRenderer.unavailableReason(it) } ?: "This blend is unavailable." }
         d.copy(layers = d.layers.map { if (it.id != id) it else {
             require(!it.locked || (visible == null && opacity == null && blend == null)) { "Unlock the layer before changing its appearance." }
             it.copy(visible = visible ?: it.visible, locked = locked ?: it.locked, opacity = opacity ?: it.opacity, blend = blend ?: it.blend)

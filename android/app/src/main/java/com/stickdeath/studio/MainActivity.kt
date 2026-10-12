@@ -593,6 +593,7 @@ private data class ProjectDraft(val name: String = "", val width: Int = 1080, va
                                 }
                             }
                             if (!FrameRenderer.supports(LayerBlend.Multiply)) Text("Disabled blend modes require Android 10 or later.")
+                            Text("Linear Burn has no exact Android compositing mode yet, so it stays disabled and iOS projects using it are rejected with the original preserved.")
                             var opacity by remember(layer.id, layer.opacity) { mutableFloatStateOf(layer.opacity) }
                             Slider(opacity, { opacity = it }, enabled = !layer.locked, onValueChangeFinished = { vm.updateLayer(layer.id, opacity = opacity) })
                         }

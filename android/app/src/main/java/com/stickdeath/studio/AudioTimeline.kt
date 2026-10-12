@@ -239,11 +239,11 @@ fun AudioTimeline(vm: StudioViewModel, doc: Document, enabled: Boolean,
                             for (bin in first until last) {
                                 val x = left + ((bin + .5) * clip.source.duration / peaks.size - clip.sourceOffset).toFloat() * scale
                                 val amplitude = peaks[bin] * (height - 20) / 2
-                                drawLine(if (clip.muted || doc.audioTracks[clip.track - 1].muted) Color.Gray else Color(0xffff9aa4), Offset(x, top + height / 2 - amplitude), Offset(x, top + height / 2 + amplitude), maxOf(1f, (clip.source.duration / peaks.size * scale).toFloat()))
+                                drawLine(if (clip.muted || !StudioCraftAudio.isTrackAudible(clip.track, doc.audioTracks)) Color.Gray else Color(0xffff9aa4), Offset(x, top + height / 2 - amplitude), Offset(x, top + height / 2 + amplitude), maxOf(1f, (clip.source.duration / peaks.size * scale).toFloat()))
                             }
                         }
                         paint.color = android.graphics.Color.WHITE
-                        drawContext.canvas.nativeCanvas.drawText(clip.name + if (clip.muted || doc.audioTracks[clip.track - 1].muted) " (muted)" else "", left + 4, top + textSize, paint)
+                        drawContext.canvas.nativeCanvas.drawText(clip.name + if (clip.muted || !StudioCraftAudio.isTrackAudible(clip.track, doc.audioTracks)) " (muted)" else "", left + 4, top + textSize, paint)
                     }
                     if (chosen) {
                         drawLine(Color(0xffff343f), Offset(left, top), Offset(left, top + height), 4.dp.toPx())
