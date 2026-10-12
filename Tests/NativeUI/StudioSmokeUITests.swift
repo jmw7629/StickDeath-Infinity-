@@ -7270,21 +7270,15 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertGreaterThan(try changedPixelCount(before, pixels(canvas.screenshot().image)), 12)
         try openExportPanel(app)
         try exportControl("studio.export.format.mp4", app: app, scrollUp: false).tap()
-        let backgrounds = app.segmentedControls["studio.export.movie.background"]
-        XCTAssertTrue(backgrounds.waitForExistence(timeout: 8))
-        let transparent = backgrounds.buttons["Transparent (unsupported)"]
-        XCTAssertTrue(transparent.isHittable); transparent.tap()
+        // MP4 has no alpha channel, so the former transparent choice is gone;
+        // the panel states the white background instead of offering a control.
+        let background = try exportControl("studio.export.movie.background", app: app, scrollUp: false)
+        XCTAssertFalse(app.segmentedControls["studio.export.movie.background"].exists)
+        XCTAssertFalse(background.label.isEmpty)
+        XCTAssertFalse(app.staticTexts["studio.export.movie.filename"].exists)
+        capture(app, name: "mp4-white-background-stated")
         try exportControl("studio.export.start", app: app).tap()
         let status = app.staticTexts["studio.export.status"]
-        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@",
-            "H.264 MP4 cannot retain transparency. Explicitly choose the white background to export."),
-            evaluatedWith: status).waitUntilFulfilled(timeout: 8))
-        XCTAssertFalse(app.staticTexts["studio.export.movie.filename"].exists)
-        XCTAssertFalse(app.buttons["studio.export.share"].exists)
-        capture(app, name: "mp4-transparency-rejected")
-        _ = try exportControl("studio.export.movie.background", app: app, scrollUp: false)
-        XCTAssertTrue(backgrounds.buttons["White"].isHittable); backgrounds.buttons["White"].tap()
-        try exportControl("studio.export.start", app: app).tap()
         XCTAssertTrue(expectation(for: NSPredicate(format: "label BEGINSWITH %@", "MP4 ready on this device from revision "),
             evaluatedWith: status).waitUntilFulfilled(timeout: 30))
         let receipt = try exportControl("studio.export.movie.receipt", app: app)
@@ -7292,7 +7286,7 @@ final class StudioSmokeUITests: XCTestCase {
                        "1 image credit included in manifest")
         XCTAssertTrue(receipt.label.contains("1,080 × 1,920"), "The generated portrait fixture was rescaled")
         XCTAssertTrue(receipt.label.contains("1 frames · 12 fps · revision "))
-        XCTAssertEqual(app.staticTexts["studio.export.movie.filename"].label, "animation.mp4")
+        XCTAssertTrue(exportFilenameIsProjectDerived(app.staticTexts["studio.export.movie.filename"].label, extension: "mp4"))
         XCTAssertFalse(app.descendants(matching: .any)["studio.export.preview"].exists,
                        "This slice must not show a fake video preview")
         capture(app, name: "mp4-actual-file-receipt")
@@ -7367,7 +7361,7 @@ final class StudioSmokeUITests: XCTestCase {
             let receipt = try exportControl("studio.export.movie.receipt", app: app)
             XCTAssertTrue(receipt.label.contains("1,080 × 1,920"))
             XCTAssertTrue(receipt.label.contains("1 frames · 12 fps · revision "))
-            XCTAssertEqual(app.staticTexts["studio.export.movie.filename"].label, "animation.mp4")
+            XCTAssertTrue(exportFilenameIsProjectDerived(app.staticTexts["studio.export.movie.filename"].label, extension: "mp4"))
         }
         try renderMovie()
         try exportControl("studio.export.share", app: app).tap()
@@ -7497,7 +7491,7 @@ final class StudioSmokeUITests: XCTestCase {
                        "1 image credit included in manifest")
         XCTAssertTrue(receipt.label.contains("1,080 × 1,920"))
         XCTAssertTrue(receipt.label.contains("2 frames · 12 fps · revision "))
-        XCTAssertEqual(app.staticTexts["studio.export.gif.filename"].label, "animation.gif")
+        XCTAssertTrue(exportFilenameIsProjectDerived(app.staticTexts["studio.export.gif.filename"].label, extension: "gif"))
         XCTAssertTrue(app.staticTexts["studio.export.gif.media"].label.contains("17 centiseconds · white · no audio"))
         let preview = try exportControl("studio.export.gif.preview", app: app)
         let first = try exportPreviewPixels(preview, app: app, name: "gif-actual-first-frame")
@@ -8140,6 +8134,13 @@ final class StudioSmokeUITests: XCTestCase {
     }
 
     @MainActor
+    /// Export files are named from the project (ASCII letters, digits, "-" or
+    /// "_", at most 40 characters, "animation" fallback) plus the extension.
+    private func exportFilenameIsProjectDerived(_ label: String, extension ext: String) -> Bool {
+        guard label.hasSuffix("." + ext) else { return false }
+        let base = label.dropLast(ext.count + 1)
+        return (1...40).contains(base.count) && base.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }
+    }
     private func exportControl(_ identifier: String, app: XCUIApplication, scrollUp: Bool = true,
                                waitForExistence: Bool = true) throws -> XCUIElement {
         let element = app.descendants(matching: .any)[identifier].firstMatch
