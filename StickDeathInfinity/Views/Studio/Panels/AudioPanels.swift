@@ -198,7 +198,10 @@ private struct StudioAudioWorkspace: View {
                 .accessibilityLabel(timeline.isPlaying ? "Pause mixed audio" : "Play mixed audio")
                 .accessibilityIdentifier("studio.audio.timelinePlay")
                 .accessibilityHint("Touch and hold for Loop playback options.")
-                .contextMenu { Toggle("Loop playback", isOn: $vm.playbackLoops) }
+                .contextMenu {
+                    Toggle("Loop playback", isOn: $vm.playbackLoops)
+                        .accessibilityIdentifier("studio.audio.loop")
+                }
             Button { seek(vm.audioDuration) } label: { Image(systemName: "forward.end.fill").frame(width: 44, height: 44) }
                 .accessibilityLabel("Audio end")
             Text(clock(vm.audioPlayheadTime)).foregroundColor(.sdStudioActionText)
@@ -795,6 +798,15 @@ private struct StudioAudioFadeEditor: View {
             focusedField = field.map { $0 == .incoming ? "studio.audio.fades.in" : "studio.audio.fades.out" }
         }
         .onDisappear { focusedField = nil }
+        .toolbar {
+            if focused != nil {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done typing") { focused = nil }
+                        .accessibilityIdentifier("studio.audio.fades.keyboard-dismiss")
+                }
+            }
+        }
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -861,6 +873,15 @@ private struct StudioAudioNumericTrimEditor: View {
             focusedField = field.map { $0 == .source ? "studio.audio.trim.source" : "studio.audio.trim.duration" }
         }
         .onDisappear { focusedField = nil }
+        .toolbar {
+            if focused != nil {
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done typing") { focused = nil }
+                        .accessibilityIdentifier("studio.audio.trim.keyboard-dismiss")
+                }
+            }
+        }
     }
     private func input(_ title: String, text: Binding<String>, field: Field) -> some View {
         VStack(alignment: .leading, spacing: 4) {
