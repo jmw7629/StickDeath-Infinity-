@@ -2216,7 +2216,7 @@ jobs:
       matrix:
         include:
           - shard: 0
-            timeout: 217
+            timeout: 222
           - shard: 1
             timeout: 198
     env:
@@ -2292,7 +2292,7 @@ jobs:
       - name: Exercise actual authentication state with isolated local transport
         id: native-auth
         if: ${{ matrix.shard == 0 && !cancelled() && steps.native-smoke.outputs.simulator_udid != '' }}
-        timeout-minutes: 17
+        timeout-minutes: 22
         env:
           SDI_SMOKE_SIMULATOR_UDID: ${{ steps.native-smoke.outputs.simulator_udid }}
         run: python3 scripts/native-smoke/run_auth_ci.py

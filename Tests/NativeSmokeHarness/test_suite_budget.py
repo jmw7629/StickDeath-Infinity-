@@ -72,16 +72,16 @@ class NativeSuiteBudget(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/spatter-client-verify.yml").read_text()
         native_job = workflow.split("  native-ios-shards:", 1)[1].split("  native-ios-build:", 1)[0]
         self.assertIn("    timeout-minutes: ${{ matrix.timeout }}", native_job)
-        self.assertIn("            timeout: 217", native_job)
+        self.assertIn("            timeout: 222", native_job)
         self.assertIn("            timeout: 198", native_job)
-        # Twelve isolated native auth cases share
-        # the existing runner in a separately bounded 17-minute step.
-        self.assertIn("        timeout-minutes: 17", native_job)
+        # Nineteen isolated native auth cases share the existing runner in a
+        # separately bounded 22-minute step (60 s maximum allowance each).
+        self.assertIn("        timeout-minutes: 22", native_job)
         auth_source = (ROOT / "Tests/AuthState/AuthStateTests.swift").read_text()
-        self.assertEqual(auth_source.count("    func test"), 12)
-        for index, minutes in ((0, 217), (1, 198)):
+        self.assertEqual(auth_source.count("    func test"), 19)
+        for index, minutes in ((0, 222), (1, 198)):
             shard, _ = budget.build_shard_budget(source, COMMAND, index)
-            self.assertLessEqual(shard["suiteSeconds"] + (25 + (17 if index == 0 else 0)) * 60, minutes * 60)
+            self.assertLessEqual(shard["suiteSeconds"] + (25 + (22 if index == 0 else 0)) * 60, minutes * 60)
         for name in ("testDodgePixelsUndoAndColdReopen", "testBurnPixelsUndoAndColdReopen",
                      "testDodgeSettingsPersistAndReset", "testBurnSettingsPersistAndReset"):
             self.assertIn(name, value["testNames"])

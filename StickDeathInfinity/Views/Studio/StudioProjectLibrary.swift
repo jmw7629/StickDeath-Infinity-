@@ -144,6 +144,16 @@ struct StudioProjectLibrary: View {
                                 .font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray).multilineTextAlignment(.center)
                         }.frame(maxWidth: .infinity).padding(.vertical, 70)
                     }
+                    if !vm.unreadableProjects.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(vm.unreadableProjects, id: \.entryName) { failure in
+                                Label(failure.message, systemImage: "exclamationmark.triangle")
+                                    .font(.specialElite(12, relativeTo: .caption)).foregroundColor(.orange)
+                                    .accessibilityIdentifier("studio.library.unreadable." + failure.entryName)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("studio.library.unreadable")
+                    }
                     if !vm.savedProjects.isEmpty && matchingProjects.isEmpty {
                         Text("No projects match your search.").font(.custom("SpecialElite-Regular", size: 16, relativeTo: .callout)).foregroundColor(.gray)
                             .frame(maxWidth: .infinity).padding(.vertical, 40)
@@ -408,6 +418,7 @@ private struct StudioStorageSheet: View {
                     if let error { Text(error).foregroundStyle(.red).accessibilityIdentifier("studio.storage.error") }
                     if let usage {
                         row("Projects and revisions", usage.projects)
+                        row("Recoverable unsaved data", usage.recoverableUnsavedData)
                         row("Recently Deleted", usage.recentlyDeleted)
                         row("Media", usage.media)
                         row("Other documents and historical files", usage.otherDocuments)

@@ -886,12 +886,15 @@ final class StudioViewModel: ObservableObject {
         recentColorHexes = restoredColors
         restoreDrawingToolPreferences()
     }
+    /// Library entries that could not be read; each keeps its original on disk.
+    @Published private(set) var unreadableProjects: [AnimationStorageFailure] = []
     func loadProjects() async {
         do {
             let listing = try storage.listAnimationsReportingFailures()
             savedProjects = listing.animations.sorted { $0.modifiedAt > $1.modifiedAt }
+            unreadableProjects = listing.failures.sorted { $0.entryName < $1.entryName }
             if !listing.failures.isEmpty { message = "Some projects could not be read. Their original files have been preserved." }
-        } catch { message = "Projects could not be listed: \(error.localizedDescription)" }
+        } catch { message = "Projects could not be listed: \(DeviceStorageManager.userMessage(for: error))" }
     }
     @Published private(set) var isManagingProjects = false
     func duplicateProject(_ metadata: AnimationMetadata) async {
@@ -1043,7 +1046,7 @@ final class StudioViewModel: ObservableObject {
             let listing = try storage.listRecoverableAnimations()
             recoverableProjects = listing.animations.sorted { $0.modifiedAt > $1.modifiedAt }
             if !listing.failures.isEmpty { message = "Some recovered projects need repair. Their original files remain preserved." }
-        } catch { message = "Recently Deleted could not be read: \(error.localizedDescription)" }
+        } catch { message = "Recently Deleted could not be read: \(DeviceStorageManager.userMessage(for: error))" }
     }
     func moveProjectToRecovery(_ id: UUID) async {
         guard !isEditing, !isSaving, !isManagingProjects else { message = "Save and return to projects before removing an animation."; return }

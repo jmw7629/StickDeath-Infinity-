@@ -15,7 +15,10 @@ RETIRED = {
     "ContactsView.swift", "VideoCallView.swift", "WatchPartyView.swift",
     "CreatorRoomView.swift",
 }
-EXCLUSIONS = {
+# Retired sources were deleted from the tree on 2026-10-12; they must not
+# return under any path, so XcodeGen's whole-folder source scan cannot pick
+# them up and no exclude list is needed.
+DELETED_PATHS = {
     "Services/LiveKitService.swift", "Services/LiveKit", "Services/Message",
     "ViewModels/MessagesViewModel.swift", "Views/Messages/MessagesView.swift",
     "Views/Messages/ChatRoomView.swift", "Views/Messages/CallsView.swift",
@@ -34,8 +37,12 @@ def verify(root: Path = ROOT) -> None:
     assert not sources & RETIRED, "Retired communication source is in the app target"
     assert not re.search(r"productName\s*=\s*LiveKit|github.com/livekit/", pbx)
     assert "client-sdk-swift" not in spec
+    for relative in DELETED_PATHS:
+        assert not (root / "StickDeathInfinity" / relative).exists(), f"retired source returned: {relative}"
+    present = {path.name for path in (root / "StickDeathInfinity").rglob("*.swift")}
+    assert not present & RETIRED, "Retired communication source returned to the tree"
+    assert not re.findall(r"/\* (?:%s) \*/" % "|".join(map(re.escape, sorted(RETIRED))), pbx), "project still references retired files"
     excludes = set(re.findall(r"^          - (.+)$", spec, re.M))
-    assert EXCLUSIONS <= excludes, "XcodeGen can reintroduce retired code"
     assert "Views/Collab/WatchTogetherView.swift" not in excludes, "XcodeGen excludes approved shared playback"
     plist = plistlib.loads((root / "StickDeathInfinity/Info.plist").read_bytes())
     assert not {"NSMicrophoneUsageDescription",

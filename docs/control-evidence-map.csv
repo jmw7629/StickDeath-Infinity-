@@ -3,13 +3,24 @@ admin.overview.status,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,Ad
 admin.review.renew-preview,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,button 'Renew private preview' -> load,n-a,unmapped,deferred
 admin.review.rights,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminVideoApprovalContent,"button 'Decision notes / rights evidence' -> binds acknowledged, binds note",n-a,unmapped,deferred
 admin.users.history,StickDeathInfinity/Views/Admin/AdminDashboardView.swift,AdminUsersContent,button 'Account history',n-a,unmapped,deferred
-auth.back,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text 'Back to Welcome',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+app.notice,StickDeathInfinity/App/AppFlowView.swift,AppFlowView,button 'Dismiss',no,unmapped,deferred
+auth.back,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text '‹',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 auth.back,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text 'Back to Welcome',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+auth.error,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text,n-a,#134 #136 #137,deferred
+auth.error,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text,n-a,#134 #136 #137,deferred
+auth.forgot-password,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,text -> authVM.requestPasswordReset,n-a,#134 #136 #137,deferred
+auth.provider.apple,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,-> authVM.signInWithApple,n-a,#134 #136 #137,deferred
+auth.provider.apple,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,-> authVM.signInWithApple,n-a,#134 #136 #137,deferred
+auth.recovery.save,StickDeathInfinity/Views/Auth/LoginView.swift,LoginView,button 'Save Password' -> authVM.updatePassword,n-a,#134 #136 #137,deferred
+auth.signup.notice,StickDeathInfinity/Views/Auth/SignUpView.swift,SignUpView,text,n-a,#134 #136 #137,deferred
+calendar.offline,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),label 'Retry',n-a,unmapped,deferred
 calendar.screen,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),"-> load, binds detail, binds 0",n-a,unmapped,deferred
+calendar.sign-in,StickDeathInfinity/Views/Messages/CalendarView.swift,CalendarEventView (retired; excluded from native target),button 'Sign In',n-a,unmapped,deferred
 onboarding.back,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,label,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.next,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,unresolved (review source),n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.position,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text,n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 onboarding.skip,StickDeathInfinity/Views/Onboarding/OnboardingView.swift,OnboardingView,text 'Skip',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
+profile.delete-account,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,"button 'Delete account' -> authVM.signOut, authVM.requestAccountDeletion",n-a,unmapped,deferred
 profile.edit.bio,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text editor 'Bio' -> binds bio,n-a,unmapped,deferred
 profile.edit.notice,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text 'Name: 1–80 characters. Bio: up to 500 characters',n-a,unmapped,deferred
 profile.edit.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileSettingsView,button 'Edit username and bio' -> authVM.captureProfileEdit,n-a,unmapped,deferred
@@ -17,8 +28,10 @@ profile.edit.save,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditPro
 profile.edit.username,StickDeathInfinity/Views/Profile/EditProfileView.swift,EditProfileView,text field 'Your username' -> binds username,n-a,unmapped,deferred
 profile.identity,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,text -> binds 0,n-a,unmapped,deferred
 profile.projects.open,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Projects on this device',n-a,unmapped,testGuestProfileProjectsAndSettingsNavigation
+profile.sign-in,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,button 'Sign in or create an account',n-a,unmapped,deferred
 profile.subscription-status,StickDeathInfinity/Views/Profile/ProfileView.swift,ProfileView,"text 'Pricing, renewal and purchase information are no'",n-a,unmapped,deferred
-rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress 'Sign in to create or join rooms',n-a,unmapped,deferred
+rooms.calendar,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,progress 'Your Studio project is saved before sign-in and ',n-a,unmapped,deferred
+rooms.sign-in,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,button 'Sign In',n-a,unmapped,deferred
 rooms.warRoom,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,unresolved (review source),n-a,unmapped,testRoomsReplaceMessagingWithoutClaimingConnectedServices
 rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabRoomView,unresolved (review source),n-a,unmapped,deferred
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
@@ -343,6 +356,7 @@ studio.library.search,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift
 studio.library.sort,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,"image 'Clear project search' -> binds searchFocused, binds sort",no,#195,testProjectLibraryLastRowWithExpandedCreation
 studio.library.storage,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,text 'Storage',no,#195,testObsoleteRevisionCleanupCancelConfirmAndColdReopen
 studio.library.transfer.cancel,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,button 'Cancel' -> cancel,no,#286,deferred
+studio.library.unreadable,StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift,StudioProjectLibrary,unresolved (review source),no,#195,deferred
 studio.line.angle-snap,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,text 'Angle snap' -> binds vm.lineAngleSnap,no,#147,deferred
 studio.line.arrow-length,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,'Head Length' -> binds vm.lineArrowLength,no,#147,deferred
 studio.line.arrowheads,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,"text 'Arrowheads' -> binds vm.strokeWidth, binds vm.lineArrowEnds",no,#147,deferred
@@ -470,10 +484,11 @@ studio.wand.shrink,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swif
 studio.wand.tolerance,StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift,FloatingToolSettingsPanel,slider 'Tolerance' -> binds vm.wandTolerance,no,#153,deferred
 warRoom.leaderboard,StickDeathInfinity/Views/Collab/LeaderboardView.swift,LeaderboardView,text -> load,n-a,unmapped,deferred
 warRoom.screen,StickDeathInfinity/Views/Collab/WarRoomView.swift,WarRoomView,"button 'Cancel' -> binds reporting, binds reportReason",n-a,unmapped,deferred
-watch-party-chat-error,StickDeathInfinity/Views/Messages/WatchParty/WatchPartyView.swift,WatchPartyView (retired; excluded from native target),text,no,unmapped,deferred
 watchTogether.localMute,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,label -> toggle,n-a,unmapped,deferred
 watchTogether.localVolume,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,slider 'Volume on this device',n-a,unmapped,deferred
+watchTogether.participants,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,text 'Shows account identifiers from room membership o',n-a,unmapped,deferred
 watchTogether.screen,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,-> load,n-a,unmapped,deferred
+watchTogether.sign-in,StickDeathInfinity/Views/Collab/WatchTogetherView.swift,WatchTogetherView,button 'Sign In',n-a,unmapped,deferred
 welcome.account-unavailable,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,text 'Sign-in is unavailable. Your local Studio is rea',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
 welcome.content,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,unresolved (review source),n-a,#134 #136 #137,helper:tapWelcomeAction
 welcome.create-account,StickDeathInfinity/Views/Auth/WelcomeView.swift,WelcomeView,text 'Create Account',n-a,#134 #136 #137,testWelcomeGuideNavigationAndLocalCompletion
