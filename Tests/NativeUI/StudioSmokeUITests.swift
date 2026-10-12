@@ -2820,8 +2820,12 @@ final class StudioSmokeUITests: XCTestCase {
         // Preserve the actual failed pixels too; an assertion aborts this test
         // before its normal success capture under continueAfterFailure=false.
         capture(app, name: "selected-artwork-copy-paste-before-pixel-assertions")
-        XCTAssertGreaterThan(Double(duplicatedInk.count)/Double(originalInk.count),1.75,"Paste failed to retain both original and copied artwork in one frame")
-        XCTAssertLessThan(Double(duplicatedInk.count)/Double(originalInk.count),2.25)
+        // Count red coverage, not thresholded edge pixels: translating a thin
+        // stroke between pixel centers changes how many antialiased pixels cross
+        // a binary threshold without changing the amount of drawn artwork.
+        let coverageRatio = redInkCoverage(duplicated) / redInkCoverage(original)
+        XCTAssertGreaterThan(coverageRatio,1.75,"Paste failed to retain both original and copied artwork in one frame")
+        XCTAssertLessThan(coverageRatio,2.25)
         XCTAssertGreaterThanOrEqual(originalInk.intersection(duplicatedInk).count,originalInk.count-4,"Moving the pasted selection moved or removed the original")
         capture(app,name:"selected-artwork-copy-paste-moved")
         app.buttons["studio.undo"].tap();app.buttons["studio.undo"].tap()
@@ -4390,8 +4394,9 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["studio.audio.search.empty"].exists)
         try audioLibraryButton("studio.audio.search.clear", app: app).tap()
         XCTAssertTrue(["", "Search sounds, tags, categories…"].contains(search.value as? String ?? "<missing>"), "Clear filters retained the query")
-        XCTAssertFalse(resultCount.exists)
-        _ = try audioLibraryButton("studio.audio.category.Impacts & Crashes", app: app)
+        XCTAssertTrue(expectation(for: NSPredicate(format: "label == %@", "2,127 matching sounds"),
+                                  evaluatedWith: resultCount).waitUntilFulfilled(timeout: 5),
+                      "Clear filters must restore the entire catalogue")
         search.tap(); search.typeText("collision\n")
         XCTAssertTrue(resultCount.waitForExistence(timeout: 5))
         XCTAssertEqual(resultCount.label, "128 matching sounds", "Global tag search differs from its actual category")
@@ -4443,6 +4448,15 @@ final class StudioSmokeUITests: XCTestCase {
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
     }
 
+    /// These completion checks need one-shot playback; Studio defaults to looping.
+    @MainActor
+    private func disableDefaultAudioLoop(_ app: XCUIApplication) throws {
+        app.buttons["studio.audio.timelinePlay"].press(forDuration: 0.7)
+        let loop = app.descendants(matching: .any)["studio.audio.loop"].firstMatch
+        XCTAssertTrue(loop.waitForExistence(timeout: 5) && loop.isHittable)
+        loop.tap()
+    }
+
     @MainActor
     func testExpandedAACLibrarySoundPlaybackAndOfflineReopen() throws {
         let app = try launchGuestStudio()
@@ -4463,7 +4477,8 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "audio-expanded-aac-library")
         app.buttons["studio.audio.library.close"].tap()
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         // The measured AAC lasts 0.720816 seconds; wait for actual player completion.
         XCTAssertTrue(app.staticTexts["00:00.72"].waitForExistence(timeout: 8), "New AAC sound never reached its real playback end")
         app.buttons["studio.audio.close"].tap()
@@ -4480,7 +4495,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
         let replay = reopened.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(replay.isHittable && replay.isEnabled); replay.tap()
+        XCTAssertTrue(replay.isHittable && replay.isEnabled); try disableDefaultAudioLoop(reopened); replay.tap()
         XCTAssertTrue(reopened.staticTexts["00:00.72"].waitForExistence(timeout: 8), "Saved AAC audio did not play after cold reopening")
         capture(reopened, name: "audio-expanded-aac-cold-reopen")
     }
@@ -4552,7 +4567,8 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
         openAudio(app);clipCount("2 clips", in: app)
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         // Two adjacent copies of the pinned0.2508125s source play through the
         // actual mixed AVAudioPlayer clock, rather than a fabricated status.
         XCTAssertTrue(app.staticTexts["00:00.50"].waitForExistence(timeout: 12))
@@ -8239,6 +8255,15 @@ final class StudioSmokeUITests: XCTestCase {
         context.interpolationQuality = .high
         context.draw(png, in: CGRect(x: 0, y: 0, width: 288, height: 512))
         return try XCTUnwrap(context.makeImage())
+    }
+
+    private func redInkCoverage(_ raster: Raster) -> Double {
+        (0..<(raster.width * raster.height)).reduce(0.0) { total, pixel in
+            let offset = pixel * 4, red = Int(raster.bytes[offset])
+            let coverage = max(0, min(red - Int(raster.bytes[offset + 1]),
+                                      red - Int(raster.bytes[offset + 2])))
+            return total + Double(coverage) / 255
+        }
     }
 
     private func exportInkMask(_ raster: Raster) -> Set<Int> {
