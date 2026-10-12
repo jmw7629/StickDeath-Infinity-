@@ -1,34 +1,37 @@
 import SwiftUI
 
-/// Studio chrome tokens from the ArtCraft PhotoCraft "Studio (Dark)" theme
-/// (github.com/storytold/photocraft crates/ui-egui/src/theme.rs, MIT OR
-/// Apache-2.0; see Resources/Licenses/ArtCraft-NOTICE.txt). PhotoCraft's violet
-/// accent is replaced by StickDeath red so the brand identity is unchanged.
+/// Studio chrome tokens. Layout metrics follow the ArtCraft PhotoCraft
+/// "Studio (Dark)" theme (github.com/storytold/photocraft
+/// crates/ui-egui/src/theme.rs, MIT OR Apache-2.0; see
+/// Resources/Licenses/ArtCraft-NOTICE.txt); colours follow the SD∞ reference
+/// design so every Studio panel shares the app's dark-navy chrome and red accent.
 enum StudioCraftTheme {
-    // Surfaces
-    static let chrome = Color(hex: "141415")
-    static let canvas = Color(hex: "0E0E0F")
-    static let canvasDot = Color(hex: "2E2E32")
-    static let dock = Color(hex: "111112")
-    static let card = Color(hex: "1A1A1C")
-    static let cardBorder = Color(hex: "28282C")
-    static let field = Color(hex: "232326")
-    static let fieldBorder = Color(hex: "343439")
-    static let hover = Color(hex: "2C2C30")
-    static let pressed = Color(hex: "38383E")
-    static let separator = Color(hex: "26262A")
-    // Text and icons
-    static let text = Color(hex: "ECECF0")
-    static let textDim = Color(hex: "96969E")
-    // Lifted from PhotoCraft's #606068 so faint labels reach 4.5:1 on the card surface.
-    static let textFaint = Color(hex: "7A7A82")
-    static let icon = Color(hex: "C4C4CC")
-    // Accent (StickDeath red in place of PhotoCraft violet) and states
-    static let accent = Color.sdRed
-    static let accentSoft = Color.sdRed.opacity(0.18)
+    // Surfaces: the SD∞ reference design's dark-navy chrome (Studio chrome
+    // #12121A, dock #14141E, cards #1A1A28, fields #1A1A24, canvas backdrop
+    // #0D0D14) instead of PhotoCraft's neutral greys, so the layer and audio
+    // panels match the rest of the app.
+    static let chrome = Color(hex: "12121A")
+    static let canvas = Color(hex: "0D0D14")
+    static let canvasDot = Color(hex: "2A2A3A")
+    static let dock = Color(hex: "14141E")
+    static let card = Color(hex: "1A1A28")
+    static let cardBorder = Color.white.opacity(0.08)
+    static let field = Color(hex: "1A1A24")
+    static let fieldBorder = Color.white.opacity(0.15)
+    static let hover = Color(hex: "22222F")
+    static let pressed = Color(hex: "2A2A3A")
+    static let separator = Color.white.opacity(0.08)
+    // Text and icons (reference greys: white, #9CA3AF, #6B7280)
+    static let text = Color.white
+    static let textDim = Color(hex: "9CA3AF")
+    static let textFaint = Color(hex: "6B7280")
+    static let icon = Color(hex: "D4D4D8")
+    // Accent: the reference Studio red (#E03030) and states
+    static let accent = Color(hex: "E03030")
+    static let accentSoft = Color(hex: "E03030").opacity(0.18)
     static let accentText = Color.sdStudioActionText
-    static let danger = Color(hex: "F06060")
-    static let warning = Color(hex: "F0BE5A")
+    static let danger = Color(hex: "DC2626")
+    static let warning = Color(hex: "EAB308")
     // SoundCraft mixer states
     static let solo = Color(hex: "DEC434")
     static let mute = Color(hex: "E89428")

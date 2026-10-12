@@ -93,7 +93,7 @@
       "keywords": ["pencil pen brush marker crayon eraser bucket fill eyedropper shapes text color size stroke tool toolbar undo redo"],
       "steps": [
         "Open a project and select a visible, unlocked layer in “Layers”.",
-        "iOS: choose a tool in the single white floating toolbar, which snaps vertically to either canvas edge. Tools: “Pen”, “Pencil”, “Marker”, “Brush”, “Crayon”, “Eraser”, “Paint Bucket”, “Eyedropper”, “Line”, “Rectangle”, “Ellipse”, “Type”, “Lasso”, “Magic Wand”, “Move”, “Hand”, “Zoom”, “Blur”, “Smudge”, “Sharpen”, “Dodge” and “Burn”. Tool settings, including Hand, Zoom and Fit, open in the one dismissible options popup.",
+        "iOS: choose a tool in the single white floating toolbar, which snaps vertically to either canvas edge. Tools: “Move”, “Lasso”, “Wand”, “Brush”, “Pencil”, “Pen”, “Marker”, “Crayon”, “Line”, “Rect”, “Circle”, “Fill”, “Dropper”, “Eraser”, “Smudge”, “Sharpen”, “Dodge”, “Burn”, “Blur”, “Text”, “Hand” and “Zoom”. Tool settings, including Hand, Zoom and Fit, open in the one dismissible options popup.",
         "Draw on the canvas. “UNDO” reverses the last committed edit and “REDO” restores it.",
         "Android: choose “Pencil” with one of eight brush families (Round, Stipple, Grain, Rough Pen, Calligraphy, Dip Pen, Halftone, Hatch), “Eraser”, the shapes “Line”, “Rectangle”, “Ellipse”, “Triangle”, “Diamond”, “Star” and “Arrow”, “Text”, “Fill”, “Eyedropper”, “Lasso”, “Move” or “Hand”. Each brush family remembers its own width, opacity, smoothing and nib angle."
       ],
@@ -179,7 +179,7 @@
         "Select the imported image’s layer. It must be visible, unlocked, fully opaque, in Normal blend, with no drawings or glow.",
         "In the Lasso options choose “Image pixels → Move” and enclose the part you want. This is a New selection; Add and Subtract are not available for pixel lifting.",
         "Completing the outline lifts the selected pixels onto a new selected layer and switches to Move. The remainder stays on the original layer and the original source bytes are preserved. Drag the box or use its handles; “UNDO” restores the original arrangement.",
-        "For regions selected by color instead, choose “Magic Wand”, tap visible image pixels, adjust “Tolerance” and “Sample colors”, then use its Move on canvas action."
+        "For regions selected by color instead, choose “Wand”, tap visible image pixels, adjust “Tolerance” and “Sample colors”, then use its Move on canvas action."
       ],
       "limits": [
         "Source images are limited to four million pixels for pixel lifting and Wand selection.",
