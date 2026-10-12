@@ -12,6 +12,11 @@ DEPENDENCIES = {
         "StickDeathInfinity/Services/StudioSoundCatalogue.swift",
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
     },
+    # AudioFadeEnvelope, CanvasLayer and their consumers use the ArtCraft ports.
+    "StickDeathInfinity/Models/Models.swift": {
+        "StickDeathInfinity/Models/StudioCraftAudio.swift",
+        "StickDeathInfinity/Models/StudioCraftLayers.swift",
+    },
     "StickDeathInfinity/Services/StudioSoundCatalogue.swift": {
         "StickDeathInfinity/Services/StudioAudioImportService.swift",
     },
