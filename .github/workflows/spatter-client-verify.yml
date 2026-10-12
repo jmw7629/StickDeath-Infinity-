@@ -1578,6 +1578,7 @@ jobs:
             StickDeathInfinity/Services/StudioImageImportService.swift \
             StickDeathInfinity/Services/StudioRasterImage.swift \
             StickDeathInfinity/Models/SpatterMotionRecipe.swift \
+            StickDeathInfinity/Services/Spatter/SpatterKnowledgeBase.swift \
             Tests/SpatterMotionRecipe/main.swift \
             -o "$RUNNER_TEMP/sdi-spatter-motion-tests"
           "$RUNNER_TEMP/sdi-spatter-motion-tests"
