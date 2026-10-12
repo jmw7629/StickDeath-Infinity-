@@ -65,6 +65,7 @@ struct StudioView: View {
             // Full-screen panels
             if vm.activePanel == .colorPicker { ColorPickerPanel(vm: vm) }
             if vm.activePanel == .gradientEndColor { ColorPickerPanel(vm: vm, target: .gradientEnd) }
+            if vm.activePanel == .shapeFillColor { ColorPickerPanel(vm: vm, target: .shapeFill) }
             if vm.activePanel == .projectSettings { ProjectSettingsPanel(vm: vm) }
             if vm.activePanel == .layers { LayerPanel(vm: vm) }
             if vm.activePanel == .export { ExportPanel(vm: vm, directRequest: spatterMovieRequest, onDirectRequestConsumed: { spatterMovieRequest = nil }) }
@@ -254,7 +255,7 @@ struct ZoomButton: View {
     var body: some View {
         Button(action: action) {
             Text(label)
-                .font(label == "FIT" ? .specialElite(9) : .system(size: 16, weight: .bold, design: .monospaced))
+                .font(label == "FIT" ? .specialElite(9) : .specialElite(16))
                 .foregroundColor(.white)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(Color(hex: "1E1E2A")))
@@ -398,7 +399,7 @@ struct FramesViewerPanel: View {
                                     )
                                     
                                     Text("Frame \(i + 1)")
-                                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(9))
                                         .foregroundColor(vm.currentFrame.id == frame.id ? .red : .white.opacity(0.5))
                                 }
                             }
@@ -418,7 +419,7 @@ struct FramesViewerPanel: View {
                                             .foregroundColor(.white.opacity(0.3))
                                     )
                                 Text("Add")
-                                    .font(.system(size: 9, design: .monospaced))
+                                    .font(.specialElite(9))
                                     .foregroundColor(.white.opacity(0.3))
                             }
                         }
@@ -463,7 +464,7 @@ struct BackgroundLibraryPanel: View {
                             ForEach(categories, id: \.self) { category in
                                 Button(action: { selectedCategory = category }) {
                                     Text("\(category) (\(presets.filter { $0.category == category }.count))")
-                                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(10))
                                         .foregroundColor(selectedCategory == category ? .white : .white.opacity(0.4))
                                         .frame(maxWidth: .infinity).padding(.vertical, 8)
                                         .background(selectedCategory == category ? Color.red : Color(hex: "1A1A24"))
@@ -480,7 +481,7 @@ struct BackgroundLibraryPanel: View {
                                         RoundedRectangle(cornerRadius: 8)
                                             .fill(LinearGradient(colors: [Color(hex: preset.startHex), Color(hex: preset.endHex)],
                                                 startPoint: .topLeading, endPoint: .bottomTrailing)).frame(height: 80)
-                                        Text(preset.name).font(.system(size: 10, weight: .medium, design: .monospaced))
+                                        Text(preset.name).font(.specialElite(10))
                                             .foregroundColor(.white.opacity(0.6))
                                     }
                                 }.disabled(requestID != nil)
@@ -550,7 +551,7 @@ struct AddImageOption: View {
                 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .font(.specialElite(14))
                         .foregroundColor(.white)
                     Text(subtitle)
                         .font(.system(size: 11))
@@ -761,7 +762,7 @@ struct AIVoiceMakerSheet: View {
             Color(hex: "1A0A2E").ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Text("Voice Maker").font(.system(size: 18, weight: .bold, design: .monospaced))
+                    Text("Voice Maker").font(.specialElite(18))
                     Spacer()
                     Button("Done") { invalidate(); dismiss() }
                 }
@@ -771,7 +772,7 @@ struct AIVoiceMakerSheet: View {
                         Text("On-device system voices · no microphone or cloud AI")
                             .font(.caption).foregroundColor(.white.opacity(0.7))
                         Text("Script / Dialogue · \(scriptText.count)/1,500")
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .font(.specialElite(12))
                         TextEditor(text: $scriptText)
                             .font(.system(size: 14)).foregroundColor(.white)
                             .scrollContentBackground(.hidden).frame(height: 110)
@@ -830,7 +831,7 @@ struct AIVoiceMakerSheet: View {
                         .disabled(voice.prepared == nil || !targetIsCurrent)
                         .accessibilityIdentifier("studio.voice.add")
                 }
-                .font(.system(size: 14, weight: .bold, design: .monospaced))
+                .font(.specialElite(14))
                 .buttonStyle(.borderedProminent).tint(Color(hex: "7C3AED"))
             }
             .foregroundColor(.white).padding(16)
@@ -872,7 +873,7 @@ struct SpatterAISheet: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 3) {
                         Text("🎨 Spatter AI")
-                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .font(.specialElite(18))
                             .foregroundColor(.red)
                         Text(spatterVM.statusText).font(.caption).foregroundColor(.white.opacity(0.6))
                             .accessibilityIdentifier("spatter.studio.status")
@@ -1073,7 +1074,7 @@ struct MagicCutSheet: View {
             Color(hex: "0A0A0F").ignoresSafeArea()
             VStack(spacing: 16) {
                 HStack {
-                    Text("Magic Cut").font(.system(size: 18, weight: .bold, design: .monospaced))
+                    Text("Magic Cut").font(.specialElite(18))
                     Spacer()
                     Button("Done") { cancel(); dismiss() }
                 }

@@ -20,7 +20,8 @@ enum StudioCraftTheme {
     // Text and icons
     static let text = Color(hex: "ECECF0")
     static let textDim = Color(hex: "96969E")
-    static let textFaint = Color(hex: "606068")
+    // Lifted from PhotoCraft's #606068 so faint labels reach 4.5:1 on the card surface.
+    static let textFaint = Color(hex: "7A7A82")
     static let icon = Color(hex: "C4C4CC")
     // Accent (StickDeath red in place of PhotoCraft violet) and states
     static let accent = Color.sdRed

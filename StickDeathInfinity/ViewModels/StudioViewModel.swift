@@ -165,7 +165,13 @@ final class StudioViewModel: ObservableObject {
     @Published var lineAngleSnap: Double = 0 { didSet { rememberDrawingToolPreferences() } }
     @Published var equalShapeSides = false { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeFilled = false { didSet { rememberDrawingToolPreferences() } }
+    /// nil fills shapes with the stroke colour (historical behaviour); a value
+    /// is an independent PhotoCraft-style fill colour.
+    @Published var shapeFillColor: Color? = nil { didSet { rememberDrawingToolPreferences() } }
     @Published var shapeCornerRadius: Double = 0 { didSet { rememberDrawingToolPreferences() } }
+    /// PhotoCraft eyedropper: point sample or N×N average, all layers or the active layer.
+    @Published var eyedropperSampleSize = 1 { didSet { rememberDrawingToolPreferences() } }
+    @Published var eyedropperActiveLayerOnly = false { didSet { rememberDrawingToolPreferences() } }
     @Published var lineArrowEnds: StudioArrowEnds = .none { didSet { rememberDrawingToolPreferences() } }
     @Published var lineArrowLength: Double = 16 { didSet { rememberDrawingToolPreferences() } }
     var toolOpacity: Double { get { strokeOpacity } set { strokeOpacity = min(1, max(0, newValue)) } }
@@ -267,6 +273,8 @@ final class StudioViewModel: ObservableObject {
     var audioDuration: Double { max(document.durationSeconds, document.audioClips.map { $0.startTime + $0.duration }.filter(\.isFinite).max() ?? 0) }
     var strokeColorHex: String { Self.hex(strokeColor) }
     var brushGradientEndColorHex: String { Self.hex(brushGradientEndColor) }
+    /// The colour a filled shape will use right now.
+    var shapeFillColorHex: String { shapeFillColor.map(Self.hex) ?? strokeColorHex }
     // Text stores RGB and opacity separately. Keep the native color picker's
     // alpha control synchronized with the same opacity used by Apply/Undo/export.
     var textPickerColor: Color {
@@ -353,7 +361,7 @@ final class StudioViewModel: ObservableObject {
             try value.validate(tool: .line); return value
         }
         guard [.rectangle, .circle].contains(selectedTool) else { return nil }
-        let value = StudioShapeDescriptor(fillColor: shapeFilled ? strokeColorHex : nil,
+        let value = StudioShapeDescriptor(fillColor: shapeFilled ? shapeFillColorHex : nil,
             cornerRadius: selectedTool == .rectangle ? shapeCornerRadius : 0)
         try value.validate(tool: selectedTool)
         return value
@@ -447,7 +455,9 @@ final class StudioViewModel: ObservableObject {
             lineRulerFixedLength: lineRulerFixedLength, lineRulerLength: lineRulerLength, mirrorMode: mirrorMode, pressureSensitivity: pressureSensitivity, pencilTiltEnabled: pencilTiltEnabled, lineArrowEnds: lineArrowEnds, lineArrowLength: lineArrowLength,
             selectionPreservesAspect: selectionPreservesAspect, selectionNudgeDistance: selectionNudgeDistance,
             wandTolerance: wandTolerance, wandContiguous: wandContiguous,
-            wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode)
+            wandSampleVisibleCanvas: wandSampleVisibleCanvas, wandMode: wandMode,
+            shapeFill: shapeFillColor.map(Self.preferenceRGB),
+            eyedropperSampleSize: eyedropperSampleSize, eyedropperActiveLayerOnly: eyedropperActiveLayerOnly)
         // Invalid programmatic values remain visible to the existing operation
         // validators, but can never poison the next launch or another tool.
         guard value.isValid else { return }
@@ -473,6 +483,9 @@ final class StudioViewModel: ObservableObject {
         lineRulerFixedLength = value.lineRulerFixedLength ?? false; lineRulerLength = value.lineRulerLength ?? 100
         lineAngleSnap = value.lineAngleSnap ?? 0; equalShapeSides = value.equalShapeSides ?? false
         shapeFilled = value.shapeFilled; shapeCornerRadius = value.cornerRadius
+        shapeFillColor = value.shapeFill.map { Color(red: $0.red, green: $0.green, blue: $0.blue) }
+        eyedropperSampleSize = value.eyedropperSampleSize ?? 1
+        eyedropperActiveLayerOnly = value.eyedropperActiveLayerOnly ?? false
         lineArrowEnds = value.lineArrowEnds ?? .none; lineArrowLength = value.lineArrowLength ?? 16
         selectionMode = value.selectionMode ?? .new
         selectionPreservesAspect = value.selectionPreservesAspect ?? true
@@ -814,11 +827,12 @@ final class StudioViewModel: ObservableObject {
         toolDefaults?.set(next, forKey: Self.recentColorsKey)
     }
     @discardableResult
-    func applyCustomColorHex(_ input: String, gradientEnd: Bool = false) -> Bool {
+    func applyCustomColorHex(_ input: String, gradientEnd: Bool = false, shapeFill: Bool = false) -> Bool {
         guard let hex = Self.normalizedColorHex(input), let rgb = UInt32(hex.dropFirst(), radix: 16) else { return false }
         let color = Color(.sRGB, red: Double((rgb >> 16) & 255) / 255,
                           green: Double((rgb >> 8) & 255) / 255, blue: Double(rgb & 255) / 255)
         if gradientEnd { brushGradientEndColor = color; rememberRecentColor(hex) }
+        else if shapeFill { shapeFillColor = color; rememberRecentColor(hex) }
         else { strokeColor = color }
         return true
     }
@@ -1137,7 +1151,7 @@ final class StudioViewModel: ObservableObject {
             managedAudioTracks = Dictionary(uniqueKeysWithValues: managed.map { ($0.id, $0) })
             savedRevision = decoded.revision; lastSaveTime = decoded.modifiedAt
             resetSession(); isEditing = true
-            if stored.editableDocumentData == nil { message = "Original frame records, images and audio are preserved. Imported images are flattened; metadata without image pixels stays preserved but cannot be rendered. Draw editable strokes on Layer 1. Audio playback is unfinished." }
+            if stored.editableDocumentData == nil { message = "Original frame records, images and audio are preserved. Imported images are flattened; metadata without image pixels stays preserved but cannot be rendered. Draw editable strokes on Layer 1." }
             return true
         } catch { message = "Project could not be opened: \(error.localizedDescription)"; return false }
     }
@@ -2860,7 +2874,17 @@ final class StudioViewModel: ObservableObject {
     func zoomIn() { canvasScale = min(canvasScale * 1.25, 5) }
     func zoomOut() { canvasScale = max(canvasScale / 1.25, 0.25) }
     func zoomFit() { canvasScale = 1; canvasOffset = .zero }
-    func addAudioClip(sound: SoundEffect, track: Int) { message = "Sound playback and licensed asset import are unfinished. No audio clip was added." }
+    /// PhotoCraft Zoom tool tap: scale about the tapped point (viewport-local
+    /// coordinates of the untransformed canvas) so that point stays put.
+    func zoom(by factor: CGFloat, anchor: CGPoint, viewport: CGSize) {
+        guard factor.isFinite, factor > 0, anchor.x.isFinite, anchor.y.isFinite,
+              viewport.width > 0, viewport.height > 0 else { return }
+        let scale = min(5, max(0.25, canvasScale * factor))
+        let delta = canvasScale - scale
+        canvasOffset = CGSize(width: canvasOffset.width + (anchor.x - viewport.width / 2) * delta,
+                              height: canvasOffset.height + (anchor.y - viewport.height / 2) * delta)
+        canvasScale = scale
+    }
     /// The Files session must decode with StudioAudioImportService first. These
     /// are ownership/metadata checks, not an independent codec validation claim.
     @discardableResult
@@ -3800,7 +3824,7 @@ final class StudioViewModel: ObservableObject {
                 value.schemaVersion = max(value.schemaVersion, (layer.glowRadius != nil || layer.glowStrength != nil) ? 28 : 22)
                 if copied.rasterRotationDegrees != nil { value.schemaVersion = max(value.schemaVersion, 30) }
                 if let primary = value.frames[index].rasterAssetID { value.schemaVersion = max(value.schemaVersion, primary == assetID ? 27 : 31) }
-                value.layers.append(layer)
+                value.layers.insert(layer, at: 0)
                 value.activeLayerID = layer.id
                 try value.frames[index].appendRasterInstance(.init(layerID: layer.id,
                     placement: copied.rasterPlacement, reflection: copied.rasterReflection,
@@ -4175,7 +4199,7 @@ final class StudioViewModel: ObservableObject {
 }
 
 enum StudioPanelType: String {
-    case none, colorPicker, gradientEndColor, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
+    case none, colorPicker, gradientEndColor, shapeFillColor, toolSettings, projectSettings, layers, export, framesViewer, audioTimeline
     case soundLibrary, stickerEmoji, addImage, backgroundLibrary, menu, aiVoice, spatterAI, magicCut, rotoscope
 }
 extension Array {
@@ -4625,8 +4649,13 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
         var wandContiguous: Bool? = nil
         var wandSampleVisibleCanvas: Bool? = nil
         var wandMode: StudioImageRegionService.Mode? = nil
+        var shapeFill: StudioBrushColor? = nil
+        var eyedropperSampleSize: Int? = nil
+        var eyedropperActiveLayerOnly: Bool? = nil
 
         var isValid: Bool {
+            (shapeFill.map { (try? $0.validate()) != nil && $0.alpha == 1 } ?? true) &&
+            (eyedropperSampleSize.map { StudioColorSamplingService.sampleSizes.contains($0) } ?? true) &&
             (wandTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
             (selectionNudgeDistance.map { [1.0, 10, 100].contains($0) } ?? true) &&
             (areaSelectionSmoothing.map { $0.isFinite && (0...10).contains($0) } ?? true) &&

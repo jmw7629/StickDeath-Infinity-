@@ -521,8 +521,15 @@ struct StudioFrameRenderer {
             context.rotate(by: .degrees(style.rotation))
             let box = CGRect(x: -style.boxWidth/2, y: -style.boxHeight/2, width: style.boxWidth, height: style.boxHeight)
             context.clip(to: Path(box))
-            let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
-            var font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            var font: Font
+            if style.font == .specialElite {
+                // Bundled SpecialElite-Regular.ttf; weight and slant are synthesised.
+                font = Font.custom("SpecialElite-Regular", fixedSize: style.size)
+                if style.bold { font = font.bold() }
+            } else {
+                let design: Font.Design = style.font == .monospaced ? .monospaced : style.font == .serif ? .serif : .default
+                font = Font.system(size: style.size, weight: style.bold ? .bold : .regular, design: design)
+            }
             if style.italic { font = font.italic() }
             // Resolve each actual shaped line using the same font engine used
             // to draw it. Alignment applies per wrapped line, not just to the

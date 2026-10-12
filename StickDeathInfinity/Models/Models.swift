@@ -238,7 +238,21 @@ struct StudioElementTransform: Codable, Equatable, Sendable {
 }
 
 enum StudioTextAlignment: String, Codable, CaseIterable { case left, center, right }
-enum StudioTextFont: String, Codable, CaseIterable { case system, monospaced, serif }
+enum StudioTextFont: String, Codable, CaseIterable {
+    case system, monospaced, serif
+    /// The bundled SD∞ Special Elite typewriter face (DesignCraft text layers
+    /// use the product's own display face). Requires schema 35.
+    case specialElite
+    static let schemaVersion = 35
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .monospaced: return "Monospaced"
+        case .serif: return "Serif"
+        case .specialElite: return "Special Elite"
+        }
+    }
+}
 
 struct StudioTextStyle: Codable, Equatable {
     var font: StudioTextFont = .monospaced

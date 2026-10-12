@@ -51,7 +51,7 @@ struct StudioTimeline: View {
             // Frame thumbnails
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
+                    LazyHStack(spacing: 4) {
                         ForEach(Array(vm.frames.enumerated()), id: \.element.id) { i, frame in
                             Button(action: { vm.selectFrame(frame.id) }) {
                                 ZStack(alignment: .bottomTrailing) {
@@ -64,9 +64,20 @@ struct StudioTimeline: View {
                                     .frame(width: 36, height: 36)
                                     .clipShape(RoundedRectangle(cornerRadius: 4))
 
+                                    // Exposure hold badge (frames held longer than one tick)
+                                    if frame.durationTicks > 1 {
+                                        Text("×\(frame.durationTicks)")
+                                            .font(.specialElite(7))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 3).padding(.vertical, 1)
+                                            .background(Color.black.opacity(0.65), in: Capsule())
+                                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                            .padding(2)
+                                            .accessibilityHidden(true)
+                                    }
                                     // Frame number
                                     Text("\(i + 1)")
-                                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                                        .font(.specialElite(7))
                                         .foregroundColor(vm.currentFrameIndex == i ? .red : .white.opacity(0.4))
                                         .padding(2)
                                 }

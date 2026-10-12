@@ -461,7 +461,7 @@ private func rejected(_ request: StudioCommandRequest, editor: inout StudioDocum
                 try rejected(foreign, editor: &editor, expected: .wrongProject)
                 try StudioCommandExecutor.execute(change, editor: &editor)
                 try rejected(change, editor: &editor, expected: .staleRevision)
-                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete"], "capability context omitted implemented settings")
+                try require(StudioCommandContext(document: editor.document).supportedAudioEdits == ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete", "trackVolume", "trackMute", "trackPan", "trackSolo"], "capability context omitted implemented settings")
             }
             func imageEditor() throws -> StudioDocumentEditor {
                 var editor = try fresh()

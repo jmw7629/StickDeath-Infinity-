@@ -28,7 +28,7 @@ struct FloatingToolSettingsPanel: View {
     @FocusState private var textInputFocused: Bool
     @FocusState private var imageFocusedField: StudioImagePlacementField?
 
-    static func hasSettings(_ tool: DrawingTool) -> Bool { tool != .eyedropper }
+    static func hasSettings(_ tool: DrawingTool) -> Bool { true }
     
     var toolDef: ToolDef? {
         StudioToolStrip.tools.first { $0.tool == vm.selectedTool }
@@ -204,7 +204,7 @@ struct FloatingToolSettingsPanel: View {
                 }
                 SettingsSlider(label: "Size", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
-                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: "", accent: .green)
+                SettingsSlider(label: "Smoothing", value: $vm.smoothing, range: 0...10, unit: " steps", accent: .green)
                 if vm.brushFamily == .calligraphy {
                     SettingsSlider(label: "Tip Angle", value: $vm.brushTipAngle, range: 0...179, unit: "°", accent: accentColor)
                     SettingsToggle(label: "Pencil Tilt", isOn: $vm.pencilTiltEnabled, accent: accentColor)
@@ -252,10 +252,10 @@ struct FloatingToolSettingsPanel: View {
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                         .accessibilityIdentifier("studio.fill.selection-coverage")
                 }
-                SettingsSlider(label: "Tolerance", value: $vm.fillTolerance, range: 0...128, unit: "", accent: .green)
+                SettingsSlider(label: "Tolerance", value: $vm.fillTolerance, range: 0...128, unit: " levels", accent: .green)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 SettingsSlider(label: "Expand", value: $vm.fillExpand, range: -5...5, unit: "px", accent: .orange)
-                SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "", accent: .yellow)
+                SettingsSlider(label: "Gap Close", value: $vm.fillGapClose, range: 0...5, unit: "px", accent: .yellow)
                     .disabled(!vm.fillContiguous)
                     .opacity(vm.fillContiguous ? 1 : 0.4)
                 
@@ -397,7 +397,7 @@ struct FloatingToolSettingsPanel: View {
                     }.frame(minHeight: 44)
                 }
                 Picker("Font", selection: $vm.textStyle.font) {
-                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
+                    ForEach(StudioTextFont.allCases, id: \.self) { Text($0.title).tag($0) }
                 }.accessibilityIdentifier("studio.text.font")
                 SettingsSlider(label: "Font Size", value: $vm.textStyle.size, range: 8...240, unit: "px", accent: accentColor)
                 Picker("Alignment", selection: $vm.textStyle.alignment) {
@@ -423,7 +423,7 @@ struct FloatingToolSettingsPanel: View {
         case .line:
             VStack(alignment: .leading, spacing: 8) {
                 mirrorSettings
-                SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 Picker("Arrowheads", selection: $vm.lineArrowEnds) {
                     Text("None").tag(StudioArrowEnds.none); Text("Start").tag(StudioArrowEnds.start)
@@ -453,7 +453,7 @@ struct FloatingToolSettingsPanel: View {
                 Toggle(vm.selectedTool == .rectangle ? "Square" : "Perfect circle", isOn: $vm.equalShapeSides)
                     .font(.specialElite(11))
                     .accessibilityIdentifier("studio.shape.equal-sides")
-                SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...20, unit: "px", accent: accentColor)
+                SettingsSlider(label: "Stroke Width", value: $vm.strokeWidth, range: 1...50, unit: "px", accent: accentColor)
                 SettingsSlider(label: "Opacity", value: opacityBinding, range: 0...100, unit: "%", accent: accentColor)
                 
                 Text("FILL")
@@ -479,6 +479,28 @@ struct FloatingToolSettingsPanel: View {
                 .accessibilityLabel("Shape fill")
                 .accessibilityValue(vm.shapeFilled ? "Solid" : "None")
                 .accessibilityIdentifier("studio.shape.fill")
+                if vm.shapeFilled {
+                    HStack(spacing: 8) {
+                        Button { vm.activePanel = .shapeFillColor } label: {
+                            HStack(spacing: 8) {
+                                Circle().fill(vm.shapeFillColor ?? vm.strokeColor).frame(width: 28, height: 28)
+                                    .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+                                Text(vm.shapeFillColor == nil ? "Fill uses stroke color" : "Fill color")
+                                    .font(.specialElite(9)).foregroundColor(.white.opacity(0.8))
+                            }.frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Shape fill color")
+                        .accessibilityValue(vm.shapeFillColorHex.uppercased())
+                        .accessibilityIdentifier("studio.shape.fill-color")
+                        Spacer()
+                        if vm.shapeFillColor != nil {
+                            Button("Match stroke") { vm.shapeFillColor = nil }
+                                .font(.specialElite(9)).buttonStyle(.bordered).frame(minHeight: 44)
+                                .accessibilityIdentifier("studio.shape.fill-color.match")
+                        }
+                    }
+                }
                 
                 if def.tool == .rectangle {
                     SettingsSlider(label: "Corner Radius", value: $vm.shapeCornerRadius, range: 0...50, unit: "px", accent: .orange)
@@ -516,7 +538,7 @@ struct FloatingToolSettingsPanel: View {
                     .disabled(vm.selectedImageCutCapture == nil)
                     .accessibilityIdentifier("studio.image.cut")
                     .accessibilityLabel("Cut selected image")
-                    .accessibilityHint("Cuts only the selected active-layer image. Undo restores it; Paste adds the image to a blank frame.")
+                    .accessibilityHint("Cuts only the selected active-layer image. Undo restores it; Paste adds the image as a new layer on the current frame.")
                     Button("Paste image") { _ = vm.pasteImage() }
                         .disabled(!vm.canPasteImage)
                         .accessibilityIdentifier("studio.image.paste")
@@ -640,7 +662,6 @@ struct FloatingToolSettingsPanel: View {
                                 selectionLayerLock = vm.prepareSelectionLayerLock()
                                 showingSelectionLayerLock = selectionLayerLock != nil
                             }
-                            else { vm.message = "This selection action is unfinished. The artwork has not changed." }
                         }) {
                             VStack(spacing: 2) {
                                 Text(String(action.prefix(2)))
@@ -907,6 +928,23 @@ struct FloatingToolSettingsPanel: View {
                     .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
 
+        case .eyedropper:
+            VStack(alignment: .leading, spacing: 8) {
+                Text("SAMPLE SIZE")
+                    .font(.specialElite(8)).foregroundColor(.sdStudioSecondaryText).tracking(2)
+                Picker("Sample size", selection: $vm.eyedropperSampleSize) {
+                    ForEach(StudioColorSamplingService.sampleSizes, id: \.self) { size in
+                        Text(size == 1 ? "Point" : "\(size)×\(size)").tag(size)
+                    }
+                }
+                .pickerStyle(.menu).tint(.white)
+                .accessibilityIdentifier("studio.eyedropper.sample-size")
+                SettingsToggle(label: "Sample active layer only", isOn: $vm.eyedropperActiveLayerOnly, accent: accentColor)
+                    .accessibilityIdentifier("studio.eyedropper.active-layer")
+                Text("Point samples one composited pixel of the visible artwork. Larger sizes average the block around the tap, clipped to the canvas. Active-layer sampling reads that layer over the white canvas. Saved per tool.")
+                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+            }
+
         case .hand, .zoom:
             VStack(alignment: .leading, spacing: 8) {
                 if !compactHeight {
@@ -919,7 +957,7 @@ struct FloatingToolSettingsPanel: View {
                     zoomControl("plus", "Zoom in", "zoom-in") { vm.zoomIn() }
                     zoomControl("arrow.up.left.and.arrow.down.right", "FIT", "fit") { vm.zoomFit() }
                 }
-                Text("Use two fingers to pan and pinch to zoom. Hand also pans with one finger. FIT recenters the canvas.")
+                Text("Two fingers pan and pinch to zoom with every tool. Hand also pans with one finger; Zoom taps zoom in around the tap. FIT recenters the canvas.")
                     .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
             }
         default:

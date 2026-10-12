@@ -75,15 +75,19 @@ extension StudioViewModel {
         let snapshot = document
         let raster = rasterData(currentFrame.rasterAssetID)
         do {
+            let size = eyedropperSampleSize, layerOnly = eyedropperActiveLayerOnly
             let sample = try StudioColorSamplingService.sample(document: snapshot,
-                frameID: captured.frameID, point: point, rasterData: raster, rasterDataByID: rasterSources(for: currentFrame))
+                frameID: captured.frameID, point: point, rasterData: raster, rasterDataByID: rasterSources(for: currentFrame),
+                sampleSize: size, layerID: layerOnly ? snapshot.activeLayerID : nil)
             guard beginColorSample() == captured else {
                 message = "Studio changed before the color sample was ready. Tap again."
                 return false
             }
             strokeColor = Color(.sRGB, red: Double(sample.red) / 255,
                 green: Double(sample.green) / 255, blue: Double(sample.blue) / 255, opacity: 1)
-            message = "Sampled " + sample.hex + " from visible artwork."
+            let scope = layerOnly ? "the active layer" : "visible artwork"
+            message = size == 1 ? "Sampled " + sample.hex + " from " + scope + "."
+                : "Sampled " + sample.hex + " (\(size)×\(size) average) from " + scope + "."
             return true
         } catch {
             message = error.localizedDescription

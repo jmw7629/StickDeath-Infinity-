@@ -370,7 +370,7 @@ struct StudioCanvasView: View {
                             if vm.beginSelectionHandle() != nil { _ = vm.positionSelected(dx: dx, dy: dy) }
                         default: break
                         }
-                    }, navigationEnabled: [.hand, .zoom].contains(vm.selectedTool) && scenePhase == .active,
+                    }, navigationEnabled: scenePhase == .active,
                     onNavigation: { factor, translation, anchor, began in
                         if began { navigationOrigin = (vm.canvasScale, vm.canvasOffset) }
                         guard let origin = navigationOrigin, factor.isFinite, factor > 0 else { return }
@@ -723,7 +723,7 @@ struct StudioCanvasView: View {
                     }
                     return
                 }
-                if vm.selectedTool == .zoom { vm.zoomIn(); return }
+                if vm.selectedTool == .zoom { vm.zoom(by: 1.25, anchor: value.location, viewport: size); return }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
     }
     @ViewBuilder private var inputStatusOverlay: some View {

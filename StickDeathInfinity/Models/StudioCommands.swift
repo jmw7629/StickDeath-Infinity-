@@ -107,6 +107,11 @@ struct StudioCommandLayerSettings: Codable {
 
 enum StudioCommand: Codable {
     struct RenameProject: Codable { let name: String }
+    /// Omitted fields keep the current value; the editor applies the same
+    /// 16–4096 px / 1–60 fps limits as the Project Settings panel.
+    struct UpdateProjectSettings: Codable { var name: String? = nil; var width: Int? = nil; var height: Int? = nil; var fps: Int? = nil }
+    struct CopyFrame: Codable { let source: StudioCommandReference }
+    struct PasteFrame: Codable { let after: StudioCommandReference }
     struct Draw: Codable { let frame: StudioCommandReference; let layer: StudioCommandReference; let strokes: [StudioCommandStroke] }
     struct EraseSelectedElements: Codable {
         let frame: StudioCommandReference
@@ -175,6 +180,8 @@ enum StudioCommand: Codable {
     case duplicateFrameRange(ReverseFrames)
     case eraseSelectedElements(EraseSelectedElements)
     case renameProject(RenameProject)
+    case updateProjectSettings(UpdateProjectSettings)
+    case copyFrame(CopyFrame), pasteFrame(PasteFrame)
     case cropImage(CropImage)
     case setFrameHold(SetFrameHold)
     case tweenFrames(TweenFrames)
@@ -196,6 +203,9 @@ enum StudioCommand: Codable {
         switch key.stringValue {
         case "eraseSelectedElements": self = .eraseSelectedElements(try container.decode(EraseSelectedElements.self, forKey: key))
         case "renameProject": self = .renameProject(try container.decode(RenameProject.self, forKey: key))
+        case "updateProjectSettings": self = .updateProjectSettings(try container.decode(UpdateProjectSettings.self, forKey: key))
+        case "copyFrame": self = .copyFrame(try container.decode(CopyFrame.self, forKey: key))
+        case "pasteFrame": self = .pasteFrame(try container.decode(PasteFrame.self, forKey: key))
         case "cropImage": self = .cropImage(try container.decode(CropImage.self, forKey: key))
         case "tweenFrames": self = .tweenFrames(try container.decode(TweenFrames.self, forKey: key))
         case "setFrameHold": self = .setFrameHold(try container.decode(SetFrameHold.self, forKey: key))
@@ -244,6 +254,9 @@ enum StudioCommand: Codable {
         var container = encoder.container(keyedBy: StudioWireKey.self)
         switch self {
         case .renameProject(let value): try container.encode(value, forKey: StudioWireKey("renameProject"))
+        case .updateProjectSettings(let value): try container.encode(value, forKey: StudioWireKey("updateProjectSettings"))
+        case .copyFrame(let value): try container.encode(value, forKey: StudioWireKey("copyFrame"))
+        case .pasteFrame(let value): try container.encode(value, forKey: StudioWireKey("pasteFrame"))
         case .cropImage(let value): try container.encode(value, forKey: StudioWireKey("cropImage"))
         case .tweenFrames(let value): try container.encode(value, forKey: StudioWireKey("tweenFrames"))
         case .setFrameHold(let value): try container.encode(value, forKey: StudioWireKey("setFrameHold"))
@@ -367,7 +380,8 @@ struct StudioCommandContext {
     let frames: [Frame]
     let layers: [CanvasLayer]
     let editableAudioClips: [AudioClip]
-    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete"]
+    let supportedAudioEdits = ["clipVolume", "clipMute", "clipFades", "clipPlacement", "clipTrim", "clipDuplicate", "clipSplit", "clipDelete",
+                               "trackVolume", "trackMute", "trackPan", "trackSolo"]
     let supportedTools: [DrawingTool]
     let supportedBrushFamilies = StudioBrushFamily.allCases
     let supportedTweenEasings = StudioTweenEasing.allCases
@@ -376,7 +390,7 @@ struct StudioCommandContext {
     let gridSettings: StudioGridSettings
     let onionEnabled: Bool
     let onionSettings: StudioOnionSettings
-    let unavailableCommands = ["export", "importMedia", "audioMix", "publish", "sendMessage", "call", "shell", "admin"]
+    let unavailableCommands = ["export", "importMedia", "publish", "sendMessage", "call", "shell", "admin"]
 
     init(document: StudioDocument) {
         projectID = document.id; revision = document.revision; name = document.name
@@ -453,6 +467,8 @@ enum StudioCommandExecutor {
             "tweenFrames": ["after", "to", "inbetweenCount", "easing"],
             "eraseSelectedElements": ["frame", "layer", "elementIDs", "points", "width", "opacity", "mode"],
             "renameProject": ["name"],
+            "updateProjectSettings": ["name", "width", "height", "fps"],
+            "copyFrame": ["source"], "pasteFrame": ["after"],
             "splitAudioClip": ["clipID", "seconds", "newClipID"],
             "deleteAudioClip": ["clipID"],
             "duplicateAudioClip": ["clipID", "newClipID"],
@@ -604,7 +620,7 @@ enum StudioCommandExecutor {
             // A mixed batch containing any other operation keeps existing clearing semantics.
             let preservesSelection = commands.allSatisfy {
                 switch $0 {
-                case .renameProject, .eraseSelectedElements, .updateAudioTrack: return true
+                case .renameProject, .updateProjectSettings, .copyFrame, .eraseSelectedElements, .updateAudioTrack: return true
                 default: return false
                 }
             }
@@ -707,6 +723,17 @@ enum StudioCommandExecutor {
         switch command {
         case .renameProject(let value):
             try editor.renameProject(value.name)
+        case .updateProjectSettings(let value):
+            guard value.name != nil || value.width != nil || value.height != nil || value.fps != nil else { throw StudioCommandError.malformed }
+            try editor.updateProjectSettings(name: value.name ?? document.name, width: value.width ?? document.width,
+                height: value.height ?? document.height, fps: value.fps ?? document.fps)
+        case .copyFrame(let value):
+            try editor.copyFrame(try frame(value.source))
+        case .pasteFrame(let value):
+            let after = try frame(value.after)
+            guard let source = editor.clipboardFrame else { throw StudioCommandError.malformed }
+            try budget.generate(source.elements)
+            try editor.pasteFrame(after: after)
         case .splitAudioClip(let value):
             try editor.splitAudioClip(value.clipID, at: value.seconds, newClipID: value.newClipID)
         case .deleteAudioClip(let value):

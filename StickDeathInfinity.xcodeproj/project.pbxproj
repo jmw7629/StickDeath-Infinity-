@@ -84,7 +84,6 @@
 		79F3C4DD8ACBDE4106EAEB78 /* WarRoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA2DA6516F6657DAD373396C /* WarRoomView.swift */; };
 		219D7440135A12A23546886A /* CalendarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4656A17FEDE038AEB1110AD8 /* CalendarView.swift */; };
 		3F241526A6B3032C6AB1B106 /* SubscriptionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A532F4DD804EF3BF476F9BE /* SubscriptionView.swift */; };
-		7A11BF142A81C5884600C025 /* SoundLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B31A841BDFE99A171865FA9 /* SoundLibrary.swift */; };
 		09C972AFC1287A7D68017468 /* StickerLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB7657D5FD74DD0EE029DCDE /* StickerLibrary.swift */; };
 		E941E57B2A8B9B3782B9D79D /* AudioPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41025273DB7BD5B5205E0FBE /* AudioPanels.swift */; };
 		2E798FC7F997BA656EB295C6 /* ColorPickerPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 302B396582CA004E20D1A72A /* ColorPickerPanel.swift */; };
@@ -271,7 +270,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 		4656A17FEDE038AEB1110AD8 /* CalendarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Messages/CalendarView.swift"; sourceTree = SOURCE_ROOT; };
 		4488DE848BD5B2E8592E9E06 /* CallsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Messages/CallsView.swift"; sourceTree = SOURCE_ROOT; };
 		9A532F4DD804EF3BF476F9BE /* SubscriptionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Settings/SubscriptionView.swift"; sourceTree = SOURCE_ROOT; };
-		8B31A841BDFE99A171865FA9 /* SoundLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Data/SoundLibrary.swift"; sourceTree = SOURCE_ROOT; };
 		AB7657D5FD74DD0EE029DCDE /* StickerLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Data/StickerLibrary.swift"; sourceTree = SOURCE_ROOT; };
 		41025273DB7BD5B5205E0FBE /* AudioPanels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift"; sourceTree = SOURCE_ROOT; };
 		302B396582CA004E20D1A72A /* ColorPickerPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "StickDeathInfinity/Views/Studio/Panels/ColorPickerPanel.swift"; sourceTree = SOURCE_ROOT; };
@@ -389,7 +387,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				4656A17FEDE038AEB1110AD8 /* CalendarView.swift */,
 				4488DE848BD5B2E8592E9E06 /* CallsView.swift */,
 				9A532F4DD804EF3BF476F9BE /* SubscriptionView.swift */,
-				8B31A841BDFE99A171865FA9 /* SoundLibrary.swift */,
 				AB7657D5FD74DD0EE029DCDE /* StickerLibrary.swift */,
 				41025273DB7BD5B5205E0FBE /* AudioPanels.swift */,
 				302B396582CA004E20D1A72A /* ColorPickerPanel.swift */,
@@ -1052,7 +1049,6 @@ DB3FF26E51A52E86F882890D /* sourceBuild */ = {isa = PBXBuildFile; fileRef = 167D
 				79F3C4DD8ACBDE4106EAEB78 /* WarRoomView.swift in Sources */,
 				219D7440135A12A23546886A /* CalendarView.swift in Sources */,
 				3F241526A6B3032C6AB1B106 /* SubscriptionView.swift in Sources */,
-				7A11BF142A81C5884600C025 /* SoundLibrary.swift in Sources */,
 				09C972AFC1287A7D68017468 /* StickerLibrary.swift in Sources */,
 				E941E57B2A8B9B3782B9D79D /* AudioPanels.swift in Sources */,
 				2E798FC7F997BA656EB295C6 /* ColorPickerPanel.swift in Sources */,

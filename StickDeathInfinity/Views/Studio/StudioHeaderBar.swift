@@ -36,13 +36,17 @@ struct StudioHeaderBar: View {
             // HIDE
             Button(action: { vm.showToolbar.toggle() }) {
                 VStack(spacing: 1) {
-                    Image(systemName: "keyboard.chevron.compact.down")
+                    Image(systemName: vm.showToolbar ? "keyboard.chevron.compact.down" : "keyboard.chevron.compact.up")
                         .font(.system(size: 12))
-                    Text("HIDE")
+                    Text(vm.showToolbar ? "HIDE" : "SHOW")
                         .font(.specialElite(7))
                 }
                 .foregroundColor(.white.opacity(0.5))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
+            .accessibilityLabel(vm.showToolbar ? "Hide toolbar" : "Show toolbar")
+            .accessibilityIdentifier("studio.toolbar.toggle")
             
             // Save indicator
             Button(action: { Task { await vm.save() } }) {
@@ -57,6 +61,8 @@ struct StudioHeaderBar: View {
                 .padding(.vertical, 4)
                 .background(Color(hex: "1A1A24"))
                 .cornerRadius(6)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .disabled(vm.isSaving)
             .accessibilityIdentifier("studio.save")
@@ -69,6 +75,8 @@ struct StudioHeaderBar: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Export")
             .accessibilityIdentifier("studio.export.open")
@@ -80,6 +88,8 @@ struct StudioHeaderBar: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.6))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Studio menu")
             .accessibilityIdentifier("studio.menu.open")

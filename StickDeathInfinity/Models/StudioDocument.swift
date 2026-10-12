@@ -2,7 +2,7 @@ import Foundation
 
 /// Editable Studio content. CanvasLayer is the sole layer identity and ordering model.
 struct StudioDocument: Codable, Equatable {
-    static let supportedSchemaVersions = 1...34
+    static let supportedSchemaVersions = 1...35
     var schemaVersion = 1
     let id: UUID
     var name: String
@@ -528,6 +528,11 @@ struct StudioDocumentEditor {
         return values
     }
     var clipboardElementCount: Int { clipboardElements?.count ?? 0 }
+    /// The copied frame, if the clipboard currently holds one.
+    var clipboardFrame: AnimationFrame? {
+        if case .frame(let frame) = clipboard { return frame }
+        return nil
+    }
     /// Preserve staged clipboard changes when a typed batch is coalesced into
     /// one document/history edit. This never imports another project's files.
     mutating func adoptClipboard(from source: Self) throws {
@@ -826,6 +831,7 @@ struct StudioDocumentEditor {
             if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
             if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
             if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+            if element.text?.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
             if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
@@ -928,6 +934,7 @@ struct StudioDocumentEditor {
             value.frames[fi].elements[ei].text = text
             value.frames[fi].elements[ei].color = color
             value.frames[fi].elements[ei].opacity = opacity
+            if text.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
         }
     }
     mutating func addFrame() throws {
@@ -1077,6 +1084,7 @@ struct StudioDocumentEditor {
                 if element.reflection != nil { value.schemaVersion = max(value.schemaVersion, 8) }
                 if element.eraser != nil { value.schemaVersion = max(value.schemaVersion, 9) }
                 if element.text != nil { value.schemaVersion = max(value.schemaVersion, 10) }
+                if element.text?.style.font == .specialElite { value.schemaVersion = max(value.schemaVersion, StudioTextFont.schemaVersion) }
                 if element.transform != nil { value.schemaVersion = max(value.schemaVersion, 11) }
             if element.smudge != nil { value.schemaVersion = max(value.schemaVersion, 17) }
             if element.blur != nil { value.schemaVersion = max(value.schemaVersion, 18) }
@@ -1918,10 +1926,15 @@ struct StudioGridSettings: Codable, Equatable {
 /// Deliberately non-overshooting timing for editable, baked in-between frames.
 enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
     case linear, easeIn, easeOut, easeInOut
+    /// ArtCraft EffectCraft "Easy Ease": cubic-bezier(1/3, 0, 2/3, 1), whose
+    /// x(s) = s so the curve reduces exactly to 3t² − 2t³ (smoothstep). Gentler
+    /// than Ease in/out and never overshoots.
+    case easyEase
     var id: String { rawValue }
     var title: String {
         switch self { case .linear: return "Linear"; case .easeIn: return "Ease in"
-        case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out" }
+        case .easeOut: return "Ease out"; case .easeInOut: return "Ease in/out"
+        case .easyEase: return "Easy ease" }
     }
     func progress(_ t: Double) -> Double {
         let t = min(1, max(0, t))
@@ -1930,6 +1943,7 @@ enum StudioTweenEasing: String, Codable, CaseIterable, Identifiable {
         case .easeIn: return t * t
         case .easeOut: return t * (2 - t)
         case .easeInOut: return t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
+        case .easyEase: return t * t * (3 - 2 * t)
         }
     }
 }
