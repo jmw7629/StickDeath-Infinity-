@@ -304,14 +304,18 @@ final class SpatterAIViewModel: ObservableObject {
         let communicationCall = ["phone call", "voice call", "video call", "conference call", "make a call",
             "start a call", "join a call", "call with", "call a user", "call another user", "call the user",
             "call someone", "call a friend", "call my friend"].contains { normalized.contains(" " + $0 + " ") }
+        let removedCommunication = "User messaging and voice/video calls have been removed. Collaboration rooms are planned for mutually agreed sharing of a Studio project; connected rooms are not available yet. Spatter remains your Studio assistant.\n\n"
         if mentions("messaging", "messenger", "calls", "calling", "livekit", "dm", "dms") || communicationCall {
-            return "User messaging and voice/video calls have been removed. Collaboration rooms are planned for mutually agreed sharing of a Studio project; connected rooms are not available yet. Spatter remains your Studio assistant.\n\n" + roomsGuide
+            return removedCommunication + roomsGuide
         }
         // "room" alone can mean canvas space; require a collaboration word with it.
         if mentions("rooms", "invite", "invites", "invitation", "invitations", "collaborate", "collaboration", "collaborator") ||
             (mentions("room") && mentions("join", "create", "share", "shared", "code", "member", "members", "collab", "together")) ||
             (mentions("watch") && mentions("together")) {
-            return roomsGuide
+            // "chat" alone can mean this conversation; inside a rooms question it
+            // asks about user-to-user chat or calls, which are removed scope.
+            let asksCommunication = mentions("chat", "chats", "chatting", "call", "video", "voice", "mic", "microphone", "camera")
+            return (asksCommunication ? removedCommunication : "") + roomsGuide
         }
         if mentions("account", "accounts", "login", "signin", "password", "passwords") ||
             (mentions("sign") && mentions("in", "out", "up")) || (mentions("delete", "deletion") && mentions("account")) ||
