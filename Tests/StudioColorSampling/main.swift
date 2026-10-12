@@ -79,6 +79,7 @@ private struct TestFailure: Error { let message: String }
         for (x,y) in [(0.0,0.0),(63.99,0),(0,47.99),(63.99,47.99)] { try require(try read(d,x,y).hex == "#FFFFFF", "Boundary white") }
         pass("fractional and all four canvas edge coordinates")
         // PhotoCraft eyedropper: N×N averages and active-layer sampling.
+        try require(StudioColorSamplingService.sampleSizes == StudioDrawingToolPreferences.eyedropperSampleSizes, "Sample size catalogues diverged")
         let point = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 12, y: 12), sampleSize: 1)
         try require(point.hex == "#FF0000", "Point sample equals the historical result")
         let dotEdge = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 18, y: 12), sampleSize: 11)

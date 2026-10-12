@@ -4619,6 +4619,10 @@ struct StudioSelectionHandleGeometry {
 /// captured stroke/shape settings, so changing these never changes existing art.
 struct StudioDrawingToolPreferences: Codable, Equatable {
     static let maximumBytes = 32_768
+    /// PhotoCraft eyedropper sample sizes; StudioColorSamplingService.sampleSizes
+    /// must stay identical (the colour-sampling test asserts it) because this
+    /// file compiles without the service in several native test builds.
+    static let eyedropperSampleSizes = [1, 3, 5, 11, 31, 51, 101]
     var version = 1
     var values: [String: Entry] = [:]
 
@@ -4677,7 +4681,7 @@ struct StudioDrawingToolPreferences: Codable, Equatable {
 
         var isValid: Bool {
             (shapeFill.map { (try? $0.validate()) != nil && $0.alpha == 1 } ?? true) &&
-            (eyedropperSampleSize.map { StudioColorSamplingService.sampleSizes.contains($0) } ?? true) &&
+            (eyedropperSampleSize.map { StudioDrawingToolPreferences.eyedropperSampleSizes.contains($0) } ?? true) &&
             (wandTolerance.map { $0.isFinite && (0...128).contains($0) } ?? true) &&
             (selectionNudgeDistance.map { [1.0, 10, 100].contains($0) } ?? true) &&
             (areaSelectionSmoothing.map { $0.isFinite && (0...10).contains($0) } ?? true) &&
