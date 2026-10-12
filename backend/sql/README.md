@@ -157,3 +157,172 @@ and records previous/new flags in a client-inaccessible audit table. Removing a
 feature flag does not require content to remain eligible. Neither operation changes
 visibility, render approval, creator consent, export permission or publication jobs.
 A stale feature revision requires refresh. This remains source-only/unapplied.
+
+## October 12 batch: integrity, publication, rooms v2, challenges, achievements, billing, agents, lifecycle, hardening, support
+
+All files below are unapplied deployment candidates. They were applied, in the order
+listed at the end of this document, to a throwaway local PostgreSQL 16 cluster with
+stubbed Supabase pieces (see "Local harness"); that proves the SQL is coherent on
+vanilla PostgreSQL and that the assertions in `tests/` hold there. It proves nothing
+about the live project, which has not been touched.
+
+Two existing candidates were corrected because the harness could not apply or run
+them: `upload-preview.sql` referenced the `creator`/`upload`/`digest` parameters
+unqualified inside a SQL-language body (ambiguous with column names, a hard error at
+apply time); `publishing-jobs.sql` `publish_action` used `on conflict(...,destination)`
+with a parameter of the same name (runtime error on every enqueue). Signatures and
+RPC names are unchanged.
+
+`feed-integrity.sql` closes the cross-cutting gaps: self-likes are refused; suspended
+or banned creators disappear from feed listings, reactions, follows, War Room lists,
+proposals and votes (`creator_restricted`); a repeat report is `do nothing` and a
+decided report can no longer be reopened by reason changes; War Room proposals expire
+seven days after creation (`expired` status, service sweep `sdi_war_expire_proposals`)
+and stop counting toward the five-active limit; private render artifacts registered
+for 24 hours are retained seven days while under review and thirty days once approved,
+so approval and publishing leases no longer race the intake expiry (problem 6).
+Rejected renders keep their registered expiry.
+
+`feed-publication.sql` is the missing feed path (problem 1). `sdi_feed_publish_claim`/
+`sdi_feed_publish_finish` are service-role only and re-check
+`release_allowed(review, version, digest, 'feed')` on claim and finish: owner/admin
+approval of the exact digest, consent, cleared rights, active account, retained
+artifact and the owner flag for Spatter renders. Finish inserts the approved
+`sdi_watch_media` row (owner, digest, HTTPS URL) and a visible `feed_posts` row in one
+transaction; if approval lapsed or cancellation raced the copy, the job becomes
+`removal_pending` and `sdi_feed_removal_claim/finish` remove the hosted copy. Creator
+export permission is the new `render_reviews.allow_export` field with the
+`sdi_export_consent` setter (default off, not part of approval evidence). Creators
+queue the feed destination through `sdi_creator_review('publish_feed', ...)`.
+
+`rooms-v2.sql` adds the shared project reference, title and `view`/`edit` permissions
+to `sdi_rooms` (owner-set, revisioned), `editor`/`viewer` member roles with an
+owner-only `set_role`, the member's own pending-request list, room reports with an
+admin queue (`sdi_room_moderate`: dismiss/close, uninvolved administrator, no reporter
+identity returned), and `room_commands` for versioned shared edits: unique operation
+id per room (idempotent replay), strictly increasing room revision, explicit conflict
+responses carrying the missing commands, bounded payloads and rate. It also supplies
+the feed-removal appeal RPC for `moderation_appeals` (problem 9): owner-only
+submission within 30 days, uninvolved-admin decision, restoration only while the
+hosted copy still exists.
+
+`challenges.sql` implements challenge create/schedule/cancel (moderation capability
+with MFA), member submit/withdraw/vote with the War Room digest-eligibility rule, one
+entry per creator, one mutable favorite vote per nonparticipant, server-time phases
+(upcoming/active/voting/completed), a service finalizer (ties record no winner) and
+`sdi_calendar_range(start, end, limit<=500)` for Calendar month views over a range of
+at most 62 days. `reward_text` is descriptive; no coins, prizes or money exist.
+
+`achievements.sql` adds versioned `achievement_criteria`, an idempotency ledger keyed
+on the finalized source event, service award functions for War Room and challenge
+results (`sdi_award_achievements` sweep) and a member catalogue of earned/locked
+badges for the caller only. Visibility to others still follows profile-records
+preferences (default off).
+
+`billing.sql` stores product identifiers, provider events (unique provider+event id),
+subscriptions with a provider-reported paid-through date, an entitlements view, a
+finance ledger of provider-reported amounts and an audit table. No price is stored;
+the approved offers are the two monthly tiers at USD 4.99 and USD 9.99 and annual
+periods cannot be approved until the owner records explicit configuration. Events are
+applied only by the service role from verified provider payloads; out-of-order events
+never move a subscription backwards; unapproved products grant nothing. Clients read
+`sdi_my_entitlement` and write nothing. Edge-function contracts are in
+`backend/billing/README.md` (unimplemented).
+
+`agent-controls.sql` is the owner's agent console backend: registry (paused by
+default), global emergency stop, per-agent run/item/cost caps and permissions,
+versioned instructions with rollback, run log with heartbeats, and the service
+contract `agent_run_begin/heartbeat/finish` that refuses work when stopped, paused,
+over cap or without published instructions. Caps are configuration; nothing spends.
+
+`admin-hardening.sql` adds the step-up check (`recently_authenticated`, based on MFA
+timestamps in the token's `amr` claims), per-administrator rate limits, a denial
+audit, one `admin_gate` helper, step-up on role changes, the service-only
+`sdi_provision_owner` (bootstrap only; requires confirmed email and a verified MFA
+factor; binds display name/handle; takes no password), worker heartbeats and
+`sdi_admin_health` (queue counts, oldest pending items, worker staleness, emergency
+stop; no hostnames or credentials).
+
+`support-requests.sql` is the #272 intake: `sdi_support_action` with
+`create|list_mine|withdraw|delete` for members (five per day, idempotency key,
+server receipt) and `list|update_status` for administrators with the users capability
+and MFA, audited, with per-request retention and a service retention sweep. No
+attachments in this candidate; private projects are never uploaded.
+
+`account-lifecycle.sql` provides member notices, the own-rows data export (three per
+day; on-device projects are not server-side and the export says so), deletion requests
+with a seven-day cooling-off and the service worker `sdi_account_deletion_run`: phase
+one ends sessions, suspends, withdraws publishing consent, unapproves media and queues
+removals, hides posts, withdraws matches and entries, closes rooms and scrubs support
+text; phase two purges server rows in dependency order and deletes the auth user only
+once hosted copies are removed, publishing jobs are settled and intake renders are
+retired, otherwise it waits and eventually surfaces the request as blocked. Several
+evidence references become nullable `on delete set null` so retained moderation
+records survive the deletion of the member who filed them. Provider subscriptions are
+not cancelled by this code; the notice tells the member to cancel with the store.
+
+Known limits of this batch: `publishing_admin` withdrawal still handles only YouTube
+jobs (feed copies go through the feed removal worker); nothing schedules the service
+sweeps; the removal and feed workers are SQL contracts without a host adapter; the
+Spatter generation and daily-draft flows live in `backend/spatter` and are out of
+scope here. None of this is deployed or verified against the live project.
+
+## Local harness
+
+`scripts/backend/run_sql_tests.sh` starts a throwaway PostgreSQL 16 cluster
+(`initdb` in a temporary directory, Unix socket only), applies
+`scripts/backend/sql_test_stubs.sql`, applies every file in the apply-order block below
+(and fails if a `backend/sql/*.sql` file is missing from it), then runs each
+`backend/sql/tests/*.sql` file, which wrap themselves in `begin ... rollback`.
+When run as root it executes the server inside a user namespace mapped to the
+`postgres` (or `nobody`) account because PostgreSQL refuses to run as root.
+
+What the stubs replace, and only for this local run: the `anon`, `authenticated` and
+`service_role` roles; an `auth` schema with minimal `users`, `sessions`, `identities`
+and `mfa_factors` tables; `auth.uid()`/`auth.jwt()` reading `request.jwt.claims`
+exactly as Supabase does; pgcrypto in an `extensions` schema; and an `sdi_test` schema
+of assertion/login helpers. Nothing else is stubbed. Supabase-specific behaviour that
+the stubs cannot reproduce (GoTrue session issuance, MFA enrolment, PostgREST
+parameter mapping, storage) remains deferred to the integration phase.
+
+Python unit tests for the intake and publishing adapters use scripted fake transports
+and never open a network connection:
+`python3 -m unittest discover -s backend/tests -t .` from the repository root.
+
+## Apply order (single source of truth; the local harness reads this block)
+
+<!-- apply-order -->
+1. collaboration-watch.sql
+2. room-invitations.sql
+3. war-room.sql
+4. video-feed.sql
+5. admin-approval.sql
+6. admin-users.sql
+7. admin-permissions.sql
+8. moderation.sql
+9. publishing-jobs.sql
+10. publishing-withdrawal.sql
+11. publishing-admin.sql
+12. creator-reviews.sql
+13. review-rights.sql
+14. upload-identity.sql
+15. upload-registration.sql
+16. upload-preview.sql
+17. upload-retention.sql
+18. preview-renewal.sql
+19. war-finalization.sql
+20. war-moderation.sql
+21. war-appeals.sql
+22. profile-records.sql
+23. admin-overview.sql
+24. feed-integrity.sql
+25. feed-publication.sql
+26. rooms-v2.sql
+27. challenges.sql
+28. achievements.sql
+29. billing.sql
+30. agent-controls.sql
+31. admin-hardening.sql
+32. support-requests.sql
+33. account-lifecycle.sql
+<!-- /apply-order -->

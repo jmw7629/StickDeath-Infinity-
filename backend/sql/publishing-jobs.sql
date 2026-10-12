@@ -40,6 +40,7 @@ $$;
 revoke all on function sdi_private.release_allowed(uuid,bigint,text,text) from public,anon,authenticated;
 create function sdi_private.publish_action(action text,review uuid default null,destination text default null,job uuid default null) returns jsonb
 language plpgsql security definer set search_path='' as $$
+#variable_conflict use_column
 declare r sdi_private.render_reviews; j sdi_private.publish_jobs; items jsonb;
 begin
  if not sdi_private.account_active() then return jsonb_build_object('error','Current account session required.');end if;
