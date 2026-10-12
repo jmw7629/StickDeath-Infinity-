@@ -1,11 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════
-// ChoosePlanView — Subscription plan selection
-// Matches: src/pages/ChoosePlan.tsx exactly
-// - Skull + "Choose Your Plan" + "Unlock your creative potential"
-// - 4 vertical plan cards: Free, Creator, Pro (POPULAR), Studio
-// - Feature tags as small pills
-// - CTA button changes based on selection
-// - "Start Free →" skip at bottom
+// ChoosePlanView — Subscription plan selection (onboarding)
+//
+// Contract: docs/BILLING_CONTRACT.md
+// - Two monthly plans only (USD 4.99 and 9.99 as configured in App Store
+//   Connect). Prices come from the loaded StoreKit `Product`; nothing here
+//   states a price. No annual plan, no third tier.
+// - Feature pills name only what the app really does today. Paid-plan
+//   extras are owner configuration and are labelled as pending.
+// - "Start Free →" always continues without a purchase. A failed purchase
+//   never advances as if it succeeded.
+// - This view is compiled but not mounted anywhere yet.
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -15,24 +19,26 @@ struct ChoosePlanView: View {
     let onSelected: () -> Void
 
     @StateObject private var stripe = StripeService.shared
-    @State private var selectedPlan: String? = nil
+    @State private var selectedTier: AppConfig.SubscriptionTier? = nil
     @State private var loading = false
-    @State private var showError = false
-    @State private var errorMessage = ""
+    @State private var errorMessage: String?
+
+    /// What every build of the Studio does today, regardless of plan.
+    private static let studioFeatures = [
+        "Frame-by-frame Studio",
+        "Layers and audio timeline",
+        "MP4, GIF and PNG export",
+        "Projects stay on device",
+        "Spatter Studio assistant",
+    ]
 
     private let plans: [PlanInfo] = [
-        PlanInfo(id: "free", name: "Free", price: "$0", per: "",
-                 features: ["5 projects", "Basic tools", "720p export", "Watermark"],
-                 color: Color(hex: "#9CA3AF"), popular: false),
-        PlanInfo(id: "creator", name: "Creator", price: "$4.99", per: "/mo",
-                 features: ["25 projects", "Advanced tools", "1080p export", "No watermark", "5 AI queries/day"],
+        PlanInfo(tier: .creator, name: "Creator",
+                 features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
                  color: Color(hex: "#DC2626"), popular: false),
-        PlanInfo(id: "pro", name: "Pro", price: "$9.99", per: "/mo",
-                 features: ["Unlimited projects", "All tools", "4K export", "Cloud sync", "50 AI queries/day", "Collab rooms"],
+        PlanInfo(tier: .pro, name: "Pro",
+                 features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
                  color: Color(hex: "#DC2626"), popular: true),
-        PlanInfo(id: "studio", name: "Studio", price: "$19.99", per: "/mo",
-                 features: ["Everything in Pro", "Team workspace", "Commercial license", "Unlimited AI", "API access"],
-                 color: Color(hex: "#A855F7"), popular: false),
     ]
 
     var body: some View {
@@ -53,7 +59,7 @@ struct ChoosePlanView: View {
                         .tracking(1)
                         .padding(.top, 12)
 
-                    Text("Unlock your creative potential")
+                    Text("Two monthly plans, billed by Apple")
                         .font(.specialElite(14))
                         .foregroundColor(.sdTextSecondary)
                         .padding(.top, 8)
@@ -66,42 +72,50 @@ struct ChoosePlanView: View {
                         ForEach(plans) { plan in
                             PlanCardRow(
                                 plan: plan,
-                                isSelected: selectedPlan == plan.id,
-                                onSelect: { selectedPlan = plan.id }
+                                product: stripe.product(for: plan.tier),
+                                isSelected: selectedTier == plan.tier,
+                                onSelect: { selectedTier = plan.tier }
                             )
                         }
+
+                        availabilityNotice
                     }
                     .padding(.horizontal, 16)
                 }
 
                 // CTA section
                 VStack(spacing: 12) {
-                    if let selected = selectedPlan {
-                        let plan = plans.first { $0.id == selected }
+                    if let message = errorMessage {
+                        Text(message)
+                            .font(.specialElite(12))
+                            .foregroundColor(Color(hex: "#F87171"))
+                            .multilineTextAlignment(.center)
+                    }
+
+                    if let tier = selectedTier, let plan = plans.first(where: { $0.tier == tier }) {
+                        let product = stripe.product(for: tier)
                         Button {
-                            handleSelect(selected)
+                            handleSelect(tier)
                         } label: {
                             Text(loading
-                                 ? "Processing..."
-                                 : (selected == "free"
-                                    ? "Continue with Free"
-                                    : "Start \(plan?.name ?? "") Plan"))
+                                 ? "Waiting for Apple..."
+                                 : ctaTitle(plan: plan, product: product))
                                 .font(.specialElite(16))
                                 .fontWeight(.bold)
                                 .foregroundColor(.white)
                                 .frame(maxWidth: .infinity)
                                 .padding(.vertical, 16)
                                 .background(
-                                    loading
+                                    (loading || product == nil)
                                         ? Color(hex: "#DC2626").opacity(0.5)
                                         : Color(hex: "#DC2626")
                                 )
                                 .cornerRadius(12)
                         }
-                        .disabled(loading)
+                        .disabled(loading || product == nil)
                     }
 
-                    // Start Free skip
+                    // Continue without a subscription
                     Button {
                         onSelected()
                     } label: {
@@ -110,37 +124,63 @@ struct ChoosePlanView: View {
                             .foregroundColor(.sdTextSecondary)
                             .padding(.vertical, 12)
                     }
+                    .disabled(loading)
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 20)
                 .padding(.bottom, 32)
             }
         }
+        .task {
+            if stripe.productLoadState == .notLoaded {
+                await stripe.loadProducts()
+            }
+        }
     }
 
-    private func handleSelect(_ planId: String) {
+    @ViewBuilder
+    private var availabilityNotice: some View {
+        switch stripe.productLoadState {
+        case .notLoaded, .loading:
+            Text("Loading prices from the App Store...")
+                .font(.specialElite(11))
+                .foregroundColor(.sdTextSecondary)
+                .padding(.top, 4)
+        case .notConfigured:
+            Text("Plans are not configured in App Store Connect yet. You can start free now.")
+                .font(.specialElite(11))
+                .foregroundColor(.sdTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 4)
+        case .failed(let message):
+            Text("The App Store could not be reached: \(message)")
+                .font(.specialElite(11))
+                .foregroundColor(.sdTextSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.top, 4)
+        case .loaded:
+            EmptyView()
+        }
+    }
+
+    private func ctaTitle(plan: PlanInfo, product: Product?) -> String {
+        guard let product else { return "\(plan.name) is not available yet" }
+        return "Start \(plan.name) — \(product.displayPrice)/mo"
+    }
+
+    private func handleSelect(_ tier: AppConfig.SubscriptionTier) {
+        errorMessage = nil
         loading = true
         Task {
-            if planId == "free" {
+            defer { loading = false }
+            do {
+                try await stripe.subscribe(to: tier)
                 onSelected()
-            } else {
-                // Map to subscription tier
-                if let tier = AppConfig.SubscriptionTier(rawValue: planId) {
-                    do {
-                        try await stripe.subscribe(to: tier)
-                        onSelected()
-                    } catch StripeService.PaymentError.cancelled {
-                        loading = false
-                    } catch {
-                        errorMessage = error.localizedDescription
-                        showError = true
-                        loading = false
-                        // Graceful fallback — proceed anyway
-                        onSelected()
-                    }
-                } else {
-                    onSelected()
-                }
+            } catch StripeService.PaymentError.cancelled {
+                // User dismissed Apple's sheet; stay on this screen.
+            } catch {
+                // Do not advance as if the purchase succeeded.
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -148,18 +188,20 @@ struct ChoosePlanView: View {
 
 // MARK: - Plan Info Model
 private struct PlanInfo: Identifiable {
-    let id: String
+    let tier: AppConfig.SubscriptionTier
     let name: String
-    let price: String
-    let per: String
     let features: [String]
     let color: Color
     let popular: Bool
+
+    var id: String { tier.rawValue }
 }
 
 // MARK: - Plan Card Row
 private struct PlanCardRow: View {
     let plan: PlanInfo
+    /// The loaded StoreKit product, if App Store Connect has one for this plan.
+    let product: Product?
     let isSelected: Bool
     let onSelect: () -> Void
 
@@ -175,16 +217,20 @@ private struct PlanCardRow: View {
 
                     Spacer()
 
-                    HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        Text(plan.price)
-                            .font(.specialElite(18))
-                            .fontWeight(.bold)
-                            .foregroundColor(.white)
-                        if !plan.per.isEmpty {
-                            Text(plan.per)
+                    if let product {
+                        HStack(alignment: .firstTextBaseline, spacing: 0) {
+                            Text(product.displayPrice)
+                                .font(.specialElite(18))
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                            Text("/mo")
                                 .font(.specialElite(12))
                                 .foregroundColor(.sdTextSecondary)
                         }
+                    } else {
+                        Text("Price shown when configured")
+                            .font(.specialElite(11))
+                            .foregroundColor(.sdTextSecondary)
                     }
                 }
 
