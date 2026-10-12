@@ -40,6 +40,21 @@ jobs:
             Tests/StudioCraftSuite/main.swift \
             -o /tmp/sdi-studio-craft-suite
           timeout 60s /tmp/sdi-studio-craft-suite
+  backend-candidates:
+    # Applies every backend/sql deployment candidate to a throwaway local
+    # PostgreSQL 16 cluster with stubbed Supabase pieces and runs the SQL and
+    # Python backend tests. Not a deployment; proves nothing about the live project.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Run backend Python tests with fake transports
+        run: python3 -m unittest discover -s backend/tests -t .
+      - name: Apply SQL candidates in README order and run the SQL tests
+        run: bash scripts/backend/run_sql_tests.sh
   source-security:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
