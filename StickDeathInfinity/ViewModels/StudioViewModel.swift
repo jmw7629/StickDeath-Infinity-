@@ -325,6 +325,25 @@ final class StudioViewModel: ObservableObject {
         activePanel = .toolSettings; message = nil
         return true
     }
+    /// DesignCraft-style placement: a Type-tool tap starts a new text box
+    /// centred on the tapped document point, kept inside the canvas.
+    @discardableResult
+    func beginTextEditing(at point: CGPoint) -> Bool {
+        let width = Double(canvasWidth), height = Double(canvasHeight)
+        guard point.x.isFinite, point.y.isFinite, point.x >= 0, point.y >= 0,
+              Double(point.x) < width, Double(point.y) < height else {
+            message = "Tap inside the canvas to place a text box."; return false
+        }
+        guard textDraft == nil else {
+            message = "Apply or cancel the current text first. Use Move to reposition an existing text box."; return false
+        }
+        guard beginTextEditing(), let draft = textDraft else { return false }
+        let origin = CGPoint(x: min(max(0, Double(point.x) - textStyle.boxWidth / 2), max(0, width - textStyle.boxWidth)),
+                             y: min(max(0, Double(point.y) - textStyle.boxHeight / 2), max(0, height - textStyle.boxHeight)))
+        textDraft = TextDraft(projectID: draft.projectID, revision: draft.revision, frameID: draft.frameID,
+                              layerID: draft.layerID, elementID: nil, origin: origin)
+        return true
+    }
     func cancelTextEditing() { textDraft = nil; textInput = ""; message = nil }
     @discardableResult
     func applyTextEditing() -> Bool {

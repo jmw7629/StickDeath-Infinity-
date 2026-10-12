@@ -628,8 +628,8 @@ struct StudioStrokeInput {
         guard [0.0, 15, 45, 90].contains(angleSnapDegrees),
               angleSnapDegrees == 0 || tool == .line,
               !equalShapeSides || [.rectangle, .circle].contains(tool),
-              rulerAngleDegrees.map({ $0.isFinite && (-180...180).contains($0) && tool == .line && angleSnapDegrees == 0 }) ?? true,
-              rulerLength.map({ $0.isFinite && (1...4096).contains($0) && rulerAngleDegrees != nil }) ?? true else {
+              rulerAngleDegrees.map({ $0.isFinite && (-180...180).contains($0) && Self.rulerTools.contains(tool) && angleSnapDegrees == 0 }) ?? true,
+              rulerLength.map({ $0.isFinite && (1...4096).contains($0) && rulerAngleDegrees != nil && tool == .line }) ?? true else {
             throw StudioBrushError.invalidSettings("These drawing constraints are invalid for this tool.")
         }
         var point = CGPoint(x: min(max(location.x / viewportSize.width, 0), 1) * documentSize.width,
@@ -671,9 +671,13 @@ struct StudioStrokeInput {
         }
         points.append(StrokePoint(x: point.x, y: point.y, pressure: pressure, timestamp: elapsed, tilt: tilt))
     }
+    /// Tools that accept the straight-edge ruler: Line, and the styled brush
+    /// tools whose samples are projected onto the ruler axis (PhotoCraft
+    /// straight-line painting). Fixed length remains Line-only.
+    static let rulerTools: Set<DrawingTool> = [.line, .pencil, .pen, .brush, .marker, .crayon]
     /// Editor-only ruler guide, never part of a DrawnElement or export.
     var rulerGuide: [CGPoint] {
-        guard tool == .line, let angle = rulerAngleDegrees, angle.isFinite,
+        guard Self.rulerTools.contains(tool), let angle = rulerAngleDegrees, angle.isFinite,
               let start = points.first else { return [] }
         let radians = CGFloat(angle * .pi / 180), dx = cos(radians), dy = sin(radians)
         func endpoint(_ sign: CGFloat) -> CGPoint {

@@ -105,6 +105,11 @@ private struct Failure: Error { let message: String }
         try rejects { _ = try constrained(.line,end:.zero,ruler:181) }
         try rejects { _ = try constrained(.line,end:.zero,ruler:0,length:0) }
         try rejects { _ = try constrained(.line,end:.zero,length:10) }
+        // Straight-edge ruler for brush tools: every sample slides along the axis.
+        let ruledPen = try constrained(.pen,end:.init(x:80,y:70),ruler:0)
+        try require(ruledPen.points.allSatisfy { $0.y == 16 } && ruledPen.points.last!.x == 80, "Brush ruler must project samples onto the axis")
+        try rejects { _ = try constrained(.pen,end:.init(x:80,y:70),ruler:0,length:20) }
+        try rejects { _ = try constrained(.rectangle,end:.init(x:80,y:70),ruler:0) }
         pass("ruler projects both directions with exact angle length edge clipping and editor-only guides")
 
         var legacy = shape("legacy"); legacy.shape = nil

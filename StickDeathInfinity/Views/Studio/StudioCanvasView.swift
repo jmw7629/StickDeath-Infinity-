@@ -536,7 +536,7 @@ struct StudioCanvasView: View {
                             startedAt: value.time, shape: shape, eraser: eraser,
                             angleSnapDegrees: vm.selectedTool == .line && !vm.lineRulerEnabled ? vm.lineAngleSnap : 0,
                             equalShapeSides: [.rectangle, .circle].contains(vm.selectedTool) && vm.equalShapeSides,
-                            rulerAngleDegrees: vm.selectedTool == .line && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
+                            rulerAngleDegrees: StudioStrokeInput.rulerTools.contains(vm.selectedTool) && vm.lineRulerEnabled ? vm.lineRulerAngle : nil,
                             rulerLength: vm.selectedTool == .line && vm.lineRulerEnabled && vm.lineRulerFixedLength ? vm.lineRulerLength : nil,
                             mirror: vm.selectedTool != .eraser && vm.mirrorMode != .off ?
                                 .init(mode: vm.mirrorMode, width: Double(vm.canvasWidth), height: Double(vm.canvasHeight)) : nil,
@@ -724,6 +724,12 @@ struct StudioCanvasView: View {
                     return
                 }
                 if vm.selectedTool == .zoom { vm.zoom(by: 1.25, anchor: value.location, viewport: size); return }
+                if vm.selectedTool == .text, size.width > 0, size.height > 0 {
+                    // SwiftUI reports the location in this untransformed local view.
+                    _ = vm.beginTextEditing(at: CGPoint(x: value.location.x / size.width * CGFloat(vm.canvasWidth),
+                                                        y: value.location.y / size.height * CGFloat(vm.canvasHeight)))
+                    return
+                }
                 vm.message = "This tool or layer cannot edit here yet. Choose an unlocked Brush, Pen, Pencil, Eraser or shape tool."
     }
     @ViewBuilder private var inputStatusOverlay: some View {

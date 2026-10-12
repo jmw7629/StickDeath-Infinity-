@@ -190,6 +190,7 @@ struct FloatingToolSettingsPanel: View {
         case .pencil, .pen, .brush, .marker, .crayon:
             VStack(alignment: .leading, spacing: 8) {
                 mirrorSettings
+                lineRulerSettings
                 Button { showBrushLibrary.toggle() } label: {
                     HStack {
                         Text("Brush Library: " + vm.brushFamily.title)
@@ -381,7 +382,7 @@ struct FloatingToolSettingsPanel: View {
                         Button("Edit selected") { if vm.beginTextEditing(selected: true) { textInputFocused = true } }
                             .accessibilityIdentifier("studio.text.edit")
                     }.frame(minHeight: 44)
-                    Text("New text starts at canvas center. Use Move to select and position a text box, then Edit selected.")
+                    Text("Tap the canvas to place a text box there, or New text starts at canvas center. Use Move to select and position a text box, then Edit selected.")
                         .font(.specialElite(10)).foregroundColor(.sdStudioSecondaryText)
                 } else {
                     TextField("Enter text", text: $vm.textInput, axis: .vertical)
@@ -1000,13 +1001,18 @@ struct FloatingToolSettingsPanel: View {
                 .accessibilityIdentifier("studio.line.ruler")
             if vm.lineRulerEnabled {
                 SettingsSlider(label: "Angle", value: $vm.lineRulerAngle, range: -180...180, unit: "°", accent: .red)
-                Toggle("Fixed length", isOn: $vm.lineRulerFixedLength)
-                    .accessibilityIdentifier("studio.line.ruler-fixed-length")
-                if vm.lineRulerFixedLength {
-                    SettingsSlider(label: "Length", value: $vm.lineRulerLength, range: 1...4096, unit: "px", accent: .red)
+                if vm.selectedTool == .line {
+                    Toggle("Fixed length", isOn: $vm.lineRulerFixedLength)
+                        .accessibilityIdentifier("studio.line.ruler-fixed-length")
+                    if vm.lineRulerFixedLength {
+                        SettingsSlider(label: "Length", value: $vm.lineRulerLength, range: 1...4096, unit: "px", accent: .red)
+                    }
+                    Text("Drag either way along the ruler. With Fixed length, tapping also places a line. Lines stop at the canvas edge. The blue guide is never exported.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
+                } else {
+                    Text("Every sample of the stroke slides along the ruler through its first touch, so the brush paints a straight line with its own texture and pressure. The blue guide is never exported. Saved per tool.")
+                        .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
                 }
-                Text("Drag either way along the ruler. With Fixed length, tapping also places a line. Lines stop at the canvas edge. The blue guide is never exported.")
-                    .font(.specialElite(9)).foregroundColor(.sdStudioSecondaryText)
             }
         }.font(.specialElite(11))
     }
