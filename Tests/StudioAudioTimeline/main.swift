@@ -1242,12 +1242,17 @@ func check(_ value: @autoclosure () throws -> Bool, _ message: String) throws {
             try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: true, trackVolume: 1, trackAudible: false) == "Preview is silent: clip or track is muted", "track mute wins over solo wording")
             try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 1, trackMuted: false, trackVolume: 1, trackAudible: false) == "Preview is silent: another track is soloed", "solo hint")
             try check(StudioAudioPreviewSilence.reason(clipMuted: false, clipVolume: 0, trackMuted: false, trackVolume: 1, trackAudible: true) == "Preview is silent: clip or track volume is zero", "zero volume")
+            // Evaluate against the real document type without depending on the
+            // mute/track state the earlier journeys left on the shared clip.
             var doc = vm.document
             doc.schemaVersion = max(doc.schemaVersion, 34)
-            doc.soloedAudioTracks = [2]
-            let clip = doc.audioClips[0]
-            try check(clip.track == 1 && StudioAudioPreviewSilence.reason(for: clip, in: doc) == "Preview is silent: another track is soloed", "document solo evaluation")
-            doc.soloedAudioTracks = [1]
+            doc.mutedAudioTracks = nil; doc.audioTrackVolumes = nil
+            var clip = doc.audioClips[0]
+            clip.isMuted = false; clip.volume = 1
+            let other = clip.track == 1 ? 2 : 1
+            doc.soloedAudioTracks = [other]
+            try check(StudioAudioPreviewSilence.reason(for: clip, in: doc) == "Preview is silent: another track is soloed", "document solo evaluation")
+            doc.soloedAudioTracks = [clip.track]
             try check(StudioAudioPreviewSilence.reason(for: clip, in: doc) == nil, "soloing the clip's own track keeps it audible")
         }
         try await test("audio session controller stops registered owners on interruption and releases on last end") {
