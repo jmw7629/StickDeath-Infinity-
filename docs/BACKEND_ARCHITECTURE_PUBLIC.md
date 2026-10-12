@@ -4,6 +4,12 @@
 > - **Verified source exists** — confirmed in committed source files.
 > - **Runtime verified** — confirmed to be operational via executed checks or established deployment facts.
 > - **Not verified** — referenced in source or design documents but not confirmed operational.
+>
+> Scope reference: `docs/PRODUCT_SCOPE_2026_09_19.md` and GitHub issue #116. Items that
+> earlier revisions of this document described but that the owner retired on
+> 2026-09-19 (user-to-user messaging, voice/video calls, call billing, creator tips,
+> a "Studio" subscription tier and invented annual prices) are listed in §9 so the
+> history is clear; they are not product scope and must not be rebuilt.
 
 Sensitive infrastructure details, credential locations, private network topology, and security-specific findings are intentionally omitted from this public report. See the security note at the end of this document.
 
@@ -11,284 +17,157 @@ Sensitive infrastructure details, credential locations, private network topology
 
 ## 1. High-Level Architecture
 
-StickDeath Infinity is a **native SwiftUI/iOS application** backed by a **Supabase-hosted backend**. There is no custom backend server in this repository. The iOS app acts as a thick client that reads and writes directly to Supabase (Postgres, Auth, Storage, Realtime, Edge Functions).
+StickDeath Infinity is a **native SwiftUI/iOS application** (with an Android client in progress) backed by a **Supabase-hosted backend** (Postgres, Auth, Storage, Edge Functions). There is no custom application server in this repository; two small server-side Python components (private render intake and the owner-channel publishing worker) exist as source and are not deployed.
 
-An existing web surface (nginx-served) and an `/admin` surface exist on the backend VPS — these are not part of this repository and are not modified by this documentation task.
+**Key external services (current scope):**
+- **Supabase** — Database, Auth (Apple, Google, GitHub, Microsoft identity), Storage, Edge Functions
+- **StoreKit 2** — Apple In-App Purchases for the two monthly subscriptions
+- **Stripe** — Server-side only (web checkout/portal and webhooks); test mode until the owner authorizes live activation; no client-side Stripe charges
+- **YouTube Data API** — Owner-channel publication of approved renders, server-side OAuth only
+- **Spatter assistant** — On-device guide plus an optional server-side generation path; the provider is a configurable server-side adapter, no provider is named in product scope and **no paid external AI calls are configured** (owner policy)
 
-**Key external services:**
-- **Supabase** — Database, Auth, Storage, Edge Functions, Realtime
-- **LiveKit Cloud** — WebRTC voice/video calls and collaboration rooms
-- **OpenAI** — GPT-4o for the Spatter AI assistant
-- **StoreKit 2** — Apple In-App Purchases for subscriptions
-- **Stripe** — Non-digital payments (creator tips, call billing)
+Editable projects and originals stay on the device. The server holds only identity, access, consent, votes, billing, moderation and job metadata plus bounded temporary media.
 
 ---
 
-## 2. Supabase Integration (Verified Source Exists)
+## 2. Supabase Integration
 
-All backend data flows route through a singleton Supabase client (`SupabaseManager.shared`) initialized from `AppConfig` (gitignored configuration, not committed to source control).
+All client data flows route through a singleton Supabase client (`SupabaseManager.shared`) initialized from `AppConfig` (gitignored configuration, not committed to source control).
 
-### 2.1 Auth
+### 2.1 Auth (Verified Source Exists)
 
 | Method | Status | Notes |
 |--------|--------|-------|
 | Sign In with Apple | Verified source exists | Native `ASAuthorizationController` → Supabase ID token exchange |
 | Sign In with Google | Verified source exists | OAuth redirect via `stickdeath://auth/callback` URL scheme |
+| GitHub / Microsoft | Not verified | Required by scope (`docs/AUTH_PROVIDER_CONFIGURATION.md`); provider configuration is an owner gate |
 | Email/Password | Verified source exists | Standard Supabase Auth sign-up/sign-in |
-| Guest (Anonymous) | Verified source exists | Anonymous Supabase session with auto-generated username |
+| Guest (Anonymous) | Verified source exists | Anonymous session; anonymous accounts cannot publish, vote, join rooms or contact support |
 | Session persistence | Verified source exists | Supabase auth state change listener implemented |
 
-### 2.2 Database Tables (Inferred from Source)
+Administrator roles are **server-authorized** (`sdi_private.admin_roles`, MFA `aal2`, live session), never derived from an email list or profile field. Earlier builds gated the admin dashboard on a hard-coded `superuserEmails` configuration; that pattern is retired and must not be reintroduced.
 
-The following tables are referenced in the iOS client source code. Table existence, schema correctness, and RLS policies are **not verified** from this repository — they would need to be confirmed against the live Supabase project.
+### 2.2 Database (Candidate Schema, Not Applied)
 
-| Table | Purpose | Source reference |
-|-------|---------|-----------------|
-| `users` | User profiles, subscription status, roles | `AuthService.swift` |
-| `posts` | Social feed posts | `SocialService.swift` |
-| `likes` | Post likes | `SocialService.swift` |
-| `comments` | Post comments | `SocialService.swift` |
-| `follows` | User follow relationships | `SocialService.swift` |
-| `chat_rooms` | Chat room definitions | `MessageService.swift` |
-| `chat_messages` | Chat messages | `MessageService.swift` |
-| `room_members` | Chat room membership | `MessageService.swift` |
-| `challenges` | Community animation challenges | `ChallengeService.swift` |
-| `challenge_submissions` | Challenge entries | `ChallengeService.swift` |
-| `studio_projects` | Animation project metadata and frame data | `ProjectService.swift` |
-| `tips` | Creator tips and call charges | `StripeService.swift` |
-| `spatter_bot_configs` | Spatter Command Center bot configurations | `SpatterBotService.swift` |
-| `spatter_content_queue` | Content scheduling queue | `SpatterBotService.swift` |
-| `spatter_knowledge` | Runtime AI knowledge entries (optional) | `SpatterService.swift` |
+The current backend design is the set of SQL candidates in `backend/sql/` (install order in `backend/sql/README.md`). They have been applied to a local PostgreSQL 16 cluster by `scripts/backend/run_sql_tests.sh` with stubbed Supabase pieces; they have **not** been applied to the live project, whose legacy tables (`users`, `posts`, `likes`, `comments`, `follows`, `challenges`, `challenge_submissions`, `studio_projects`) must be inventoried and reconciled in the integration phase.
 
-**Verification status:** Tables are inferred from client-side query code. Table schemas, indexes, RLS policies, and Supabase RPCs (e.g., `increment_likes`) are not verified from this repository.
+| Area | Candidate files | Client surface |
+|------|-----------------|----------------|
+| Rooms (invitation-based collaboration on a shared Studio project; roles; versioned commands; reports) | `collaboration-watch.sql`, `room-invitations.sql`, `rooms-v2.sql` | `sdi_room_action`, `sdi_room_manage`, `sdi_room_command` |
+| War Room (favorite voting between approved renditions) | `war-room.sql`, `war-finalization.sql`, `war-moderation.sql`, `war-appeals.sql`, `profile-records.sql` | `sdi_war_action`, `sdi_war_report`, `sdi_war_notices`, `sdi_profile_records`, `sdi_war_leaderboard` |
+| Feed of approved videos | `video-feed.sql`, `feed-integrity.sql`, `feed-publication.sql`, `moderation.sql` | `sdi_feed_action`, `sdi_export_consent`, `sdi_moderation_appeal` |
+| Render review and publishing | `admin-approval.sql`, `review-rights.sql`, `publishing-jobs.sql`, `publishing-withdrawal.sql`, `publishing-admin.sql`, `creator-reviews.sql`, `upload-*.sql`, `preview-renewal.sql` | `sdi_creator_review`, `sdi_publish_action`, `sdi_review_action` |
+| Challenges and Calendar | `challenges.sql` | `sdi_challenge_action`, `sdi_calendar_range` |
+| Achievements | `achievements.sql` | `sdi_achievement_catalog` |
+| Billing and entitlements | `billing.sql` | `sdi_my_entitlement` (read-only) |
+| Administration | `admin-users.sql`, `admin-permissions.sql`, `admin-overview.sql`, `admin-hardening.sql`, `agent-controls.sql` | `sdi_users_action`, `sdi_admin_permissions`, `sdi_admin_health`, `sdi_agent_admin` |
+| Account lifecycle and support | `account-lifecycle.sql`, `support-requests.sql` | `sdi_account_lifecycle`, `sdi_member_notices`, `sdi_support_action` |
+
+All tables live in `sdi_private` (RLS enabled, no client grants) behind `security definer` RPCs that bind every action to `auth.uid()`, check `account_active()` (live session, not suspended) and, for administration, `admin_can(capability)` with MFA. Worker functions are granted to `service_role` only. There is no `increment_likes`-style client-callable counter; counts are computed server-side.
 
 ### 2.3 Storage
 
 | Bucket | Purpose | Source reference |
 |--------|---------|-----------------|
-| `media` | Images, videos, avatars, project data | `StorageService.swift` |
+| `media` | Images, avatars, project thumbnails | `StorageService.swift` |
 
-Storage operations (upload, download, delete, public URL generation) use Supabase Storage SDK. The `media` bucket holds user-uploaded content organized by path convention (`avatars/`, `projects/`, etc.).
-
-**Runtime verified:** The app's StorageService is wired and would function against a live Supabase project with a properly configured `media` bucket.
+Rendered MP4s for review do not go through client-writable storage: they enter through the private intake service (§5.3) and only the publishing service inserts approved public renditions.
 
 ### 2.4 Edge Functions
 
 | Function | Purpose | Status |
 |----------|---------|--------|
-| `livekit-token` | Generates LiveKit room access tokens | Verified source exists (called via `client.functions.invoke`) |
-| Project export (server-side rendering) | Render .sdi to GIF/MP4 | Not verified — TODO in `ProjectService.swift` |
+| `stripe-checkout` | Server-created Checkout/Portal sessions for approved products | Not implemented; contract in `backend/billing/README.md` |
+| `stripe-webhook` | Verified Stripe events → `sdi_billing_apply_event` | Not implemented; contract in `backend/billing/README.md` |
+| `appstore-notifications` | Verified App Store Server Notifications → `sdi_billing_apply_event` | Not implemented; contract in `backend/billing/README.md` |
+| Spatter generation proxy | Server-side adapter so no provider credential reaches a client | Not implemented; provider-neutral by policy |
 
-### 2.5 Realtime
-
-Supabase Realtime subscriptions for live chat messaging are referenced but **not implemented**. `MessageService.swift:88-95` contains a TODO placeholder for Supabase Realtime channel subscription.
-
-**Status:** Not verified — placeholder only.
+No realtime channel is part of the design: Watch Together polls a server-stamped session row; room edits replay versioned commands.
 
 ---
 
-## 3. LiveKit Integration (Verified Source Exists)
+## 3. Rooms, Watch Together and War Room (Verified Source Exists, Not Runtime Verified)
 
-Two LiveKit service implementations exist in the codebase:
-
-### 3.1 Production Implementation (`Services/LiveKit/LiveKitService.swift`)
-
-This is the more complete implementation with:
-- Full call phase state machine (idle → preCalling → ringing → incoming → connecting → active → ended)
-- R3 billing engine: per-minute rate tiers, spend caps, auto-run extensions, idle detection, abuse guard
-- Token generation via Supabase Edge Function (`livekit-token`)
-- Audio/video/screen-share media controls
-- Post-call fare receipt
-
-**Rate tiers:** Standard $0.05/min, Creator $0.10/min, Pro $0.15/min, Studio $0.25/min
-
-**Runtime verified:** The LiveKit Swift SDK is included as a dependency (`Package.swift`). Actual connection to LiveKit Cloud is not verified from this environment.
-
-### 3.2 Legacy Implementation (`Services/LiveKitService.swift`)
-
-A simpler implementation with basic connect/disconnect, mute/video/screen-share controls, and direct token fetching via HTTP. This file appears to be an earlier version retained alongside the production implementation.
-
-**Note:** The legacy implementation contains a hardcoded Supabase anon key in the token-fetching function. While the anon key is designed to be public, this pattern should be reviewed.
-
-### 3.3 Collaboration Rooms
-
-Five collaboration room types are defined in the Views layer:
-
-| Room Type | Purpose | Status |
-|-----------|---------|--------|
-| `CollabRoomView` | Multi-user canvas sharing | Verified source exists |
-| `CreatorRoomView` | Host + viewers + chat | Verified source exists |
-| `WarRoomView` | 2-player battle with spectators | Verified source exists |
-| `WatchTogetherView` | Synced video playback | Verified source exists |
-| `LeaderboardView` | Competition rankings | Verified source exists |
-
-**Runtime verified:** Room types are defined in the UI layer but actual LiveKit room creation and connection is not confirmed as operational.
+- **Rooms** are owner-created, invitation-based collaboration spaces for an explicitly shared Studio project. Invites are server-generated 256-bit codes, hashed at rest, expiring in 24 hours with 20 uses; the recipient consents and the owner approves (mutual agreement). Owners set `view`/`edit` permissions and `editor`/`viewer` roles; revocation ends access immediately. Shared edits are versioned commands with idempotent operation ids and explicit conflicts. There is no chat, camera, microphone, screen sharing or call billing.
+- **Watch Together** synchronizes playback of an approved rendition inside a room using database-stamped positions.
+- **War Room** is a contest between two approved renditions: proposal, explicit opponent acceptance, 24-hour voting, one mutable vote per authenticated nonparticipant, server-counted results, moderation with appeals, optional badges and win/loss display hidden by default. Proposals expire after seven days.
 
 ---
 
-## 4. Spatter AI (Verified Source Exists)
+## 4. Spatter
 
-Spatter is the StickDeath AI assistant/creative operating system. Two components:
+### 4.1 On-Device Guide (Verified Source Exists)
 
-### 4.1 On-Device Knowledge Engine (`AI/SpatterBrainLoader.swift`)
+Bundled knowledge files and the native guide drive Studio assistance; nothing is sent off-device for the guide.
 
-- Bundled JSON knowledge base (3 files, ~4900 lines) covering animation, physics, tools, collaboration, community, business, and lore
-- 120 embedded knowledge modules (100 brain + 20 core)
-- Context-aware knowledge injection based on current screen/tool
-- Fallback to Pollinations.ai free endpoint
+### 4.2 Server-Side Generation (Not Verified)
 
-**Status:** Verified source exists, embedded in app bundle.
-
-### 4.2 Backend Service (`Services/Spatter/SpatterService.swift`)
-
-- Calls OpenAI GPT-4o directly from the client with the full personality prompt + embedded knowledge
-- Optionally queries Supabase `spatter_knowledge` table for runtime-added knowledge
-- System prompt defines Spatter's personality, knowledge domains, and behavioral rules
-
-**Security observation:** The OpenAI API key is read from `AppConfig.openAIAPIKey` and used directly in a client-side HTTP request. This should be proxied through a Supabase Edge Function for production use. This is noted as a generic security finding without reproducing specific attack vectors.
-
-### 4.3 Spatter Command Center (Verified Source Exists)
-
-Six views implementing an owner-only admin interface for bot management:
-
-| View | Purpose |
-|------|---------|
-| `SpatterDashboardView` | Overview dashboard |
-| `SpatterCommandCenterView` | Command center interface |
-| `SpatterBotConfigView` | Bot configuration management |
-| `SpatterContentQueueView` | Content scheduling queue |
-| `SpatterAnalyticsView` | Analytics display |
-| `SpatterCCSettingsView` | Settings management |
-
-Backed by `SpatterBotService.swift` which manages bot configs, content queue, and analytics via Supabase.
-
-**Runtime verified:** The UI is built and the service layer is wired to Supabase queries. Whether the `spatter_bot_configs` and `spatter_content_queue` tables exist in the live database is not confirmed from this repository.
+Daily generation, if enabled, produces **private drafts** that require the owner's approval of the exact render digest in the admin command center before any feed, channel or social release (`release_allowed` requires `owner_at_decision` for `spatter_generated` renders). The provider adapter is server-side and configurable; no provider is part of product scope and no paid provider calls are configured. The agent-control candidate (`agent-controls.sql`) supplies pause, emergency stop, caps and versioned instructions for this and other automated agents. Owner-only configuration views exist in source; their data wiring is not verified.
 
 ---
 
 ## 5. Publishing / Content System
 
-### 5.1 Social Feed (`Services/Social/SocialService.swift`)
+### 5.1 Feed (Candidate)
 
-- Posts with text, media, and project references
-- Likes with RPC-based count increment
-- Comments with user join
-- Follow/unfollow relationships
+Approved renders become visible feed posts only through the service-role feed publication path after `release_allowed(review, version, digest, 'feed')` succeeds. Likes (no self-likes), follows, blocks and categorized reports are idempotent; suspended creators are excluded from listings. File export of a post requires the creator's explicit export permission (default off).
 
-**Verified source exists.** Runtime functionality depends on Supabase RLS policies and table configuration.
+### 5.2 Challenges (Candidate)
 
-### 5.2 Challenges (`Services/Challenge/Challenge.swift`)
+Moderators schedule challenges; members enter one approved rendition each, vote once during the voting window, and server time decides phases. Configured real rewards are descriptive text; no currency exists.
 
-- Challenge CRUD (create, list, submit, fetch submissions)
-- Community animation competitions with time windows
+### 5.3 Render Intake and Publishing (Verified Source Exists, Not Deployed)
 
-**Verified source exists.** Runtime functionality depends on Supabase configuration.
+`backend/ingestion` is a private resumable MP4 intake (chunk checksums, quotas, bounded media validation, idempotent review registration, expiring private preview links). `backend/publishing` is a one-job worker that uploads private, verifies processing and ownership, releases only on a renewed approval lease, and can withdraw to private. Owner YouTube OAuth lives only in the server secret store. Offline unit tests with fake transports: `python3 -m unittest discover -s backend/tests -t .`.
 
-### 5.3 Studio Projects (`Services/Project/ProjectService.swift`)
+### 5.4 Studio Projects
 
-- Project CRUD (create, list, save frames, load frames, delete)
-- Server-side rendering/export is a TODO — currently throws `exportNotImplemented`
-
-**Verified source exists.** The device-first storage architecture means full animation data stays on device; only metadata and thumbnails sync to the server.
+Projects are device-first. Server-side rendering of `.sdi` projects is not implemented; export happens on device.
 
 ---
 
 ## 6. Payment Architecture
 
-### 6.1 Subscriptions (StoreKit 2)
+### 6.1 Approved Offers
 
-| Tier | Monthly | Yearly | Features |
-|------|---------|--------|----------|
-| Free | — | — | Basic studio, watermarks, 1080p export, limited projects |
-| Creator | $4.99/mo | $49.99/yr | No watermark, unlimited projects |
-| Pro | $9.99/mo | $99.99/yr | 4K export, cloud sync, collab rooms, priority support |
-| Studio | $19.99/mo | $199.99/yr | Commercial license, team workspace, API access, custom branding |
+| Tier | Period | Price point (owner decision) | Status |
+|------|--------|------------------------------|--------|
+| Creator | Monthly | USD 4.99 | Product identifiers not yet configured |
+| Pro | Monthly | USD 9.99 | Product identifiers not yet configured |
+| Any | Annual | Not approved | Requires explicit owner configuration before approval (`billing_products.owner_configured_at`) |
 
-Subscription status is synced to Supabase `users` table after each StoreKit transaction.
+Prices live only in App Store Connect and the Stripe dashboard. The database stores product identifiers, verified provider events, subscriptions with a provider-reported paid-through date and a provider-reported ledger; **no client writes tier or status**. Native digital entitlements use StoreKit 2; Stripe is server-side only and runs in test mode until separately authorized. No live charges are made as tests, no new paid services are added, and no coins, tips or call charges exist.
 
-**Verified source exists.** App Store Connect product registration is implied but not confirmed.
+### 6.2 Reconciliation
 
-### 6.2 Non-Digital Payments (Stripe)
-
-- **Creator tips:** Person-to-person payments (non-digital goods, permitted by Apple guidelines)
-- **Call billing:** Consumable service charges for LiveKit R3 calls
-- Recorded in Supabase `tips` table; actual Stripe charge via Edge Function (not implemented in this repository)
-
-**Verified source exists for recording.** Stripe Edge Function integration is not confirmed as operational.
+Entitlements derive from `sdi_private.entitlements` (active/trialing/grace/past_due with `paid_through` in the future). `sdi_billing_reconcile()` expires lapsed subscriptions after a 16-day grace window and reports counts. Finance administrators read provider-reported sums that are labelled as records, not balances.
 
 ---
 
 ## 7. Admin Surface
 
-### 7.1 iOS Admin Dashboard (`Views/Admin/AdminDashboardView.swift`)
+### 7.1 Native Admin (Verified Source Exists)
 
-A 10-tab superuser panel gated by `AppConfig.superuserEmails`:
+Tabs for video approvals, users, content, moderation, publishing and overview call the `sdi_*` admin RPCs. Authorization is server-side: enabled `admin_roles` row, MFA `aal2`, live session, capability check, step-up (recent MFA) for sensitive changes, per-administrator rate limits and a denial audit (`admin-hardening.sql`). Health (`sdi_admin_health`) reports queue depths, oldest pending items and worker heartbeat age without host details. Agent controls (`sdi_agent_admin`) provide pause/resume, emergency stop, caps and instruction history. Owner provisioning is a service-only procedure that requires a confirmed email and a verified MFA factor and takes no password.
 
-| Tab | Content |
-|-----|---------|
-| Dashboard | Stats cards (hardcoded), recent activity (hardcoded) |
-| Users | User list (hardcoded sample data) |
-| Content | Storage stats (hardcoded) |
-| Challenges | Challenge stats (hardcoded) |
-| Spatter AI | Brain module count, query stats, admin portal link |
-| Bots | Bot status indicators |
-| Analytics | DAU/WAU/MAU (hardcoded) |
-| Moderation | Report queue (hardcoded) |
-| Settings | Maintenance mode, registration, email verification toggles |
-| Billing | MRR, subscriber breakdown (hardcoded) |
+### 7.2 Web Command Center
 
-**Verification status:** The admin view exists in source but currently displays hardcoded placeholder data rather than fetching from the backend. It is not connected to live data.
-
-### 7.2 Web Admin Surface
-
-A web-based admin surface exists on the backend VPS (not part of this repository). Details are intentionally omitted from this public report.
+A static web admin shell calling the same RPCs is planned (#277). No web admin surface in this repository is operational.
 
 ---
 
-## 8. Reusable vs Legacy Assessment
+## 8. Account Lifecycle, Support and Privacy
 
-### High-Value Reuse (for SwiftUI production app)
-
-| Component | Confidence | Notes |
-|-----------|-----------|-------|
-| `SupabaseManager` | Verified source exists | Clean singleton pattern, minimal code |
-| `AuthService` | Verified source exists | Complete auth flow with Apple/Google/Email/Guest |
-| `StorageService` | Verified source exists | Clean Supabase Storage integration |
-| `SocialService` | Verified source exists | Posts, likes, comments, follows — good building blocks |
-| `ChallengeService` | Verified source exists | Challenge CRUD — good structure |
-| `MessageService` | Verified source exists | Chat rooms and messages — foundation is solid |
-| `ProjectService` | Verified source exists | Studio project CRUD — core to the app |
-| `DeviceStorageManager` | Verified source exists | Well-designed device-first storage architecture |
-| `LiveKitService` (production) | Verified source exists | Complete R3 billing + call management |
-| `StripeService` | Verified source exists | StoreKit 2 + Stripe hybrid — thorough implementation |
-| `SpatterService` | Verified source exists | AI integration — needs API key proxy for production |
-
-### Legacy / Incomplete
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| `LiveKitService` (legacy) | Superseded | Replaced by `Services/LiveKit/LiveKitService.swift` |
-| `SpatterBotService` | Partial | Bot configs, content queue, analytics — tables may not exist |
-| `AdminDashboardView` | Placeholder | Hardcoded data — needs backend wiring |
-| `SpatterCC` views | Partial | UI exists, backend integration incomplete |
-| `MessageService` Realtime | Not implemented | TODO placeholder only |
-| `ProjectService` export | Not implemented | Server-side rendering TODO |
+- Members export their own server records (`sdi_account_lifecycle('export')`, three per day). On-device projects are not server-side and are not part of the export.
+- Deletion requests have a seven-day cooling-off period; the service worker then suspends, withdraws publishing consent, unapproves media and queues removals, closes rooms and finally purges server rows once hosted copies and intake renders are gone. Provider subscriptions must be cancelled through the store or portal.
+- Support requests are authenticated, rate-limited, receipted and retained for a bounded period; administrators with the users capability work the queue. This is customer support, not messaging.
+- Temporary render media has bounded retention (seven days under review, thirty days after approval) and is deleted only after verified publication or documented expiry. The service never deletes a member's only original.
 
 ---
 
-## 9. Architecture Recommendations
+## 9. Retired Scope (Do Not Rebuild)
 
-1. **Proxy OpenAI calls through Supabase Edge Functions.** Client-side API key usage is a security concern for production. Create a `spatter-chat` Edge Function that holds the API key server-side.
-
-2. **Wire the admin dashboard to live data.** The current hardcoded stats are not useful. Implement Supabase queries or Edge Function endpoints for real admin metrics.
-
-3. **Implement Supabase Realtime for messaging.** The TODO placeholder in `MessageService` should be completed for live chat functionality.
-
-4. **Complete project export.** Server-side rendering via Edge Function is the planned path for .sdi → GIF/MP4 export.
-
-5. **Remove or consolidate the legacy `LiveKitService`.** The simpler implementation at `Services/LiveKitService.swift` is superseded by the production implementation.
-
-6. **Review the hardcoded Supabase anon key** in the legacy LiveKit service. While anon keys are public by design, centralizing configuration through `AppConfig` is preferred.
+The following were described in earlier revisions of this document and remain only as source remnants scheduled for removal (#260): LiveKit voice/video calls and the `livekit-token` function, chat rooms/messages and realtime messaging, call billing rate tiers, creator tips, a USD 19.99 "Studio" tier and annual prices, client-side AI provider keys, client-written subscription status, and the `superuserEmails` admin gate. Where a remnant still compiles, it is not reachable product behaviour and must not be wired up.
 
 ---
 
@@ -300,10 +179,10 @@ This report intentionally omits:
 - Specific security vulnerabilities and attack vectors
 - Private database names, hostnames, and internal URLs
 - Process topology, port bindings, and service manager details
-- Admin-auth internals and privileged access patterns
+- Admin-auth internals beyond the public RPC contracts
 
-**A private admin-security remediation task is required before production hardening.** The prior inventory identified a potentially severe privileged-credential design issue in the browser admin surface. That finding is not reproduced here. Specific remediation should be addressed in a separate private security task, not in this public documentation.
+Owner credentials are provisioned privately with MFA; no password is stored in source, issues, fixtures or logs. Release and merge claims require honest verification; nothing in this document is a claim that any candidate is deployed.
 
 ---
 
-*Document generated from source code inspection of the StickDeath Infinity repository. No remote VPS state was modified in the creation of this document.*
+*Document generated from source inspection of the StickDeath Infinity repository. No remote state was modified in the creation of this document.*
