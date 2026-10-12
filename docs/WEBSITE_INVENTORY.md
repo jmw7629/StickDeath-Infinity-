@@ -7,7 +7,7 @@ Batch date: 2026-10-12. Branch base: `e48e789` (`claude/studio-sdi-overhaul-kure
 | Area | Files | Status |
 | --- | --- | --- |
 | Product/help page | `website/index.html`, `site.js`, `help.js`, `styles.css` | Static, buildless, zero third-party requests. `#pricing` unchanged (no plans, no prices). |
-| Help source of truth | `website/help/articles.json` (20 topics) → generated `website/help/help-data.js` | Each topic carries `platform`, `steps`, `limits`, `sources` (repo paths), `guideRevision` (`2026-10-09.5`), per-topic `reviewed` ISO date and `status` (`source-implemented` ×18, `unavailable` ×2, `verified-on-device` ×0). |
+| Help source of truth | `website/help/articles.json` (20 topics) → generated `website/help/help-data.js` | Each topic carries `platform`, `steps`, `limits`, `sources` (repo paths), `guideRevision` (`2026-10-12.1`), per-topic `reviewed` ISO date and `status` (`source-implemented` ×18, `unavailable` ×2, `verified-on-device` ×0). |
 | Help checker | `scripts/website/check_help.mjs` | Enforces sources + reviewed dates, guide revision regex-extracted from `StickDeathInfinity/ViewModels/SpatterAIViewModel.swift`, every curly-quoted UI label verbatim in Swift/Kotlin sources, every source path present; regenerates `help-data.js` (`--check` fails on drift). |
 | Discovery | `website/robots.txt`, `website/sitemap.xml`, canonical/OG/Twitter meta, JSON-LD (WebSite + Organization only), `website/404.html`, `website/assets/og-card.html` → `og-card.png` (1200×630, 67,955 bytes) | Generated/verified by `scripts/website/build_site.mjs` from `scripts/website/site_constants.mjs`. Non-indexable pages (404, account, policy drafts, generated attribution) carry `noindex`; robots.txt does not Disallow them so the directive is crawlable. |
 | Policy drafts | `website/policies/terms-v1.html`, `privacy-v1.html`, `publishing-v1.html` | Version 1.0-draft, no effective date, visible "Draft — requires legal review before publication" banner, owner-gated items named explicitly. |
@@ -49,7 +49,7 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node scripts/website/a11y_perf.mjs --j
 ### check_help.mjs
 
 ```
-check_help: OK — 20 articles, guide revision 2026-10-09.5, 201 distinct UI labels verified against 158 Swift and 35 Kotlin files, 39 source paths exist; help-data.js in sync
+check_help: OK — 20 articles, guide revision 2026-10-12.1, 202 distinct UI labels verified against 146 Swift and 38 Kotlin files, 39 source paths exist; help-data.js in sync
 ```
 
 ### build_site.mjs

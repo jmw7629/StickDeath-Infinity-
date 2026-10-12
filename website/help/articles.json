@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "guideRevision": "2026-10-09.5",
+  "guideRevision": "2026-10-12.1",
   "labelQuoting": "UI labels inside steps are wrapped in curly quotes (“…”). scripts/website/check_help.mjs verifies each one exists verbatim in StickDeathInfinity/**/*.swift or android/**/*.kt.",
   "statuses": {
     "source-implemented": "Behavior read from the current repository source. Not a device or App Store verification receipt.",
@@ -32,7 +32,7 @@
         "android/README.md",
         "android/app/src/main/java/com/stickdeath/studio/MainActivity.kt"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -57,7 +57,7 @@
         "StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift",
         "StickDeathInfinity/ViewModels/SpatterAIViewModel.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -81,7 +81,7 @@
         "StickDeathInfinity/Views/Studio/StudioProjectLibrary.swift",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -110,7 +110,7 @@
         "android/app/src/main/java/com/stickdeath/studio/BrushRenderer.kt",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -138,7 +138,7 @@
         "StickDeathInfinity/Resources/Licenses/ArtCraft-NOTICE.txt",
         "android/app/src/main/java/com/stickdeath/studio/Document.kt"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -165,7 +165,7 @@
         "StickDeathInfinity/Models/StudioDocument.swift",
         "StickDeathInfinity/ViewModels/SpatterAIViewModel.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -190,7 +190,7 @@
         "StickDeathInfinity/Views/Studio/Panels/ToolSettingsPanel.swift",
         "StickDeathInfinity/ViewModels/SpatterAIViewModel.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -222,7 +222,7 @@
         "StickDeathInfinity/Resources/StudioImages/remote-pack.json",
         "StickDeathInfinity/ViewModels/SpatterAIViewModel.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -247,7 +247,7 @@
         "StickDeathInfinity/Models/StudioDocument.swift",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -272,7 +272,7 @@
         "StickDeathInfinity/Models/StudioDocument.swift",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -295,7 +295,7 @@
         "android/app/src/main/java/com/stickdeath/studio/Document.kt",
         "android/app/src/main/java/com/stickdeath/studio/MainActivity.kt"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -322,7 +322,7 @@
         "StickDeathInfinity/Resources/StudioSounds/CREDITS.txt",
         "StickDeathInfinity/Resources/StudioSounds/catalogue.json"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -345,7 +345,7 @@
       "sources": [
         "StickDeathInfinity/Views/Studio/Panels/AudioPanels.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -373,7 +373,7 @@
         "StickDeathInfinity/Resources/Licenses/ArtCraft-NOTICE.txt",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -400,7 +400,7 @@
         "StickDeathInfinity/Views/Studio/Panels/StudioGIFExportControls.swift",
         "StickDeathInfinity/Models/Models.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -425,7 +425,7 @@
         "StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift",
         "StickDeathInfinity/Views/Studio/StudioView.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -451,7 +451,7 @@
         "StickDeathInfinity/Views/Studio/Panels/StudioMovieExportControls.swift",
         "StickDeathInfinity/App/AppConfig.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "unavailable"
     },
@@ -475,7 +475,7 @@
         "StickDeathInfinity/Views/Settings/SettingsView.swift",
         "StickDeathInfinity/Services/Auth/AuthService.swift"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "unavailable"
     },
@@ -501,7 +501,7 @@
         "StickDeathInfinity/Resources/StudioImages/catalogue.json",
         "android/README.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     },
@@ -527,7 +527,7 @@
         "android/app/src/main/java/com/stickdeath/studio/ProjectExporter.kt",
         "docs/PROJECT_INTERCHANGE.md"
       ],
-      "guideRevision": "2026-10-09.5",
+      "guideRevision": "2026-10-12.1",
       "reviewed": "2026-10-12",
       "status": "source-implemented"
     }

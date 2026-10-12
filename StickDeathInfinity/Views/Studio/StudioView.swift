@@ -936,6 +936,15 @@ struct SpatterAISheet: View {
                     if spatterVM.useCloud {
                         Text("Sends your message, this sheet's earlier cloud messages and a limited project/tool/layer/frame/audio summary to the configured authenticated backend. Drawings, audio files and file paths are not sent.")
                             .font(.caption2).foregroundColor(.white.opacity(0.6))
+                        Toggle("Include project and layer names", isOn: $spatterVM.shareProjectNames).font(.caption)
+                            .disabled(spatterVM.isThinking)
+                            .accessibilityIdentifier("spatter.studio.cloud.share-names")
+                        Text(spatterVM.shareProjectNames ? "Your project and layer names are included in the cloud summary." : "The cloud summary says “Current project” and “Layer N” instead of your names.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                        if let budget = spatterVM.budgetText {
+                            Text(budget).font(.caption2).foregroundColor(.white.opacity(0.6))
+                                .accessibilityIdentifier("spatter.studio.cloud.budget")
+                        }
                     }
                     if let notice = contextError ?? spatterVM.notice {
                         Text(notice).font(.caption).foregroundColor(.white.opacity(0.8))

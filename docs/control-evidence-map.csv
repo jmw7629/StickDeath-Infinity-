@@ -37,12 +37,13 @@ rooms.watchTogether,StickDeathInfinity/Views/Collab/CollabRoomView.swift,CollabR
 spatter.artwork.order-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Send selected artwork backward',no,#203,deferred
 spatter.audio.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,unresolved (review source),no,#203,testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen
 spatter.audio.target,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"text -> binds 0.id, binds 0.soundName",no,#203,deferred
-spatter.audio.track-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Unmute track',no,#203,deferred
+spatter.audio.track-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Unsolo track',no,#203,deferred
 spatter.frame.action-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Duplicate active frame 12 times.',no,#203,deferred
 spatter.frame.duplicate-range-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate frame range example',no,#203,deferred
 spatter.frame.exposure-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use frame exposure example',no,#203,deferred
 spatter.frame.exposure-range-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use frame range timing example',no,#203,deferred
 spatter.grid.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Configure grid',no,#203,deferred
+spatter.image.edit-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Place selected image with angle',no,#203,deferred
 spatter.image.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,unresolved (review source),no,#203,deferred
 spatter.image.horizontal-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Flip selected image horizontally',no,#203,deferred
 spatter.image.target,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text -> binds 0.id,no,#203,deferred
@@ -66,10 +67,11 @@ spatter.memory.inspect,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterP
 spatter.memory.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,text,no,#203,deferred
 spatter.memory.reset,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,button 'Reset saved preferences',no,#203,deferred
 spatter.memory.save,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterPersonalMemorySheet,"button 'Save preferences' -> vm.savePersonalPreferences, binds draft.guidance, binds 0.rawValue.capitalized",no,#203,deferred
+spatter.messages.budget,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',n-a,#203 #207,deferred
 spatter.messages.cancel,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,button 'Cancel request' -> cancel,n-a,#203 #207,deferred
 spatter.messages.cloud,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,toggle 'Cloud advice' -> binds spatterVM.useCloud,n-a,#203 #207,deferred
 spatter.messages.input,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text field 'Ask Spatter for advice...' -> binds input,n-a,#203 #207,deferred
-spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Sends your message and earlier cloud messages fr',n-a,#203 #207,deferred
+spatter.messages.notice,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text,n-a,#203 #207,deferred
 spatter.messages.send,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,image -> submit,n-a,#203 #207,deferred
 spatter.messages.status,StickDeathInfinity/Views/SpatterAI/SpatterChatView.swift,SpatterChatView,text 'Spatter 💀',n-a,#203 #207,deferred
 spatter.motion.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Apply local edit' -> session.submit, binds draftFocused",no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
@@ -79,6 +81,8 @@ spatter.motion.cancel,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipe
 spatter.motion.example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use a complete example. These local edits create',no,#203,deferred
 spatter.motion.export,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open PNG export' -> session.close,no,#203,testSpatterLocalMotionEditsExportsAndReopens
 spatter.motion.export-mp4,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Export this edit as MP4' -> session.prepareMovieExport, session.close, session.saveState",no,#203,testSpatterDirectMP4PreviewRetainsEditableProject
+spatter.motion.export-receipt,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterExportReceiptView,text 'Measured from the real output file. Export creat',no,#203,deferred
+spatter.motion.export-receipt-error,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterExportReceiptView,text,no,#203,deferred
 spatter.motion.input,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text editor 'Local Studio instruction' -> binds draft,no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.motion.keyboard.done,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Done',no,#203,testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens
 spatter.motion.project-status,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'Export opens Studios PNG sequence / spritesheet ',no,#203,deferred
@@ -88,6 +92,8 @@ spatter.motion.save-state,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRe
 spatter.motion.scroll,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text 'Opens the existing picture picker. Choose a sour',no,#203,helper:localMotionControl
 spatter.motion.stick-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Stick figure examples',no,#203,deferred
 spatter.motion.two-actor-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use two editable actors',no,#203,deferred
+spatter.motion.undo,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,"button 'Undo Spatter edit' -> session.undoAppliedEdit, session.canUndoAppliedEdit",no,#203,deferred
+spatter.motion.undo-unavailable,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text -> vm.document.id,no,#203,deferred
 spatter.navigation.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Select layer 1',no,#203,deferred
 spatter.onion.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Configure onion skin',no,#203,deferred
 spatter.picture.apply,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Open Add Picture…',no,#203,testLicensedImageLibraryUndoAndColdReopen
@@ -95,15 +101,21 @@ spatter.project.rename-example,StickDeathInfinity/Views/Studio/Panels/SpatterMot
 spatter.selection.duplicate-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use duplicate selected drawings example',no,#207,deferred
 spatter.selection.erase-example,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Use selected eraser example',no,#207,testSpatterSelectedErasureUndoAndColdReopen
 spatter.selection.erase-targets,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#207,deferred
+spatter.selection.transform-examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Flip selected drawings vertically',no,#207,deferred
+spatter.selection.transform-targets,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,text,no,#207,deferred
 spatter.studio.cancel,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Cancel request' -> cancel,no,#203 #207,deferred
 spatter.studio.close,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Done' -> dismiss,no,#203 #207,testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.cloud,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Cloud advice' -> binds spatterVM.useCloud,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
+spatter.studio.cloud.budget,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,deferred
+spatter.studio.cloud.share-names,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,toggle 'Include project and layer names' -> binds spatterVM.shareProjectNames,no,#203 #207,deferred
 spatter.studio.input,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text field 'Ask Spatter for advice...' -> binds prompt,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.local-motion,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local Studio edits…',no,#203 #207,testLicensedImageLibraryUndoAndColdReopen testSpatterDirectMP4PreviewRetainsEditableProject testSpatterLayerDuplicateRenameUndoAndColdReopen testSpatterLocalMotionEditsExportsAndReopens testSpatterSelectedAudioPlacementUndoAndColdReopen testSpatterSelectedAudioVolumeUndoAndColdReopen testSpatterSelectedErasureUndoAndColdReopen
 spatter.studio.memory,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,button 'Local memory preferences…',no,#203 #207,deferred
-spatter.studio.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,"text 'Sends your message, this sheets earlier cloud me'",no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
+spatter.studio.notice,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.send,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,image,no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
 spatter.studio.status,StickDeathInfinity/Views/Studio/StudioView.swift,SpatterAISheet,text '🎨 Spatter AI',no,#203 #207,testStudioSpatterLocalGuidanceAndUnconfiguredCloud
+spatter.text.examples,StickDeathInfinity/Views/Studio/Panels/SpatterMotionRecipePanel.swift,SpatterMotionRecipePanel,button 'Set selected text and color',no,#203,deferred
+spattercc.credentials.unavailable,StickDeathInfinity/Views/SpatterCC/SpatterBotConfigView.swift,SpatterBotConfigView,text -> binds 0,n-a,unmapped,deferred
 startup.offline,StickDeathInfinity/Views/Splash/SplashScreenView.swift,SplashScreenView,button 'Open Studio Offline',n-a,#134 #136 #137,deferred
 startup.ready,StickDeathInfinity/Views/Splash/SplashScreenView.swift,SplashScreenView,text 'Ready',n-a,#134 #136 #137,deferred
 startup.restore-error,StickDeathInfinity/Views/Splash/SplashScreenView.swift,SplashScreenView,"text 'Your session could not be restored. Try again, o'",n-a,#134 #136 #137,deferred

@@ -14,7 +14,7 @@ Per the owner's implementation-first direction, no build, test, browser/accessib
 
 ## October 9 help-navigation and Studio guidance update
 
-- Added task-based iOS guides for whole-artwork lasso/Move, image-pixel lifting, sound-library placement and Files/movie soundtrack import. Lasso guidance matches native Spatter guide revision `2026-10-09.5`; audio instructions were read against `AudioPanels.swift`. Guidance explicitly distinguishes current source from the user's installed build.
+- Added task-based iOS guides for whole-artwork lasso/Move, image-pixel lifting, sound-library placement and Files/movie soundtrack import. Lasso guidance matches native Spatter guide revision `2026-10-12.1`; audio instructions were read against `AudioPanels.swift`. Guidance explicitly distinguishes current source from the user's installed build.
 - Each expanded topic has a shareable fragment link. Reopening the same fragment after filtering now clears filters and restores/focuses the topic; it no longer depends on a hash-change event that cannot occur for an unchanged URL. Modified clicks keep native browser behavior.
 - JavaScript syntax and whitespace checks are recorded by the coordinator. Browser interaction, VoiceOver, real device behavior, deployment and authenticated support intake remain deferred/unconnected. No issue completion is claimed.
 
