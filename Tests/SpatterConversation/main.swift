@@ -384,6 +384,83 @@ private final class NetworkTrap: URLProtocol {
                 try await idle(vm)
                 try require(vm.status == .cloudAdvice && vm.messages.last!.content == "Real injected retry advice", "Retry did not complete")
             }
+            try await test("composed cloud prompt excludes retired messaging and call modules while preserving the module tables") {
+                // The pinned personality literal still names the retired line; composition must drop it.
+                let legacyPersonality = "You are Spatter.\n    Your knowledge areas:\n    - Social: TikTok/YouTube strategy\n    - Collaboration: LiveKit calls, voice/video flow, studio share, watch together, rooms\n    - Community: Challenges"
+                let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
+                let prompt = SpatterCloudPrompt.compose(personality: legacyPersonality,
+                    embeddedKnowledge: SpatterKnowledgeBase.buildContext(for: "messages", tool: "livekit", maxTokens: 3000),
+                    runtimeKnowledge: "[Collaboration] start a LiveKit video call\n[Studio] onion skin tips",
+                    contextSummary: try context.sharingNames(false).promptSummary(),
+                    capabilities: SpatterAIViewModel.currentStudioCapabilities)
+                let lowered = prompt.lowercased()
+                try require(!lowered.contains("livekit") && !lowered.contains("video call") && !lowered.contains("voice call") && !lowered.contains("messenger"),
+                    "Retired collaboration terms reached the cloud prompt")
+                let words = Set(prompt.split { !$0.isLetter }.map(String.init))
+                try require(!words.contains("DM") && !words.contains("DMs"), "Direct-message vocabulary reached the cloud prompt")
+                try require(prompt.contains(SpatterCloudPrompt.currentCollaborationLine) && prompt.contains("onion skin tips")
+                    && prompt.contains("Current context:") && prompt.contains("grammar:selectionTranslate"), "Composition dropped current rooms line, active runtime knowledge or context")
+                try require(SpatterKnowledgeBase.allModules.count == 120 && SpatterKnowledgeBase.activeModules.count == 113
+                    && SpatterKnowledgeBase.retiredModuleIDs.isSubset(of: Set(SpatterKnowledgeBase.allModules.filter(SpatterKnowledgeBase.isRetired).map(\.id))),
+                    "Retired modules were deleted instead of filtered, or the explicit list is not honored")
+                try require(SpatterKnowledgeBase.search("livekit").isEmpty && !SpatterKnowledgeBase.search("onion").isEmpty, "Search still exposes retired modules")
+                let answer = SpatterAIViewModel.localGuidance(for: "How do LiveKit video calls work in rooms?", context: .general)
+                try require(answer.contains("have been removed") && answer.contains("revocable, expiring code") && !answer.contains("LiveKit Global Manager"), "Local guidance ranked a retired module")
+            }
+            try await test("studio snapshot carries capabilities and history state and withholds names unless shared") {
+                let context = try unwrap(SpatterContext.studio(studio.commandScreenContext))
+                let snapshot = try unwrap(context.studio)
+                try require(snapshot.capabilities.contains("grammar:selectionTranslate") && snapshot.capabilities.contains("grammar:audioTrack")
+                    && snapshot.capabilities.contains("tool:pen") && Set(snapshot.capabilities).count == snapshot.capabilities.count, "Capabilities list incomplete")
+                try require(snapshot.canUndo == studio.canUndo && snapshot.canRedo == studio.canRedo && snapshot.activeLayerIndex == 1, "History state not captured from the editor")
+                let shared = try context.sharingNames(true).promptSummary(), withheld = try context.sharingNames(false).promptSummary()
+                try require(shared.contains("Private project marker") && shared.contains("\"namesShared\":true"), "Shared summary lost the real name")
+                try require(!withheld.contains("Private project marker") && withheld.contains("\"name\":\"Current project\"") && withheld.contains("\"name\":\"Layer 1\"")
+                    && withheld.contains("\"namesShared\":false") && withheld.contains("\"capabilities\":["), "Withheld summary leaked names or dropped capabilities")
+                try require(context.sharingNames(false) != context && context.sharingNames(true) == context && context.sharingNames(false).scope == context.scope, "Redaction changed identity scope")
+                try require(withheld.utf8.count <= 8192 + 120, "Snapshot exceeded the bounded size")
+                var received: [SpatterContext] = []
+                let gate = Gate()
+                let vm = SpatterAIViewModel(richResponder: { _, ctx in
+                    received.append(ctx)
+                    return SpatterCloudReply(schemaVersion: 1, reply: try await gate.response(), usageUnits: 3, budget: .init(remaining: 5, resetsAt: nil))
+                })
+                vm.useCloud = true
+                try require(vm.submit("Advice please", context: context), "Cloud request rejected")
+                try await started(gate); gate.finish("Hold the pose."); try await idle(vm)
+                try require(received.count == 1 && received[0].studio?.name == SpatterContext.StudioSnapshot.redactedProjectName
+                    && received[0].studio?.activeLayer?.name == "Layer 1", "Default cloud request shared names")
+                try require(vm.budgetText == "Remaining today: 5" && vm.status == .cloudAdvice, "Server budget not surfaced")
+                vm.shareProjectNames = true
+                try require(vm.submit("More advice", context: context), "Second cloud request rejected")
+                try await started(gate); gate.finish("Keep the silhouette clear."); try await idle(vm)
+                try require(received.count == 2 && received[1].studio?.name == "Private project marker", "Share-names toggle ignored")
+                vm.endSession()
+                try require(vm.budgetText == nil && vm.shareProjectNames == false && vm.useCloud == false, "Session end kept cloud state")
+            }
+            try await test("account and rooms guidance states current limits without inventing access") {
+                var calls = 0
+                let vm = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })
+                for (question, expected) in [
+                    ("How do I delete my account?", ["Apple, Google, GitHub or Microsoft", "not available yet", "cannot delete"]),
+                    ("Can I sign in with Microsoft and keep guest projects?", ["separate guest scope", "does not merge"]),
+                    ("How do room invites work?", ["revocable, expiring code", "never an account sign-in token", "no chat, direct messaging"]),
+                    ("Can we chat or call inside a collaboration room?", ["have been removed", "Watch Together"]),
+                    ("Is Watch Together a video call?", ["it is not a call"])
+                ] {
+                    try require(vm.submit(question, context: .general), "Guide request rejected")
+                    try await idle(vm)
+                    let answer = vm.messages.last!.content
+                    try require(expected.allSatisfy { answer.contains($0) } && answer.contains("Guidance only"), "Account/rooms guidance missing fact: \(question)")
+                }
+                try require(calls == 0 && SpatterAIViewModel.currentGuideVersion == "2026-10-12.1", "Guide used cloud or version was not bumped")
+                for fact in ["catalog v\(SpatterInstructionCatalog.version)", "selectionTranslate", "imagePlacement", "textUpdate", "pan L100–R100 and solo",
+                             "SHA-256", "In-app account deletion is not available yet", "revocable, expiring code"] {
+                    try require(SpatterAIViewModel.currentStudioCapabilities.contains(fact), "Capability text missing: \(fact)")
+                }
+                try require(SpatterInstructionCatalog.grammars.count == 31 && SpatterInstructionCatalog.commandNames.contains("translateElements")
+                    && SpatterInstructionCatalog.commandNames.contains("updateText"), "Catalog does not list the reachable commands")
+            }
             try await test("drawing help explains actual families and eraser limits while preserving intent priority") {
                 var calls = 0
                 let chat = SpatterAIViewModel(responder: { _, _ in calls += 1; return "Unused" })

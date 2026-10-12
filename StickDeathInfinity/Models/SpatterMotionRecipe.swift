@@ -1144,12 +1144,19 @@ struct SpatterAudioTrackInstruction: Equatable {
     let track: Int
     var volume: Double? = nil
     var muted: Bool? = nil
+    /// −1 (L100) … 0 (center) … 1 (R100), matching the editor's pan range.
+    var pan: Double? = nil
+    var soloed: Bool? = nil
     static let volumeExample = "Set audio track 1 volume to 40%."
     static let muteExample = "Mute audio track 1."
     static let unmuteExample = "Unmute audio track 1."
+    static let panExample = "Pan audio track 2 to L40."
+    static let centerExample = "Pan audio track 2 to center."
+    static let soloExample = "Solo audio track 3."
+    static let unsoloExample = "Unsolo audio track 3."
     enum Failure: LocalizedError {
         case unsupported
-        var errorDescription: String? { "Use Set audio track 1 volume to 40%., Mute audio track 1., or Unmute audio track 1. Choose track 1–4 and volume 0–100%. Nothing changed." }
+        var errorDescription: String? { "Use Set audio track 1 volume to 40%., Mute audio track 1., Unmute audio track 1., Pan audio track 2 to L40. (L100–R100 or center), Solo audio track 3., or Unsolo audio track 3. Choose track 1–4 and volume 0–100%. Nothing changed." }
     }
     static func isInstruction(_ text: String) -> Bool {
         let words = text.lowercased().split { !$0.isLetter }
@@ -1159,18 +1166,31 @@ struct SpatterAudioTrackInstruction: Equatable {
         guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
         guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw Failure.unsupported }
         let patterns = [#"\A\s*set\s+audio\s+track\s+([1-4])\s+volume\s+to\s+([0-9]{1,3}(?:\.[0-9]{1,6})?)\s*%\.?\s*\z"#,
-                        #"\A\s*(mute|unmute)\s+audio\s+track\s+([1-4])\.?\s*\z"#]
+                        #"\A\s*(mute|unmute)\s+audio\s+track\s+([1-4])\.?\s*\z"#,
+                        #"\A\s*pan\s+audio\s+track\s+([1-4])\s+to\s+(center|centre|[LR](?:100|[1-9]?[0-9]))\.?\s*\z"#,
+                        #"\A\s*(solo|unsolo)\s+audio\s+track\s+([1-4])\.?\s*\z"#]
         for (index, pattern) in patterns.enumerated() {
             let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
             guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
                   let first = Range(match.range(at: 1), in: text), let second = Range(match.range(at: 2), in: text) else { continue }
-            if index == 0 {
+            switch index {
+            case 0:
                 guard let track = Int(text[first]), let percent = Double(text[second]), percent.isFinite,
                       (0...100).contains(percent) else { throw Failure.unsupported }
                 return .init(track: track, volume: percent / 100)
+            case 1:
+                guard let track = Int(text[second]) else { throw Failure.unsupported }
+                return .init(track: track, muted: text[first].lowercased() == "mute")
+            case 2:
+                guard let track = Int(text[first]) else { throw Failure.unsupported }
+                let position = text[second].lowercased()
+                if position.hasPrefix("cent") { return .init(track: track, pan: 0) }
+                guard let magnitude = Double(position.dropFirst()), magnitude.isFinite, (0...100).contains(magnitude) else { throw Failure.unsupported }
+                return .init(track: track, pan: (position.hasPrefix("l") ? -magnitude : magnitude) / 100)
+            default:
+                guard let track = Int(text[second]) else { throw Failure.unsupported }
+                return .init(track: track, soloed: text[first].lowercased() == "solo")
             }
-            guard let track = Int(text[second]) else { throw Failure.unsupported }
-            return .init(track: track, muted: text[first].lowercased() == "mute")
         }
         throw Failure.unsupported
     }
@@ -1178,7 +1198,7 @@ struct SpatterAudioTrackInstruction: Equatable {
                  checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
         try checkCancellation()
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
-            action: .apply([.updateAudioTrack(.init(track: track, volume: volume, muted: muted))]))
+            action: .apply([.updateAudioTrack(.init(track: track, volume: volume, muted: muted, pan: pan, soloed: soloed))]))
     }
 }
 
@@ -1515,5 +1535,334 @@ struct SpatterFrameCutInstruction {
         guard context.frames.count > 1 else { throw StudioCommandError.cannotDeleteLastFrame }
         return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
             action: .apply([.cutFrame(.id(context.activeFrameID))]))
+    }
+}
+
+
+// MARK: - Selection, image and text grammars (October 12, 2026)
+//
+// Each grammar is a complete anchored instruction: a trailing clause rejects the
+// whole instruction rather than executing its prefix. The session supplies the
+// captured selection; nothing here infers a target from prose or a provider.
+
+/// Shared bounds and capture helper for the grammars below. Private to this file.
+private enum SpatterGrammarSupport {
+    static func checked(_ text: String) throws {
+        guard text.utf8.count <= SpatterMotionRecipe.maximumInstructionBytes else { throw SpatterMotionRecipe.RecipeError.instructionTooLong }
+        guard !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { throw SpatterMotionRecipe.RecipeError.unsupportedInstruction }
+    }
+    /// Captures for the first anchored pattern that matches; nil ranges become "".
+    static func captures(_ text: String, patterns: [String]) throws -> (Int, [String])? {
+        for (index, pattern) in patterns.enumerated() {
+            let expression = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+            guard let match = expression.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) else { continue }
+            var values: [String] = []
+            for group in 1..<match.numberOfRanges {
+                values.append(Range(match.range(at: group), in: text).map { String(text[$0]) } ?? "")
+            }
+            return (index, values)
+        }
+        return nil
+    }
+    static func number(_ token: String, in range: ClosedRange<Double>) -> Double? {
+        guard let value = Double(token), value.isFinite, range.contains(value) else { return nil }
+        return value
+    }
+    static func requireSelection(_ ids: Set<String>, in context: StudioCommandContext) -> Bool {
+        guard !ids.isEmpty, ids.count <= 1024, ids.allSatisfy({ !$0.isEmpty && $0.count <= 160 }),
+              let frame = context.frames.first(where: { $0.id == context.activeFrameID }),
+              ids.count <= frame.elementCount else { return false }
+        return true
+    }
+    /// Same eligibility the reflection grammar applies to a captured selected image.
+    static func requireImage(frameID: String, layerID: String, assetID: String, in context: StudioCommandContext) -> Bool {
+        guard frameID == context.activeFrameID, layerID == context.activeLayerID,
+              let frame = context.frames.first(where: { $0.id == frameID }),
+              frame.imageLayerID == layerID, frame.imageAssetID == assetID, frame.imagePlacement != nil,
+              assetID.hasPrefix("image-"), UUID(uuidString: String(assetID.dropFirst(6))) != nil,
+              let layer = context.layers.first(where: { $0.id == layerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free" else { return false }
+        return true
+    }
+    static let percent = #"([^\s%,()]+)\s*%"#
+}
+
+/// "Move selected drawings by (10%, -5%)." Percentages of the canvas width/height.
+struct SpatterSelectionTranslateInstruction: Equatable {
+    let dxPercent: Double
+    let dyPercent: Double
+    static let example = "Move selected drawings by (10%, -5%)."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Move selected drawings by (10%, -5%). with offsets between -100% and 100% of the canvas. Nothing changed."
+            case .selection: return "Select 1–1,024 drawings with Move before opening Spatter. Images and mixed artwork are not drawing targets. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "move" && words.contains("drawings")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let pattern = #"\A\s*move\s+selected\s+drawings\s+by\s*\(\s*"# + SpatterGrammarSupport.percent + #"\s*,\s*"# + SpatterGrammarSupport.percent + #"\s*\)\.?\s*\z"#
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let dx = SpatterGrammarSupport.number(values[0], in: -100...100),
+              let dy = SpatterGrammarSupport.number(values[1], in: -100...100) else { throw Failure.unsupported }
+        return .init(dxPercent: dx, dyPercent: dy)
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireSelection(selectedElementIDs, in: context) else { throw Failure.selection }
+        let dx = dxPercent / 100 * Double(context.width), dy = dyPercent / 100 * Double(context.height)
+        try StudioElementTranslation(x: dx, y: dy).validate()
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.translateElements(.init(frame: .id(context.activeFrameID), elementIDs: selectedElementIDs.sorted(), dx: dx, dy: dy))]))
+    }
+}
+
+/// "Scale selected drawings to 150% and rotate 45 degrees." Either clause alone is accepted.
+struct SpatterSelectionTransformInstruction: Equatable {
+    let scalePercent: Double
+    let rotationDegrees: Double
+    static let example = "Scale selected drawings to 150% and rotate 45 degrees."
+    static let scaleExample = "Scale selected drawings to 50%."
+    static let rotateExample = "Rotate selected drawings 90 degrees."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Scale selected drawings to 150% and rotate 45 degrees., Scale selected drawings to 50%., or Rotate selected drawings 90 degrees. Scale is 10–1,000% and rotation -180 to 180 degrees. Nothing changed."
+            case .selection: return "Select 1–1,024 drawings or text boxes with Move before opening Spatter. Images and mixed artwork are not drawing targets. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return ["scale", "rotate"].contains(words.first.map(String.init) ?? "") && words.contains("drawings")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let patterns = [#"\A\s*scale\s+selected\s+drawings\s+to\s+"# + SpatterGrammarSupport.percent + #"\s+and\s+rotate\s+([^\s]+)\s+degrees?\.?\s*\z"#,
+                        #"\A\s*scale\s+selected\s+drawings\s+to\s+"# + SpatterGrammarSupport.percent + #"\.?\s*\z"#,
+                        #"\A\s*rotate\s+selected\s+drawings\s+(?:by\s+)?([^\s]+)\s+degrees?\.?\s*\z"#]
+        guard let (index, values) = try SpatterGrammarSupport.captures(text, patterns: patterns) else { throw Failure.unsupported }
+        switch index {
+        case 0:
+            guard let scale = SpatterGrammarSupport.number(values[0], in: 10...1000),
+                  let rotation = SpatterGrammarSupport.number(values[1], in: -180...180) else { throw Failure.unsupported }
+            return .init(scalePercent: scale, rotationDegrees: rotation)
+        case 1:
+            guard let scale = SpatterGrammarSupport.number(values[0], in: 10...1000) else { throw Failure.unsupported }
+            return .init(scalePercent: scale, rotationDegrees: 0)
+        default:
+            guard let rotation = SpatterGrammarSupport.number(values[0], in: -180...180) else { throw Failure.unsupported }
+            return .init(scalePercent: 100, rotationDegrees: rotation)
+        }
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireSelection(selectedElementIDs, in: context) else { throw Failure.selection }
+        let scale = scalePercent / 100
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.transformElements(.init(frame: .id(context.activeFrameID), elementIDs: selectedElementIDs.sorted(),
+                scaleX: scale, scaleY: scale, rotation: rotationDegrees))]))
+    }
+}
+
+/// "Flip selected drawings horizontally." Reflects around the group's combined bounds.
+struct SpatterSelectionReflectInstruction: Equatable {
+    let axis: StudioReflectionAxis
+    static let horizontalExample = "Flip selected drawings horizontally."
+    static let verticalExample = "Flip selected drawings vertically."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Flip selected drawings horizontally. or Flip selected drawings vertically. as one complete instruction. Nothing changed."
+            case .selection: return "Select 1–1,024 drawings with Move before opening Spatter. Use the image flip instruction for a selected image. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "flip" && words.contains("drawings")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [#"\A\s*flip\s+selected\s+drawings\s+(horizontally|vertically)\.?\s*\z"#]) else { throw Failure.unsupported }
+        return .init(axis: values[0].lowercased() == "horizontally" ? .horizontal : .vertical)
+    }
+    func prepare(in context: StudioCommandContext, selectedElementIDs: Set<String>, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireSelection(selectedElementIDs, in: context) else { throw Failure.selection }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.reflectElements(.init(frame: .id(context.activeFrameID), elementIDs: selectedElementIDs.sorted(), axis: axis))]))
+    }
+}
+
+/// "Rotate selected image clockwise." One quarter turn of the captured selected image.
+struct SpatterImageRotationInstruction: Equatable {
+    let direction: StudioImageQuarterTurn
+    static let clockwiseExample = "Rotate selected image clockwise."
+    static let counterclockwiseExample = "Rotate selected image counterclockwise."
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Rotate selected image clockwise. or Rotate selected image counterclockwise. as one complete instruction. Nothing changed."
+            case .invalidContext: return "Select the image on its visible, unlocked active layer with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "rotate" && words.contains("image")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [#"\A\s*rotate\s+selected\s+image\s+(clockwise|counterclockwise|counter-clockwise|anticlockwise)\.?\s*\z"#]) else { throw Failure.unsupported }
+        return .init(direction: values[0].lowercased() == "clockwise" ? .clockwise : .counterclockwise)
+    }
+    func prepare(in context: StudioCommandContext, frameID: String, layerID: String, assetID: String, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireImage(frameID: frameID, layerID: layerID, assetID: assetID, in: context) else { throw Failure.invalidContext }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.rotateImage(.init(frame: .id(frameID), assetID: assetID, direction: direction, layer: .id(layerID)))]))
+    }
+}
+
+/// "Crop selected image to (10%, 10%, 80%, 80%)." x, y, width, height of the upright source.
+struct SpatterImageCropInstruction: Equatable {
+    let crop: StudioImageCrop
+    static let example = "Crop selected image to (10%, 10%, 80%, 80%)."
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Crop selected image to (10%, 10%, 80%, 80%). with x, y, width and height percentages of the original image; the rectangle must stay inside it and be at least 1% wide and high. Nothing changed."
+            case .invalidContext: return "Select the image on its visible, unlocked active layer with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "crop" && words.contains("image")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let p = SpatterGrammarSupport.percent
+        let pattern = #"\A\s*crop\s+selected\s+image\s+to\s*\(\s*"# + p + #"\s*,\s*"# + p + #"\s*,\s*"# + p + #"\s*,\s*"# + p + #"\s*\)\.?\s*\z"#
+        guard let (_, values) = try SpatterGrammarSupport.captures(text, patterns: [pattern]),
+              let x = SpatterGrammarSupport.number(values[0], in: 0...100), let y = SpatterGrammarSupport.number(values[1], in: 0...100),
+              let width = SpatterGrammarSupport.number(values[2], in: 1...100), let height = SpatterGrammarSupport.number(values[3], in: 1...100) else { throw Failure.unsupported }
+        let crop = StudioImageCrop(x: x / 100, y: y / 100, width: width / 100, height: height / 100)
+        do { try crop.validate() } catch { throw Failure.unsupported }
+        return .init(crop: crop)
+    }
+    func prepare(in context: StudioCommandContext, frameID: String, layerID: String, assetID: String, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireImage(frameID: frameID, layerID: layerID, assetID: assetID, in: context) else { throw Failure.invalidContext }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.cropImage(.init(frame: .id(frameID), assetID: assetID, crop: crop, layer: .id(layerID)))]))
+    }
+}
+
+/// "Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees."
+/// Canvas percentages; the complete unrotated box must fit inside the canvas.
+struct SpatterImagePlacementInstruction: Equatable {
+    let xPercent: Double, yPercent: Double, widthPercent: Double, heightPercent: Double
+    let angleDegrees: Double?
+    static let example = "Place selected image at (10%, 20%) with size (40%, 30%)."
+    static let angleExample = "Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees."
+    enum Failure: LocalizedError {
+        case unsupported, invalidContext
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Place selected image at (10%, 20%) with size (40%, 30%). optionally followed by and angle 25 degrees. Position and size are canvas percentages; the box must stay inside the canvas with size 1–100% and angle -180 to 180. Nothing changed."
+            case .invalidContext: return "Select the image on its visible, unlocked active layer with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        let words = text.lowercased().split { !$0.isLetter }
+        return words.first == "place" && words.contains("image")
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let p = SpatterGrammarSupport.percent
+        let head = #"\A\s*place\s+selected\s+image\s+at\s*\(\s*"# + p + #"\s*,\s*"# + p + #"\s*\)\s+with\s+size\s*\(\s*"# + p + #"\s*,\s*"# + p + #"\s*\)"#
+        let patterns = [head + #"\s+and\s+angle\s+([^\s]+)\s+degrees?\.?\s*\z"#, head + #"\.?\s*\z"#]
+        guard let (index, values) = try SpatterGrammarSupport.captures(text, patterns: patterns),
+              let x = SpatterGrammarSupport.number(values[0], in: 0...100), let y = SpatterGrammarSupport.number(values[1], in: 0...100),
+              let width = SpatterGrammarSupport.number(values[2], in: 1...100), let height = SpatterGrammarSupport.number(values[3], in: 1...100),
+              x + width <= 100.000001, y + height <= 100.000001 else { throw Failure.unsupported }
+        var angle: Double?
+        if index == 0 {
+            guard let value = SpatterGrammarSupport.number(values[4], in: -180...180) else { throw Failure.unsupported }
+            angle = value
+        }
+        return .init(xPercent: x, yPercent: y, widthPercent: width, heightPercent: height, angleDegrees: angle)
+    }
+    func placement(canvasWidth: Int, canvasHeight: Int) -> StudioRasterPlacement {
+        let w = Double(canvasWidth), h = Double(canvasHeight)
+        return .init(x: xPercent / 100 * w, y: yPercent / 100 * h, width: widthPercent / 100 * w, height: heightPercent / 100 * h)
+    }
+    func prepare(in context: StudioCommandContext, frameID: String, layerID: String, assetID: String, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard SpatterGrammarSupport.requireImage(frameID: frameID, layerID: layerID, assetID: assetID, in: context) else { throw Failure.invalidContext }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.updateImagePlacement(.init(frame: .id(frameID), assetID: assetID,
+                placement: placement(canvasWidth: context.width, canvasHeight: context.height), rotationDegrees: angleDegrees, layer: .id(layerID)))]))
+    }
+}
+
+/// "Set selected text to \"Hello\" in #FF0000." Replaces content, keeps typography.
+struct SpatterTextUpdateInstruction: Equatable {
+    let content: String
+    let colorHex: String?
+    static let example = "Set selected text to \"Hello\"."
+    static let colorExample = "Set selected text to \"Hello\" in #FF0000."
+    enum Failure: LocalizedError {
+        case unsupported, selection
+        var errorDescription: String? {
+            switch self {
+            case .unsupported: return "Use Set selected text to \"Hello\". or Set selected text to \"Hello\" in #FF0000. with one quoted text of 1–2,048 characters and an optional six-digit color. The quoted text is content, never another instruction. Nothing changed."
+            case .selection: return "Select exactly one text box on a visible, unlocked layer with Move before opening Spatter. Nothing changed."
+            }
+        }
+    }
+    static func isInstruction(_ text: String) -> Bool {
+        text.range(of: #"\A\s*set\s+selected\s+text\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+    static func parse(_ text: String) throws -> Self {
+        try SpatterGrammarSupport.checked(text)
+        let patterns = [#"\A\s*set\s+selected\s+text\s+to\s+"([^"\\]{1,2048})"\s+in\s+(#[0-9A-Fa-f]{6})\.?\s*\z"#,
+                        #"\A\s*set\s+selected\s+text\s+to\s+"([^"\\]{1,2048})"\.?\s*\z"#]
+        guard let (index, values) = try SpatterGrammarSupport.captures(text, patterns: patterns),
+              !values[0].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, values[0].utf8.count <= StudioTextDescriptor.maximumBytes else { throw Failure.unsupported }
+        return .init(content: values[0], colorHex: index == 0 ? values[1].uppercased() : nil)
+    }
+    func prepare(in context: StudioCommandContext, element: DrawnElement, requestID: UUID = UUID(),
+                 checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> StudioCommandRequest {
+        try checkCancellation()
+        guard element.tool == .text, var descriptor = element.text, let layerID = element.layerID,
+              let layer = context.layers.first(where: { $0.id == layerID }),
+              layer.visible, layer.opacity > 0, !layer.isFullyLocked, layer.lockMode == "free",
+              let frame = context.frames.first(where: { $0.id == context.activeFrameID }), frame.elementCount > 0 else { throw Failure.selection }
+        descriptor.content = content
+        var updated = element; updated.text = descriptor
+        do { try descriptor.validate(element: updated) } catch { throw Failure.unsupported }
+        return .init(requestID: requestID, projectID: context.projectID, expectedRevision: context.revision,
+            action: .apply([.updateText(.init(frame: .id(context.activeFrameID), elementID: element.id, text: descriptor,
+                color: colorHex ?? element.color, opacity: element.opacity))]))
     }
 }
