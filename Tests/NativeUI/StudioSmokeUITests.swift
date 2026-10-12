@@ -4443,6 +4443,7 @@ final class StudioSmokeUITests: XCTestCase {
         XCTAssertTrue(reopenedAudio.waitForExistence(timeout: 5)); reopenedAudio.tap()
         XCTAssertEqual(reopened.staticTexts["studio.audio.clip-count"].label, "1 clips")
         XCTAssertFalse(reopened.staticTexts["studio.audio.timelineNotice"].exists)
+        try disableDefaultAudioLoop(reopened)
         reopened.buttons["studio.audio.timelinePlay"].tap()
         XCTAssertTrue(reopened.staticTexts["00:09.22"].waitForExistence(timeout: 15), "Saved auditioned sound failed real playback after cold reopen")
         capture(reopened, name: "audio-tag-selected-sound-cold-reopen")
@@ -4919,7 +4920,8 @@ final class StudioSmokeUITests: XCTestCase {
         app.buttons["studio.audio.close"].tap();app.buttons["studio.redo"].tap()
         openAudio(app);clipCount("2 clips", in: app)
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled);play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         XCTAssertTrue(app.staticTexts["00:00.25"].waitForExistence(timeout: 12), "Actual mixed player did not reach the unchanged clip end")
         app.buttons["studio.audio.close"].tap()
         let save = app.buttons["studio.save"];XCTAssertTrue(save.isHittable);save.tap()
@@ -4956,7 +4958,8 @@ final class StudioSmokeUITests: XCTestCase {
         capture(app, name: "audio-bundled-library-two-clips")
         app.buttons["studio.audio.library.close"].tap()
         let play = app.buttons["studio.audio.timelinePlay"]
-        XCTAssertTrue(play.isHittable && play.isEnabled); play.tap()
+        XCTAssertTrue(play.isHittable && play.isEnabled)
+        try disableDefaultAudioLoop(app); play.tap()
         // This is the real AVAudioPlayer completion time for the integrity-pinned
         // 3.063492-second file, not a sleep followed by a fabricated success label.
         XCTAssertTrue(app.staticTexts["00:03.06"].waitForExistence(timeout: 12), "Mixed playback never reached the actual source end")
