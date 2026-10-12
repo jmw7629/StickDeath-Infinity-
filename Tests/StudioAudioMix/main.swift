@@ -506,7 +506,8 @@ private actor Barrier {
             try near(raised.receipt.appliedGain, StudioAudioMixService.normalizationTargetPeak / 0.1, 0.0001)
             try raised.cleanup()
             var mutedClip = clip(quiet); mutedClip.isMuted = true
-            let silent = try await StudioAudioMixService().mix(document: try document([mutedClip]), retainedAudioTracks: [quiet], durationSeconds: 0.1,
+            var mutedDocument = try document([mutedClip]); mutedDocument.schemaVersion = 4 // clip mute needs schema 4
+            let silent = try await StudioAudioMixService().mix(document: mutedDocument, retainedAudioTracks: [quiet], durationSeconds: 0.1,
                 outputParent: scratch, options: .init(normalizeToMinusOneDBFS: true))
             try check(silent.receipt.appliedGain == 1 && silent.receipt.peakAbsoluteSample == 0 && silent.receipt.normalizedToMinusOneDBFS, "silence must not be amplified")
             try silent.cleanup(); try empty()
