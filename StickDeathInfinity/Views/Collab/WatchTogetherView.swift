@@ -7,8 +7,12 @@ import Supabase
 struct WatchTogetherView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.requestSignIn) private var requestSignIn
     @State private var rooms: [WatchRoom] = []
     @State private var media: [WatchMedia] = []
+    /// Read-only membership rows (account identifiers only). RLS returns the
+    /// viewer's own row, or every row when the viewer owns the room.
+    @State private var participants: [WatchParticipant] = []
     @State private var selected: WatchRoom?
     @State private var selectedMedia = ""
     @State private var state: WatchPlayback?
@@ -34,7 +38,14 @@ struct WatchTogetherView: View {
                 Text("Watch Together").font(.specialElite(24))
                 Text("Watch an approved video with the members of a shared room.")
                     .foregroundColor(.sdTextSecondary)
-                if !auth.isAuthenticated { Label("Sign in to view your rooms", systemImage: "lock") }
+                if !auth.isAuthenticated {
+                    Label("Sign in to view your rooms", systemImage: "lock")
+                    Button("Sign In") { requestSignIn() }
+                        .font(.specialElite(16)).foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(Color.sdPrimaryGradient).cornerRadius(12)
+                        .accessibilityIdentifier("watchTogether.sign-in")
+                }
                 if let error {
                     Text(error).foregroundColor(.sdRed)
                     Button("Reconnect") { refresh += 1 }
@@ -62,9 +73,12 @@ struct WatchTogetherView: View {
                         } else {
                             Text("The host controls shared playback.").foregroundColor(.sdTextSecondary)
                         }
+                        Text("Position is estimated from the server's last update time and this device's clock; a drift of a few seconds between members is expected.")
+                            .font(.caption).foregroundColor(.sdTextSecondary)
                     } else if state == nil {
                         Text("No video selected in this room.")
                     }
+                    participantList
                     if isHost {
                         Picker("Approved video", selection: $selectedMedia) {
                             Text("Choose video").tag("")
@@ -104,6 +118,26 @@ struct WatchTogetherView: View {
         .accessibilityIdentifier("watchTogether.screen")
     }
 
+    private var participantList: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(isHost ? "Members" : "Your membership").font(.specialElite(16))
+            if participants.isEmpty {
+                Text("No membership rows are visible for this room.").font(.caption).foregroundColor(.sdTextSecondary)
+            }
+            ForEach(participants) { member in
+                HStack {
+                    Text(member.user_id.uuidString.lowercased()).font(.caption.monospaced()).textSelection(.enabled)
+                    Spacer()
+                    Text(member.revoked ? "Removed" : member.owner_approved && member.member_accepted ? "Accepted" : "Pending")
+                        .font(.caption).foregroundColor(.sdTextSecondary)
+                }
+            }
+            Text("Shows account identifiers from room membership only. Presence, chat, microphone and camera are not part of Watch Together.")
+                .font(.caption).foregroundColor(.sdTextSecondary)
+        }
+        .accessibilityIdentifier("watchTogether.participants")
+    }
+
     private var localAudioControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
@@ -139,7 +173,7 @@ struct WatchTogetherView: View {
         state = nil; loadedMedia = nil; seeking = false; seekPosition = 0
     }
     @MainActor private func leave() {
-        generation = UUID(); clearPlayback(); selected = nil; selectedMedia = ""; busy = false
+        generation = UUID(); clearPlayback(); selected = nil; selectedMedia = ""; busy = false; participants = []
     }
     @MainActor private func isCurrent(_ room: WatchRoom, account: String?, epoch: UUID) -> Bool {
         !Task.isCancelled && generation == epoch && selected?.id == room.id &&
@@ -169,6 +203,10 @@ struct WatchTogetherView: View {
             guard isCurrent(room, account: account, epoch: epoch) else { return }
             guard let refreshedRoom = membership.first, membership.count == 1 else { leave(); error = "Room access ended."; return }
             selected = refreshedRoom
+            let members: [WatchParticipant] = try await client.from("sdi_room_members").select("user_id,owner_approved,member_accepted,revoked")
+                .eq("room_id", value: room.id.uuidString).limit(100).execute().value
+            guard isCurrent(room, account: account, epoch: epoch) else { return }
+            participants = members.sorted { $0.user_id.uuidString < $1.user_id.uuidString }
             let values: [WatchPlayback] = try await client.from("sdi_watch_sessions").select().eq("room_id", value: room.id.uuidString).limit(1).execute().value
             guard isCurrent(room, account: account, epoch: epoch) else { return }
             guard let value = values.first else { clearPlayback(); return }
@@ -181,6 +219,9 @@ struct WatchTogetherView: View {
             if loadedMedia != video.id { player?.pause(); player = AVPlayer(url: url); loadedMedia = video.id }
             applyLocalAudio()
             state = value; error = nil
+            // Approximate: `updated_at` is server time and `Date()` is device time.
+            // Until a server_now RPC exists, the offset between the two clocks is
+            // not measured, so members may differ by their clock skew.
             let elapsed = value.playing ? max(0, Date().timeIntervalSince(value.updated_at)) : 0
             let target = min(video.duration, max(0, value.position + elapsed))
             if !seeking {
@@ -242,6 +283,10 @@ struct WatchTogetherView: View {
 }
 
 private struct WatchRoom: Decodable, Identifiable { let id: UUID; let owner_id: UUID; let title: String }
+private struct WatchParticipant: Decodable, Identifiable {
+    var id: UUID { user_id }
+    let user_id: UUID; let owner_approved: Bool; let member_accepted: Bool; let revoked: Bool
+}
 private struct WatchPlayback: Decodable, Identifiable {
     let id: UUID; let media_id: UUID; let position: Double; let playing: Bool
     let revision: Int; let updated_at: Date

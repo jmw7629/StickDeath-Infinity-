@@ -95,13 +95,12 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("Delete Account?", isPresented: $showDeleteConfirm) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
-                Task { try? await AuthService.shared.deleteAccount() }
-            }
+        // Deletion is not available yet (AuthService.deleteAccount throws). This
+        // legacy screen is not routed; keep its text truthful rather than promising removal.
+        .alert("Account deletion unavailable", isPresented: $showDeleteConfirm) {
+            Button("OK", role: .cancel) {}
         } message: {
-            Text("This action cannot be undone. All your data will be permanently deleted.")
+            Text("Account deletion is not available in this build. Nothing has been deleted, and your local projects stay on this device.")
         }
     }
 }

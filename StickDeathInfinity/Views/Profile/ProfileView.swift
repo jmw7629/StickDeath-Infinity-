@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// Reference-shaped profile. Connected facts remain unavailable until verified.
 struct ProfileView: View {
     @EnvironmentObject var authVM: AuthViewModel
+    @Environment(\.requestSignIn) private var requestSignIn
     let onOpenProjects: () -> Void
     @State private var destination: Destination?
     @State private var localProjectCount: Int?
@@ -83,6 +84,14 @@ struct ProfileView: View {
                     .font(.specialElite(11)).foregroundStyle(.secondary)
 
                 VStack(spacing: 8) {
+                    if !authVM.isAuthenticated {
+                        Button { requestSignIn() } label: {
+                            rowLabel("Sign in or create an account", icon: "person.crop.circle.badge.plus")
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("profile.sign-in")
+                        Text("Your device projects stay here whether or not you sign in.")
+                            .font(.specialElite(11)).foregroundStyle(.secondary)
+                    }
                     Button(action: onOpenProjects) {
                         rowLabel("Projects on this device", icon: "folder")
                     }.buttonStyle(.plain)
@@ -203,7 +212,18 @@ struct ProfileSettingsView: View {
                 Section {
                     Button("Sign Out", role: .destructive) { Task { await authVM.signOut() } }
                         .disabled(authVM.isLoading)
+                    Text("Signing out closes the open project and returns to the library. Nothing on this device is deleted.")
+                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
                     if let error = authVM.error { Text(error).foregroundStyle(.red) }
+                }
+                Section("Account deletion") {
+                    Button("Delete account", role: .destructive) { Task { await authVM.requestAccountDeletion() } }
+                        .disabled(authVM.isLoading)
+                        .accessibilityIdentifier("profile.delete-account")
+                    // The service refuses deletion (AuthError.accountDeletionUnavailable) and
+                    // the refusal text is shown above through authVM.error. Say so up front.
+                    Text("Deletion is not available in this build yet: removing the profile row would not revoke sessions or erase related records, so nothing is deleted. Your local projects stay on this device either way.")
+                        .font(.specialElite(11, relativeTo: .caption)).foregroundStyle(.secondary)
                 }
             }
         }
@@ -227,7 +247,7 @@ private struct PublishingJobsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Publishing activity").font(.specialElite(22))
                 Text("Only an approved render with destination consent can enter this queue. Cancelling an upload may require removal from the destination after transfer.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.specialElite(15, relativeTo: .callout)).foregroundStyle(.secondary)
                 if let error { Text(error).foregroundStyle(.red) }
                 if busy { ProgressView() }
                 Button("Refresh") { Task { await load() } }.disabled(busy)
@@ -237,9 +257,9 @@ private struct PublishingJobsView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text(job.destination.capitalized).font(.specialElite(18))
                         Text(job.state.replacingOccurrences(of: "_", with: " ").capitalized)
-                        Text("Render \(job.render_digest.prefix(12)) · Attempt \(job.attempts)").font(.caption)
-                        Text(job.updated_at, style: .relative).font(.caption)
-                        if let issue = job.last_error { Text(issue).font(.caption).foregroundStyle(.red) }
+                        Text("Render \(job.render_digest.prefix(12)) · Attempt \(job.attempts)").font(.specialElite(12, relativeTo: .caption))
+                        Text(job.updated_at, style: .relative).font(.specialElite(12, relativeTo: .caption))
+                        if let issue = job.last_error { Text(issue).font(.specialElite(12, relativeTo: .caption)).foregroundStyle(.red) }
                         if job.state == "published", let raw = job.result_url, let parts = URLComponents(string: raw),
                            parts.scheme == "https", parts.host != nil, parts.user == nil, parts.password == nil, let url = parts.url {
                             Link("Open published video", destination: url)
@@ -299,16 +319,16 @@ private struct CreatorReviewsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Submitted renders").font(.specialElite(20))
-            Text("Only submitted and approved renders appear here. Your local drafts are not uploaded automatically.").font(.caption)
+            Text("Only submitted and approved renders appear here. Your local drafts are not uploaded automatically.").font(.specialElite(12, relativeTo: .caption))
             Button("Refresh submissions") { Task { await request("list") } }.disabled(busy)
             if busy { ProgressView() }
-            if let message { Text(message).font(.caption) }
+            if let message { Text(message).font(.specialElite(12, relativeTo: .caption)) }
             ForEach(reviews) { review in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(review.title).font(.specialElite(17))
-                    Text("\(review.state.capitalized) · Version \(review.version)").font(.caption)
-                    Text("Render: \(review.render_digest.prefix(16))").font(.caption.monospaced())
-                    Text("Permissions: \(review.destinations.isEmpty ? "None" : review.destinations.joined(separator: ", "))").font(.caption)
+                    Text("\(review.state.capitalized) · Version \(review.version)").font(.specialElite(12, relativeTo: .caption))
+                    Text("Render: \(review.render_digest.prefix(16))").font(.specialElite(12, relativeTo: .caption).monospaced())
+                    Text("Permissions: \(review.destinations.isEmpty ? "None" : review.destinations.joined(separator: ", "))").font(.specialElite(12, relativeTo: .caption))
                     if review.can_publish {
                         Button("Publish approved video to SDI YouTube") { pending = review }.disabled(busy)
                     }
@@ -370,9 +390,9 @@ private struct ProfileRecordsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Records & badges").font(.specialElite(22))
-                Text("Both public displays start off. Hiding your profile totals does not hide videos, match participation or individual match results.").font(.callout)
+                Text("Both public displays start off. Hiding your profile totals does not hide videos, match participation or individual match results.").font(.specialElite(15, relativeTo: .callout))
                 if busy { ProgressView() }
-                if let message { Text(message).font(.caption) }
+                if let message { Text(message).font(.specialElite(12, relativeTo: .caption)) }
                 Button("Refresh") { Task { await load(save: false) } }.disabled(busy)
                 if let data {
                     Text("Your private record").font(.specialElite(18))
@@ -385,10 +405,10 @@ private struct ProfileRecordsView: View {
                     ForEach(data.badges ?? []) { badge in
                         VStack(alignment: .leading) {
                             Text(badge.title).font(.specialElite(16))
-                            Text("\(badge.earned_at.formatted()) · Criteria \(badge.criterion_version)").font(.caption)
+                            Text("\(badge.earned_at.formatted()) · Criteria \(badge.criterion_version)").font(.specialElite(12, relativeTo: .caption))
                         }
                     }
-                    if data.badges?.isEmpty == true { Text("No verified badges awarded.").font(.caption) }
+                    if data.badges?.isEmpty == true { Text("No verified badges awarded.").font(.specialElite(12, relativeTo: .caption)) }
                 }
             }.padding()
         }.background(Color.sdBackground).foregroundStyle(Color.sdTextPrimary)
@@ -446,8 +466,8 @@ struct AccountAuthenticatorView: View {
             if let totp = enrollment?.totp {
                 Section("Set up your authenticator") {
                     Text("Enter this setup key in your authenticator app, then enter its current code below. Keep the key private.")
-                    Text(totp.secret).font(.body.monospaced()).textSelection(.enabled).privacySensitive()
-                    Text("The setup key is cleared when you leave this screen or background the app. An unfinished factor can be removed below and set up again.").font(.caption)
+                    Text(totp.secret).font(.specialElite(16, relativeTo: .body).monospaced()).textSelection(.enabled).privacySensitive()
+                    Text("The setup key is cleared when you leave this screen or background the app. An unfinished factor can be removed below and set up again.").font(.specialElite(12, relativeTo: .caption))
                 }
             }
             Section("Verify this session") {
@@ -467,7 +487,7 @@ struct AccountAuthenticatorView: View {
                 ForEach(factors.filter { $0.status == .unverified && $0.id != enrollment?.id }) { factor in
                     Button("Remove unfinished setup", role: .destructive) { Task { await perform("remove", factor: factor.id) } }.disabled(busy)
                 }
-                Text("Verified factors cannot be removed here. Account recovery requires the protected recovery process.").font(.caption)
+                Text("Verified factors cannot be removed here. Account recovery requires the protected recovery process.").font(.specialElite(12, relativeTo: .caption))
             }
         }.navigationTitle("Authenticator security")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
@@ -596,10 +616,10 @@ struct SDIRenderUploadView: View {
                 Toggle("StickDeath Infinity home feed", isOn: $feed)
                 Toggle("Official SDI YouTube channel", isOn: $youtube)
                 Toggle("SDI social marketing reuse", isOn: $social)
-                Text("Only selected destinations may be reviewed. Channel and social versions may include SDI branding. Private drafts and unselected files are not submitted.").font(.caption)
+                Text("Only selected destinations may be reviewed. Channel and social versions may include SDI branding. Private drafts and unselected files are not submitted.").font(.specialElite(12, relativeTo: .caption))
                 if let consent = AppConfig.publishingConsent {
                     Link("Read publishing terms", destination: consent.termsURL)
-                    Text("Terms version: \(consent.version)").font(.caption)
+                    Text("Terms version: \(consent.version)").font(.specialElite(12, relativeTo: .caption))
                 }
                 Toggle("I have the necessary rights and contributor permissions and agree to the current terms for these destinations.", isOn: $accepted)
                 if let exportedMovie {
@@ -616,15 +636,15 @@ struct SDIRenderUploadView: View {
                 }
             }
             Section("Private upload copies") {
-                Text("Copies remain on this device for resume until you remove them. Your original exported file and editable project are preserved.").font(.caption)
+                Text("Copies remain on this device for resume until you remove them. Your original exported file and editable project are preserved.").font(.specialElite(12, relativeTo: .caption))
                 Button("Refresh uploads") { Task { await reload() } }.disabled(busy)
                 ForEach(jobs) { job in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(job.metadata.title).font(.specialElite(17))
-                        Text("\(job.offset) / \(job.metadata.size) bytes · \(job.state)").font(.caption)
+                        Text("\(job.offset) / \(job.metadata.size) bytes · \(job.state)").font(.specialElite(12, relativeTo: .caption))
                         if let review = job.reviewID {
-                            Text("Submitted for review: \(review.uuidString)").font(.caption).textSelection(.enabled)
-                            Text("Manage approval and destination permissions in Publishing. This receipt is not publication confirmation.").font(.caption)
+                            Text("Submitted for review: \(review.uuidString)").font(.specialElite(12, relativeTo: .caption)).textSelection(.enabled)
+                            Text("Manage approval and destination permissions in Publishing. This receipt is not publication confirmation.").font(.specialElite(12, relativeTo: .caption))
                         } else {
                             Button("Resume upload") { transfer(job) }.disabled(busy || !configured || !auth.isAuthenticated)
                         }

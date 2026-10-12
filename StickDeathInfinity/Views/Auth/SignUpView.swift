@@ -79,11 +79,18 @@ struct SignUpView: View {
 
                         // SSO Buttons (first, matching React order)
                         VStack(spacing: 12) {
-                            SocialAuthButton(
-                                icon: "apple.logo",
-                                title: "Continue with Apple",
-                                action: { showError = true; Task { if await authVM.signInWithApple() { onSuccess() } } }
-                            )
+                            VStack(spacing: 4) {
+                                SocialAuthButton(
+                                    icon: "apple.logo",
+                                    title: "Continue with Apple",
+                                    action: { showError = true; Task { if await authVM.signInWithApple() { onSuccess() } } }
+                                )
+                                .disabled(authVM.isLoading || authVM.appleSignInUnavailableReason != nil)
+                                .accessibilityIdentifier("auth.provider.apple")
+                                if let reason = authVM.appleSignInUnavailableReason {
+                                    Text(reason).font(.caption).foregroundColor(.sdTextSecondary)
+                                }
+                            }
                             ForEach(AppConfig.OAuthProvider.allCases, id: \.self) { provider in
                                 VStack(spacing: 4) {
                                     SocialAuthButton(
@@ -95,8 +102,12 @@ struct SignUpView: View {
                                         }
                                     )
                                     .disabled(authVM.isLoading || authVM.providerUnavailableReason(provider) != nil)
+                                    .accessibilityIdentifier("auth.provider.\(provider.rawValue)")
                                     if let reason = authVM.providerUnavailableReason(provider) {
                                         Text(reason).font(.caption).foregroundColor(.sdTextSecondary)
+                                    } else if provider == .microsoft, let tenant = authVM.microsoftTenant {
+                                        Text(ProviderHint.microsoft(tenant: tenant)).font(.caption).foregroundColor(.sdTextSecondary)
+                                            .multilineTextAlignment(.center)
                                     }
                                 }
                             }
@@ -187,7 +198,21 @@ struct SignUpView: View {
                             Text(error)
                                 .font(.system(size: 13))
                                 .foregroundColor(.sdDestructive)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
                                 .padding(.top, 12)
+                                .accessibilityIdentifier("auth.error")
+                        }
+                        // Confirmation pending is not an error: the account exists but
+                        // has no session until the email address is confirmed.
+                        if let notice = authVM.notice, showError {
+                            Text(notice)
+                                .font(.system(size: 13))
+                                .foregroundColor(.sdTextSecondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 24)
+                                .padding(.top, 12)
+                                .accessibilityIdentifier("auth.signup.notice")
                         }
 
                         // Create Account button

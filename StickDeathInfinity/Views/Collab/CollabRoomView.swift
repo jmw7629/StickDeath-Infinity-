@@ -6,6 +6,7 @@ import Supabase
 struct CollabRoomView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var phase
+    @Environment(\.requestSignIn) private var requestSignIn
     @State private var rooms: [RoomSummary] = []
     @State private var members: [RoomMember] = []
     @State private var selected: RoomSummary?
@@ -29,7 +30,16 @@ struct CollabRoomView: View {
                     Text("Rooms").font(.specialElite(24))
                     Text("Collaborate by agreement. Invitation codes never grant access on their own.")
                         .foregroundColor(.sdTextSecondary)
-                    if !auth.isAuthenticated { Label("Sign in to create or join rooms", systemImage: "lock") }
+                    if !auth.isAuthenticated {
+                        Label("Sign in to create or join rooms", systemImage: "lock")
+                        Button("Sign In") { requestSignIn() }
+                            .font(.specialElite(16)).foregroundColor(.white)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .background(Color.sdPrimaryGradient).cornerRadius(12)
+                            .accessibilityIdentifier("rooms.sign-in")
+                        Text("Your Studio project is saved before sign-in and reopens when you return.")
+                            .font(.caption).foregroundColor(.sdTextSecondary)
+                    }
                     if let failure { Text(failure).foregroundColor(.sdRed) }
                     if let message { Text(message).foregroundColor(.sdTextSecondary) }
                     if busy { ProgressView() }

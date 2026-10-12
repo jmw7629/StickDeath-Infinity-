@@ -9,12 +9,16 @@ import SwiftUI
 
 struct MainTabView: View {
     @State private var activeTab: AppTab = .home
-    @State private var showTutorial = true
+    /// The same key AppTutorialView writes; completing or skipping once persists.
+    @AppStorage("tutorial_completed") private var tutorialCompleted = false
     @EnvironmentObject var spatterVM: SpatterAIViewModel
     @ObservedObject private var studioVM = StudioViewModel.shared
 
     init(initialTab: AppTab = .home) {
         _activeTab = State(initialValue: initialTab)
+    }
+    private var showTutorial: Binding<Bool> {
+        Binding(get: { !tutorialCompleted }, set: { tutorialCompleted = !$0 })
     }
 
     var body: some View {
@@ -54,9 +58,9 @@ struct MainTabView: View {
                 PricingTickerView()
             }
 
-            // Tutorial overlay
-            if showTutorial {
-                AppTutorialView(isPresented: $showTutorial)
+            // Tutorial overlay (first run only; completion is a device preference)
+            if !tutorialCompleted {
+                AppTutorialView(isPresented: showTutorial)
             }
         }
     }

@@ -5,22 +5,33 @@ import SwiftUI
 struct CalendarEventView: View {
     @ObservedObject private var auth = AuthService.shared
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.requestSignIn) private var requestSignIn
     @AppStorage("sdi.calendar.selectedDate") private var savedDate = Date().timeIntervalSince1970
     @State private var month = Date()
     @State private var selectedDate = Date()
     @State private var events: [ScheduledChallenge] = []
     @State private var loading = false
     @State private var error: String?
+    /// Set when the shown schedules came from the per-account cache, not the server.
+    @State private var offlineUpdatedAt: Date?
+    @State private var truncated = false
     @State private var invalidSchedules = 0
+    private let cache = ChallengeScheduleCache()
     @State private var detail: Challenge?
     @State private var request = UUID()
     @State private var refreshRevision = 0
 
     @State private var calendar = Calendar.current
     @State private var today = Date()
-    private var accountKey: String { "\(auth.isAuthenticated):\(auth.userId ?? "guest"):\(refreshRevision)" }
+    /// Only the visible month is fetched; changing month refetches that range.
+    private var accountKey: String {
+        "\(auth.isAuthenticated):\(auth.userId ?? "guest"):\(refreshRevision):\(ChallengeScheduleCache.monthKey(monthStart, calendar: calendar))"
+    }
     private var monthStart: Date {
         calendar.dateInterval(of: .month, for: month)?.start ?? month
+    }
+    private var monthEnd: Date {
+        calendar.dateInterval(of: .month, for: month)?.end ?? month
     }
     private var dates: [Date] {
         guard let range = calendar.range(of: .day, in: .month, for: monthStart) else { return [] }
@@ -77,12 +88,27 @@ struct CalendarEventView: View {
                 Text(selectedDate.formatted(date: .complete, time: .omitted)).font(.specialElite(17))
                 if !auth.isAuthenticated {
                     Label("Sign in to see your available schedules.", systemImage: "lock")
+                    Button("Sign In") { requestSignIn() }
+                        .font(.specialElite(16)).foregroundColor(.white)
+                        .frame(maxWidth: .infinity, minHeight: 48)
+                        .background(Color.sdPrimaryGradient).cornerRadius(12)
+                        .accessibilityIdentifier("calendar.sign-in")
                 } else if loading {
                     ProgressView("Loading schedules…")
                 } else if let error {
                     Text(error).foregroundColor(.sdTextSecondary)
                     Button("Retry") { refreshRevision += 1 }
-                } else if selectedEvents.isEmpty {
+                }
+                if let offlineUpdatedAt {
+                    Label("Offline · last updated \(offlineUpdatedAt.formatted(date: .abbreviated, time: .shortened))", systemImage: "wifi.slash")
+                        .font(.caption).foregroundColor(.sdTextSecondary)
+                        .accessibilityIdentifier("calendar.offline")
+                }
+                if truncated {
+                    Text("More than \(ChallengeService.scheduleRangeLimit) schedules exist this month; only the first \(ChallengeService.scheduleRangeLimit) are shown.")
+                        .font(.caption).foregroundColor(.sdTextSecondary)
+                }
+                if auth.isAuthenticated && !loading && selectedEvents.isEmpty && (error == nil || offlineUpdatedAt != nil) {
                     Text("No scheduled challenges on this day.").foregroundColor(.sdTextSecondary)
                 }
                 ForEach(selectedEvents) { event in
@@ -163,26 +189,42 @@ struct CalendarEventView: View {
     @MainActor private func load() async {
         let token = UUID(); request = token
         events = []; detail = nil; error = nil; invalidSchedules = 0; loading = false
+        offlineUpdatedAt = nil; truncated = false
         guard auth.isAuthenticated, let account = auth.userId else { return }
         loading = true
         defer { if request == token { loading = false } }
+        let rangeStart = monthStart, rangeEnd = monthEnd
+        let monthKey = ChallengeScheduleCache.monthKey(rangeStart, calendar: calendar)
         do {
-            let values = try await ChallengeService.shared.fetchChallenges()
+            let values = try await ChallengeService.shared.fetchChallenges(overlapping: rangeStart, end: rangeEnd)
             guard !Task.isCancelled, request == token, auth.isAuthenticated, auth.userId == account else { return }
-            var unique: [Int: ScheduledChallenge] = [:]
-            for challenge in values {
-                if let event = ScheduledChallenge(challenge) { unique[event.id] = event }
-                else { invalidSchedules += 1 }
-            }
-            events = unique.values.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+            place(values)
+            truncated = values.count >= ChallengeService.scheduleRangeLimit
+            try? cache.store(values, account: account, month: monthKey)
         } catch {
             guard !Task.isCancelled, request == token, auth.userId == account else { return }
-            self.error = "Schedules are unavailable. Check your connection and account configuration, then retry."
+            if let cached = cache.entry(account: account, month: monthKey) {
+                place(cached.challenges)
+                offlineUpdatedAt = cached.updatedAt
+            } else {
+                self.error = "Schedules are unavailable. Check your connection and account configuration, then retry."
+            }
         }
+    }
+    @MainActor private func place(_ values: [Challenge]) {
+        var unique: [Int: ScheduledChallenge] = [:]
+        invalidSchedules = 0
+        for challenge in values {
+            if let event = ScheduledChallenge(challenge) { unique[event.id] = event }
+            else { invalidSchedules += 1 }
+        }
+        events = unique.values.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
     }
 }
 
-private struct ScheduledChallenge: Identifiable {
+/// Internal (not private) so the native unit tests can exercise day-overlap
+/// arithmetic across daylight-saving transitions with the production code.
+struct ScheduledChallenge: Identifiable {
     var id: Int { challenge.id }
     let challenge: Challenge
     let start: Date
