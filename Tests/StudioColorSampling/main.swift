@@ -85,8 +85,14 @@ private struct TestFailure: Error { let message: String }
         let dotEdge = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 18, y: 12), sampleSize: 11)
         try require(dotEdge.red == 255 && dotEdge.green > 0 && dotEdge.green == dotEdge.blue && dotEdge.green < 255,
             "11×11 average across the red dot's edge mixes red with white: \(dotEdge.hex)")
-        let corner = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 0, y: 0), sampleSize: 31)
-        try require(corner.hex == "#FFFFFF", "Clipped corner block stays white, never clamped onto artwork")
+        // The block is clipped to the canvas rather than shifted inward: a 3×3
+        // block at the corner sees only white, while a 31×31 block reaches the
+        // red dot (centre 12,12, 12 px wide) without ever leaving the canvas.
+        let cornerSmall = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 0, y: 0), sampleSize: 3)
+        try require(cornerSmall.hex == "#FFFFFF" && cornerSmall.x == 0 && cornerSmall.y == 0, "Clipped corner block stays white")
+        let cornerLarge = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 0, y: 0), sampleSize: 31)
+        try require(cornerLarge.red == 255 && cornerLarge.green < 255 && cornerLarge.green == cornerLarge.blue,
+            "Clipped corner block averages the red dot with white: \(cornerLarge.hex)")
         do { _ = try StudioColorSamplingService.sample(document: d, frameID: d.activeFrameID, point: CGPoint(x: 12, y: 12), sampleSize: 7)
             throw TestFailure(message: "non-PhotoCraft sample size accepted") } catch StudioColorSamplingService.Failure.renderFailed {}
         var layered = d
