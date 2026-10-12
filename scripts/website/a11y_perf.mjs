@@ -1,0 +1,333 @@
+#!/usr/bin/env node
+// Accessibility, behaviour and performance harness for website/ (Chromium only).
+//
+//   PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node scripts/website/a11y_perf.mjs [--json report.json]
+//
+// Serves website/ from a tiny in-process HTTP server (no dependencies) and runs:
+//   * every page × viewports 320×640 / 390×844 / 1440×900: console.error/pageerror = fail,
+//     any non-same-origin request = fail, no horizontal overflow, ≥44×44 interactive targets
+//     (inline links inside running text exempt, as in WCAG 2.5.8), exactly one h1 and no skipped
+//     heading levels, main/nav/header landmarks, img alt, labelled form controls, visible focus
+//     outline on the first Tab stop, text contrast ≥4.5:1 (≥3:1 for large text)
+//   * index.html: skip link → #main, menu aria-expanded + Escape (compact viewports),
+//     help search "lasso" (expected count computed from help/articles.json), filter aria-pressed,
+//     every #help/<id> fragment opens and focuses its topic, support form validation → Review →
+//     Download event → clipboard → Reset
+//   * reducedMotion: 'reduce' → scroll-behavior auto; javaScriptEnabled: false → noscript shown
+//   * perf via CDP at 390×844: Slow-4G (150 ms RTT, ~1.6 Mbps down) and 4× CPU throttle;
+//     LCP, CLS, request count and transfer bytes against budgets: total ≤250 KB, requests ≤8,
+//     LCP ≤2.5 s, CLS ≤0.05
+// Exit code 1 on any failure. Numbers printed are measured in this run, nothing is estimated.
+
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+process.env.PLAYWRIGHT_BROWSERS_PATH ||= '/opt/pw-browsers';
+const require = createRequire(import.meta.url);
+function loadPlaywright() {
+  for (const candidate of ['playwright', '/opt/node-tools/node_modules/playwright']) {
+    try { return require(candidate); } catch (_) { /* try next */ }
+  }
+  throw new Error('playwright is not installed (expected /opt/node-tools/node_modules/playwright)');
+}
+const { chromium } = loadPlaywright();
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const repo = path.resolve(here, '..', '..');
+const site = path.join(repo, 'website');
+const jsonIndex = process.argv.indexOf('--json');
+const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
+
+const PAGES = ['index.html', '404.html', 'account.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
+const BUDGET = { bytes: 250_000, requests: 8, lcpMs: 2500, cls: 0.05 };
+const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
+
+const results = [];
+const measurements = {};
+function record(name, ok, detail = '', scope = '') {
+  results.push({ name, ok, detail, scope });
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${scope ? ` [${scope}]` : ''}${detail ? ` — ${detail}` : ''}`);
+}
+
+function startServer() {
+  const server = http.createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    let relative = decodeURIComponent(url.pathname);
+    if (relative.endsWith('/')) relative += 'index.html';
+    const target = path.normalize(path.join(site, relative));
+    if (!target.startsWith(site) || !fs.existsSync(target) || fs.statSync(target).isDirectory()) {
+      const notFound = fs.readFileSync(path.join(site, '404.html'));
+      response.writeHead(404, { 'content-type': MIME['.html'], 'content-length': notFound.length });
+      response.end(notFound); return;
+    }
+    const body = fs.readFileSync(target);
+    response.writeHead(200, { 'content-type': MIME[path.extname(target)] || 'application/octet-stream', 'content-length': body.length, 'cache-control': 'no-store' });
+    response.end(body);
+  });
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+}
+
+// --- in-page audits -------------------------------------------------------
+const auditScript = () => {
+  const out = {};
+  const visible = (el) => {
+    if (!el.getClientRects().length) return false;
+    const cs = getComputedStyle(el);
+    return cs.visibility !== 'hidden' && cs.display !== 'none';
+  };
+  out.scrollWidth = document.documentElement.scrollWidth;
+  out.innerWidth = window.innerWidth;
+  out.h1Count = document.querySelectorAll('h1').length;
+  const levels = [...document.querySelectorAll('h1,h2,h3,h4,h5,h6')].map((h) => Number(h.tagName[1]));
+  out.skippedHeadings = levels.filter((level, index) => index > 0 && level > levels[index - 1] + 1).length;
+  out.landmarks = { main: !!document.querySelector('main'), nav: !!document.querySelector('nav'), header: !!document.querySelector('header') };
+  out.imagesWithoutAlt = [...document.querySelectorAll('img')].filter((img) => !img.hasAttribute('alt')).length;
+  out.unlabelled = [...document.querySelectorAll('input,select,textarea')].filter((el) => visible(el) && !(el.labels && el.labels.length) && !el.getAttribute('aria-label') && !el.getAttribute('aria-labelledby')).map((el) => el.id || el.name || el.tagName);
+  out.unnamedControls = [...document.querySelectorAll('a[href],button')].filter((el) => visible(el) && !(el.textContent || '').trim() && !el.getAttribute('aria-label') && !el.querySelector('img[alt]:not([alt=""])')).map((el) => el.outerHTML.slice(0, 60));
+  out.smallTargets = [];
+  for (const el of document.querySelectorAll('a[href],button,input,select,textarea,summary,[role=button]')) {
+    if (!visible(el) || el.disabled) continue;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) continue;
+    const cs = getComputedStyle(el);
+    const parentText = el.parentElement ? el.parentElement.textContent.trim() : '';
+    const inlineInText = el.tagName === 'A' && cs.display === 'inline' && parentText.length > el.textContent.trim().length;
+    if (inlineInText) continue;
+    if (rect.width < 44 || rect.height < 44) out.smallTargets.push({ tag: el.tagName, text: (el.textContent || el.value || '').trim().slice(0, 40), id: el.id, w: Math.round(rect.width), h: Math.round(rect.height) });
+  }
+  // Contrast walk over elements with direct text.
+  const parse = (color) => { const m = color.match(/rgba?\(([^)]+)\)/); if (!m) return null; const p = m[1].split(',').map(Number); return { r: p[0], g: p[1], b: p[2], a: p.length > 3 ? p[3] : 1 }; };
+  const over = (top, bottom) => ({ r: top.r * top.a + bottom.r * (1 - top.a), g: top.g * top.a + bottom.g * (1 - top.a), b: top.b * top.a + bottom.b * (1 - top.a), a: 1 });
+  const lum = ({ r, g, b }) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+  const bodyBg = parse(getComputedStyle(document.body).backgroundColor) || { r: 255, g: 255, b: 255, a: 1 };
+  const backgroundOf = (el) => {
+    let node = el; let acc = null;
+    while (node && node.nodeType === 1) {
+      const bg = parse(getComputedStyle(node).backgroundColor);
+      if (bg && bg.a > 0) { acc = acc ? over(acc, bg) : bg; if (acc.a >= 1) return acc; }
+      node = node.parentElement;
+    }
+    return acc ? over(acc, bodyBg) : bodyBg;
+  };
+  out.contrast = []; out.contrastChecked = 0;
+  for (const el of document.body.querySelectorAll('*')) {
+    if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE'].includes(el.tagName) || el.closest('svg')) continue;
+    const text = [...el.childNodes].filter((n) => n.nodeType === 3).map((n) => n.textContent).join('').trim();
+    if (!text || !visible(el)) continue;
+    if (el.disabled) continue;
+    const cs = getComputedStyle(el);
+    if (Number(cs.opacity) === 0) continue;
+    let fg = parse(cs.color); if (!fg) continue;
+    const bg = backgroundOf(el);
+    if (fg.a < 1) fg = over(fg, bg);
+    const l1 = lum(fg), l2 = lum(bg);
+    const ratio = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+    const size = parseFloat(cs.fontSize); const weight = parseInt(cs.fontWeight, 10) || 400;
+    const large = size >= 24 || (size >= 18.66 && weight >= 700);
+    out.contrastChecked += 1;
+    if (ratio < (large ? 3 : 4.5)) out.contrast.push({ tag: el.tagName, cls: el.className, text: text.slice(0, 30), ratio: Math.round(ratio * 100) / 100, fg: cs.color, bg: `rgb(${Math.round(bg.r)},${Math.round(bg.g)},${Math.round(bg.b)})` });
+  }
+  return out;
+};
+
+async function auditPage(page, base, file, viewport) {
+  const scope = `${file}@${viewport.name}`;
+  const errors = []; const offsite = [];
+  const onConsole = (m) => { if (m.type() === 'error') errors.push(m.text()); };
+  const onError = (e) => errors.push(String(e));
+  const onRequest = (r) => { if (!r.url().startsWith(base) && !r.url().startsWith('data:') && !r.url().startsWith('blob:')) offsite.push(r.url()); };
+  page.on('console', onConsole); page.on('pageerror', onError); page.on('request', onRequest);
+  await page.goto(base + file, { waitUntil: 'load' });
+  await page.evaluate(() => document.fonts.ready);
+  if (file === 'index.html') await page.evaluate(() => document.querySelectorAll('details').forEach((d) => { d.open = true; }));
+  const audit = await page.evaluate(auditScript);
+  record('no console errors / page errors', errors.length === 0, errors.join(' | ').slice(0, 300), scope);
+  record('zero third-party requests', offsite.length === 0, offsite.join(', ').slice(0, 300), scope);
+  record('no horizontal overflow', audit.scrollWidth <= audit.innerWidth, `scrollWidth ${audit.scrollWidth} vs ${audit.innerWidth}`, scope);
+  record('interactive targets ≥44×44', audit.smallTargets.length === 0, audit.smallTargets.map((t) => `${t.tag}#${t.id}"${t.text}" ${t.w}×${t.h}`).join('; ').slice(0, 400), scope);
+  record('exactly one h1', audit.h1Count === 1, `h1 count ${audit.h1Count}`, scope);
+  record('no skipped heading levels', audit.skippedHeadings === 0, `${audit.skippedHeadings} skips`, scope);
+  record('main/nav/header landmarks', audit.landmarks.main && audit.landmarks.nav && audit.landmarks.header, JSON.stringify(audit.landmarks), scope);
+  record('every img has alt', audit.imagesWithoutAlt === 0, `${audit.imagesWithoutAlt} missing`, scope);
+  record('form controls labelled', audit.unlabelled.length === 0, audit.unlabelled.join(', '), scope);
+  record('links/buttons have names', audit.unnamedControls.length === 0, audit.unnamedControls.join(' | '), scope);
+  record('text contrast ≥4.5:1 (3:1 large)', audit.contrast.length === 0, audit.contrast.length ? audit.contrast.slice(0, 6).map((c) => `${c.tag}.${c.cls} "${c.text}" ${c.ratio} (${c.fg} on ${c.bg})`).join('; ') : `${audit.contrastChecked} text elements checked`, scope);
+  // Keyboard: first Tab stop shows a visible focus outline.
+  await page.goto(base + file, { waitUntil: 'load' });
+  await page.keyboard.press('Tab');
+  const focus = await page.evaluate(() => { const el = document.activeElement; const cs = getComputedStyle(el); return { tag: el.tagName, cls: el.className, outlineStyle: cs.outlineStyle, outlineWidth: parseFloat(cs.outlineWidth), focusVisible: el.matches(':focus-visible') }; });
+  record('visible focus outline on first Tab stop', focus.outlineStyle !== 'none' && focus.outlineWidth > 0 && focus.focusVisible, `${focus.tag}.${focus.cls} outline ${focus.outlineStyle} ${focus.outlineWidth}px`, scope);
+  page.off('console', onConsole); page.off('pageerror', onError); page.off('request', onRequest);
+  return { errors, offsite };
+}
+
+async function indexBehaviour(context, base, viewport, articles) {
+  const scope = `index.html@${viewport.name}`;
+  const page = await context.newPage();
+  const errors = []; page.on('pageerror', (e) => errors.push(String(e))); page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  // Skip link.
+  await page.keyboard.press('Tab');
+  const skip = await page.evaluate(() => { const el = document.activeElement; const r = el.getBoundingClientRect(); return { isSkip: el.classList.contains('skip'), href: el.getAttribute('href'), visible: r.top >= 0 && r.height > 0 }; });
+  await page.keyboard.press('Enter');
+  const afterSkip = await page.evaluate(() => ({ hash: location.hash, activeIsMain: document.activeElement === document.querySelector('#main') }));
+  record('skip link is first Tab stop, visible, targets #main and focuses main', skip.isSkip && skip.visible && skip.href === '#main' && afterSkip.hash === '#main' && afterSkip.activeIsMain, JSON.stringify({ ...skip, ...afterSkip }), scope);
+  // Menu (compact only).
+  const compact = viewport.width <= 580;
+  const menu = page.locator('.menu');
+  if (compact) {
+    const hiddenBefore = await menu.isHidden();
+    await menu.click();
+    const expanded = await menu.getAttribute('aria-expanded');
+    const navVisible = await page.locator('#navigation').isVisible();
+    await page.keyboard.press('Escape');
+    const collapsed = await menu.getAttribute('aria-expanded');
+    const focusOnMenu = await page.evaluate(() => document.activeElement.classList.contains('menu'));
+    const navHidden = await page.locator('#navigation').isHidden();
+    record('menu toggles aria-expanded, Escape closes and refocuses', !hiddenBefore && expanded === 'true' && navVisible && collapsed === 'false' && focusOnMenu && navHidden, `expanded=${expanded} collapsed=${collapsed} focus=${focusOnMenu}`, scope);
+  } else {
+    const menuHidden = await menu.isHidden(); const navVisible = await page.locator('#navigation').isVisible();
+    record('menu button hidden and nav visible at desktop width', menuHidden && navVisible, '', scope);
+  }
+  // Help search.
+  const term = 'lasso';
+  const expected = articles.filter((a) => [a.title, a.platform, (a.keywords || []).join(' '), ...a.steps, ...(a.limits || [])].join(' ').toLocaleLowerCase().includes(term)).length;
+  await page.fill('#query', term);
+  const found = await page.evaluate(() => ({ rendered: document.querySelectorAll('#help-results details').length, count: document.querySelector('#help-count').textContent, allMatch: [...document.querySelectorAll('#help-results details')].every((d) => d.textContent.toLocaleLowerCase().includes('lasso')) }));
+  record(`help search "lasso" renders ${expected} matching topic(s)`, found.rendered === expected && found.allMatch && found.count.startsWith(`${expected} `), `rendered ${found.rendered}, status "${found.count}"`, scope);
+  await page.click('#help-search button[type=reset]');
+  // Filters.
+  await page.click('[data-filter="animate"]');
+  const filter = await page.evaluate(() => ({ pressed: [...document.querySelectorAll('[data-filter]')].map((b) => `${b.dataset.filter}:${b.getAttribute('aria-pressed')}`).join(','), categories: [...new Set([...document.querySelectorAll('#help-results details')].map((d) => d.dataset.category))], rendered: document.querySelectorAll('#help-results details').length }));
+  const expectedAnimate = articles.filter((a) => a.category === 'animate').length;
+  record('category filter sets aria-pressed and narrows results', filter.pressed === 'all:false,create:false,animate:true,keep:false,account:false' && filter.categories.join() === 'animate' && filter.rendered === expectedAnimate, `${filter.pressed}; ${filter.rendered} rendered`, scope);
+  await page.click('[data-filter="all"]');
+  // Fragment routing for every article.
+  const routeFailures = [];
+  for (const article of articles) {
+    await page.goto(base + 'index.html#help/' + article.id, { waitUntil: 'load' });
+    try {
+      await page.waitForSelector(`#article-${article.id}[open]`, { timeout: 3000 });
+      const focused = await page.evaluate((id) => document.activeElement === document.querySelector(`#article-${id} summary`), article.id);
+      if (!focused) routeFailures.push(`${article.id}: summary not focused`);
+    } catch (_) { routeFailures.push(`${article.id}: not opened`); }
+  }
+  record(`every #help/<id> fragment opens and focuses its topic (${articles.length} ids)`, routeFailures.length === 0, routeFailures.join('; '), scope);
+  // Support form flow.
+  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.click('#support-form button[type=submit]');
+  const invalid = await page.textContent('#support-status');
+  await page.fill('#problem', 'The exported GIF was silent even though the clip was audible.');
+  await page.click('#support-form button[type=submit]');
+  const reviewVisible = await page.locator('#support-review').isVisible();
+  const preview = await page.inputValue('#support-preview');
+  const downloadPromise = page.waitForEvent('download', { timeout: 5000 }).catch(() => null);
+  await page.click('#support-download');
+  const download = await downloadPromise;
+  const downloadStatus = await page.textContent('#support-status');
+  await page.click('#support-copy');
+  await page.waitForTimeout(300);
+  const copyStatus = await page.textContent('#support-status');
+  let clipboardMatches = null;
+  if (copyStatus.includes('copied')) clipboardMatches = await page.evaluate(async () => navigator.clipboard.readText()).then((t) => t === preview).catch(() => false);
+  await page.click('#support-form button[type=reset]');
+  const reset = await page.evaluate(() => ({ status: document.querySelector('#support-status').textContent, hidden: document.querySelector('#support-review').hidden, problem: document.querySelector('#problem').value }));
+  record('support form rejects an empty report with the 10–2,000 character message', invalid.includes('10–2,000'), invalid, scope);
+  record('Review prepares a local summary marked not submitted', reviewVisible && preview.includes('Not submitted to a support service'), '', scope);
+  record('Download fires a browser download event', !!download && download.suggestedFilename() === 'stickdeath-problem-summary.txt' && downloadStatus.includes('Download requested'), download ? download.suggestedFilename() : 'no download event', scope);
+  record('Copy writes the clipboard or shows the selection fallback', (copyStatus.includes('copied') && clipboardMatches === true) || copyStatus.includes('Automatic copying is unavailable'), copyStatus, scope);
+  record('Reset clears the draft and says nothing was submitted', reset.status.includes('cleared') && reset.hidden && reset.problem === '', reset.status, scope);
+  record('no page errors during index behaviour run', errors.length === 0, errors.join(' | ').slice(0, 300), scope);
+  await page.close();
+}
+
+async function perf(browser, base) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Network.enable');
+  await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: 1.6 * 1024 * 1024 / 8, uploadThroughput: 750 * 1024 / 8 });
+  await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+  await page.addInitScript(() => {
+    window.__perf = { lcp: 0, cls: 0 };
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) window.__perf.lcp = entry.renderTime || entry.loadTime; }).observe({ type: 'largest-contentful-paint', buffered: true });
+    new PerformanceObserver((list) => { for (const entry of list.getEntries()) if (!entry.hadRecentInput) window.__perf.cls += entry.value; }).observe({ type: 'layout-shift', buffered: true });
+  });
+  const transfers = [];
+  page.on('response', async (response) => { try { const sizes = await response.request().sizes(); transfers.push({ url: response.url().replace(base, '/'), bytes: sizes.responseBodySize + sizes.responseHeadersSize, status: response.status() }); } catch (_) { /* ignore */ } });
+  const started = Date.now();
+  await page.goto(base + 'index.html', { waitUntil: 'load' });
+  await page.waitForTimeout(3000);
+  const metrics = await page.evaluate(() => { const nav = performance.getEntriesByType('navigation')[0]; return { lcp: window.__perf.lcp, cls: window.__perf.cls, domContentLoaded: nav.domContentLoadedEventEnd, load: nav.loadEventEnd }; });
+  const totalBytes = transfers.reduce((n, t) => n + t.bytes, 0);
+  measurements.perf = { viewport: '390x844', network: 'Slow-4G emulation (150 ms RTT, 1.6 Mbps down, 750 kbps up)', cpuThrottle: 4, requests: transfers.length, transferBytes: totalBytes, lcpMs: Math.round(metrics.lcp), cls: Math.round(metrics.cls * 10000) / 10000, domContentLoadedMs: Math.round(metrics.domContentLoaded), loadMs: Math.round(metrics.load), wallMs: Date.now() - started, transfers };
+  record(`perf: requests ≤${BUDGET.requests}`, transfers.length <= BUDGET.requests, `${transfers.length} requests`, 'index.html@390x844 slow-4g cpu×4');
+  record(`perf: transfer ≤${BUDGET.bytes.toLocaleString('en-US')} bytes`, totalBytes <= BUDGET.bytes, `${totalBytes.toLocaleString('en-US')} bytes`, 'index.html@390x844 slow-4g cpu×4');
+  record(`perf: LCP ≤${BUDGET.lcpMs} ms`, metrics.lcp > 0 && metrics.lcp <= BUDGET.lcpMs, `${Math.round(metrics.lcp)} ms`, 'index.html@390x844 slow-4g cpu×4');
+  record(`perf: CLS ≤${BUDGET.cls}`, metrics.cls <= BUDGET.cls, `${metrics.cls.toFixed(4)}`, 'index.html@390x844 slow-4g cpu×4');
+  await context.close();
+}
+
+async function main() {
+  const server = await startServer();
+  const base = `http://127.0.0.1:${server.address().port}/`;
+  const articles = JSON.parse(fs.readFileSync(path.join(site, 'help', 'articles.json'), 'utf8')).articles;
+  const browser = await chromium.launch({ headless: true });
+  try {
+    for (const viewport of VIEWPORTS) {
+      const context = await browser.newContext({ viewport: { width: viewport.width, height: viewport.height }, permissions: ['clipboard-read', 'clipboard-write'], acceptDownloads: true });
+      const page = await context.newPage();
+      for (const file of PAGES) await auditPage(page, base, file, viewport);
+      await page.close();
+      await indexBehaviour(context, base, viewport, articles);
+      await context.close();
+    }
+    // Missing path serves 404.html with status 404.
+    const probe = await browser.newContext(); const probePage = await probe.newPage();
+    const response = await probePage.goto(base + 'does-not-exist.html');
+    record('missing path returns 404 status with the 404 page', response.status() === 404 && (await probePage.textContent('h1')).includes('never'), `status ${response.status()}`, 'server');
+    await probe.close();
+    // Reduced motion.
+    const reduced = await browser.newContext({ reducedMotion: 'reduce', viewport: { width: 390, height: 844 } });
+    const reducedPage = await reduced.newPage();
+    await reducedPage.goto(base + 'index.html', { waitUntil: 'load' });
+    const motion = await reducedPage.evaluate(() => ({ matches: matchMedia('(prefers-reduced-motion: reduce)').matches, scrollBehavior: getComputedStyle(document.documentElement).scrollBehavior }));
+    record('prefers-reduced-motion → scroll-behavior auto', motion.matches && motion.scrollBehavior === 'auto', JSON.stringify(motion), 'index.html@390x844');
+    await reduced.close();
+    // No JavaScript.
+    const nojs = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 } });
+    const nojsPage = await nojs.newPage();
+    await nojsPage.goto(base + 'index.html', { waitUntil: 'load' });
+    // Playwright's isVisible() reports false for content rendered inside <noscript>, so measure in-page: the paragraph must have a box and non-hidden styles.
+    const rendered = ({ text }) => { const el = [...document.querySelectorAll('noscript p, main p, main h2')].find((p) => p.textContent.includes(text)); if (!el) return false; const cs = getComputedStyle(el); return el.getClientRects().length > 0 && cs.display !== 'none' && cs.visibility !== 'hidden'; };
+    const noscriptVisible = await nojsPage.evaluate(rendered, { text: 'Enable JavaScript for searchable help' });
+    const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Accounts and billing are not connected' }); })();
+    record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', 'index.html@390x844 no-js');
+    record('account page states "not connected" without JavaScript', accountStatic, '', 'account.html@390x844 no-js');
+    await nojs.close();
+    // file:// smoke: the help center must render from the embedded help-data.js without fetch().
+    const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const localPage = await local.newPage();
+    const localErrors = []; localPage.on('pageerror', (e) => localErrors.push(String(e))); localPage.on('console', (m) => { if (m.type() === 'error') localErrors.push(m.text()); });
+    await localPage.goto('file://' + path.join(site, 'index.html'), { waitUntil: 'load' });
+    const localCount = await localPage.evaluate(() => document.querySelectorAll('#help-results details').length);
+    record(`file:// load renders all ${articles.length} help topics without errors`, localCount === articles.length && localErrors.length === 0, `${localCount} topics; ${localErrors.join(' | ').slice(0, 200)}`, 'index.html file://');
+    await local.close();
+    await perf(browser, base);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+  const failed = results.filter((r) => !r.ok);
+  const summary = { passed: results.length - failed.length, failed: failed.length, total: results.length, pages: PAGES, viewports: VIEWPORTS.map((v) => v.name), budgets: BUDGET, measurements, failures: failed, playwright: require(require.resolve('playwright/package.json', { paths: [here, '/opt/node-tools'] })).version, node: process.version, ranAt: new Date().toISOString() };
+  console.log(`\n${summary.passed}/${summary.total} checks passed${failed.length ? `, ${failed.length} failed` : ''}.`);
+  console.log(`perf (390×844, Slow-4G, CPU×4): ${measurements.perf.requests} requests, ${measurements.perf.transferBytes.toLocaleString('en-US')} bytes, LCP ${measurements.perf.lcpMs} ms, CLS ${measurements.perf.cls}, load ${measurements.perf.loadMs} ms`);
+  if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(summary, null, 2));
+  process.exit(failed.length ? 1 : 0);
+}
+
+main().catch((error) => { console.error(error); process.exit(1); });
