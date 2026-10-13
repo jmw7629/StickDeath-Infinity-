@@ -1,0 +1,47 @@
+{
+  "swift-schema35-audio-clip.sdi": {
+    "android": "reject",
+    "bytes": 2940,
+    "reason": "managed audio clips/assets are not importable yet",
+    "schemaVersion": 35,
+    "sha256": "9176ae08e39fe0bda5fef794b91948263e10b15102a2602d279fdaad25e69a81"
+  },
+  "swift-schema35-glow.sdi": {
+    "android": "reject",
+    "bytes": 2666,
+    "reason": "layer glow has no Android renderer",
+    "schemaVersion": 35,
+    "sha256": "2d6d20e4695c14de2fd0cf4a4bde5e94ae756c45e9cc8e178247460ecc4cda29"
+  },
+  "swift-schema35-studio.sdi": {
+    "android": "accept",
+    "bytes": 2590,
+    "elements": 4,
+    "frames": 2,
+    "layers": 2,
+    "notes": "Position/alpha lock modes, a PhotoCraft label, multiply + linear-dodge blends, a 3-tick hold, a pressure-sampled round brush, a legacy line and the four-track mixer (volume, mute, pan, solo).",
+    "schemaVersion": 35,
+    "sha256": "6ede9ea1b78c3b4fbd1e41b7174ab3f3746ac67814e8f6a11b110e5f39a7d742"
+  },
+  "swift-schema35-text.sdi": {
+    "android": "reject",
+    "bytes": 2782,
+    "reason": "text element (fillColor text) is not importable; original preserved",
+    "schemaVersion": 35,
+    "sha256": "668c59af193ce0bb5265c0fb52d6d76dc4f54f20e9c60211b9698322b526c3c5"
+  },
+  "swift-schema35-unknown-label.sdi": {
+    "android": "reject",
+    "bytes": 2590,
+    "reason": "colorLabel outside the eleven PhotoCraft swatches",
+    "schemaVersion": 35,
+    "sha256": "6e2987e382be658a9555b1195b3cf760895c0377b06f8f71bb7f69e3b18c8662"
+  },
+  "swift-schema36-future.sdi": {
+    "android": "reject",
+    "bytes": 2590,
+    "reason": "schema above the supported 1\u202635 range",
+    "schemaVersion": 36,
+    "sha256": "98d02722d9bd9c49f49a61126af13e95e532f43dd375f7ebbdf90df21b90c88a"
+  }
+}

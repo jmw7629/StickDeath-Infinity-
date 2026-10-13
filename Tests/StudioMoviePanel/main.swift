@@ -57,6 +57,170 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             do { try await body(); passed += 1; print("PASS \(name)") }
             catch { failed += 1; print("FAIL \(name): \(error)") }
         }
+        await test("saved Spatter receipt directly exports once with checked artifact and editable source") {
+            let (vm, state, output) = try await create(root.appendingPathComponent("direct-spatter"))
+            let before = vm.document
+            vm.activePanel = .spatterAI
+            let edit = SpatterStudioEditSession()
+            let editScope = SpatterStudioEditSession.Scope(isStudioVisible: true, accountID: nil)
+            let initialSave = await vm.save()
+            try require(initialSave, "Initial production save failed")
+            try require(edit.submit("Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px.",
+                in: vm, accountID: nil, currentScope: { editScope }), "Actual recipe rejected")
+            await edit.waitForCompletion()
+            try require(edit.status == .applied, edit.notice ?? "Recipe did not apply")
+            let saved = await vm.save()
+            try require(saved, "Edited project save failed")
+            guard let request = edit.prepareMovieExport(in: vm, currentScope: editScope) else { throw Failure(message: "Saved receipt cannot prepare MP4") }
+            try require(edit.prepareMovieExport(in: vm, currentScope: editScope) == nil, "Edit minted a replay")
+            edit.close(); vm.activePanel = .export
+            try require(state.start(request, from: vm, scope: scope), "Direct export did not invoke real service")
+            try require(state.directArtifactDescription == nil, "Claimed artifact before service finished")
+            try await idle(state); try await actualRedMovie(state)
+            try require(state.directArtifactDescription?.contains(request.editRequestID.uuidString) == true,
+                        "Checked artifact missing exact edit provenance")
+            let completedURL = state.session.output!.movieURL
+            try require(!state.start(request, from: vm, scope: scope) && state.session.output?.movieURL == completedURL,
+                        "Repeated presentation re-exported or discarded output")
+            let edited = vm.document
+            vm.undo()
+            try require(vm.frames.map(\.id) == before.frames.map(\.id), "Export changed the recipe's one-step undo")
+            vm.redo()
+            try require(vm.frames.map(\.id) == edited.frames.map(\.id), "Export changed editable frame identities")
+            state.session.close()
+            try require(state.directArtifactDescription == nil && fm.contentsOfDirectory(atPath: output.path).isEmpty,
+                        "Closed export retained a stale artifact receipt or output")
+            let savedAgain = await vm.save(); try require(savedAgain, "Redo project save failed")
+            await vm.backToProjects()
+            let disk = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("direct-spatter/documents"))
+            guard let loaded = try disk.loadAnimation(id: edited.id) else { throw Failure(message: "Export source disappeared from device") }
+            let cold = StudioViewModel(storage: disk)
+            let reopened = await cold.openProject(loaded.metadata)
+            try require(reopened && cold.frames.map(\.id) == edited.frames.map(\.id), "Cold reopen lost exported editable source")
+            await cold.backToProjects()
+        }
+        for cancels in [true, false] {
+            await test(cancels
+                ? "direct Spatter export cancellation after real rendering has no artifact and preserves undo"
+                : "direct Spatter export actual output limit failure has no artifact and preserves undo") {
+                let (vm, ordinaryState, output) = try await create(root.appendingPathComponent(cancels ? "direct-cancel" : "direct-output-limit"))
+                let state = cancels ? ordinaryState : StudioMoviePanelState(outputParent: output,
+                    limits: .init(maximumOutputBytes: 1))
+                let before = vm.document
+                vm.activePanel = .spatterAI
+                let edit = SpatterStudioEditSession()
+                let editScope = SpatterStudioEditSession.Scope(isStudioVisible: true, accountID: nil)
+                let initialSave = await vm.save()
+                try require(initialSave, "Initial failure-path fixture save failed")
+                try require(edit.submit("Append 8 frames of a red outlined circle moving from (20%, 50%) to (80%, 50%), radius 8%, line width 3 px.",
+                    in: vm, accountID: nil, currentScope: { editScope }), "Actual failure-path recipe rejected")
+                await edit.waitForCompletion()
+                try require(edit.status == .applied, edit.notice ?? "Actual recipe did not apply")
+                let saved = await vm.save()
+                try require(saved, "Actual applied edit did not save")
+                let edited = vm.document
+                guard let request = edit.prepareMovieExport(in: vm, currentScope: editScope) else {
+                    throw Failure(message: "Actual saved edit could not prepare direct export")
+                }
+                edit.close(); vm.activePanel = .export
+                var rendered = false, prematureArtifact = false
+                let listener = state.session.$completedFrames.dropFirst().sink { completed in
+                    if state.directArtifactDescription != nil { prematureArtifact = true }
+                    if cancels && completed == 1 {
+                        rendered = true
+                        state.session.cancel()
+                    }
+                }
+                defer { listener.cancel(); state.session.close() }
+                try require(state.start(request, from: vm, scope: scope), "Actual direct failure-path export did not start")
+                try require(state.directSource == request && state.directArtifactDescription == nil,
+                            "Direct request was not captured or advertised output before completion")
+                try await idle(state)
+                try require(!prematureArtifact && state.directArtifactDescription == nil && state.session.output == nil,
+                            "Cancelled/failed direct export advertised an artifact")
+                try require(fm.contentsOfDirectory(atPath: output.path).isEmpty && !state.session.needsCleanup,
+                            "Cancelled/failed direct export leaked owned partial/completed files")
+                if cancels {
+                    try require(rendered && state.session.completedFrames == 1,
+                                "Cancellation did not occur after a real rendered frame")
+                    try require(state.session.errorMessage == nil && state.session.notice == "MP4 export cancelled.",
+                                "Cancellation claimed success or became an unrelated error")
+                } else {
+                    try require(state.session.errorMessage == StudioMovieExportService.ExportError.limitExceeded.localizedDescription,
+                                "Expected actual encoder output-size failure was not observed")
+                }
+                try require(vm.document == edited && vm.canUndo, "Export failure changed the editable scene or its history")
+                try require(!state.start(request, from: vm, scope: scope) && state.directArtifactDescription == nil,
+                            "Failed direct request replayed or advertised a file")
+                vm.undo()
+                try require(vm.frames == before.frames && vm.layers == before.layers,
+                            "Failure path prevented one-step Undo of the applied scene")
+                vm.redo()
+                try require(vm.frames == edited.frames && vm.layers == edited.layers,
+                            "Failure path changed editable scene on Redo")
+                await vm.backToProjects()
+            }
+        }
+        await test("direct export rejects stale unsaved draft account and replay contexts without output") {
+            for mode in 0..<5 {
+                let (vm, state, output) = try await create(root.appendingPathComponent("direct-reject-\(mode)"))
+                let saved = await vm.save(); try require(saved, "Fixture save failed")
+                let request = StudioMoviePanelState.DirectRequest(editRequestID: UUID(), projectID: vm.document.id,
+                    revision: vm.document.revision + (mode == 0 ? 1 : 0), accountID: mode == 1 ? "different-account" : nil)
+                if mode == 2 { vm.addFrame() }
+                if mode == 3 { try require(vm.beginTextEditing(), "Could not open real text draft") }
+                let suppliedScope = mode == 4 ? StudioMovieExportSession.Scope(isStudioVisible: true, isForeground: false, accountID: nil) : scope
+                try require(!state.start(request, from: vm, scope: suppliedScope), "Invalid direct export started")
+                try require(!state.start(request, from: vm, scope: scope), "Rejected direct request replayed")
+                try require(!state.isBusy && state.session.output == nil && state.directArtifactDescription == nil &&
+                    state.directError != nil && fm.contentsOfDirectory(atPath: output.path).isEmpty, "Rejected request created an artifact")
+                state.session.close(); await vm.backToProjects()
+            }
+        }
+        await test("direct export revalidates saved authority after panel and cleanup observers before snapshot") {
+            for atCleanup in [false, true] {
+                for mode in 0..<3 {
+                    let (vm, state, output) = try await create(root.appendingPathComponent("direct-reentrant-\(atCleanup)-\(mode)"))
+                    if mode == 2 { vm.addFrame() } // A real multi-tick document can start playback.
+                    let saved = await vm.save(); try require(saved, "Reentrant fixture save failed")
+                    let before = vm.document
+                    let request = StudioMoviePanelState.DirectRequest(editRequestID: UUID(), projectID: before.id,
+                        revision: before.revision, accountID: nil)
+                    var observed = 0, changed = false
+                    let mutate: () -> Void = {
+                        guard observed == 0 else { return }
+                        observed += 1
+                        switch mode {
+                        case 0: vm.addFrame(); changed = vm.document.revision != before.revision
+                        case 1: changed = vm.beginTextEditing()
+                        default: vm.togglePlayback(); changed = vm.isPlaying
+                        }
+                    }
+                    let listener: AnyCancellable
+                    if atCleanup {
+                        listener = state.session.$needsCleanup.dropFirst().sink { _ in mutate() }
+                    } else {
+                        listener = state.$directError.dropFirst().sink { _ in mutate() }
+                    }
+                    let started = state.start(request, from: vm, scope: scope)
+                    listener.cancel()
+                    try await idle(state)
+                    try require(observed == 1 && changed, "Actual synchronous observer did not change the expected authority")
+                    try require(!started && !state.isBusy && state.session.source == nil && state.session.output == nil &&
+                        state.directSource == nil && state.directArtifactDescription == nil &&
+                        fm.contentsOfDirectory(atPath: output.path).isEmpty,
+                        "Direct export captured a different revision or pending edit after validating its saved request")
+                    try require(state.directError?.contains("saved Spatter edit changed") == true,
+                        "Final capture rejection lost its truthful explanation")
+                    try require(!state.start(request, from: vm, scope: scope), "Rejected reentrant request replayed")
+                    if mode == 0 {
+                        vm.undo(); try require(vm.frames == before.frames, "Rejected export damaged actual edit Undo")
+                    } else if mode == 1 { vm.cancelTextEditing() }
+                    else { vm.stopPlayback() }
+                    state.session.close(); await vm.backToProjects()
+                }
+            }
+        }
         await test("actual movie exports through observable panel state then safely starts after close") {
             let (vm,state,output) = try await create(root.appendingPathComponent("fresh"))
             var notifications = 0

@@ -36,6 +36,73 @@ actor StudioImageImportService {
         /// auxiliary depth/gain maps and source metadata remain in originalData;
         /// they are not reproduced in this editable SDR raster.
         let normalizedPNG: Data
+        /// Only verified library imports carry this optional original-asset record.
+        /// Files/Photos and historical projects remain nil.
+        var catalogueAttribution: [String: String]? = nil
+    }
+
+    struct BackgroundPreset: Identifiable, Sendable, Equatable {
+        let id: String
+        let name: String
+        let category: String
+        let startHex: String
+        let endHex: String
+        static let all: [Self] = {
+            let colors = [("Sunset", "FF6B35", "F72585"), ("Ocean", "0077B6", "00B4D8"),
+                ("Forest", "2D6A4F", "40916C"), ("Neon", "7209B7", "F72585"),
+                ("Midnight", "0D1B2A", "1B263B"), ("Fire", "D00000", "FFBA08"),
+                ("Ice", "48CAE4", "ADE8F4"), ("Void", "0A0A0F", "1A1A24")]
+            return colors.map { Self(id: "gradient-" + $0.0.lowercased(), name: $0.0, category: "Gradients", startHex: $0.1, endHex: $0.2) }
+                + colors.map { Self(id: "solid-" + $0.0.lowercased(), name: $0.0, category: "Solid", startHex: $0.1, endHex: $0.1) }
+        }()
+    }
+
+    /// Independently generated pixels, not a downloaded/rights-unclear asset.
+    /// The same image lease, PNG encoder and attachment limits govern presets.
+    func prepareBackground(presetID: String, width: Int, height: Int) async throws -> ImportedImage {
+        guard let preset = BackgroundPreset.all.first(where: { $0.id == presetID }),
+              (16...4096).contains(width), (16...4096).contains(height),
+              width <= Self.maximumPixels / height else { throw ImportError.unsupportedGeometry }
+        try Task.checkCancellation()
+        try await StudioImageImportLease.shared.acquire()
+        let result: ImportedImage
+        do {
+            try Task.checkCancellation()
+            guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+                  let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8,
+                    bytesPerRow: width * 4, space: space,
+                    bitmapInfo: CGBitmapInfo.byteOrder32Big.rawValue | CGImageAlphaInfo.premultipliedLast.rawValue) else { throw ImportError.invalidImage }
+            func color(_ hex: String) -> CGColor {
+                let rgb = UInt32(hex, radix: 16)!
+                return CGColor(colorSpace: space, components: [CGFloat((rgb >> 16) & 255) / 255,
+                    CGFloat((rgb >> 8) & 255) / 255, CGFloat(rgb & 255) / 255, 1])!
+            }
+            if preset.startHex == preset.endHex {
+                context.setFillColor(color(preset.startHex))
+                context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+            } else {
+                guard let gradient = CGGradient(colorsSpace: space,
+                    colors: [color(preset.startHex), color(preset.endHex)] as CFArray, locations: [0, 1]) else { throw ImportError.invalidImage }
+                // Bitmap CGContext uses a lower-left drawing origin; PNG/UI rows
+                // start at the top. Match the visible topLeading→bottomTrailing swatch.
+                context.drawLinearGradient(gradient, start: CGPoint(x: 0, y: height), end: CGPoint(x: width, y: 0),
+                    options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+            }
+            try Task.checkCancellation()
+            guard let image = context.makeImage() else { throw ImportError.invalidImage }
+            let png = try normalizedPNG(image)
+            guard png.count <= Self.maximumEncodedBytes else { throw ImportError.limitExceeded }
+            try validatePNG(png)
+            result = ImportedImage(id: UUID(), name: preset.name + " " + preset.category.lowercased() + " background",
+                container: .png, originalData: png, originalWidth: width, originalHeight: height, originalOrientation: 1,
+                width: width, height: height, normalizedPNG: png)
+        } catch {
+            await StudioImageImportLease.shared.release()
+            throw error
+        }
+        await StudioImageImportLease.shared.release()
+        try Task.checkCancellation()
+        return result
     }
 
     /// One process-wide lease covers encoded bytes, ImageIO decode and bounded

@@ -17,16 +17,18 @@ struct StudioHeaderBar: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .bold))
                     Text(vm.projectName)
-                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .font(.specialElite(14))
                         .lineLimit(1)
                 }
                 .foregroundColor(.white.opacity(0.8))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
             .accessibilityIdentifier("studio.back")
             
             // Info pill
             Text("\(vm.fps) FPS · \(vm.frames.count) frames · \(vm.studioLayers.count) layers")
-                .font(.system(size: 9))
+                .font(.specialElite(9))
                 .foregroundColor(.white.opacity(0.35))
             
             Spacer()
@@ -34,13 +36,17 @@ struct StudioHeaderBar: View {
             // HIDE
             Button(action: { vm.showToolbar.toggle() }) {
                 VStack(spacing: 1) {
-                    Image(systemName: "keyboard.chevron.compact.down")
+                    Image(systemName: vm.showToolbar ? "keyboard.chevron.compact.down" : "keyboard.chevron.compact.up")
                         .font(.system(size: 12))
-                    Text("HIDE")
-                        .font(.system(size: 7, weight: .bold, design: .monospaced))
+                    Text(vm.showToolbar ? "HIDE" : "SHOW")
+                        .font(.specialElite(7))
                 }
                 .foregroundColor(.white.opacity(0.5))
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
             }
+            .accessibilityLabel(vm.showToolbar ? "Hide toolbar" : "Show toolbar")
+            .accessibilityIdentifier("studio.toolbar.toggle")
             
             // Save indicator
             Button(action: { Task { await vm.save() } }) {
@@ -48,13 +54,15 @@ struct StudioHeaderBar: View {
                     Image(systemName: "doc.on.doc.fill")
                         .font(.system(size: 10))
                     Text(vm.saveTimeAgo)
-                        .font(.system(size: 9))
+                        .font(.specialElite(9))
                 }
                 .foregroundColor(.white.opacity(0.4))
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(Color(hex: "1A1A24"))
                 .cornerRadius(6)
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .disabled(vm.isSaving)
             .accessibilityIdentifier("studio.save")
@@ -67,6 +75,8 @@ struct StudioHeaderBar: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.red)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Export")
             .accessibilityIdentifier("studio.export.open")
@@ -78,6 +88,8 @@ struct StudioHeaderBar: View {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.6))
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityLabel("Studio menu")
             .accessibilityIdentifier("studio.menu.open")

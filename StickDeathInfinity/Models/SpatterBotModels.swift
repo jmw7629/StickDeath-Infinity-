@@ -73,7 +73,13 @@ enum BotPlatform: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    var credentialFields: [BotCredentialField] {
+    /// Retired (2026-10-12): client-side credential entry is quarantined. Provider
+    /// secrets belong on the backend behind owner authorization; the app must not
+    /// collect, store or transmit them. This list is intentionally empty and the
+    /// historical field definitions are preserved below only as documentation.
+    var credentialFields: [BotCredentialField] { [] }
+    static let credentialUnavailableNotice = "Provider credentials cannot be entered or stored in the app. Legacy client-side credential storage is retired; configure provider access on the backend with owner authorization. Nothing was saved."
+    var legacyCredentialFieldDocumentation: [BotCredentialField] {
         switch self {
         case .twitter:
             return [
@@ -270,6 +276,8 @@ struct BotConfiguration: Codable, Identifiable {
     var id: Int?
     var platform: String
     var isActive: Bool
+    /// Retired: never persisted. Encoding always writes an empty object and decoding
+    /// discards any stored values, so legacy rows cannot reintroduce client secrets.
     var credentials: [String: String]
     var selectedSchedule: String?
     var enabledFeatures: [String]
@@ -283,6 +291,36 @@ struct BotConfiguration: Codable, Identifiable {
         case enabledFeatures = "enabled_features"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    init(id: Int? = nil, platform: String, isActive: Bool, credentials: [String: String] = [:],
+         selectedSchedule: String? = nil, enabledFeatures: [String], createdAt: String? = nil, updatedAt: String? = nil) {
+        self.id = id; self.platform = platform; self.isActive = isActive
+        self.credentials = [:]  // quarantined: client-side credentials are not retained
+        self.selectedSchedule = selectedSchedule; self.enabledFeatures = enabledFeatures
+        self.createdAt = createdAt; self.updatedAt = updatedAt
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(Int.self, forKey: .id)
+        platform = try container.decode(String.self, forKey: .platform)
+        isActive = try container.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
+        credentials = [:]
+        selectedSchedule = try container.decodeIfPresent(String.self, forKey: .selectedSchedule)
+        enabledFeatures = try container.decodeIfPresent([String].self, forKey: .enabledFeatures) ?? []
+        createdAt = try container.decodeIfPresent(String.self, forKey: .createdAt)
+        updatedAt = try container.decodeIfPresent(String.self, forKey: .updatedAt)
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(id, forKey: .id)
+        try container.encode(platform, forKey: .platform)
+        try container.encode(isActive, forKey: .isActive)
+        try container.encode([String: String](), forKey: .credentials)
+        try container.encodeIfPresent(selectedSchedule, forKey: .selectedSchedule)
+        try container.encode(enabledFeatures, forKey: .enabledFeatures)
+        try container.encodeIfPresent(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(updatedAt, forKey: .updatedAt)
     }
 }
 

@@ -1,45 +1,28 @@
+// ═══════════════════════════════════════════════════════════════════
+// SubscriptionView — Settings → Subscription
+//
+// Contract: docs/BILLING_CONTRACT.md
+// - Shows only real StoreKit data: product display prices once loaded,
+//   and the current entitlement from Apple's signed transaction.
+// - No simulated purchase, no invented renewal date, no hard-coded price.
+// - This view is compiled but not mounted anywhere yet.
+// ═══════════════════════════════════════════════════════════════════
+
 import SwiftUI
-// NOTE: In production, import StoreKit for real Apple payment integration
-// import StoreKit
+import StoreKit
 
 struct SubscriptionView: View {
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var store = StripeService.shared
     @State private var showPurchase = false
-    @State private var selectedPlan = "pro_monthly"
-    @State private var purchasing = false
-    @State private var purchased = false
-    
-    struct Plan: Identifiable {
-        let id: String
-        let name: String
-        let price: String
-        let period: String
-        let savings: String
-        let popular: Bool
-    }
-    
-    let plans: [Plan] = [
-        Plan(id: "pro_monthly", name: "Pro Monthly", price: "$9.99", period: "/month", savings: "", popular: true),
-        Plan(id: "pro_annual", name: "Pro Annual", price: "$79.99", period: "/year", savings: "Save 33%", popular: false),
-        Plan(id: "studio_monthly", name: "Studio", price: "$19.99", period: "/month", savings: "All features", popular: false),
-    ]
-    
-    let features = [
-        "Unlimited projects & frames",
-        "4K HD export (MP4, GIF, PNG)",
-        "All brushes, tools & effects",
-        "Spatter AI unlimited queries",
-        "Live collab rooms",
-        "Priority support",
-        "No watermark",
-        "Cloud backup (device-first storage)",
-    ]
-    
+    @State private var selectedProductID: String?
+    @State private var purchaseError: String?
+
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Button(action: { 
+                Button(action: {
                     if showPurchase { showPurchase = false }
                     else { dismiss() }
                 }) {
@@ -54,7 +37,7 @@ struct SubscriptionView: View {
             }
             .padding()
             .background(Color(hex: "0A0A14"))
-            
+
             if showPurchase {
                 purchaseView
             } else {
@@ -63,39 +46,37 @@ struct SubscriptionView: View {
         }
         .background(Color(hex: "0A0A14"))
         .navigationBarHidden(true)
+        .task {
+            if store.productLoadState == .notLoaded {
+                await store.loadProducts()
+            }
+            await store.refreshEntitlements()
+        }
     }
-    
+
+    // MARK: - Current plan (real entitlement only)
+
     var currentPlanView: some View {
         ScrollView {
             VStack(spacing: 16) {
-                Text("👑").font(.system(size: 40))
-                Text("Pro Plan")
-                    .font(.system(size: 20, weight: .bold))
-                    .foregroundColor(.white)
-                Text("$9.99/month · Renews Jun 15")
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                Text("✓ Active")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.green)
-                
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(["Unlimited projects", "HD export", "All brushes & tools", "Spatter AI unlimited", "Priority support", "No watermark"], id: \.self) { feature in
-                        HStack(spacing: 8) {
-                            Text("✓").foregroundColor(.green)
-                            Text(feature)
-                                .font(.system(size: 12))
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                statusCard
+
+                if let notice = store.reconciliationNotice {
+                    Text(notice)
+                        .font(.system(size: 11))
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
                 }
-                .padding()
-                .background(Color.white.opacity(0.04))
-                .cornerRadius(12)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
-                
+
+                if let error = store.lastError {
+                    Text(error)
+                        .font(.system(size: 11))
+                        .foregroundColor(.red)
+                        .multilineTextAlignment(.center)
+                }
+
                 Button(action: { showPurchase = true }) {
-                    Text("Change Plan")
+                    Text(isSubscribed ? "Change Plan" : "See Plans")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
@@ -103,9 +84,11 @@ struct SubscriptionView: View {
                         .background(Color.red)
                         .cornerRadius(12)
                 }
-                
-                Button(action: {}) {
-                    Text("Restore Purchases")
+
+                Button(action: {
+                    Task { await store.restorePurchases() }
+                }) {
+                    Text(store.isProcessing ? "Restoring..." : "Restore Purchases")
                         .font(.system(size: 13))
                         .foregroundColor(.secondary)
                         .frame(maxWidth: .infinity)
@@ -114,114 +97,228 @@ struct SubscriptionView: View {
                         .cornerRadius(12)
                         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.1)))
                 }
-                
-                Text("Managed via Apple StoreKit · All data stored on device")
+                .disabled(store.isProcessing)
+
+                Text("Billed by Apple through the App Store. Manage or cancel in Settings → Apple ID → Subscriptions. Projects stay on this device.")
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
             }
             .padding()
         }
     }
-    
+
+    private var isSubscribed: Bool {
+        if case .active = store.subscriptionStatus { return true }
+        return false
+    }
+
+    @ViewBuilder
+    private var statusCard: some View {
+        switch store.subscriptionStatus {
+        case .active(let entitlement):
+            VStack(spacing: 8) {
+                Text(planName(for: entitlement.productID))
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(.white)
+                Text("Active")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.green)
+                if let product = store.availableProducts.first(where: { $0.id == entitlement.productID }) {
+                    Text("\(product.displayPrice)/month")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                }
+                Text("Purchased \(entitlement.purchaseDate.formatted(date: .abbreviated, time: .omitted))")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                if let expiration = entitlement.expirationDate {
+                    Text("Current period ends \(expiration.formatted(date: .abbreviated, time: .omitted))")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+                Text("Transaction \(entitlement.transactionID)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding()
+            .background(Color.white.opacity(0.04))
+            .cornerRadius(12)
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
+
+        case .pending:
+            infoCard(title: "Purchase pending",
+                     detail: "Apple is waiting for approval (for example Ask to Buy). The plan activates when Apple confirms it.")
+
+        case .none:
+            infoCard(title: "No active subscription",
+                     detail: "You are using the free Studio. Nothing is billed.")
+        }
+    }
+
+    private func infoCard(title: String, detail: String) -> some View {
+        VStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 20, weight: .bold))
+                .foregroundColor(.white)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
+    }
+
+    private func planName(for productID: String) -> String {
+        if let product = store.availableProducts.first(where: { $0.id == productID }) {
+            return product.displayName.isEmpty ? productID : product.displayName
+        }
+        switch StoreProductID.tier(for: productID) {
+        case .creator: return "Creator (monthly)"
+        case .pro:     return "Pro (monthly)"
+        case .free, .studio: return productID
+        }
+    }
+
+    // MARK: - Plans (real StoreKit products only)
+
     var purchaseView: some View {
         ScrollView {
             VStack(spacing: 10) {
-                ForEach(plans) { plan in
-                    Button(action: { selectedPlan = plan.id }) {
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(plan.name)
-                                    .font(.system(size: 14, weight: .semibold))
-                                    .foregroundColor(.white)
-                                if !plan.savings.isEmpty {
-                                    Text(plan.savings)
-                                        .font(.system(size: 10))
-                                        .foregroundColor(.green)
-                                }
-                            }
-                            Spacer()
-                            HStack(spacing: 0) {
-                                Text(plan.price)
-                                    .font(.system(size: 20, weight: .heavy))
-                                    .foregroundColor(.white)
-                                Text(plan.period)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                        .padding()
-                        .background(selectedPlan == plan.id ? Color.red.opacity(0.12) : Color.white.opacity(0.04))
-                        .cornerRadius(12)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 12)
-                                .stroke(selectedPlan == plan.id ? Color.red : Color.white.opacity(0.06), lineWidth: 2)
-                        )
-                        .overlay(alignment: .topTrailing) {
-                            if plan.popular {
-                                Text("POPULAR")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 2)
-                                    .background(Color.red)
-                                    .cornerRadius(8)
-                                    .offset(x: 0, y: -8)
-                            }
-                        }
-                    }
-                }
-                
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("INCLUDED")
-                        .font(.system(size: 9, weight: .bold))
+                switch store.productLoadState {
+                case .notLoaded, .loading:
+                    ProgressView()
+                        .tint(.white)
+                        .padding(.vertical, 24)
+                    Text("Loading plans from the App Store...")
+                        .font(.system(size: 12))
                         .foregroundColor(.secondary)
-                        .tracking(2)
-                    ForEach(features, id: \.self) { feature in
-                        HStack(spacing: 8) {
-                            Text("✓").foregroundColor(.green).font(.system(size: 12))
-                            Text(feature).font(.system(size: 11)).foregroundColor(.secondary)
-                        }
-                    }
-                }
-                .padding()
-                .background(Color.white.opacity(0.04))
-                .cornerRadius(12)
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
-                .padding(.top, 8)
-                
-                // Purchase button — in production uses StoreKit Product.purchase()
-                Button(action: {
-                    purchasing = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                        purchasing = false
-                        purchased = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            showPurchase = false
-                            purchased = false
-                        }
-                    }
-                }) {
-                    Text(purchasing ? "Processing..." : (purchased ? "✓ Subscribed!" : "Subscribe — \(plans.first { $0.id == selectedPlan }?.price ?? "")\(plans.first { $0.id == selectedPlan }?.period ?? "")"))
-                        .font(.system(size: 15, weight: .bold))
+
+                case .notConfigured:
+                    notConfiguredCard(detail: "The App Store has no products for this app yet. Plans appear here once they are created in App Store Connect.")
+
+                case .failed(let message):
+                    notConfiguredCard(detail: "The App Store could not be reached: \(message)")
+                    Button("Try Again") { Task { await store.loadProducts() } }
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(16)
-                        .background(purchased ? Color.green : Color.red)
-                        .cornerRadius(12)
-                        .opacity(purchasing ? 0.7 : 1.0)
+
+                case .loaded:
+                    ForEach(store.availableProducts, id: \.id) { product in
+                        productRow(product)
+                    }
+
+                    if let error = purchaseError {
+                        Text(error)
+                            .font(.system(size: 11))
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Button(action: { Task { await purchaseSelected() } }) {
+                        Text(store.isProcessing ? "Waiting for Apple..." : subscribeLabel)
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(16)
+                            .background(Color.red)
+                            .cornerRadius(12)
+                            .opacity(store.isProcessing || selectedProduct == nil ? 0.6 : 1.0)
+                    }
+                    .disabled(store.isProcessing || selectedProduct == nil)
                 }
-                .disabled(purchasing || purchased)
-                
+
                 VStack(spacing: 2) {
-                    Text("Payment processed by Apple via StoreKit")
+                    Text("Payment is processed by Apple via StoreKit. The price Apple shows at checkout is the price charged.")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
-                    Text("Cancel anytime in Settings → Apple ID")
+                        .multilineTextAlignment(.center)
+                    Text("Cancel anytime in Settings → Apple ID → Subscriptions")
                         .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 8)
+            }
+            .padding()
+        }
+    }
+
+    private var selectedProduct: Product? {
+        guard let id = selectedProductID else { return nil }
+        return store.availableProducts.first { $0.id == id }
+    }
+
+    private var subscribeLabel: String {
+        guard let product = selectedProduct else { return "Select a plan" }
+        return "Subscribe — \(product.displayPrice)/month"
+    }
+
+    private func productRow(_ product: Product) -> some View {
+        let isSelected = selectedProductID == product.id
+        return Button(action: { selectedProductID = product.id }) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(product.displayName.isEmpty ? product.id : product.displayName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                    if !product.description.isEmpty {
+                        Text(product.description)
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    Text(product.displayPrice)
+                        .font(.system(size: 20, weight: .heavy))
+                        .foregroundColor(.white)
+                    Text("/month")
+                        .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
             }
             .padding()
+            .background(isSelected ? Color.red.opacity(0.12) : Color.white.opacity(0.04))
+            .cornerRadius(12)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(isSelected ? Color.red : Color.white.opacity(0.06), lineWidth: 2)
+            )
+        }
+    }
+
+    private func notConfiguredCard(detail: String) -> some View {
+        VStack(spacing: 8) {
+            Text("Plans are not configured yet")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(.white)
+            Text(detail)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding()
+        .background(Color.white.opacity(0.04))
+        .cornerRadius(12)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.06)))
+    }
+
+    private func purchaseSelected() async {
+        guard let product = selectedProduct else { return }
+        purchaseError = nil
+        do {
+            try await store.purchase(product)
+            showPurchase = false
+        } catch StripeService.PaymentError.cancelled {
+            // User backed out of Apple's sheet; nothing to report.
+        } catch {
+            purchaseError = error.localizedDescription
         }
     }
 }

@@ -1,0 +1,59 @@
+{
+  "devices": [
+    {
+      "architecture": "x86_64",
+      "deviceId": "00000000-0000-4000-8000-000000000001",
+      "deviceName": "Recorded native fixture",
+      "modelName": "iPhone 16 Pro",
+      "osBuildNumber": "22G86",
+      "osVersion": "18.6",
+      "platform": "iOS Simulator"
+    }
+  ],
+  "testNodes": [
+    {
+      "children": [
+        {
+          "children": [
+            {
+              "children": [
+                {
+                  "children": [
+                    {
+                      "name": "Type \"com.willisnmb.stickdeathinfinity.layer-reorder\" was expected to be declared and exported in the Info.plist of StickDeathInfinity.app, but it was not found.",
+                      "nodeType": "Runtime Warning"
+                    }
+                  ],
+                  "duration": "3m 17s",
+                  "durationInSeconds": 197.75767302513123,
+                  "name": "testMixedDrawingImageMoveDeleteUndoAndColdReopen()",
+                  "nodeIdentifier": "StudioSmokeUITests/testMixedDrawingImageMoveDeleteUndoAndColdReopen()",
+                  "nodeIdentifierURL": "test://com.apple.xcode/StickDeathInfinity/StickDeathInfinityUITests/StudioSmokeUITests/testMixedDrawingImageMoveDeleteUndoAndColdReopen",
+                  "nodeType": "Test Case",
+                  "result": "Passed"
+                }
+              ],
+              "name": "StudioSmokeUITests",
+              "nodeIdentifierURL": "test://com.apple.xcode/StickDeathInfinity/StickDeathInfinityUITests/StudioSmokeUITests",
+              "nodeType": "Test Suite",
+              "result": "Passed"
+            }
+          ],
+          "name": "StickDeathInfinityUITests",
+          "nodeIdentifierURL": "test://com.apple.xcode/StickDeathInfinity/StickDeathInfinityUITests",
+          "nodeType": "UI test bundle",
+          "result": "Passed"
+        }
+      ],
+      "name": "StickDeathInfinity",
+      "nodeType": "Test Plan",
+      "result": "Passed"
+    }
+  ],
+  "testPlanConfigurations": [
+    {
+      "configurationId": "1",
+      "configurationName": "Test Scheme Action"
+    }
+  ]
+}

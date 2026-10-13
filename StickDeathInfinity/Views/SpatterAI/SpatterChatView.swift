@@ -120,6 +120,10 @@ struct SpatterChatView: View {
             if spatterVM.useCloud {
                 Text("Sends your message and earlier cloud messages from this chat to the configured authenticated backend. No Studio project is shared.")
                     .font(.caption2).foregroundColor(.sdTextMuted)
+                if let budget = spatterVM.budgetText {
+                    Text(budget).font(.caption2).foregroundColor(.sdTextSecondary)
+                        .accessibilityIdentifier("spatter.messages.budget")
+                }
             }
             if let notice = spatterVM.notice {
                 Text(notice).font(.caption).foregroundColor(.sdTextSecondary)

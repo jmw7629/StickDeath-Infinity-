@@ -1,71 +1,112 @@
 // ═══════════════════════════════════════════════════════════════════
-// StripeService — StoreKit 2 Subscriptions + Stripe Tips/Calls
+// StripeService — StoreKit 2 subscriptions (client side)
 //
-// iOS App Store rules: Digital subscriptions MUST use StoreKit IAP.
-// Stripe is used ONLY for:
-//   - Creator-to-creator tips (non-digital goods / services)
-//   - R3 call billing charges (consumable services)
-//   - Web-side payments (not in-app)
+// Contract: docs/BILLING_CONTRACT.md
 //
-// Subscription tiers via StoreKit 2:
-//   Free / Creator ($4.99/mo) / Pro ($9.99/mo) / Studio ($19.99/mo)
+// - Exactly two monthly auto-renewable plans are approved: USD 4.99 and
+//   USD 9.99. Apple shows the real localized price from the loaded
+//   `Product`; nothing in this file states a price.
+// - Annual plans are NOT configured. No annual product id or price exists
+//   until the owner explicitly configures amounts and entitlements.
+// - Entitlements are reconciled server-side from Apple's signed
+//   transactions. This client never writes subscription tier/status to the
+//   `users` table. See `reconcileEntitlementsWithServer()`.
+// - Call billing and tips were removed: calls are retired scope and tips
+//   are not in the current contract. The historical name "StripeService"
+//   is kept only because this file is referenced by the Xcode project;
+//   no Stripe API is called from the client.
 // ═══════════════════════════════════════════════════════════════════
 
 import Foundation
-import Supabase
 import StoreKit
 
-// MARK: - Product IDs (register these in App Store Connect)
+// MARK: - Product IDs
+//
+// PLACEHOLDERS. The owner must create two monthly auto-renewable
+// subscriptions in App Store Connect and either keep these identifiers or
+// override them from the build configuration (Info.plist keys
+// `SDI_STOREKIT_PLAN_4_99_PRODUCT_ID` and `SDI_STOREKIT_PLAN_9_99_PRODUCT_ID`,
+// following the existing `$(VAR)` xcconfig pattern). Until App Store Connect
+// has matching products, `Product.products(for:)` returns nothing and the UI
+// shows an honest "not configured" state.
 enum StoreProductID {
-    static let creatorMonthly = "com.stickdeath.infinity.creator.monthly"
-    static let proMonthly     = "com.stickdeath.infinity.pro.monthly"
-    static let studioMonthly  = "com.stickdeath.infinity.studio.monthly"
+    /// Info.plist key for the USD 4.99/month plan identifier.
+    static let plan499InfoKey = "SDI_STOREKIT_PLAN_4_99_PRODUCT_ID"
+    /// Info.plist key for the USD 9.99/month plan identifier.
+    static let plan999InfoKey = "SDI_STOREKIT_PLAN_9_99_PRODUCT_ID"
 
-    static let creatorYearly  = "com.stickdeath.infinity.creator.yearly"
-    static let proYearly      = "com.stickdeath.infinity.pro.yearly"
-    static let studioYearly   = "com.stickdeath.infinity.studio.yearly"
+    /// Placeholder identifier for the USD 4.99/month plan (owner must confirm in App Store Connect).
+    static let placeholderCreatorMonthly = "com.stickdeath.infinity.creator.monthly"
+    /// Placeholder identifier for the USD 9.99/month plan (owner must confirm in App Store Connect).
+    static let placeholderProMonthly = "com.stickdeath.infinity.pro.monthly"
 
-    static let allSubscriptions: [String] = [
-        creatorMonthly, proMonthly, studioMonthly,
-        creatorYearly, proYearly, studioYearly
-    ]
+    /// USD 4.99/month plan — maps to `AppConfig.SubscriptionTier.creator`.
+    static var creatorMonthly: String {
+        configured(plan499InfoKey) ?? placeholderCreatorMonthly
+    }
+
+    /// USD 9.99/month plan — maps to `AppConfig.SubscriptionTier.pro`.
+    static var proMonthly: String {
+        configured(plan999InfoKey) ?? placeholderProMonthly
+    }
+
+    // TODO(owner): Annual plans. No annual product identifiers or prices are
+    // configured. Adding one requires the owner's explicit annual amount and
+    // entitlement decision plus matching App Store Connect products. Do not
+    // add an identifier here without that configuration.
+
+    /// The complete approved catalogue: two monthly plans, nothing else.
+    static var allSubscriptions: [String] { [creatorMonthly, proMonthly] }
+
+    /// Whether the identifiers in use are the unverified placeholders.
+    static var usesPlaceholderIdentifiers: Bool {
+        configured(plan499InfoKey) == nil || configured(plan999InfoKey) == nil
+    }
 
     static func tier(for productId: String) -> AppConfig.SubscriptionTier {
-        switch productId {
-        case creatorMonthly, creatorYearly: return .creator
-        case proMonthly, proYearly:        return .pro
-        case studioMonthly, studioYearly:  return .studio
-        default:                           return .free
+        if productId == creatorMonthly { return .creator }
+        if productId == proMonthly { return .pro }
+        // `.studio` has no approved product; unknown ids grant nothing.
+        return .free
+    }
+
+    static func productId(for tier: AppConfig.SubscriptionTier) -> String? {
+        switch tier {
+        case .creator: return creatorMonthly
+        case .pro:     return proMonthly
+        case .free, .studio: return nil
         }
     }
 
-    static func productId(for tier: AppConfig.SubscriptionTier, yearly: Bool = false) -> String? {
-        switch (tier, yearly) {
-        case (.creator, false): return creatorMonthly
-        case (.creator, true):  return creatorYearly
-        case (.pro, false):     return proMonthly
-        case (.pro, true):      return proYearly
-        case (.studio, false):  return studioMonthly
-        case (.studio, true):   return studioYearly
-        case (.free, _):        return nil
-        }
+    private static func configured(_ key: String) -> String? {
+        guard let raw = Bundle.main.infoDictionary?[key] as? String else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Unexpanded `$(VAR)` build settings are not configuration.
+        guard !trimmed.isEmpty, !trimmed.contains("$("), !trimmed.contains("${") else { return nil }
+        return trimmed
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MARK: - StripeService (StoreKit 2 + Stripe hybrid)
+// MARK: - StripeService (StoreKit 2 client)
 // ═══════════════════════════════════════════════════════════════════
 
 @MainActor
 final class StripeService: ObservableObject {
     static let shared = StripeService()
 
-    // Subscription state
+    /// Tier derived from Apple's current entitlements on this device. This
+    /// is a local, best-effort view; the server reconciliation is the
+    /// authority once it is configured.
     @Published var currentTier: AppConfig.SubscriptionTier = .free
     @Published var subscriptionStatus: SubscriptionStatus = .none
     @Published var availableProducts: [Product] = []
+    @Published var productLoadState: ProductLoadState = .notLoaded
     @Published var isProcessing = false
     @Published var lastError: String?
+    /// Set when a purchase or restore succeeded with Apple but the server
+    /// reconciliation could not run. Shown to the user; never hidden.
+    @Published var reconciliationNotice: String?
 
     private var transactionListener: Task<Void, Error>?
 
@@ -84,30 +125,40 @@ final class StripeService: ObservableObject {
     // MARK: - StoreKit 2: Load Products
     // ═══════════════════════════════════════════════════════════════
 
-    /// Fetch subscription products from App Store Connect
+    /// Fetch the two approved monthly products from the App Store. An empty
+    /// result means the products do not exist (yet) in App Store Connect.
     func loadProducts() async {
+        productLoadState = .loading
         do {
             let products = try await Product.products(for: StoreProductID.allSubscriptions)
             availableProducts = products.sorted { $0.price < $1.price }
+            productLoadState = products.isEmpty ? .notConfigured : .loaded
         } catch {
-            print("[StripeService] Failed to load products: \(error)")
-            lastError = "Failed to load subscription plans"
+            availableProducts = []
+            productLoadState = .failed(error.localizedDescription)
+            lastError = "Could not load subscription plans from the App Store."
         }
+    }
+
+    /// The loaded product for a tier, if App Store Connect has it.
+    func product(for tier: AppConfig.SubscriptionTier) -> Product? {
+        guard let id = StoreProductID.productId(for: tier) else { return nil }
+        return availableProducts.first { $0.id == id }
     }
 
     // ═══════════════════════════════════════════════════════════════
     // MARK: - StoreKit 2: Purchase Subscription
     // ═══════════════════════════════════════════════════════════════
 
-    /// Purchase a subscription tier via StoreKit 2
-    func subscribe(to tier: AppConfig.SubscriptionTier, yearly: Bool = false) async throws {
+    /// Purchase a monthly plan via StoreKit 2.
+    func subscribe(to tier: AppConfig.SubscriptionTier) async throws {
         guard tier != .free else {
             // Downgrade to free — user must cancel in Settings
             lastError = "To cancel, go to Settings → Subscriptions on your device."
             return
         }
 
-        guard let productId = StoreProductID.productId(for: tier, yearly: yearly) else {
+        guard let productId = StoreProductID.productId(for: tier) else {
             throw PaymentError.invalidProduct
         }
 
@@ -115,31 +166,39 @@ final class StripeService: ObservableObject {
             throw PaymentError.productNotFound
         }
 
+        try await purchase(product)
+    }
+
+    /// Purchase a loaded StoreKit product. The signed-in user's id is attached
+    /// as `appAccountToken` so the server can reconcile Apple's transaction
+    /// to the account without any client-side claim of entitlement.
+    func purchase(_ product: Product) async throws {
+        guard StoreProductID.allSubscriptions.contains(product.id) else {
+            throw PaymentError.invalidProduct
+        }
+
+        guard let userIdString = AuthService.shared.userId,
+              let appAccountToken = UUID(uuidString: userIdString) else {
+            throw PaymentError.notAuthenticated
+        }
+
         isProcessing = true
         lastError = nil
         defer { isProcessing = false }
 
-        // StoreKit 2 purchase
-        let result = try await product.purchase()
+        let result = try await product.purchase(options: [.appAccountToken(appAccountToken)])
 
         switch result {
         case .success(let verification):
-            // Verify the transaction
             let transaction = try checkVerified(verification)
 
-            // Update entitlements
-            currentTier = tier
-            subscriptionStatus = .active(String(transaction.id))
+            // Local entitlement view from Apple's signed transaction.
+            currentTier = StoreProductID.tier(for: transaction.productID)
+            subscriptionStatus = .active(ActiveEntitlement(transaction))
 
-            // Sync to Supabase so the server knows
-            await syncSubscriptionToSupabase(
-                tier: tier,
-                transactionId: String(transaction.id),
-                productId: product.id,
-                status: "active"
-            )
+            // Server reconciliation is the authority for entitlements.
+            await attemptReconciliation()
 
-            // Finish the transaction
             await transaction.finish()
 
         case .userCancelled:
@@ -159,51 +218,73 @@ final class StripeService: ObservableObject {
     // MARK: - StoreKit 2: Restore & Refresh Entitlements
     // ═══════════════════════════════════════════════════════════════
 
-    /// Check current entitlements from StoreKit (call on app launch)
+    /// Read current entitlements from StoreKit (call on app launch).
     func refreshEntitlements() async {
-        var highestTier: AppConfig.SubscriptionTier = .free
-        var activeSubId: String?
+        var highest: (tier: AppConfig.SubscriptionTier, entitlement: ActiveEntitlement)?
 
-        // Iterate through current entitlements
         for await result in Transaction.currentEntitlements {
             do {
                 let transaction = try checkVerified(result)
+                guard transaction.revocationDate == nil else { continue }
 
-                if transaction.revocationDate == nil {
-                    let tier = StoreProductID.tier(for: transaction.productID)
-                    if tier.rank > highestTier.rank {
-                        highestTier = tier
-                        activeSubId = String(transaction.id)
-                    }
-                }
+                let tier = StoreProductID.tier(for: transaction.productID)
+                guard tier != .free else { continue }
+
+                if let current = highest, current.tier.rank >= tier.rank { continue }
+                highest = (tier, ActiveEntitlement(transaction))
             } catch {
                 print("[StripeService] Invalid entitlement: \(error)")
             }
         }
 
-        currentTier = highestTier
-        if let subId = activeSubId {
-            subscriptionStatus = .active(subId)
+        if let highest {
+            currentTier = highest.tier
+            subscriptionStatus = .active(highest.entitlement)
         } else {
+            currentTier = .free
             subscriptionStatus = .none
         }
-
-        // Sync to Supabase
-        await syncSubscriptionToSupabase(
-            tier: highestTier,
-            transactionId: activeSubId,
-            productId: nil,
-            status: highestTier == .free ? "none" : "active"
-        )
     }
 
-    /// Restore purchases (user-initiated)
+    /// Restore purchases (user-initiated).
     func restorePurchases() async {
         isProcessing = true
+        lastError = nil
         defer { isProcessing = false }
 
-        try? await AppStore.sync()
+        do {
+            try await AppStore.sync()
+        } catch {
+            lastError = "Restore could not reach the App Store: \(error.localizedDescription)"
+        }
         await refreshEntitlements()
+        if case .active = subscriptionStatus {
+            await attemptReconciliation()
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // MARK: - Server Entitlement Reconciliation (owner-gated)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Entitlements are granted by the server after it verifies Apple's
+    /// signed transaction (App Store Server API / notifications keyed by
+    /// `appAccountToken`). That endpoint is not configured in this
+    /// repository, so this stub throws instead of pretending to sync.
+    /// The former client-side write of `subscription_tier` /
+    /// `subscription_status` to the `users` table was removed on purpose:
+    /// a client must not assert its own entitlement.
+    func reconcileEntitlementsWithServer() async throws {
+        throw PaymentError.entitlementReconciliationNotConfigured
+    }
+
+    private func attemptReconciliation() async {
+        do {
+            try await reconcileEntitlementsWithServer()
+            reconciliationNotice = nil
+        } catch {
+            reconciliationNotice = error.localizedDescription
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -234,20 +315,12 @@ final class StripeService: ObservableObject {
     // MARK: - Entitlement Gating
     // ═══════════════════════════════════════════════════════════════
 
+    // The feature-to-tier mapping is owner configuration that has not been
+    // published. Until it is, only the always-free Studio is a known answer;
+    // every paid gate reports unavailable rather than inventing a policy.
     func hasAccess(to feature: Feature) -> Bool {
         switch feature {
-        case .basicStudio:          return true
-        case .noWatermark:          return currentTier != .free
-        case .export1080p:          return currentTier != .free
-        case .export4K:             return currentTier == .pro || currentTier == .studio
-        case .unlimitedProjects:    return currentTier == .pro || currentTier == .studio
-        case .cloudSync:            return currentTier == .pro || currentTier == .studio
-        case .collabRooms:          return currentTier == .pro || currentTier == .studio
-        case .commercialLicense:    return currentTier == .studio
-        case .teamWorkspace:        return currentTier == .studio
-        case .apiAccess:            return currentTier == .studio
-        case .customBranding:       return currentTier == .studio
-        case .prioritySupport:      return currentTier == .pro || currentTier == .studio
+        case .basicStudio: return true
         }
     }
 
@@ -261,64 +334,7 @@ final class StripeService: ObservableObject {
     }
 
     enum Feature {
-        case basicStudio, noWatermark, export1080p, export4K
-        case unlimitedProjects, cloudSync, collabRooms
-        case commercialLicense, teamWorkspace, apiAccess
-        case customBranding, prioritySupport
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // MARK: - Stripe: Tips (creator-to-creator, non-digital goods)
-    // ═══════════════════════════════════════════════════════════════
-
-    /// Send a tip — uses Stripe because tips are person-to-person
-    /// payments, not digital content purchases (Apple allows this)
-    func sendTip(toUserId: String, amount: Double) async throws {
-        guard let fromUserId = AuthService.shared.userId else {
-            throw PaymentError.notAuthenticated
-        }
-
-        isProcessing = true
-        defer { isProcessing = false }
-
-        let amountCents = Int(amount * 100)
-
-        // Record in Supabase (actual Stripe charge via Edge Function)
-        try await SupabaseManager.shared.client.from("tips").insert([
-            "from_user_id": AnyJSON.string(fromUserId),
-            "to_user_id": .string(toUserId),
-            "amount_cents": .integer(amountCents),
-            "type": .string("tip"),
-        ]).execute()
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // MARK: - Stripe: R3 Call Billing (consumable service charges)
-    // ═══════════════════════════════════════════════════════════════
-
-    /// Log a call charge — uses Supabase tips table (same as web)
-    /// Call billing is a consumable service, not a subscription.
-    func chargeForCall(
-        calleeId: String,
-        durationSeconds: Int,
-        rateTier: AppConfig.CallRateTier,
-        callType: String = "video",
-        spendCap: Double
-    ) async throws {
-        guard let callerId = AuthService.shared.userId else {
-            throw PaymentError.notAuthenticated
-        }
-
-        let totalCost = Double(durationSeconds) / 60.0 * rateTier.ratePerMinute
-        let amountCents = Int(totalCost * 100)
-
-        try await SupabaseManager.shared.client.from("tips").insert([
-            "from_user_id": AnyJSON.string(callerId),
-            "to_user_id": .string("platform"),
-            "amount_cents": .integer(amountCents),
-            "message": .string("Call: \(durationSeconds)s \(callType) @ \(rateTier.displayName)"),
-            "type": .string("call_charge"),
-        ]).execute()
+        case basicStudio
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -335,43 +351,38 @@ final class StripeService: ObservableObject {
         }
     }
 
-    /// Sync subscription status to Supabase (so server/web knows)
-    private func syncSubscriptionToSupabase(
-        tier: AppConfig.SubscriptionTier,
-        transactionId: String?,
-        productId: String?,
-        status: String
-    ) async {
-        guard let userId = AuthService.shared.userId else { return }
+    // MARK: - Product Load State
+    enum ProductLoadState: Equatable {
+        case notLoaded
+        case loading
+        /// The App Store returned products for the approved identifiers.
+        case loaded
+        /// The App Store returned no products: App Store Connect is not configured yet.
+        case notConfigured
+        case failed(String)
+    }
 
-        var updates: [String: AnyJSON] = [
-            "subscription_tier": .string(tier.rawValue),
-            "subscription_status": .string(status),
-        ]
-        if let txId = transactionId {
-            updates["apple_transaction_id"] = .string(txId)
-        }
-        if let pid = productId {
-            updates["apple_product_id"] = .string(pid)
-        }
+    // MARK: - Active Entitlement (real values from Apple's signed transaction)
+    struct ActiveEntitlement: Equatable {
+        let transactionID: String
+        let productID: String
+        let purchaseDate: Date
+        /// Present for auto-renewable subscriptions; nil means Apple did not supply one.
+        let expirationDate: Date?
 
-        do {
-            try await SupabaseManager.shared.client
-                .from("users")
-                .update(updates)
-                .eq("id", value: userId)
-                .execute()
-        } catch {
-            print("[StripeService] syncSubscriptionToSupabase error: \(error)")
+        init(_ transaction: Transaction) {
+            transactionID = String(transaction.id)
+            productID = transaction.productID
+            purchaseDate = transaction.purchaseDate
+            expirationDate = transaction.expirationDate
         }
     }
 
     // MARK: - Subscription Status
     enum SubscriptionStatus: Equatable {
         case none
-        case active(String)
+        case active(ActiveEntitlement)
         case pending
-        case expired(String)
     }
 
     // MARK: - Errors
@@ -384,17 +395,20 @@ final class StripeService: ObservableObject {
         case unknown
         case verificationFailed(String)
         case limitsUnavailable
+        case entitlementReconciliationNotConfigured
 
         var errorDescription: String? {
             switch self {
-            case .notAuthenticated:       return "Not signed in"
-            case .invalidProduct:         return "Invalid product"
-            case .productNotFound:        return "Product not available"
+            case .notAuthenticated:       return "Sign in before subscribing so the purchase can be linked to your account."
+            case .invalidProduct:         return "This plan is not part of the approved catalogue."
+            case .productNotFound:        return "This plan is not available from the App Store yet."
             case .cancelled:              return "Purchase cancelled"
             case .pending:                return "Purchase pending approval"
             case .unknown:                return "Unknown error"
             case .verificationFailed(let msg): return "Verification failed: \(msg)"
             case .limitsUnavailable:      return "Subscription limits are unavailable until the entitlement policy is configured and verified."
+            case .entitlementReconciliationNotConfigured:
+                return "Entitlement reconciliation not configured: the server has not verified this purchase yet. Apple holds your receipt; no account entitlement was changed."
             }
         }
     }

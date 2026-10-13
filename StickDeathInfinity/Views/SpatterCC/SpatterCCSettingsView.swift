@@ -1,3 +1,4 @@
+// RETIRED (2026-10-12): this Spatter Command Center surface is unmounted from the app. It is kept for reference only; it must not collect provider credentials, show seeded queues as live data or be re-mounted without owner-authorized backend scope. See backend/spatter/README.md.
 // ═══════════════════════════════════════════════════════════════════
 // SpatterCCSettingsView — Command Center global settings
 // Matches: spatter-admin /settings exactly

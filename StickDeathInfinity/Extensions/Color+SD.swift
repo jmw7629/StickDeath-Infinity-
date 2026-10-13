@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // Color+SD — Full StickDeath color system
-// Matches: src/index.css CSS custom properties exactly
+// Matches: src/index.css CSS custom properties (sdTextMuted deviates; see below)
 // ═══════════════════════════════════════════════════════════════════
 
 import SwiftUI
@@ -25,6 +25,11 @@ extension Color {
     static let sdRedDeep = Color(hex: "8B0000")
     /// #FF1A1A — Bright red (highlights)
     static let sdRedBright = Color(hex: "FF1A1A")
+    /// #FF6B6B — Readable action text/icons on dark Studio surfaces.
+    /// Keep sdRed for filled controls and selection artwork.
+    static let sdStudioActionText = Color(hex: "FF6B6B")
+    /// #B8B8C2 — Secondary Studio labels, values and instructions.
+    static let sdStudioSecondaryText = Color(hex: "B8B8C2")
     /// Primary gradient (red → darkRed)
     static let sdPrimaryGradient = LinearGradient(
         colors: [Color(hex: "C80000"), Color(hex: "8B0000")],
@@ -37,8 +42,12 @@ extension Color {
     static let sdTextPrimary = Color(hex: "E0E0E0")
     /// #999999 — Secondary text
     static let sdTextSecondary = Color(hex: "999999")
-    /// #666666 — Muted text
-    static let sdTextMuted = Color(hex: "666666")
+    /// #757575 — Muted text for non-essential hints. Raised from the CSS
+    /// #666666 on 2026-10-12 (#264): #666666 measured 2.77:1 on sdSurface3 and
+    /// 2.90:1 on sdSurfaceLight; #757575 measures >= 3.45:1 on every sd*
+    /// surface (docs/STUDIO_CONTROL_CONTRAST_VERIFICATION.md). Still below
+    /// 4.5:1, so never use it for body copy or essential values.
+    static let sdTextMuted = Color(hex: "757575")
 
     // MARK: - Borders
     /// #1f1f1f — Default border

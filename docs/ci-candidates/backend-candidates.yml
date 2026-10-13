@@ -1,0 +1,48 @@
+name: SDI backend candidates
+# CANDIDATE — not active. Lives under docs/ci-candidates so it cannot run.
+# To enable, move to .github/workflows/backend-candidates.yml in a reviewed
+# commit. Runs the offline backend gates on vanilla PostgreSQL 16 and Python 3:
+# SQL candidates + assertions, the backup/restore rehearsal and the Python unit
+# tests. Nothing here contacts a provider or the live project; no secrets needed.
+on:
+  pull_request:
+    paths: ['backend/**', 'scripts/backend/**', '.github/workflows/backend-candidates.yml']
+  push:
+    branches: [main]
+    paths: ['backend/**', 'scripts/backend/**']
+permissions:
+  contents: read
+concurrency:
+  group: sdi-backend-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  sql-candidates:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Install PostgreSQL 16 server binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-16 postgresql-contrib-16
+          sudo systemctl stop postgresql || true
+      - name: Apply every candidate and run the SQL assertions
+        run: PGBIN=/usr/lib/postgresql/16/bin scripts/backend/run_sql_tests.sh
+      - name: Backup and restore rehearsal
+        run: PGBIN=/usr/lib/postgresql/16/bin scripts/backend/verify_backup.sh
+  python-units:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.13'
+      - name: Billing handlers, intake, publishing, feed, destinations, sweeps, mail, push
+        run: python3 -m unittest discover -s backend/tests -t . -v
+      - name: Spatter handler tests
+        run: python3 -m unittest discover -s backend/spatter -p 'test_*.py' -t .

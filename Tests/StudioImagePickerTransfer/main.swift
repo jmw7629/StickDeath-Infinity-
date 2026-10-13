@@ -78,6 +78,25 @@ private final class Observation: @unchecked Sendable {
                 try require(image.originalData == bytes && image.width == 24 && image.height == 12, "Real decoder lost provider bytes")
                 try owned.cleanup(); try owned.cleanup()
             }
+            try await test("in-memory still JPEG provider survives real file transfer decode and cleanup") { _, scratch in
+                let png = try image()
+                let source = CGImageSourceCreateWithData(png as CFData, nil)!
+                let pixels = CGImageSourceCreateImageAtIndex(source, 0, nil)!
+                let encoded = NSMutableData()
+                let destination = CGImageDestinationCreateWithData(encoded, "public.jpeg" as CFString, 1, nil)!
+                CGImageDestinationAddImage(destination, pixels, nil)
+                try require(CGImageDestinationFinalize(destination), "JPEG encoding failed")
+                let bytes = encoded as Data
+                let p = NSItemProvider(); p.suggestedName = "Camera photo.jpg"
+                p.registerDataRepresentation(forTypeIdentifier: "public.jpeg", visibility: .ownProcess) { done in
+                    done(bytes, nil); return nil
+                }
+                let owned = try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch)
+                let decoded = try await StudioImageImportService().importImage(from: owned.url(), name: owned.displayName, scratchParent: scratch)
+                try require(decoded.originalData == bytes && decoded.width == 24 && decoded.height == 12,
+                            "In-memory camera-style provider lost actual JPEG data")
+                try owned.cleanup()
+            }
             try await test("registered preferred supported format retained without generic coercion") { folder, scratch in
                 let source = folder.appendingPathComponent("source.png"); try image().write(to: source)
                 let p = provider(source, type: "public.heic")
@@ -178,7 +197,33 @@ private final class Observation: @unchecked Sendable {
                     try await reject({ try await StudioImagePickerTransfer.load(from: p, scratchParent: scratch, timeoutSeconds: deadline) }, matching: { if case StudioImagePickerTransfer.Failure.invalidDeadline = $0 { return true }; return false })
                 }
             }
-            print("PASS \(passed) production photo picker transfer groups")
+            try await test("video transfer selects explicit movie type and supplies its suffix without changing bytes") { folder, scratch in
+                for (type, suffix) in [("com.apple.quicktime-movie", "mov"), ("public.mpeg-4", "mp4")] {
+                    let source = folder.appendingPathComponent("provider-" + suffix)
+                    let bytes = Data("Container decoding is a separate validation stage".utf8)
+                    try bytes.write(to: source)
+                    let p = provider(source, name: "Selected video", type: type)
+                    p.registerDataRepresentation(forTypeIdentifier: "public.jpeg", visibility: .ownProcess) { done in
+                        done(nil, Injected.provider); return nil
+                    }
+                    try require(StudioImagePickerTransfer.preferredType(in: p, media: .video) == type, "Video chose its still thumbnail")
+                    let owned = try await StudioImagePickerTransfer.load(from: p, media: .video, scratchParent: scratch)
+                    try require(try owned.url().pathExtension == suffix, "Extensionless provider URL lost its declared container")
+                    try fm.removeItem(at: source)
+                    try require(try Data(contentsOf: owned.url()) == bytes, "Video copy did not retain exact provider bytes")
+                    try owned.cleanup()
+                }
+            }
+            try await test("generic movie and still providers cannot enter video decoding") { _, scratch in
+                for type in ["public.movie", "public.png"] {
+                    let p = NSItemProvider(), calls = Observation()
+                    p.registerFileRepresentation(forTypeIdentifier: type, fileOptions: [], visibility: .ownProcess) { _ in calls.record(); return nil }
+                    try await reject({ try await StudioImagePickerTransfer.load(from: p, media: .video, scratchParent: scratch) },
+                        matching: { if case StudioImagePickerTransfer.Failure.unsupportedVideoRepresentation = $0 { return true }; return false })
+                    try require(calls.count == 0, "Unsupported video representation was loaded")
+                }
+            }
+            print("PASS \(passed) production Photos media picker transfer groups")
         } catch { print("FAIL \(error)"); exit(1) }
     }
 }

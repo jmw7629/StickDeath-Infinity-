@@ -170,6 +170,20 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(manifest.frameIDs == doc.frames.map(\.id) && manifest.projectID == doc.id && manifest.documentRevision == 7 && manifest.fps == 24, "Manifest lost canonical identity/timing")
             try require(!manifest.audioIncluded && !manifest.editorGuidesIncluded && manifest.encodedBytes == Data(contentsOf: output.movieURL).count, "Manifest claimed unavailable work")
         }
+        await test("held cels encode exact variable H264 sample timing") {
+            var doc = try document(); doc.schemaVersion = 21
+            doc.frames[0].holdTicks = 3; doc.frames[1].holdTicks = 6
+            let output = try await Service().export(snapshot: snapshot(doc), outputParent: parent(root, "held-cels"), background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames.count == 3, "Exposure duplicated or lost stored cels")
+            for (index, tick) in [0,3,9].enumerated() {
+                try require(CMTimeCompare(decoded.pts[index], CMTime(value: Int64(tick), timescale: 24)) == 0,
+                            "Exposure PTS ignored held ticks")
+            }
+            try require(CMTimeCompare(decoded.duration, CMTime(value: 10, timescale: 24)) == 0,
+                        "Held final duration changed")
+            try output.cleanup()
+        }
         await test("one frame and nondivisor FPS retain exact complete duration without duplicate frames") {
             let folder = try parent(root, "timing")
             for fps in [1, 7, 30, 60] {
@@ -209,9 +223,9 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             let pixels = try await decode(hidden.movieURL).frames[0]
             try pixel(pixels.pixel(32, 32), [255, 0, 0, 255])
         }
-        await test("all schema2 seeded brush families pressure smoothing and texture use actual shared renderer") {
+        await test("all seeded brush families pressure smoothing and texture use actual shared renderer") {
             let folder = try parent(root, "brushes"); var doc = try document(colors: ["#FF0000"], height: 64)
-            doc.schemaVersion = 2
+            doc.schemaVersion = 25
             doc.frames = StudioBrushFamily.allCases.enumerated().map { index, family in
                 AnimationFrame(id: "brush-frame-\(index)", elements: [DrawnElement(id: "brush-\(index)", tool: .brush,
                     points: [StrokePoint(x: 8, y: 10, pressure: 0.3, timestamp: 0), StrokePoint(x: 32, y: 50, pressure: 0.8, timestamp: 0.2), StrokePoint(x: 56, y: 16, pressure: 1, timestamp: 0.4)],
@@ -286,6 +300,18 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
                 try await rejected { _ = try await Service(limits: limits).export(snapshot: snapshot(doc, rasters: ["unused": Data([1, 2, 3])]), outputParent: folder, background: .white) }
             }
             try require(contents(folder).isEmpty, "Preflight budget left partial output")
+        }
+        await test("frames stream through one pool buffer so 300 frames export above the former 240 cap") {
+            try require(Service.Limits().maximumFrames == 1440 && Service.Limits().maximumTotalPixels == 2_985_984_000, "Streaming limits")
+            let folder = try parent(root, "stream-300")
+            let colors = (0..<300).map { $0 % 2 == 0 ? "#FF0000" : "#0000FF" }
+            let output = try await Service().export(snapshot: snapshot(try document(colors: colors, width: 32, height: 16, fps: 24)), outputParent: folder, background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(output.manifest.frameIDs.count == 300 && decoded.frames.count == 300 && decoded.pts.count == 300, "300-frame movie incomplete")
+            try require(CMTimeCompare(decoded.duration, CMTime(value: 300, timescale: 24)) == 0, "300-frame duration")
+            try pixel(decoded.frames[0].pixel(16, 8), [255, 0, 0, 255]); try pixel(decoded.frames[299].pixel(16, 8), [0, 0, 255, 255])
+            try output.cleanup()
+            try require(try contents(folder).isEmpty, "Streamed export left files")
         }
         await test("cancellation before work and after real encoded frame removes only owned partial output") {
             let folder = try parent(root, "cancel"); let sentinel = folder.appendingPathComponent("keep.txt")
@@ -869,6 +895,216 @@ private func require(_ value: @autoclosure () throws -> Bool, _ message: String)
             try require(sawBoundary && inode(output.movieURL) == originalInode, "Unchanged actual encoded bytes could not transfer")
             let decoded = try await decode(output.movieURL); try require(decoded.frames.count == 1, "Unchanged encoded picture lost"); try pixel(decoded.frames[0].pixel(32,16), [255,0,0,255])
             _ = try output.checkedURLs(); try output.cleanup(); try require(contents(folder).isEmpty, "Unchanged bytes failed owned cleanup")
+        }
+        await test("licensed image credits survive actual silent MP4 encode decode and manifest checks") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            guard let item = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }) else { throw Failure(message: "Licensed Pencil missing") }
+            let data = try catalogue.checkedPNG(item), rights = try catalogue.attribution(for: item)
+            let credit = try StudioExportService.ImageCredit(attribution: rights)
+            let folder = try parent(root, "credited-silent")
+            var doc = try document(colors: ["#FF0000", "#FF0000"])
+            doc.schemaVersion = 3
+            for index in doc.frames.indices {
+                doc.frames[index].elements = []; doc.frames[index].rasterAssetID = "licensed"; doc.frames[index].rasterLayerID = doc.activeLayerID
+                doc.frames[index].rasterPlacement = .init(x: 0, y: 0, width: 24, height: 32)
+            }
+            var editor = try StudioDocumentEditor(document: doc)
+            let primary = doc.activeLayerID
+            try editor.duplicateLayer(primary)
+            let alias = editor.document.activeLayerID
+            for frameID in doc.frames.map(\.id) {
+                try editor.cropImage(frameID: frameID, assetID: "licensed", crop: .init(x: 0, y: 0, width: 0.75, height: 1), layerID: alias)
+                try editor.updateImagePlacement(frameID: frameID, assetID: "licensed", placement: .init(x: 32, y: 0, width: 32, height: 32), layerID: alias)
+            }
+            try editor.updateLayer(primary) { $0.visible = false }
+            doc = editor.document
+            try require(doc.frames[0].rasterPlacement?.width == 24 && doc.frames[0].rasterInstance(on: alias)?.crop?.width == 0.75,
+                        "Licensed layer duplication changed primary or lost selected crop")
+            var missingRejected = false
+            do {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: [:], imageCredits: ["licensed": credit]), outputParent: folder, background: .white)
+            } catch { missingRejected = true }
+            try require(missingRejected && contents(folder).isEmpty, "Missing linked source was accepted or left partial output")
+            let captured = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: ["licensed": data], imageCredits: ["licensed": credit])
+            let output = try await Service().export(snapshot: captured, outputParent: folder, background: .white)
+            _ = try output.checkedURLs()
+            let manifest = try JSONDecoder().decode(Service.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(manifest.version == 2 && manifest.imageCredits == [credit], "Silent checked manifest lost or duplicated actual credit")
+            let decoded = try await decode(output.movieURL)
+            let png = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder,
+                imageCredits: ["licensed": credit], rasterData: { _ in data })
+            try require(decoded.frames.count == 2, "Credited MP4 lost actual frames")
+            for index in 0..<2 {
+                try matchesPNG(decoded.frames[index], readPNG(png.imageURLs[index]))
+                try pixel(decoded.frames[index].pixel(8, 16), [255, 255, 255, 255])
+            }
+            try require(manifest.documentRevision == doc.revision && editor.document == doc && doc.referencedRasterAssetIDs == ["licensed"],
+                        "Linked movie lost latest revision or mutated shared source")
+            try require(manifest.encodedBytes + Data(contentsOf: output.manifestURL).count <= Service.Limits().maximumOutputBytes,
+                "Movie plus manifest exceeds aggregate bound")
+            var legacy = try JSONSerialization.jsonObject(with: Data(contentsOf: output.manifestURL)) as! [String: Any]
+            legacy["version"] = 1; legacy.removeValue(forKey: "imageCredits")
+            let old = try JSONDecoder().decode(Service.Manifest.self, from: JSONSerialization.data(withJSONObject: legacy))
+            try require(old.imageCredits == nil && old.version == 1, "Legacy silent manifest cannot decode")
+            try output.cleanup(); try require(png.directory.checkResourceIsReachable(), "Separate reference output was removed")
+        }
+        await test("two independent licensed sources share a frame and survive real MP4 decoding with exact visible credits") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            guard let pencil = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_pencil" }),
+                  let arrow = catalogue.images.first(where: { $0.id == "kenney.scribble-platformer.item_arrow" }) else {
+                throw Failure(message: "Independent licensed fixtures missing")
+            }
+            let firstData = try catalogue.checkedPNG(pencil), secondData = try catalogue.checkedPNG(arrow)
+            try require(firstData != secondData, "Independent-source fixture accidentally reuses one PNG")
+            let firstCredit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: pencil))
+            let secondCredit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: arrow))
+            let firstID = "image-11111111-1111-4111-8111-111111111111", secondID = "image-22222222-2222-4222-8222-222222222222"
+            let folder = try parent(root, "independent-images")
+            var doc = try document(colors: ["#FFFFFF"])
+            doc.schemaVersion = 31; doc.frames[0].elements = []
+            doc.layers.append(CanvasLayer(id: "independent", name: "Independent arrow"))
+            doc.frames[0].rasterAssetID = firstID; doc.frames[0].rasterLayerID = doc.activeLayerID
+            doc.frames[0].rasterPlacement = .init(x: 0, y: 0, width: 28, height: 32)
+            doc.frames[0].rasterAliases = [.init(layerID: "independent", placement: .init(x: 36, y: 0, width: 28, height: 32), assetID: secondID)]
+            try doc.validate()
+            let rasters = [firstID: firstData, secondID: secondData]
+            let credits = [firstID: firstCredit, secondID: secondCredit]
+            let output = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits), outputParent: folder, background: .white)
+            _ = try output.checkedURLs()
+            let decoded = try await decode(output.movieURL)
+            let png = try await StudioExportService().export(document: doc, format: .pngSequence, outputParent: folder, imageCredits: credits, rasterData: { rasters[$0] })
+            try require(decoded.frames.count == 1 && output.manifest.imageCredits == [secondCredit, firstCredit], "Independent movie lost source attribution or frame")
+            let reference = try readPNG(png.imageURLs[0])
+            try matchesPNG(decoded.frames[0], reference)
+            for range in [0..<28, 36..<64] {
+                let colored = (0..<32).reduce(0) { count, y in count + range.filter { x in
+                    let p = decoded.frames[0].pixel(x, y); return p[0] < 230 || p[1] < 230 || p[2] < 230
+                }.count }
+                try require(colored > 12, "One independent image disappeared from encoded pixels")
+            }
+            try output.cleanup()
+            doc.layers[1].visible = false
+            let hidden = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits), outputParent: folder, background: .white)
+            let hiddenPixels = try await decode(hidden.movieURL)
+            try require(hidden.manifest.imageCredits == [firstCredit], "Hidden independent source acquired a visible credit")
+            for y in stride(from: 4, to: 32, by: 8) { for x in stride(from: 40, to: 64, by: 8) {
+                try pixel(hiddenPixels.frames[0].pixel(x, y), [255,255,255,255])
+            } }
+            try hidden.cleanup()
+            let before = Set(try contents(folder))
+            try await rejected({
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: [firstID: firstData], imageCredits: credits), outputParent: folder, background: .white)
+            }, matching: { if case Service.ExportError.missingRaster = $0 { return true }; return false })
+            try require(Set(try contents(folder)) == before && doc.referencedRasterAssetIDs == Set([firstID, secondID]), "Missing hidden independent source published files or lost document reference")
+        }
+        await test("movie credits omit hidden zero-opacity and personal originals without weakening raster validation") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            let item = catalogue.images[0], data = try catalogue.checkedPNG(item)
+            let credit = try StudioExportService.ImageCredit(attribution: catalogue.attribution(for: item))
+            let folder = try parent(root, "credit-visibility")
+            for mode in ["hidden", "zero", "personal"] {
+                var doc = try document(colors: ["#FF0000"])
+                doc.frames[0].rasterAssetID = "image"; doc.frames[0].rasterLayerID = doc.activeLayerID
+                if mode == "hidden" { doc.layers[0].visible = false }
+                if mode == "zero" { doc.layers[0].opacity = 0 }
+                let captured = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: ["image": data], imageCredits: mode == "personal" ? [:] : ["image": credit])
+                let output = try await Service().export(snapshot: captured, outputParent: folder, background: .white)
+                let decoded = try await decode(output.movieURL)
+                try require(output.manifest.imageCredits == nil && output.manifest.version == 1 && decoded.frames.count == 1, "Invisible/personal image acquired invented credit")
+                try output.cleanup()
+                if mode != "personal" {
+                    let missing = Service.Snapshot(document: doc, retainedAudioTracks: [], rasterDataByID: [:], imageCredits: ["image": credit])
+                    try await rejected { _ = try await Service().export(snapshot: missing, outputParent: folder, background: .white) }
+                }
+            }
+            try require(contents(folder).isEmpty, "Rejected hidden missing raster left output")
+        }
+        await test("credited movie metadata ceiling and conflicting source claims fail before publication") {
+            let catalogue = try StudioImageCatalogue(directory: URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent("StickDeathInfinity/Resources/StudioImages"))
+            let item = catalogue.images[0], data = try catalogue.checkedPNG(item), rights = try catalogue.attribution(for: item)
+            let credit = try StudioExportService.ImageCredit(attribution: rights)
+            let folder = try parent(root, "credit-bounds")
+            var doc = try document(colors: ["#FF0000", "#0000FF"])
+            doc.frames[0].rasterAssetID = "first"; doc.frames[1].rasterAssetID = "second"
+            for index in doc.frames.indices { doc.frames[index].rasterLayerID = doc.activeLayerID }
+            var changed = rights; changed["author"] = "Conflicting attribution fixture"
+            let other = try StudioExportService.ImageCredit(attribution: changed)
+            try await rejected {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: ["first": data, "second": data],
+                    imageCredits: ["first": credit, "second": other]), outputParent: folder, background: .white)
+            }
+            doc = try document(colors: Array(repeating: "#FF0000", count: 120))
+            var credits: [String: StudioExportService.ImageCredit] = [:], rasters: [String: Data] = [:]
+            for index in doc.frames.indices {
+                let id = "image-\(index)"; var large = rights
+                large["assetID"] = id + String(repeating: "x", count: 580)
+                large["author"] = String(repeating: "a", count: 600); large["attribution"] = String(repeating: "b", count: 600)
+                credits[id] = try StudioExportService.ImageCredit(attribution: large); rasters[id] = data
+                doc.frames[index].rasterAssetID = id; doc.frames[index].rasterLayerID = doc.activeLayerID
+            }
+            try require(JSONEncoder().encode(Array(credits.values)).count > 128 * 1024, "Actual metadata fixture must exceed explicit byte bound")
+            try await rejected {
+                _ = try await Service().export(snapshot: .init(document: doc, retainedAudioTracks: [], rasterDataByID: rasters, imageCredits: credits),
+                    outputParent: folder, background: .white)
+            }
+            try require(contents(folder).isEmpty, "Rejected movie credits published or left staging files")
+        }
+        await test("render plan documents the exact scale and even padding rule") {
+            let original = try Service.RenderPlan.make(canvasWidth: 65, canvasHeight: 33, preset: .original)
+            try require(original.scale == 1 && original.contentWidth == 65 && original.contentHeight == 33 && original.paddingRight == 1 && original.paddingBottom == 1 && original.outputWidth == 66 && original.outputHeight == 34, "odd canvas padding rule")
+            let even = try Service.RenderPlan.make(canvasWidth: 64, canvasHeight: 32, preset: .original)
+            try require(even.paddingRight == 0 && even.paddingBottom == 0 && even.outputWidth == 64 && even.outputHeight == 32, "even canvas must not pad")
+            let hd = try Service.RenderPlan.make(canvasWidth: 64, canvasHeight: 32, preset: .p720)
+            try require(hd.scale == 22.5 && hd.contentWidth == 1440 && hd.contentHeight == 720 && hd.outputWidth == 1440 && hd.outputHeight == 720, "720p scales the shorter edge")
+            let portrait = try Service.RenderPlan.make(canvasWidth: 1080, canvasHeight: 1920, preset: .p480)
+            try require(portrait.contentWidth == 480 && portrait.contentHeight == 853 && portrait.paddingBottom == 1 && portrait.outputHeight == 854, "portrait 480p rounds then pads")
+            try require(Service.RenderPreset(quality: .standard) == .p480 && Service.RenderPreset(quality: .hd) == .p720 && Service.RenderPreset(quality: .fullHD) == .p1080, "ExportQuality mapping")
+            try require(original.rule.contains("right=1") && original.rule.contains("66x34"), "rule text \(original.rule)")
+            try await rejected({ _ = try Service.RenderPlan.make(canvasWidth: 0, canvasHeight: 10, preset: .original) })
+        }
+        await test("odd canvas exports with one white padding column and row instead of failing") {
+            let folder = try parent(root, "odd")
+            let doc = try document(colors: ["#FF0000"], width: 65, height: 33)
+            let output = try await Service().export(snapshot: snapshot(doc), outputParent: folder, background: .white, filenameBase: "Odd-Canvas")
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames.count == 1 && decoded.frames[0].width == 66 && decoded.frames[0].height == 34, "padded dimensions")
+            try pixel(decoded.frames[0].pixel(32, 16), [255, 0, 0, 255])
+            let corner = decoded.frames[0].pixel(65, 33)
+            try require(corner[0] > 150 && corner[1] > 150 && corner[2] > 150, "padding corner is not white-ish: \(corner)")
+            try require(output.movieURL.lastPathComponent == "Odd-Canvas.mp4" && output.manifest.movieFilename == "Odd-Canvas.mp4", "project-named movie file")
+            try require(output.manifest.width == 66 && output.manifest.height == 34 && output.manifest.canvasWidth == 65 && output.manifest.canvasHeight == 33, "manifest records output and canvas sizes")
+            try require(output.manifest.renderPlan?.paddingRight == 1 && output.manifest.renderPlan?.paddingBottom == 1 && output.manifest.renderRule?.contains("66x34") == true, "manifest records the padding rule")
+            let manifest = try JSONDecoder().decode(Service.Manifest.self, from: Data(contentsOf: output.manifestURL))
+            try require(manifest.renderPlan == output.manifest.renderPlan && manifest.codec == "H.264", "manifest round trip")
+            try output.cleanup()
+        }
+        await test("480p preset scales the shorter edge and records the scale in the manifest") {
+            let folder = try parent(root, "preset")
+            var input = snapshot(try document(colors: ["#0000FF"]))
+            input.render = .init(codec: .h264, preset: .p480)
+            let output = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+            let decoded = try await decode(output.movieURL)
+            try require(decoded.frames[0].width == 960 && decoded.frames[0].height == 480, "480p output size")
+            try pixel(decoded.frames[0].pixel(480, 240), [0, 0, 255, 255])
+            try require(output.manifest.renderPlan?.scale == 15 && output.manifest.renderPlan?.preset == .p480, "manifest scale")
+            try output.cleanup()
+        }
+        await test("HEVC is applied when this encoder accepts it and otherwise refused explicitly") {
+            let folder = try parent(root, "hevc")
+            var input = snapshot(try document(colors: ["#00FF00"]))
+            input.render = .init(codec: .hevc, preset: .original)
+            do {
+                let output = try await Service().export(snapshot: input, outputParent: folder, background: .white)
+                let asset = AVURLAsset(url: output.movieURL)
+                let formats = try await asset.loadTracks(withMediaType: .video)[0].load(.formatDescriptions)
+                try require(formats.count == 1 && CMFormatDescriptionGetMediaSubType(formats[0]) == kCMVideoCodecType_HEVC && output.manifest.codec == "HEVC", "HEVC stream/manifest")
+                let decoded = try await decode(output.movieURL)
+                try pixel(decoded.frames[0].pixel(32, 16), [0, 255, 0, 255])
+                try output.cleanup()
+            } catch Service.ExportError.codecUnavailable {
+                print("SKIP HEVC encoder unavailable on this host; explicit codecUnavailable returned")
+                try require(contents(folder).isEmpty, "Refused HEVC left staging files")
+            }
         }
         print("STUDIO_MOVIE_EXPORT_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed != 0 { exit(1) }

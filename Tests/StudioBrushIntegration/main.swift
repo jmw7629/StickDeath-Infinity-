@@ -38,14 +38,15 @@ private func rejects(_ operation: () throws -> Void) throws {
         return bytes
     }
     static func render(_ frame: AnimationFrame, layers: [CanvasLayer], edge: Int = 64,
-                       outerOpacity: Double = 1) throws -> [UInt8] {
+                       outerOpacity: Double = 1, transparent: Bool = false, rasterSources: [String: Data] = [:]) throws -> [UInt8] {
         let prepared = try StudioFrameRenderer.prepare(frame: frame)
+        let rasters = try StudioFrameRenderer.prepareRasters(frame: frame, layers: layers, sourceData: rasterSources)
         var error: Error?
         let renderer = ImageRenderer(content: Canvas { context, size in
-            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white))
+            if !transparent { context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.white)) }
             context.opacity = outerOpacity
             error = StudioFrameRenderer.draw(context: &context, frame: frame, layers: layers,
-                canvasSize: CGSize(width: 64, height: 64), size: size, preparedBrushes: prepared)
+                canvasSize: CGSize(width: 64, height: 64), size: size, preparedBrushes: prepared, rasterSources: rasterSources, preparedRasters: rasters)
         }.frame(width: CGFloat(edge), height: CGFloat(edge)))
         renderer.scale = 1
         guard let image = renderer.cgImage else { throw Failure(message: "Actual native renderer produced no image") }
@@ -81,7 +82,7 @@ private func rejects(_ operation: () throws -> Void) throws {
             try require(StudioDocumentArchive.decode(archive).document == editor.document, "Brush descriptor archive roundtrip changed data")
             var wrong = editor.document; wrong.schemaVersion = 1
             try rejects { try wrong.validate() }
-            wrong.schemaVersion = 4; try rejects { try wrong.validate() }
+            wrong.schemaVersion = StudioDocument.supportedSchemaVersions.upperBound + 1; try rejects { try wrong.validate() }
             editor.undo()
             try require(editor.document.schemaVersion == 1 && render(editor.document.frames[0], layers: editor.document.layers) == oldPixels,
                         "Undo failed to restore historical schema/pixels")
@@ -112,6 +113,240 @@ private func rejects(_ operation: () throws -> Void) throws {
             try rejects { try input.append(location: .zero, time: started.addingTimeInterval(0.01)) }
             try require(input.element == beforeTimingError, "Invalid event timing mutated captured stroke")
             print("PASS production touch capture uses measured timestamps/stable identity and no invented pressure")
+            var pencilInput = input
+            try pencilInput.append(location: CGPoint(x: 105, y: 88), time: started.addingTimeInterval(0.25), pressure: 0.2)
+            try pencilInput.append(location: CGPoint(x: 110, y: 88), time: started.addingTimeInterval(0.375), pressure: 0.9)
+            try require(pencilInput.points.suffix(2).map(\.pressure) == [0.2, 0.9], "Real normalized pressure was lost")
+            let encodedPencil = try JSONEncoder().encode(pencilInput.element)
+            try require(try JSONDecoder().decode(DrawnElement.self, from: encodedPencil) == pencilInput.element,
+                        "Pressure samples did not survive document encoding")
+            let beforePressureError = pencilInput.element
+            for invalid: CGFloat in [-0.1, 1.1, .nan, .infinity] {
+                try rejects { try pencilInput.append(location: .zero, time: started.addingTimeInterval(0.5), pressure: invalid) }
+            }
+            try require(pencilInput.element == beforePressureError, "Invalid pressure partially modified the stroke")
+            print("PASS real pressure capture survives encoding and rejects invalid force without partial edits")
+
+
+            let flatTilt = StudioPencilTilt(altitude: 0, azimuth: 0)
+            let uprightTilt = StudioPencilTilt(altitude: .pi / 2, azimuth: .pi / 2)
+            var estimatedInput = input
+            try estimatedInput.append(location: CGPoint(x: 80, y: 80), time: started.addingTimeInterval(0.25), pressure: 0.2, tilt: uprightTilt, estimationIndex: 42)
+            try estimatedInput.append(location: CGPoint(x: 100, y: 100), time: started.addingTimeInterval(0.5), pressure: 0.7, estimationIndex: 43)
+            let beforeCorrection = estimatedInput.element
+            try require(try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42,
+                location: CGPoint(x: 90, y: 84), pressure: 0.8, tilt: flatTilt, expectsMoreUpdates: true), "Known estimated sample was ignored")
+            try require(estimatedInput.points.count == 4 && estimatedInput.points[2].x == 45 && estimatedInput.points[2].y == 42 && estimatedInput.points[2].pressure == 0.8 && estimatedInput.points[2].tilt == flatTilt && estimatedInput.points[2].timestamp == 0.25 && estimatedInput.points[3] == beforeCorrection.points[3], "Correction changed ordering, timing or unrelated samples")
+            try require(estimatedInput.estimatedSampleIndices[42] == 2, "Partial update prematurely discarded sample identity")
+            let validCorrection = estimatedInput.element
+            for invalid: CGFloat in [-0.1, 1.1, .nan, .infinity] {
+                try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: .zero, pressure: invalid, tilt: nil, expectsMoreUpdates: false) }
+            }
+            try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: CGPoint(x: CGFloat.nan, y: 0), pressure: nil, tilt: nil, expectsMoreUpdates: false) }
+            try rejects { _ = try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: .zero, pressure: nil, tilt: .init(altitude: .nan, azimuth: 0), expectsMoreUpdates: false) }
+            try rejects { try estimatedInput.append(location: .zero, time: started.addingTimeInterval(0.75), estimationIndex: 42) }
+            try require(estimatedInput.element == validCorrection && estimatedInput.estimatedSampleIndices.count == 2, "Invalid correction or duplicate identity mutated the capture")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "another-stroke", estimationIndex: 42, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Cross-stroke correction accepted")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 999, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Unknown sample accepted")
+            try require(try estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 42, location: CGPoint(x: 90, y: 84), pressure: 0.8, tilt: flatTilt, expectsMoreUpdates: false), "Final known correction ignored")
+            try require(estimatedInput.estimatedSampleIndices[42] == nil && estimatedInput.finishEstimatedUpdates() == 1 && estimatedInput.estimatedSampleIndices.isEmpty, "Finalization did not bound unresolved updates")
+            try require(try !estimatedInput.updateEstimatedSample(strokeID: "captured", estimationIndex: 43, location: .zero, pressure: nil, tilt: nil, expectsMoreUpdates: false), "Late correction rewrote finalized artwork")
+            try require(estimatedInput.element == validCorrection, "Finalization changed best-known artwork")
+            let correctedArchive = try JSONEncoder().encode(estimatedInput.element)
+            try require(try JSONDecoder().decode(DrawnElement.self, from: correctedArchive) == validCorrection, "Corrected samples did not persist")
+            try require(try render(.init(id: "before-estimate", elements: [beforeCorrection]), layers: editor.document.layers) != render(.init(id: "after-estimate", elements: [validCorrection]), layers: editor.document.layers), "Estimated correction did not change actual rendered pixels")
+            print("PASS live estimated Pencil corrections preserve sample identity/timing, render and persist; invalid, stale and post-finalization updates are fenced")
+
+            var tiltInput = input
+            try tiltInput.append(location: CGPoint(x: 90, y: 88), time: started.addingTimeInterval(0.25), pressure: 0.5, tilt: flatTilt)
+            try require(tiltInput.points.last?.tilt == flatTilt, "Measured tilt was lost during capture")
+            let beforeTiltError = tiltInput.element
+            for invalid in [StudioPencilTilt(altitude: -.pi, azimuth: 0), .init(altitude: 0, azimuth: .pi * 2), .init(altitude: .nan, azimuth: 0)] {
+                try rejects { try tiltInput.append(location: .zero, time: started.addingTimeInterval(0.5), tilt: invalid) }
+            }
+            try require(tiltInput.element == beforeTiltError, "Invalid tilt partially changed the draft")
+            let wrap = StudioPencilTilt(altitude: 0, azimuth: 359 * .pi / 180).interpolated(to: .init(altitude: 1, azimuth: .pi / 180), fraction: 0.5)
+            try require(abs(sin(wrap.azimuth)) < 0.000001 && wrap.altitude == 0.5, "Tilt interpolation took the long arc across zero")
+            var tilted = stroke(firstLayer, family: .calligraphy)
+            tilted.brush?.version = 2; tilted.brush?.tiltEnabled = true
+            tilted.points = [.init(x: 32, y: 32, tilt: uprightTilt), .init(x: 32, y: 32, tilt: flatTilt)]
+            let tiltGeometry = try StudioBrushGeometryCache.geometry(for: tilted)
+            try require(tiltGeometry.marks.count == 2 && tiltGeometry.marks[1].width > tiltGeometry.marks[0].width * 2,
+                        "Stationary Pencil tilt did not widen the actual nib")
+            var fixedNib = tilted; fixedNib.brush?.tiltEnabled = nil; fixedNib.brush?.version = 1
+            try require(try render(.init(id: "tilted", elements: [tilted]), layers: editor.document.layers) != render(.init(id: "fixed", elements: [fixedNib]), layers: editor.document.layers),
+                        "Tilt changed metadata without changing real rendered pixels")
+            var tiltEditor = try StudioDocumentEditor(document: .new(name: "Tilt", width: 64, height: 64, fps: 12))
+            tilted.layerID = tiltEditor.document.activeLayerID
+            try tiltEditor.commit(tilted, frameID: tiltEditor.document.activeFrameID)
+            try require(tiltEditor.document.schemaVersion == 23, "Tilt did not upgrade the guarded document version")
+            let tiltArchive = try StudioDocumentArchive(document: tiltEditor.document, rasterFrameIndices: [:]).encoded()
+            try require(StudioDocumentArchive.decode(tiltArchive).document == tiltEditor.document, "Tilt archive changed the artwork")
+            var olderTilt = tiltEditor.document; olderTilt.schemaVersion = 22; try rejects { try olderTilt.validate() }
+            tiltEditor.undo(); try require(tiltEditor.document.schemaVersion == 1, "Undo did not restore original schema")
+            tiltEditor.redo(); try require(tiltEditor.document.frames[0].elements[0] == tilted, "Redo lost tilt")
+            let tiltOutput = try await StudioExportService().export(document: tiltEditor.document, format: .pngSequence, outputParent: root)
+            let tiltSource = CGImageSourceCreateWithURL(tiltOutput.imageURLs[0] as CFURL, nil)!
+            let tiltImage = CGImageSourceCreateImageAtIndex(tiltSource, 0, nil)!
+            try require(try pixels(tiltImage) == render(tiltEditor.document.frames[0], layers: tiltEditor.document.layers), "Tilt PNG differs from canvas")
+            print("PASS measured tilt validates atomically, rotates and widens real nib pixels, survives schema23/archive/Undo/Redo and PNG export")
+
+            var alphaEditor = try StudioDocumentEditor(document: .new(name: "Alpha paint", width: 64, height: 64, fps: 12))
+            let alphaLayer = alphaEditor.document.activeLayerID, alphaFrame = alphaEditor.document.activeFrameID
+            var alphaBase = stroke(alphaLayer, opacity: 0.5); alphaBase.width = 12
+            try alphaEditor.commit(alphaBase, frameID: alphaFrame)
+            try alphaEditor.updateLayer(alphaLayer) { $0.lockMode = "alpha" }
+            let beforeAlphaPaint = alphaEditor.document
+            let originalAlphaPixels = try render(beforeAlphaPaint.frames[0], layers: beforeAlphaPaint.layers, transparent: true)
+            var alphaPaint = stroke(alphaLayer); alphaPaint.color = "#0000FF"; alphaPaint.width = 64
+            alphaPaint.points = [.init(x: 32, y: 0), .init(x: 32, y: 64)]
+            try alphaEditor.commit(alphaPaint, frameID: alphaFrame)
+            try require(alphaEditor.document.schemaVersion == 24 && alphaEditor.document.frames[0].elements.last?.preservesLayerAlpha == true, "Canonical alpha lock did not capture its rendering operation")
+            let alphaPixels = try render(alphaEditor.document.frames[0], layers: alphaEditor.document.layers, transparent: true)
+            try require(alphaPixels != originalAlphaPixels, "Alpha painting did not recolor real pixels")
+            for offset in stride(from: 0, to: alphaPixels.count, by: 4) {
+                try require(abs(Int(alphaPixels[offset+3])-Int(originalAlphaPixels[offset+3])) <= 1, "Alpha painting changed destination alpha")
+                if originalAlphaPixels[offset+3] == 0 { try require(alphaPixels[offset+3] == 0, "Paint escaped the existing coverage") }
+            }
+            let afterAlphaPaint = alphaEditor.document
+            alphaEditor.undo(); try require(alphaEditor.document.frames == beforeAlphaPaint.frames, "Undo did not restore pre-alpha artwork")
+            alphaEditor.redo(); try require(alphaEditor.document.frames == afterAlphaPaint.frames, "Redo lost alpha-paint operation")
+            let alphaArchive = try StudioDocumentArchive(document: alphaEditor.document, rasterFrameIndices: [:]).encoded()
+            try require(StudioDocumentArchive.decode(alphaArchive).document == alphaEditor.document, "Alpha paint changed during persistence")
+            var oldAlpha = alphaEditor.document; oldAlpha.schemaVersion = 23; try rejects { try oldAlpha.validate() }
+            var invalidAlpha = alphaEditor.document; invalidAlpha.frames[0].elements[1].preservesLayerAlpha = false; try rejects { try invalidAlpha.validate() }
+            let alphaOutput = try await StudioExportService().export(document: alphaEditor.document, format: .pngSequence, outputParent: root)
+            let alphaSource = CGImageSourceCreateWithURL(alphaOutput.imageURLs[0] as CFURL, nil)!
+            try require(try pixels(CGImageSourceCreateImageAtIndex(alphaSource, 0, nil)!) == render(alphaEditor.document.frames[0], layers: alphaEditor.document.layers), "Alpha paint PNG differs from the canonical canvas")
+            for mode in ["full", "hidden", "zero"] {
+                var denied = alphaEditor
+                try denied.updateLayer(alphaLayer) { if mode == "hidden" { $0.visible = false } else if mode == "zero" { $0.opacity = 0 } else { $0.lockMode = "full"; $0.locked = true } }
+                let unchanged = denied.document
+                var rejected = alphaPaint; rejected = DrawnElement(id: UUID().uuidString, tool: rejected.tool, points: rejected.points, color: rejected.color, width: rejected.width, opacity: rejected.opacity, layerID: alphaLayer, brush: rejected.brush)
+                try rejects { try denied.commit(rejected, frameID: alphaFrame) }
+                try require(denied.document == unchanged, "Denied alpha paint partially changed the document")
+            }
+            var emptyAlpha = try StudioDocumentEditor(document: .new(name: "Empty alpha", width: 64, height: 64, fps: 12))
+            try emptyAlpha.updateLayer(emptyAlpha.document.activeLayerID) { $0.lockMode = "alpha" }
+            var emptyPaint = alphaPaint; emptyPaint.layerID = emptyAlpha.document.activeLayerID
+            try emptyAlpha.commit(emptyPaint, frameID: emptyAlpha.document.activeFrameID)
+            try require(try render(emptyAlpha.document.frames[0], layers: emptyAlpha.document.layers, transparent: true).allSatisfy { $0 == 0 }, "Painting an empty alpha-locked layer created coverage")
+            var unsupported = alphaPaint; unsupported.brush = nil
+            let beforeUnsupported = alphaEditor.document
+            try rejects { try alphaEditor.commit(unsupported, frameID: alphaFrame) }
+            try require(alphaEditor.document == beforeUnsupported, "Unsupported alpha-locked edit changed history")
+            var copiedAlpha = alphaEditor
+            copiedAlpha.copyFrame(); try copiedAlpha.pasteFrame()
+            try require(copiedAlpha.document.frames[1].elements.last?.preservesLayerAlpha == true, "Frame copy stripped alpha preservation")
+            try require(render(copiedAlpha.document.frames[1], layers: copiedAlpha.document.layers, transparent: true) == alphaPixels, "Frame copy changed alpha-painted pixels")
+            var duplicatedAlpha = alphaEditor
+            try duplicatedAlpha.duplicateLayer(alphaLayer)
+            try require(duplicatedAlpha.document.frames[0].elements.filter { $0.preservesLayerAlpha == true }.count == 2, "Layer duplication stripped alpha preservation")
+            let alphaStorage = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("alpha-documents"), cachesDirectory: root.appendingPathComponent("alpha-cache"))
+            let alphaMetadata = AnimationMetadata(id: beforeAlphaPaint.id, title: beforeAlphaPaint.name, fps: beforeAlphaPaint.fps,
+                canvasWidth: 64, canvasHeight: 64, frameCount: 1, layerCount: 1, createdAt: beforeAlphaPaint.createdAt, modifiedAt: beforeAlphaPaint.modifiedAt, thumbnailData: nil)
+            try alphaStorage.saveAnimation(AnimationProject(id: beforeAlphaPaint.id, metadata: alphaMetadata,
+                frames: [StoredAnimationFrame(imageData: nil, layerData: nil)], audioTracks: [],
+                editableDocumentData: StudioDocumentArchive(document: beforeAlphaPaint, rasterFrameIndices: [:]).encoded()))
+            let alphaVM = StudioViewModel(storage: alphaStorage)
+            let alphaOpened = await alphaVM.openProject(alphaMetadata); try require(alphaOpened, "Actual alpha project did not open")
+            alphaVM.setLayerLockMode(alphaLayer, mode: .free)
+            alphaVM.setLayerLockMode(alphaLayer, mode: .alpha)
+            try require(alphaVM.document.layers.first?.lockMode == "alpha", "User-facing alpha lock control did not enable painting")
+            let lockedCaptureDocument = alphaVM.document
+            try require(alphaVM.beginStrokeInput(id: alphaPaint.id), "Alpha stroke could not acquire input ownership")
+            alphaVM.setLayerLockMode(alphaLayer, mode: .free)
+            try require(alphaVM.document == lockedCaptureDocument, "Layer lock changed during active capture")
+            try require(alphaVM.commitElement(alphaPaint), "Actual VM alpha paint rejected")
+            alphaVM.finishStrokeInput(id: alphaPaint.id)
+            let alphaSaved = await alphaVM.save(); try require(alphaSaved, "Actual alpha paint save failed")
+            let coldAlphaVM = StudioViewModel(storage: alphaStorage)
+            let coldAlphaOpened = await coldAlphaVM.openProject(alphaMetadata); try require(coldAlphaOpened, "Actual alpha paint cold reopen failed")
+            try require(coldAlphaVM.currentFrame.elements.last?.preservesLayerAlpha == true && render(coldAlphaVM.currentFrame, layers: coldAlphaVM.document.layers, transparent: true) == alphaPixels, "Actual save/reopen changed alpha-painted pixels")
+            print("PASS canonical alpha-lock brush paint changes RGB, preserves transparent/partial coverage, fences unsupported edits, survives schema24/archive/Undo/Redo and real PNG export")
+
+            // Actual imported pixels: transparent exterior, opaque upper region,
+            // and half-alpha lower region. The production importer owns decoding.
+            var pngBytes = [UInt8](repeating: 0, count: 64 * 64 * 4)
+            for y in 12..<52 { for x in 12..<52 {
+                let offset = (y * 64 + x) * 4, alpha: UInt8 = y < 32 ? 255 : 128
+                pngBytes[offset] = alpha; pngBytes[offset + 3] = alpha
+            } }
+            let cg = CGImage(width: 64, height: 64, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 256,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue:
+                    CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+                provider: CGDataProvider(data: Data(pngBytes) as CFData)!, decode: nil,
+                shouldInterpolate: false, intent: .defaultIntent)!
+            let png = NSMutableData()
+            let destination = CGImageDestinationCreateWithData(png, UTType.png.identifier as CFString, 1, nil)!
+            CGImageDestinationAddImage(destination, cg, nil)
+            try require(CGImageDestinationFinalize(destination), "Imported alpha fixture PNG encoding")
+            let file = root.appendingPathComponent("alpha-source.png")
+            try (png as Data).write(to: file)
+            let imported = try await StudioImageImportService().importImage(from: file, name: "Alpha source", scratchParent: root)
+            let rasterStore = DeviceStorageManager(documentsDirectory: root.appendingPathComponent("raster-alpha-documents"))
+            let rasterVM = StudioViewModel(storage: rasterStore)
+            let createdRaster = await rasterVM.createProject(name: "Raster alpha", width: 64, height: 64, fps: 12)
+            try require(createdRaster, "Imported alpha project creation")
+            let rasterID = try rasterVM.attachImportedImage(imported, expectedProjectID: rasterVM.document.id,
+                expectedRevision: rasterVM.document.revision, frameID: rasterVM.document.activeFrameID, layerID: rasterVM.document.activeLayerID)
+            let rasterLayer = rasterVM.currentFrame.rasterLayerID!
+            rasterVM.selectLayer(rasterLayer)
+            let originalSource = rasterVM.originalImageSource(rasterID)
+            let rawBefore = try render(rasterVM.currentFrame, layers: rasterVM.layers, transparent: true,
+                rasterSources: rasterVM.rasterSources(for: rasterVM.currentFrame))
+            let beforeRasterPaint = rasterVM.document
+            var importedPaint = stroke(rasterLayer); importedPaint.color = "#0000FF"; importedPaint.width = 64
+            importedPaint.points = [.init(x: 32, y: 0), .init(x: 32, y: 64)]
+            let typedPaint = StudioCommandStroke(id: importedPaint.id, tool: importedPaint.tool,
+                points: importedPaint.points, color: importedPaint.color, width: Double(importedPaint.width),
+                opacity: importedPaint.opacity, brush: importedPaint.brush)
+            let request = StudioCommandRequest(requestID: UUID(), projectID: rasterVM.document.id,
+                expectedRevision: rasterVM.document.revision, action: .apply([
+                    .updateLayer(.init(layer: .id(rasterLayer), settings: .init(lock: .alpha))),
+                    .draw(.init(frame: .id(rasterVM.document.activeFrameID), layer: .id(rasterLayer), strokes: [typedPaint]))]))
+            _ = try rasterVM.applyStudioCommands(JSONEncoder().encode(request))
+            let paintedFrame = rasterVM.currentFrame
+            let rawAfter = try render(paintedFrame, layers: rasterVM.layers, transparent: true,
+                rasterSources: rasterVM.rasterSources(for: paintedFrame))
+            try require(rawBefore != rawAfter && paintedFrame.elements.last?.preservesLayerAlpha == true,
+                        "Typed alpha painting did not recolor imported coverage")
+            let opaqueCenter = (24 * 64 + 32) * 4, partialCenter = (40 * 64 + 32) * 4
+            for offset in [opaqueCenter, partialCenter] {
+                try require(rawAfter[offset + 2] > rawAfter[offset] && rawAfter[offset + 2] > 60,
+                            "Imported coverage was not painted with the requested blue color")
+            }
+            for offset in stride(from: 0, to: rawBefore.count, by: 4) {
+                try require(abs(Int(rawBefore[offset + 3]) - Int(rawAfter[offset + 3])) <= 1,
+                            "Imported alpha paint changed actual coverage")
+                if rawBefore[offset + 3] == 0 { try require(rawAfter[offset + 3] == 0, "Paint escaped imported transparency") }
+            }
+            rasterVM.undo(); try require(rasterVM.currentFrame == beforeRasterPaint.frames[0], "Typed alpha batch Undo was partial")
+            rasterVM.redo(); try require(rasterVM.currentFrame == paintedFrame, "Typed alpha batch Redo lost paint")
+            rasterVM.setLayerOpacity(rasterLayer, opacity: 0.7)
+            rasterVM.setLayerBlend(rasterLayer, mode: "multiply")
+            rasterVM.setLayerGlow(rasterLayer, enabled: true)
+            rasterVM.setLayerGlowStyle(rasterLayer, color: "#00FF00", radius: 3, strength: 0.5)
+            let styledFrame = rasterVM.currentFrame, styledLayers = rasterVM.layers
+            let styledPixels = try render(styledFrame, layers: styledLayers, rasterSources: rasterVM.rasterSources(for: styledFrame))
+            let unstyledPixels = try render(paintedFrame, layers: beforeRasterPaint.layers,
+                rasterSources: rasterVM.rasterSources(for: paintedFrame))
+            try require(styledPixels != unstyledPixels, "Opacity/blend/glow did not affect imported alpha composite")
+            let exported = try await StudioExportService().export(document: rasterVM.document, format: .pngSequence,
+                outputParent: root, rasterData: { rasterVM.rasterData($0) })
+            let pngSource = CGImageSourceCreateWithURL(exported.imageURLs[0] as CFURL, nil)!
+            try require(pixels(CGImageSourceCreateImageAtIndex(pngSource, 0, nil)!) == styledPixels,
+                        "Imported alpha blend/glow PNG differs from real composite")
+            let savedRaster = await rasterVM.save(); try require(savedRaster, "Imported alpha persistence")
+            let coldRaster = StudioViewModel(storage: rasterStore)
+            let openedRaster = await coldRaster.openProject(try rasterStore.loadAnimation(id: rasterVM.document.id)!.metadata)
+            try require(openedRaster && coldRaster.currentFrame == styledFrame && coldRaster.layers == styledLayers &&
+                coldRaster.originalImageSource(rasterID) == originalSource && coldRaster.rasterData(rasterID) == imported.normalizedPNG &&
+                render(coldRaster.currentFrame, layers: coldRaster.layers,
+                    rasterSources: coldRaster.rasterSources(for: coldRaster.currentFrame)) == styledPixels,
+                "Cold imported alpha paint lost source, appearance or pixels")
+            print("PASS actual imported transparent/partial coverage typed alpha paint one Undo/Redo blend/glow PNG and cold original retention")
+
 
             var halfLayer = CanvasLayer(id: "half", name: "Half"); halfLayer.opacity = 0.5
             let halfStroke = stroke(halfLayer.id, opacity: 0.5)
@@ -138,12 +373,14 @@ private func rejects(_ operation: () throws -> Void) throws {
             let opened = await vm.openProject(metadata); try require(opened, "Actual VM could not reopen brush document")
             try require(vm.document == persisted && sortedData(vm.audioClips) == originalAudioBytes, "VM open altered brush/audio document")
             vm.addFrame(); vm.addLayer()
-            let drawn = stroke(vm.activeLayerID, family: .halftone)
+            var drawn = stroke(vm.activeLayerID, family: .calligraphy)
+            drawn.brush?.version = 2; drawn.brush?.tiltEnabled = true
+            drawn.points[0].tilt = flatTilt; drawn.points[1].tilt = uprightTilt
             try require(vm.commitElement(drawn), "Actual VM brush commit failed")
             let saved = await vm.save(); try require(saved, "Actual atomic brush save failed")
             let reopened = StudioViewModel(storage: storage)
             let reopenedOK = await reopened.openProject(metadata); try require(reopenedOK, "Saved brush project failed reopen")
-            try require(reopened.currentFrame.elements.last?.brush == drawn.brush && sortedData(reopened.audioClips) == originalAudioBytes,
+            try require(reopened.currentFrame.elements.last == drawn && sortedData(reopened.audioClips) == originalAudioBytes,
                         "Save/reopen lost brush or canonical audio data")
             try require(reopened.projectAudioTracks.first?.audioData == originalAudio.audioData,
                         "Opaque historical audio bytes were lost")
@@ -194,7 +431,15 @@ private func rejects(_ operation: () throws -> Void) throws {
             for family in StudioBrushFamily.allCases {
                 var doc = try StudioDocument.new(name: "Brush \(family.rawValue)", width: 64, height: 64, fps: 12)
                 let element = stroke(doc.activeLayerID, family: family)
-                doc.schemaVersion = 2; doc.frames[0].elements = [element]
+                var familyEditor = try StudioDocumentEditor(document: doc)
+                try familyEditor.commit(element, frameID: doc.activeFrameID)
+                doc = familyEditor.document
+                if [.airbrush, .watercolor, .neon].contains(family) {
+                    try require(doc.schemaVersion == 25, "Extended family did not guard the project schema")
+                    var oldFamily = doc; oldFamily.schemaVersion = 24; try rejects { try oldFamily.validate() }
+                    let archive = try StudioDocumentArchive(document: doc, rasterFrameIndices: [:]).encoded()
+                    try require(StudioDocumentArchive.decode(archive).document == doc, "Extended family archive changed")
+                }
                 let expected = try render(doc.frames[0], layers: doc.layers)
                 distinct.insert(Data(expected))
                 let output = try await exportService.export(document: doc, format: .pngSequence, outputParent: root)
@@ -206,7 +451,7 @@ private func rejects(_ operation: () throws -> Void) throws {
                 try require(small.contains { $0 < 240 }, "Thumbnail lost actual brush ink")
             }
             try require(distinct.count == StudioBrushFamily.allCases.count, "Exposed brush families do not produce distinct shared-renderer pixels")
-            print("PASS all ten families share distinct actual native/thumbnail/export pixels; real PNGs reopen")
+            print("PASS all thirteen families share distinct actual native/thumbnail/export pixels; real PNGs reopen")
 
             var collision = stroke("cache", id: "same-id")
             let first = try StudioBrushGeometryCache.geometry(for: collision)
@@ -326,7 +571,7 @@ private func rejects(_ operation: () throws -> Void) throws {
             print("BRUSH_INTEGRATION_METRICS rapid60Total=\(durations.reduce(0,+))s rapidWorst=\(durations.max() ?? 0)s cachedDocumentValidation=\(validationSeconds)s cacheBytes=\(footprint.bytes)")
             try require((durations.max() ?? 0) < 2 && validationSeconds < 2, "Bounded preparation unexpectedly stalled for seconds")
             print("PASS actual rapid input preparation and full production document validation benchmark")
-            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 14 production groups")
+            print("STUDIO_BRUSH_INTEGRATION_TESTS=PASS 17 production groups")
         } catch {
             fputs("STUDIO_BRUSH_INTEGRATION_TESTS=FAIL \(error)\n", stderr)
             exit(1)

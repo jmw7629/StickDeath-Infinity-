@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- noindex while this is a draft. Remove only after legal review and owner approval, then add the page to scripts/website/site_constants.mjs as indexable. -->
+<meta name="robots" content="noindex">
+<meta name="description" content="Draft creator publication and marketing permissions for StickDeath Infinity, version 1. Requires legal review before publication.">
+<meta name="theme-color" content="#101011"><title>Publication & Marketing Permissions (draft v1) — StickDeath Infinity</title>
+<meta name="sdi:canonical-base" content="https://stickdeath-infinity.invalid/">
+<link rel="icon" href="../assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="../styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header"><a class="brand" href="../index.html" aria-label="StickDeath Infinity home"><img src="../assets/mark.svg" width="36" height="36" alt=""><span>STICKDEATH<span class="brand-sub">INFINITY</span></span></a>
+<nav aria-label="Main navigation"><a href="../index.html#studio">Studio</a><a href="../index.html#availability">Get the app</a><a href="../index.html#pricing">Pricing status</a><a href="../index.html#help">Help</a></nav></header>
+<main id="main" tabindex="-1" class="wrap policy">
+<p class="eyebrow">POLICY · CREATOR PERMISSIONS</p>
+<h1>Publication &amp;<br>Marketing <em>Permissions</em></h1>
+<div class="draft-banner" role="note"><strong>Draft — requires legal review before publication.</strong> This draft describes the permission model as implemented in the native Publishing flow on the review date. The app’s <code>SDI_PUBLISHING_CONSENT_VERSION</code> and <code>SDI_PUBLISHING_TERMS_URL</code> must point at the approved version before any submission is accepted; today they are unset and uploading is unavailable.</div>
+<dl class="meta-list">
+<dt>Version</dt><dd>1.0-draft (policy id <code>publishing-v1</code>)</dd>
+<dt>Effective date</dt><dd>Not yet effective; set at publication of the approved version and mirrored into the app configuration</dd>
+<dt>Review date</dt><dd>2026-10-12, read against the repository source</dd>
+<dt>Recorded with each submission</dt><dd>The accepted terms version, the selected destinations, the audience classification and the export revision</dd>
+</dl>
+
+<h2>1. Three separate permissions</h2>
+<p>When you submit a video you choose each destination on its own. None is pre-selected, none implies another, and each can be withdrawn independently.</p>
+<table>
+<thead><tr><th>Permission</th><th>What it allows</th><th>What it does not allow</th></tr></thead>
+<tbody>
+<tr><td><strong>StickDeath Infinity home feed</strong></td><td>Showing the approved render inside the app’s home feed after moderation and owner approval</td><td>Posting outside the app</td></tr>
+<tr><td><strong>Official SDI YouTube channel</strong></td><td>Uploading the approved channel rendition to the official channel after moderation and owner approval</td><td>Any social marketing reuse; any edit beyond the disclosed watermark</td></tr>
+<tr><td><strong>SDI social marketing reuse</strong></td><td>Reusing the approved render, or excerpts of it, in StickDeath Infinity’s own social marketing</td><td>Paid advertising, licensing to third parties, or use of unselected files</td></tr>
+</tbody>
+</table>
+
+<h2>2. What submitting does, and does not do</h2>
+<ul>
+<li>Saving, opening or exporting a project never authorizes an upload. Only “Submit this MP4 for review” or “Choose MP4 and keep upload copy”, followed by “Submit for review”, stages a private copy.</li>
+<li>A submission receipt is not publication confirmation. Nothing auto-publishes.</li>
+<li>Only the destinations you selected may be reviewed. Private drafts and unselected files are not submitted.</li>
+<li>Your original export and editable project are preserved on your device throughout.</li>
+</ul>
+
+<h2>3. Rights you confirm</h2>
+<p>Before submitting you confirm that you have the necessary rights and contributor permissions for everything in the video, including imported images, audio, likenesses and collaborators’ contributions, and that you agree to the current terms for the selected destinations. Bundled library assets are provided under the licenses in <a class="text-link" href="attribution.html">Attribution</a>.</p>
+
+<h2>4. Moderation and the owner’s exact-render approval</h2>
+<ul>
+<li>Every submission is moderated. Moderation can decline a destination without affecting your private copy.</li>
+<li>Every Spatter-generated video requires the owner’s approval of the exact render in the admin command center before any feed, channel or social release. Daily generation produces private drafts only.</li>
+<li>Approval is bound to the exact render and revision. Any revision invalidates the approval and requires a new one; retries are idempotent and cancellations take effect.</li>
+<li>Scores, matches, viewers and achievements are never invented. War Room results come only from authenticated, abuse-resistant votes.</li>
+</ul>
+
+<h2>5. Watermark on the channel copy</h2>
+<ul>
+<li>The approved channel rendition carries a small watercolor SDI mark at the bottom right. Channel and social versions may therefore include SDI branding.</li>
+<li>The editable original and your own exports are retained unchanged. Studio exports themselves add no watermark.</li>
+</ul>
+
+<h2>6. Withdrawing a permission, cancelling, revoking</h2>
+<ul>
+<li>While a copy is staged you can “Pause”, “Resume upload”, “Remove upload copy” or “Cancel upload and remove copy”. Receiving uploads are cancelled before the staged copy is removed.</li>
+<li>Registered reviews keep a separate permission-withdrawal workflow in the app. Withdrawing a permission stops any future release under it and cancels pending jobs.</li>
+<li>Handling of copies already published before a withdrawal (for example removal timelines on the channel or in marketing) is an open legal item for this draft and must be defined before publication.</li>
+</ul>
+
+<h2>7. Audience classification</h2>
+<p>You classify each submission as “Made for kids” or “Not made for kids”. The classification travels with the submission and is applied to the channel upload where the destination requires it.</p>
+
+<h2>8. Versioning</h2>
+<p>The app records the terms version shown at submission (“Terms version”). When this document changes materially, a new version id is published, the app configuration is updated, and existing permissions are not widened without a fresh consent.</p>
+
+<h2>9. Contact and complaints</h2>
+<p>A verified route for rights complaints, takedown requests and permission questions is owner-gated and will be published here before this document takes effect.</p>
+
+<p class="quiet">Source grounding for this draft: <code>StickDeathInfinity/Views/Profile/ProfileView.swift</code> (destination toggles, rights attestation, receipt wording, upload copy controls), <code>StickDeathInfinity/Views/Studio/Panels/StudioMovieExportControls.swift</code>, <code>StickDeathInfinity/App/AppConfig.swift</code>, <code>AGENTS.md</code> and <code>docs/PRODUCT_SCOPE_2026_09_19.md</code> (owner approval, watermark, separate permissions).</p>
+</main>
+<footer class="wrap"><a class="brand" href="../index.html">STICKDEATH INFINITY</a><p>Draft policy · version 1.0-draft</p><div><a href="terms-v1.html">Terms (draft)</a><a href="privacy-v1.html">Privacy (draft)</a><a href="attribution.html">Attribution</a><a href="../account.html">Account</a></div></footer>
+</body></html>

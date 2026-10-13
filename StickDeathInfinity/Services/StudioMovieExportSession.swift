@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CryptoKit
 import Darwin
 
 /// Private MP4 session foundation. The panel must report its scalar scope and
@@ -7,10 +8,48 @@ import Darwin
 @MainActor
 final class StudioMovieExportSession: ObservableObject {
     typealias Service = StudioMovieExportService
+    @MainActor enum Output {
+        case animation(Service.Output)
+        case mixed(StudioMixedMovieExportService.Output)
+        var isCleaned: Bool { switch self { case .animation(let v): return v.isCleaned; case .mixed(let v): return v.isCleaned } }
+        var movieURL: URL { switch self { case .animation(let v): return v.movieURL; case .mixed(let v): return v.movieURL } }
+        var manifestURL: URL { switch self { case .animation(let v): return v.manifestURL; case .mixed(let v): return v.directory.appendingPathComponent("manifest.json") } }
+        var manifest: Service.Manifest {
+            switch self {
+            case .animation(let v): return v.manifest
+            case .mixed(let v):
+                let r=v.receipt, p=r.captureProof
+                let codec = Service.Codec(rawValue: p.codec ?? "h264") ?? .h264
+                var manifest = Service.Manifest(version:r.version, projectID:p.projectID, documentRevision:p.revision,
+                    frameIDs:p.frameIDs, fps:p.durationDenominator, width:r.width, height:r.height,
+                    durationNumerator:r.durationNumerator, durationDenominator:r.durationDenominator,
+                    codec:codec.label + " + AAC", background:.white, audioIncluded:true, editorGuidesIncluded:false, encodedBytes:r.encodedBytes, imageCredits:r.imageCredits)
+                manifest.canvasWidth = p.renderPlan?.canvasWidth; manifest.canvasHeight = p.renderPlan?.canvasHeight
+                manifest.renderPlan = p.renderPlan; manifest.renderRule = p.renderPlan?.rule
+                manifest.heldLastFrameTicks = p.heldLastFrameTicks; manifest.movieFilename = r.movieFilename
+                manifest.soundCredits = r.soundCredits
+                return manifest
+            }
+        }
+        /// Gain the mixer applied when normalization was requested; nil without audio or when off.
+        var audioAppliedGain: Float? {
+            if case .mixed(let v) = self, v.receipt.audioNormalizedToMinusOneDBFS == true { return v.receipt.audioAppliedGain }
+            return nil
+        }
+        func checkedURLs() throws -> [URL] { switch self { case .animation(let v): return try v.checkedURLs(); case .mixed(let v): return try v.checkedURLs() } }
+        func cleanup() throws { switch self { case .animation(let v): try v.cleanup(); case .mixed(let v): try v.cleanup() } }
+    }
     struct Scope {
         let isStudioVisible: Bool
         let isForeground: Bool
         let accountID: String?
+    }
+    /// User choices for one export. Defaults reproduce the historical output:
+    /// H.264, original canvas size, no level change.
+    struct ExportOptions: Equatable {
+        var render = Service.RenderOptions()
+        var normalizeAudio = false
+        init(render: Service.RenderOptions = .init(), normalizeAudio: Bool = false) { self.render = render; self.normalizeAudio = normalizeAudio }
     }
     struct Source {
         let projectID: UUID
@@ -20,15 +59,20 @@ final class StudioMovieExportSession: ObservableObject {
     }
     @Published private(set) var isRunning = false
     @Published private(set) var isSharing = false
+    @Published private(set) var isPreviewing = false
+    @Published private(set) var isRecovering = false
+    @Published private(set) var audioProgressText: String?
     @Published private(set) var isClosed = false
     @Published private(set) var completedFrames = 0
     @Published private(set) var totalFrames = 0
     @Published private(set) var phase: Service.Phase?
     @Published private(set) var source: Source?
-    @Published private(set) var output: Service.Output?
+    @Published private(set) var output: Output?
     @Published private(set) var errorMessage: String?
     @Published private(set) var notice: String?
     @Published private(set) var needsCleanup = false
+    /// Why library sound credits could not be resolved for the last export, if so (#191).
+    @Published private(set) var soundCreditNotice: String?
 
     private let outputParent: URL
     private let limits: Service.Limits
@@ -38,20 +82,26 @@ final class StudioMovieExportSession: ObservableObject {
     private var task: Task<Void, Never>?
     private var activeRunID: UUID?
     private var activeShareID: UUID?
+    private var activePreviewID: UUID?
+    private weak var activePreview: PreviewRequest?
     private var cancellationRequested = false
     private var isStarting = false
+    private var isBeginningConsumer = false
     private var isCleaning = false
     // A pre-return service cleanup failure does not give us a deletion handle.
     // Keep this for read-only recovery checking; never delete by this URL.
     private var unownedPartial: URL?
+    private var mixedRecovery: StudioMixedMovieExportService.Recovery?
+    private var recoveryTask: Task<Void, Never>?
 
     init(outputParent: URL = FileManager.default.temporaryDirectory, limits: Service.Limits = .init()) {
         self.outputParent = outputParent; self.limits = limits
     }
 
     @discardableResult
-    func start(from vm: StudioViewModel, background: Service.Background, scope: Scope) -> Bool {
-        guard !isClosed, !isRunning, !isSharing, !isStarting else { return false }
+    func start(from vm: StudioViewModel, background: Service.Background, scope: Scope,
+               expectedRequest: StudioMovieExportRequest? = nil, options: ExportOptions = .init()) -> Bool {
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isBeginningConsumer else { return false }
         isStarting = true
         defer { isStarting = false }
         guard scope.isStudioVisible, scope.isForeground, vm.isEditing else {
@@ -60,7 +110,18 @@ final class StudioMovieExportSession: ObservableObject {
         guard vm.activeStrokeID == nil, vm.pendingBrushStroke == nil else {
             errorMessage = "Finish or resolve the current drawing before exporting MP4."; return false
         }
+        func matchesSavedRequest(_ document: StudioDocument, accountID: String?) -> Bool {
+            guard let expectedRequest else { return true }
+            return expectedRequest.projectID == document.id && expectedRequest.revision == document.revision &&
+                expectedRequest.accountID == accountID && !vm.isDirty && !vm.isSaving &&
+                !vm.isPlaying && vm.textDraft == nil
+        }
+        guard matchesSavedRequest(vm.document, accountID: scope.accountID) else {
+            errorMessage = "The saved Spatter edit changed before the MP4 snapshot was captured. Nothing was exported."
+            return false
+        }
         currentScope = scope
+        invalidatePreview()
         guard cleanupOwnedOutput() else { return false }
         // Cleanup publishes state. Honor a synchronous observer changing scope,
         // closing the panel, or changing input before we capture a new project.
@@ -71,16 +132,46 @@ final class StudioMovieExportSession: ObservableObject {
         }
         // One synchronous MainActor capture; the task never retains the VM.
         let document = vm.document
+        // Both the panel handoff and output cleanup publish synchronously.
+        // Bind a direct export to its approved saved edit after those observers
+        // have run, without changing manual export's immutable-snapshot behavior.
+        guard matchesSavedRequest(document, accountID: currentScope.accountID) else {
+            errorMessage = "The saved Spatter edit changed before the MP4 snapshot was captured. Nothing was exported."
+            return false
+        }
         var rasters: [String: Data] = [:]
-        for id in Set(document.frames.compactMap(\.rasterAssetID)) {
+        for id in document.referencedRasterAssetIDs {
             if let bytes = vm.rasterData(id) { rasters[id] = bytes }
         }
+        var credits: [String: StudioExportService.ImageCredit] = [:]
+        do {
+            for id in StudioExportService.visibleRasterAssetIDs(document: document).sorted() {
+                guard let original = vm.originalImageSource(id),
+                      let attribution = original.catalogueAttribution else { continue }
+                try original.validate()
+                credits[id] = try StudioExportService.ImageCredit(attribution: attribution)
+            }
+            _ = try StudioExportService.renderedImageCredits(document: document, creditsByRasterID: credits)
+        } catch {
+            errorMessage = error.localizedDescription; return false
+        }
         let snapshot = Service.Snapshot(document: document,
-            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters)
+            retainedAudioTracks: vm.projectAudioTracks, rasterDataByID: rasters, imageCredits: credits, render: options.render)
+        // Preflight (#202): refuse before rendering when the device is critically
+        // hot or the destination volume lacks twice the estimated output.
+        do {
+            let plan = try Service.RenderPlan.make(canvasWidth: document.width, canvasHeight: document.height, preset: options.render.preset)
+            let estimate = StudioExportPreflight.estimatedMovieBytes(width: plan.outputWidth, height: plan.outputHeight,
+                fps: document.fps, durationSeconds: document.durationSeconds, includesAudio: !document.audioClips.isEmpty)
+            try StudioExportPreflight.check(estimatedOutputBytes: estimate, destination: outputParent)
+        } catch {
+            errorMessage = error.localizedDescription; return false
+        }
+        let filenameBase = StudioExportFilename.base(for: document.name)
         editor = vm; capturedAccountID = scope.accountID
         source = Source(projectID: document.id, revision: document.revision,
                         name: document.name, frameCount: document.frames.count)
-        errorMessage = nil; notice = nil; phase = nil
+        errorMessage = nil; notice = nil; phase = nil; audioProgressText = nil; soundCreditNotice = nil
         completedFrames = 0; totalFrames = document.frames.count
         cancellationRequested = false
         let runID = UUID(); activeRunID = runID
@@ -88,21 +179,63 @@ final class StudioMovieExportSession: ObservableObject {
         task = Task { [self, snapshot] in
             do {
                 try checkRunningContext()
-                let result = try await Service(limits: limits).export(snapshot: snapshot,
-                    outputParent: outputParent, background: background) { [self] progress in
-                        try checkRunningContext()
-                        phase = progress.phase
-                        completedFrames = progress.completedFrames; totalFrames = progress.totalFrames
-                        // Published observers can synchronously cancel or close.
-                        try checkRunningContext()
-                    }
-                output = result
+                var snapshot = snapshot
+                if !snapshot.document.audioClips.isEmpty {
+                    guard background == .white else { throw Service.ExportError.transparentUnsupported }
+                    // Library attribution travels with the mixed movie (#191).
+                    audioProgressText = "Resolving sound credits…"
+                    let resolved = await Self.resolveSoundCredits(for: snapshot.retainedAudioTracks)
+                    try checkRunningContext()
+                    snapshot.soundCredits = resolved.credits
+                    soundCreditNotice = resolved.notice
+                    let mixedOptions = StudioMixedMovieExportService.Options(
+                        audio: .init(normalizeToMinusOneDBFS: options.normalizeAudio), filenameBase: filenameBase)
+                    let result = try await StudioMixedMovieExportService().export(snapshot: snapshot,
+                        outputParent: outputParent, movieLimits: limits, options: mixedOptions) { [self] progress in
+                            try checkRunningContext()
+                            switch progress.phase {
+                            case .rendering:
+                                phase = .rendering; completedFrames = progress.completed; totalFrames = progress.total
+                                audioProgressText = nil
+                            case .mixing: phase = .finalizing; audioProgressText = "Mixing project audio…"
+                            case .muxing: phase = .finalizing; audioProgressText = "Encoding audio into MP4…"
+                            case .verifying: phase = .verifying; audioProgressText = "Checking picture and audio timing…"
+                            }
+                            try checkRunningContext()
+                        }
+                    output = .mixed(result)
+                } else {
+                    let result = try await Service(limits: limits).export(snapshot: snapshot,
+                        outputParent: outputParent, background: background, filenameBase: filenameBase) { [self] progress in
+                            try checkRunningContext()
+                            phase = progress.phase
+                            completedFrames = progress.completedFrames; totalFrames = progress.totalFrames
+                            try checkRunningContext()
+                        }
+                    output = .animation(result)
+                }
                 try checkRunningContext()
-                _ = try result.checkedURLs()
-                notice = "MP4 ready on this device from revision \(result.manifest.documentRevision). No audio was included."
+                guard let output else { throw Service.ExportError.outputUnavailable }
+                _ = try output.checkedURLs()
+                var text = "MP4 ready on this device from revision \(output.manifest.documentRevision). " +
+                    (output.manifest.audioIncluded ? "Project audio is included as stereo AAC." : "No audio was included.")
+                if let gain = output.audioAppliedGain {
+                    text += String(format: " Audio was normalized to -1 dBFS (gain ×%.3f); clip volumes are unchanged.", gain)
+                }
+                if let held = output.manifest.heldLastFrameTicks, held > 0 {
+                    text += " The last frame is held \(held) extra tick\(held == 1 ? "" : "s") so the audio tail fits."
+                }
+                if let credits = output.manifest.soundCredits, !credits.isEmpty {
+                    text += " \(credits.count) library sound credit\(credits.count == 1 ? " is" : "s are") recorded in the manifest."
+                }
+                notice = text
+                audioProgressText = nil
             } catch is CancellationError {
                 notice = "MP4 export cancelled."
             } catch {
+                if let failure = error as? StudioMixedMovieExportService.Failure {
+                    mixedRecovery = failure.recovery; needsCleanup = true
+                }
                 if case Service.ExportError.cleanupFailed(let path) = error, output == nil {
                     unownedPartial = path; needsCleanup = true
                 }
@@ -119,11 +252,32 @@ final class StudioMovieExportSession: ObservableObject {
         return true
     }
 
+    /// Library credits for the captured audio assets (#191). Digests and the
+    /// bundled catalogue load off the main actor. An unavailable library yields
+    /// no credits plus a notice, never a failed export: every library sound is
+    /// CC0 and audio imported from Files has no library attribution anyway.
+    static func resolveSoundCredits(for tracks: [AudioTrack]) async -> (credits: [StudioSoundCredit], notice: String?) {
+        let assets = await Task.detached(priority: .userInitiated) { () -> [StudioSoundCreditResolver.Asset] in
+            tracks.compactMap { track in
+                guard track.legacySourceFilename == nil, let data = track.audioData, !data.isEmpty else { return nil }
+                return .init(id: track.id, sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+            }
+        }.value
+        guard !assets.isEmpty else { return ([], nil) }
+        do {
+            let catalogue = try await StudioSoundCatalogue.loadBundled()
+            let table = catalogue.attributionsByDigest
+            return (try StudioSoundCreditResolver.credits(for: assets) { table[$0] }, nil)
+        } catch {
+            return ([], "Library sound credits were not resolved (\(error.localizedDescription)). The MP4 manifest lists no sound credits.")
+        }
+    }
+
     func refreshScope(_ scope: Scope) {
         currentScope = scope
         guard source != nil else { return }
         if !contextMatches(requireForeground: false) { close() }
-        else if !scope.isForeground { cancel() }
+        else if !scope.isForeground { invalidatePreview(); cancel() }
     }
     func cancel() {
         guard isRunning else { return }
@@ -133,8 +287,9 @@ final class StudioMovieExportSession: ObservableObject {
     }
     func close() {
         isClosed = true
+        invalidatePreview()
         cancel()
-        if !isRunning && !isSharing, cleanupOwnedOutput() {
+        if !isRunning && !isSharing && !isRecovering, cleanupOwnedOutput() {
             notice = "MP4 export closed. Its owned files were removed."
         }
     }
@@ -143,9 +298,15 @@ final class StudioMovieExportSession: ObservableObject {
     /// checked URLs immediately before passing them to UIActivityViewController.
     /// Close/dismiss never deletes files while this request is active.
     func beginSharing(scope: Scope) -> ShareRequest? {
+        guard !isBeginningConsumer else { return nil }
+        isBeginningConsumer = true
+        defer { isBeginningConsumer = false }
         refreshScope(scope)
-        guard !isClosed, !isRunning, !isSharing, contextMatches(requireForeground: true),
-              let output else { return nil }
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
+              contextMatches(requireForeground: true), let output else { return nil }
+        invalidatePreview()
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isPreviewing,
+              contextMatches(requireForeground: true), self.output?.movieURL == output.movieURL else { return nil }
         do { _ = try output.checkedURLs() }
         catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
         let id = UUID(); activeShareID = id
@@ -157,7 +318,18 @@ final class StudioMovieExportSession: ObservableObject {
     }
     @discardableResult
     func retryCleanup() -> Bool {
-        guard !isRunning, !isSharing else { return false }
+        guard !isRunning, !isSharing, !isRecovering else { return false }
+        if let recovery = mixedRecovery {
+            isRecovering = true; notice = "Recovering temporary movie files…"
+            recoveryTask = Task { [self] in
+                defer { recoveryTask = nil; isRecovering = false }
+                do {
+                    try await recovery.cleanup(); mixedRecovery = nil
+                    if cleanupOwnedOutput(allowRecoveryCompletion: true) { errorMessage = nil; notice = "Previous movie files were cleared. No unknown file was deleted." }
+                } catch { errorMessage = error.localizedDescription; needsCleanup = true }
+            }
+            return false
+        }
         guard cleanupOwnedOutput() else { return false }
         errorMessage = nil; notice = "Previous movie files were cleared. No unknown file was deleted."
         return true
@@ -176,8 +348,10 @@ final class StudioMovieExportSession: ObservableObject {
               currentScope.isStudioVisible else { return false }
         return !requireForeground || currentScope.isForeground
     }
-    private func cleanupOwnedOutput() -> Bool {
-        guard !isCleaning else { return false }
+    private func cleanupOwnedOutput(allowRecoveryCompletion: Bool = false) -> Bool {
+        guard !isCleaning, !isPreviewing, activePreviewID == nil,
+              !isRecovering || allowRecoveryCompletion else { return false }
+        guard mixedRecovery == nil else { needsCleanup = true; return false }
         isCleaning = true
         defer { isCleaning = false }
         if let partial = unownedPartial {
@@ -211,12 +385,79 @@ final class StudioMovieExportSession: ObservableObject {
         isSharing = false
     }
 
+    /// One local decoder owns a lease. Invalidation synchronously stops that
+    /// consumer before cleanup, sharing, another export or a scope change.
+    func beginPreview(scope: Scope, stopConsumer: @escaping @MainActor () -> Void) -> PreviewRequest? {
+        guard !isBeginningConsumer else { return nil }
+        isBeginningConsumer = true
+        defer { isBeginningConsumer = false }
+        refreshScope(scope)
+        guard !isClosed, !isRunning, !isSharing, !isRecovering, !isStarting, !isCleaning,
+              !needsCleanup, !isPreviewing, contextMatches(requireForeground: true),
+              let output else { return nil }
+        do { _ = try output.checkedURLs() }
+        catch { errorMessage = error.localizedDescription; needsCleanup = true; return nil }
+        let id = UUID()
+        let request = PreviewRequest(id: id, owner: self, output: output, stopConsumer: stopConsumer)
+        activePreviewID = id; activePreview = request; isPreviewing = true
+        guard activePreviewID == id, !isClosed, contextMatches(requireForeground: true) else {
+            request.invalidate()
+            // @Published sends synchronously before storing its new value.
+            // A close from that notification may already have released the ID.
+            if activePreviewID == nil { isPreviewing = false }
+            return nil
+        }
+        return request
+    }
+    private func invalidatePreview() { activePreview?.invalidate() }
+    private func finishPreview(id: UUID) {
+        guard activePreviewID == id else { return }
+        activePreviewID = nil; activePreview = nil; isPreviewing = false
+        if isClosed, !isRunning, !isSharing, !isRecovering { _ = cleanupOwnedOutput() }
+    }
+
+    @MainActor final class PreviewRequest {
+        let id: UUID
+        private var owner: StudioMovieExportSession?
+        private let output: Output
+        private var stopConsumer: (@MainActor () -> Void)?
+        private var finished = false
+        private var invalidating = false
+        fileprivate init(id: UUID, owner: StudioMovieExportSession, output: Output,
+                         stopConsumer: @escaping @MainActor () -> Void) {
+            self.id = id; self.owner = owner; self.output = output; self.stopConsumer = stopConsumer
+        }
+        func checkedURL() throws -> URL {
+            guard !finished, owner?.activePreviewID == id else { throw Service.ExportError.outputUnavailable }
+            _ = try output.checkedURLs()
+            return output.movieURL
+        }
+        /// The consumer calls this only after pausing and releasing its item.
+        func finish() {
+            guard !finished else { return }
+            finished = true; stopConsumer = nil
+            owner?.finishPreview(id: id); owner = nil
+        }
+        fileprivate func invalidate() {
+            guard !finished, !invalidating else { return }
+            invalidating = true
+            stopConsumer?()
+            finish()
+        }
+        deinit {
+            if let owner, !finished {
+                let requestID = id
+                Task { @MainActor in owner.finishPreview(id: requestID) }
+            }
+        }
+    }
+
     @MainActor final class ShareRequest: Identifiable {
         let id: UUID
         private var owner: StudioMovieExportSession?
-        private let output: Service.Output
+        private let output: Output
         private var finished = false
-        fileprivate init(id: UUID, owner: StudioMovieExportSession, output: Service.Output) {
+        fileprivate init(id: UUID, owner: StudioMovieExportSession, output: Output) {
             self.id = id; self.owner = owner; self.output = output
         }
         func checkedURLs() throws -> [URL] {

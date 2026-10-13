@@ -1,233 +1,173 @@
 import SwiftUI
+import AVKit
 
+/// One challenge: brief, server-timed schedule, real eligible entries with
+/// playback, the creator's own entry (one per creator, from approved
+/// renditions) and one mutable favourite vote. Results come only from the
+/// server's finalised record.
 struct ChallengeDetailView: View {
-    let challenge: Challenge
+    let challenge: ChallengeSummary
+    var clock: ChallengeClock?
     @Environment(\.dismiss) private var dismiss
-    @State private var selectedTab: ChallengeTab = .submissions
-    @State private var submissions: [ChallengeSubmission] = []
-    @State private var loadError: String?
-    @State private var showSubmissionNotice = false
-    
-    enum ChallengeTab: String, CaseIterable {
-        case submissions = "Submissions"
-        case leaderboard = "Leaderboard"
-    }
-    
+    @ObservedObject private var auth = AuthService.shared
+    @State private var entries: [ChallengeEntry] = []
+    @State private var phase: ChallengePhase?
+    @State private var media: [ApprovedMedia] = []
+    @State private var selection = ""
+    @State private var player: AVPlayer?
+    @State private var playing: UUID?
+    @State private var pendingVote: UUID?
+    @State private var busy = false
+    @State private var loaded = false
+    @State private var error: String?
+    @State private var notice: String?
+    @State private var epoch = UUID()
+    private var viewer: UUID? { auth.userId.flatMap(UUID.init(uuidString:)) }
+    private var serverNow: Date { clock?.now(deviceNow: Date()) ?? Date() }
+    private var currentPhase: ChallengePhase { phase ?? challenge.phase(at: serverNow) }
+    private var myEntry: ChallengeEntry? { entries.first { $0.creator == viewer } }
+    private var isParticipant: Bool { myEntry != nil || challenge.my_entry }
+
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 8) {
-                Button(action: { dismiss() }) {
-                    Image(systemName: "chevron.left")
-                        .foregroundColor(.gray)
-                        .font(.system(size: 18))
-                }
-                Text("⚔️").font(.system(size: 18))
-                Text(challenge.title)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(.white)
-                Spacer()
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            
+        NavigationStack {
             ScrollView {
-                VStack(spacing: 0) {
-                    // Stats row
-                    HStack(spacing: 12) {
-                        StatCard(value: challenge.submissionCount.map(String.init) ?? "—", label: "Entries", color: .red)
-                        StatCard(value: challenge.timeLeft, label: "Left", color: .green)
-                        StatCard(value: challenge.reward, label: "Prize", color: .yellow)
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(challenge.title).communityHeading()
+                    Text("Phase: \(currentPhase.title) (server time)").communityCaption()
+                    if !challenge.brief.isEmpty { Text(challenge.brief).font(.specialElite(14, relativeTo: .body)) }
+                    CommunityCard {
+                        Text("Schedule").communitySubheading()
+                        if let starts = challenge.starts_at { Text("Opens: \(starts.formatted(date: .abbreviated, time: .shortened))").font(.specialElite(13, relativeTo: .footnote)) }
+                        if let closes = challenge.submissions_close_at { Text("Submissions close: \(closes.formatted(date: .abbreviated, time: .shortened))").font(.specialElite(13, relativeTo: .footnote)) }
+                        if let ends = challenge.voting_ends_at { Text("Voting ends: \(ends.formatted(date: .abbreviated, time: .shortened))").font(.specialElite(13, relativeTo: .footnote)) }
+                        Text("Times shown in \(TimeZone.current.identifier).").communityCaption()
+                        if challenge.hasReward { Text("Reward (as configured): \(challenge.reward_text)").communityCaption() }
+                        else { Text("No reward is configured for this challenge.").communityCaption() }
+                        Text("Rules: enter your own approved, rights-cleared rendition; one entry per creator; viewers who did not enter cast one favourite vote, which they may change until voting ends. Ties record no winner.")
+                            .communityCaption()
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    
-                    // Description
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(challenge.description ?? "No description provided.")
-                            .font(.system(size: 13))
-                            .foregroundColor(.gray)
-                            .lineSpacing(4)
-                        
-                        Text("Rules:")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(.white)
-                        
-                        VStack(alignment: .leading, spacing: 4) {
-                            RuleRow(text: "Follow the rules in this challenge's description. Additional structured rules are not available from the service.")
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
-                    
-                    // Tab picker
-                    HStack(spacing: 8) {
-                        ForEach(ChallengeTab.allCases, id: \.self) { tab in
-                            Button(action: { selectedTab = tab }) {
-                                Text(tab.rawValue)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(selectedTab == tab ? .red : .gray)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 10)
-                                    .background(
-                                        selectedTab == tab
-                                            ? Color.red.opacity(0.15)
-                                            : Color.white.opacity(0.05)
-                                    )
-                                    .cornerRadius(10)
+                    if let error { CommunityMessage(text: error, kind: .error).accessibilityIdentifier("challenges.detail.error") }
+                    if let notice { CommunityMessage(text: notice, kind: .success) }
+                    if busy { ProgressView().tint(StudioCraftTheme.accent) }
+                    if let outcome = challenge.outcomeText {
+                        CommunityCard {
+                            Text("Result").communitySubheading()
+                            Text(outcome).font(.specialElite(15, relativeTo: .body))
+                            if let winner = challenge.winner_entry, let entry = entries.first(where: { $0.id == winner }) {
+                                Text("Winning entry: \(entry.title)").font(.specialElite(14, relativeTo: .body))
                             }
-                        }
+                        }.accessibilityIdentifier("challenges.detail.result")
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-                    
-                    if let loadError { Text(loadError).font(.caption).foregroundColor(.gray).padding() }
-                    // Tab content
-                    if selectedTab == .submissions {
-                        SubmissionsGrid(submissions: submissions)
-                    } else {
-                        LeaderboardList(submissions: submissions)
+                    entryCard
+                    if let player, let playing, let entry = entries.first(where: { $0.id == playing }) {
+                        VideoPlayer(player: player).frame(minHeight: 220).accessibilityLabel("Playing \(entry.title)")
                     }
-                }
+                    Text("Entries").communitySubheading()
+                    if loaded && entries.isEmpty && error == nil { Text("No eligible entries yet.").communityCaption().accessibilityIdentifier("challenges.detail.empty") }
+                    ForEach(entries) { entry in entryRow(entry) }
+                    Button("Refresh entries") { Task { await load() } }
+                        .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy)
+                        .accessibilityIdentifier("challenges.detail.refresh")
+                }.padding(16)
             }
-            
-            // Submit button
-            Button(action: { showSubmissionNotice = true }) {
-                Text("Submit Entry 🎬")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.red)
-                    .cornerRadius(12)
-            }
-            .padding(16)
+            .communityScreen()
+            .navigationTitle("Challenge").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
-        .background(Color(hex: "0A0A14"))
-        .task {
-            do { submissions = try await ChallengeService.shared.fetchSubmissions(challengeID: challenge.id) }
-            catch { loadError = "Submissions could not be loaded. Try again when connected." }
+        .preferredColorScheme(.dark)
+        .task(id: "\(challenge.id):\(auth.userId ?? "none")") {
+            epoch = UUID(); entries = []; phase = nil; media = []; loaded = false; error = nil; notice = nil; stop()
+            await load()
         }
-        .alert("Submission unavailable", isPresented: $showSubmissionNotice) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("A rendered Studio file and the rights/consent submission flow are required. Nothing has been submitted.")
-        }
+        .onDisappear { stop() }
     }
-}
 
-struct StatCard: View {
-    let value: String
-    let label: String
-    let color: Color
-    
-    var body: some View {
-        VStack(spacing: 4) {
-            Text(value)
-                .font(.system(size: 22, weight: .heavy))
-                .foregroundColor(color)
-            Text(label)
-                .font(.system(size: 11))
-                .foregroundColor(.gray)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
-        .background(Color(hex: "0E0E1A"))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
-        .cornerRadius(12)
-    }
-}
-
-struct RuleRow: View {
-    let text: String
-    var body: some View {
-        HStack(spacing: 6) {
-            Text("•").foregroundColor(.gray)
-            Text(text)
-                .font(.system(size: 12))
-                .foregroundColor(.gray)
-        }
-    }
-}
-
-struct SubmissionsGrid: View {
-    let submissions: [ChallengeSubmission]
-
-    let columns = [
-        GridItem(.flexible(), spacing: 8),
-        GridItem(.flexible(), spacing: 8)
-    ]
-    
-    var body: some View {
-        LazyVGrid(columns: columns, spacing: 8) {
-            if submissions.isEmpty { Text("No submissions available.").font(.caption).foregroundColor(.gray) }
-            ForEach(submissions) { sub in
-                VStack(spacing: 6) {
-                    Image(systemName: "film").font(.system(size: 32)).foregroundColor(.red)
-                    Text("Submission #\(sub.id)")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white)
-                    Text(sub.voteCount.map { "\($0) votes" } ?? "Votes unavailable")
-                        .font(.system(size: 10))
-                        .foregroundColor(.gray)
+    private var entryCard: some View {
+        CommunityCard {
+            Text("Your entry").communitySubheading()
+            if let mine = myEntry {
+                Text(mine.title).font(.specialElite(15, relativeTo: .body))
+                if currentPhase != .completed {
+                    Button("Withdraw entry") { Task { await act("Entry withdrawn; its votes were removed.") { try await CommunityServices.challenges.withdraw(entry: mine.id) } } }
+                        .buttonStyle(CommunitySecondaryButtonStyle(destructive: true)).disabled(busy)
+                        .accessibilityIdentifier("challenges.detail.withdraw")
                 }
-                .frame(maxWidth: .infinity)
-                .padding(12)
-                .background(Color(hex: "0E0E1A"))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(Color.white.opacity(0.06), lineWidth: 1)
-                )
-                .cornerRadius(10)
+            } else if currentPhase == .active {
+                Picker("Approved video", selection: $selection) {
+                    Text("Select your approved video").tag("")
+                    ForEach(media) { Text($0.title).tag($0.id.uuidString) }
+                }.pickerStyle(.menu).tint(StudioCraftTheme.accentText)
+                    .accessibilityIdentifier("challenges.detail.submit-picker")
+                if media.isEmpty { Text("Publish a rights-cleared, approved rendition before entering.").communityCaption() }
+                Button("Submit entry") {
+                    guard let id = UUID(uuidString: selection) else { return }
+                    Task { await act("Entry recorded.") { try await CommunityServices.challenges.submit(challenge: challenge.id, media: id) } }
+                }
+                .buttonStyle(CommunityPrimaryButtonStyle()).disabled(busy || UUID(uuidString: selection) == nil)
+                .accessibilityIdentifier("challenges.detail.submit")
+            } else {
+                Text(currentPhase == .upcoming ? "Submissions open when the challenge starts." : "Submissions are closed.").communityCaption()
             }
         }
-        .padding(.horizontal, 16)
     }
-}
-
-struct LeaderboardList: View {
-    let submissions: [ChallengeSubmission]
-    private var leaders: [ChallengeSubmission] {
-        submissions.filter { $0.voteCount != nil }.sorted { ($0.voteCount ?? 0) > ($1.voteCount ?? 0) }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if leaders.isEmpty { Text("No recorded votes available.").font(.caption).foregroundColor(.gray).padding() }
-            ForEach(Array(leaders.enumerated()), id: \.offset) { idx, leader in
-                HStack(spacing: 12) {
-                    Text("#\(idx + 1)")
-                        .font(.system(size: 16, weight: .heavy))
-                        .foregroundColor(
-                            idx == 0 ? .yellow :
-                            idx == 1 ? Color(hex: "9CA3AF") :
-                            idx == 2 ? Color(hex: "B45309") :
-                            .gray
-                        )
-                        .frame(width: 24)
-                    
-                    Text("Submission #\(leader.id)")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.white)
-                    
-                    Spacer()
-                    
-                    Text("\(leader.voteCount ?? 0) votes")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.red)
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 16)
-                
-                if idx < leaders.count - 1 {
-                    Divider()
-                        .background(Color.white.opacity(0.04))
-                        .padding(.horizontal, 16)
+    private func entryRow(_ entry: ChallengeEntry) -> some View {
+        CommunityCard(selected: playing == entry.id) {
+            Text(entry.title).font(.specialElite(16, relativeTo: .body))
+            Text("\(entry.creator == viewer ? "Your entry" : "Creator \(communityShortID(entry.creator))") · \(entry.created_at.formatted(date: .abbreviated, time: .shortened))").communityCaption()
+            if let votes = entry.votes { Text("\(votes) \(votes == 1 ? "vote" : "votes")").font(.specialElite(13, relativeTo: .footnote)).monospacedDigit() }
+            HStack(spacing: 8) {
+                Button(playing == entry.id ? "Playing" : "Play") { play(entry) }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(playing == entry.id)
+                    .accessibilityIdentifier("challenges.detail.play")
+                if currentPhase == .voting && !isParticipant {
+                    Button {
+                        Task { await vote(entry) }
+                    } label: {
+                        Label(entry.my_vote ? "Your favourite" : "Choose as favourite",
+                              systemImage: entry.my_vote ? "checkmark.circle.fill" : pendingVote == entry.id ? "clock" : "circle")
+                    }
+                    .buttonStyle(CommunitySecondaryButtonStyle()).disabled(busy || pendingVote != nil || entry.my_vote)
+                    .accessibilityAddTraits(entry.my_vote ? .isSelected : [])
+                    .accessibilityIdentifier("challenges.detail.vote")
                 }
             }
         }
+    }
+    private func play(_ entry: ChallengeEntry) {
+        guard let url = entry.safeURL else { error = "Video address is unavailable."; return }
+        player?.pause(); player = AVPlayer(url: url); playing = entry.id; player?.play()
+    }
+    private func stop() { player?.pause(); player = nil; playing = nil }
+
+    @MainActor private func load() async {
+        guard auth.isAuthenticated, let account = viewer else { return }
+        let revision = epoch
+        busy = true; defer { if revision == epoch { busy = false } }
+        do {
+            let result = try await CommunityServices.challenges.entries(challenge: challenge.id)
+            guard !Task.isCancelled, revision == epoch else { return }
+            entries = result.entries; phase = result.phase; loaded = true; error = nil
+            if (result.phase ?? currentPhase) == .active, !entries.contains(where: { $0.creator == account }) {
+                media = try await CommunityServices.warRoom.ownedMedia(account: account)
+            }
+        } catch { if revision == epoch { entries = []; loaded = true; self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    @MainActor private func act(_ success: String, _ operation: @MainActor () async throws -> Void) async {
+        guard !busy else { return }
+        let revision = epoch; busy = true; error = nil; notice = nil
+        defer { if revision == epoch { busy = false } }
+        do { try await operation(); guard revision == epoch else { return }; notice = success; busy = false; await load() }
+        catch { if revision == epoch { self.error = CommunityGateway.normalize(error).errorDescription } }
+    }
+    @MainActor private func vote(_ entry: ChallengeEntry) async {
+        guard pendingVote == nil else { return }
+        pendingVote = entry.id
+        let revision = epoch
+        defer { if revision == epoch { pendingVote = nil } }
+        do {
+            try await CommunityServices.challenges.vote(challenge: challenge.id, entry: entry.id)
+            guard revision == epoch else { return }
+            notice = "Favourite recorded. You can change it until voting ends."; await load()
+        } catch { if revision == epoch { error = CommunityGateway.normalize(error).errorDescription } }
     }
 }

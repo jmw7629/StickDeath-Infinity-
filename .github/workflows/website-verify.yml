@@ -1,0 +1,44 @@
+name: SDI website verify
+# Verifies the static website source: help centre truth against the Swift/Kotlin
+# sources, canonical/discovery files, and the Playwright accessibility, behaviour,
+# no-JS, file:// and throttled performance harness (Chromium only). No deployment.
+on:
+  pull_request:
+    paths: ['website/**', 'scripts/website/**', 'StickDeathInfinity/ViewModels/SpatterAIViewModel.swift', '.github/workflows/website-verify.yml']
+  push:
+    branches: [main]
+    paths: ['website/**', 'scripts/website/**']
+permissions:
+  contents: read
+concurrency:
+  group: sdi-website-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+      - name: Help centre matches the sources
+        run: node scripts/website/check_help.mjs --check
+      - name: Discovery files and canonical URLs
+        run: node scripts/website/build_site.mjs --check
+      - name: Install Playwright Chromium (pinned)
+        run: |
+          npm install --no-save --no-audit --no-fund playwright@1.56.1
+          npx playwright install --with-deps chromium
+      - name: Accessibility, behaviour, no-JS, file:// and performance budgets
+        run: node scripts/website/a11y_perf.mjs --json a11y-perf.json
+        env:
+          NODE_PATH: ${{ github.workspace }}/node_modules
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: website-a11y-perf
+          path: a11y-perf.json
+          retention-days: 14

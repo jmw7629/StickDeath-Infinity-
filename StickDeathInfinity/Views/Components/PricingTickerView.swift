@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
-// PricingTickerView — Discrete corner overlay with Spatter's wit
-// Matches: MainApp.tsx PricingTicker exactly
+// PricingTickerView — Existing corner overlay with factual local Studio tips
+// Historical type name retained; this toast makes no pricing or entitlement claims.
 // Bottom-right toast, rotates quotes, dismissable
 // ═══════════════════════════════════════════════════════════════════
 
@@ -69,22 +69,10 @@ struct PricingTickerView: View {
     }
 }
 
-// Matches MainApp.tsx TICKER_QUOTES exactly
+// Manual tips for existing local controls, not subscriptions or completed actions.
 private let tickerQuotes: [(text: String, color: String)] = [
-    ("Free plan: $0. Your wallet lives another day 💀", "#9CA3AF"),
-    ("Creator $4.99/mo — no watermark, no shame", "#DC2626"),
-    ("Pro $9.99/mo — unlimited projects, unlimited chaos 🔥", "#DC2626"),
-    ("Studio $19.99/mo — you're basically a whole studio now", "#A855F7"),
-    ("Why watermark when you can WRECK mark? Creator: $4.99", "#DC2626"),
-    ("50 AI queries/day on Pro — Spatter never sleeps 🧠", "#DC2626"),
-    ("4K export on Pro... your stick figures in IMAX resolution", "#DC2626"),
-    ("Collab rooms on Pro — animate together, die together ⚔️", "#DC2626"),
-    ("Studio plan: commercial license. Sell your stick death art. Get rich. 💀💰", "#A855F7"),
-    ("Free tier = 5 projects. That's 5 more than zero tbh", "#9CA3AF"),
-    ("Unlimited AI on Studio — Spatter becomes your full-time employee", "#A855F7"),
-    ("Creator plan removes the watermark. Your art. No branding. $4.99.", "#DC2626"),
-    ("Team workspace on Studio — because chaos scales better together", "#A855F7"),
-    ("Cloud sync on Pro — never lose a frame again. Unless you meant to 💀", "#DC2626"),
-    ("API access on Studio — connect your stick deaths to literally anything", "#A855F7"),
-    ("25 projects on Creator — that's like... 25 entire cinematic universes", "#DC2626"),
+    ("Your projects stay on this device. Back up the good chaos to Files 💀", "#9CA3AF"),
+    ("Wrong stroke? Undo has your back. Keep the mayhem editable 💀", "#DC2626"),
+    ("Onion skin shows neighboring frames. Give that skeleton some timing 💀", "#DC2626"),
+    ("Export makes a file, not a public post. You choose what leaves the crypt 💀", "#A855F7"),
 ]

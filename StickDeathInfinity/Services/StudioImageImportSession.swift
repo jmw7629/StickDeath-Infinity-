@@ -23,6 +23,7 @@ final class StudioImageImportSession: ObservableObject {
         let originalByteCount: Int
         let normalizedByteCount: Int
         let container: StudioImageImportService.Container
+        let catalogueAttribution: [String: String]?
     }
     struct AppliedImage {
         let assetID: String
@@ -48,6 +49,7 @@ final class StudioImageImportSession: ObservableObject {
     @Published private(set) var isWorking = false
     @Published private(set) var notice: String?
     @Published private(set) var progressText: String?
+    @Published private(set) var previewFrameCount = 1
     @Published private(set) var preview: Preview?
     @Published private(set) var previewImage: CGImage?
     @Published private(set) var appliedImage: AppliedImage?
@@ -61,8 +63,15 @@ final class StudioImageImportSession: ObservableObject {
         let revision: Int
         let frameID: String
         let layerID: String
+        let frameIndex: Int
+        let fps: Int
+        let videoMapping: StudioVideoFrameImportService.Mapping
+        let videoFrameCount: Int
     }
-    private enum Source { case file(URL), photo(NSItemProvider) }
+    private enum Source {
+        case file(URL), photo(NSItemProvider), videoPhoto(NSItemProvider), videoFrame(URL)
+        case library(StudioImageCatalogue, StudioImageCatalogue.Image)
+    }
     private enum SessionError: LocalizedError {
         case unavailable, contextChanged, accountChanged, inactive, ineligible, previewUnavailable
         var errorDescription: String? {
@@ -71,7 +80,7 @@ final class StudioImageImportSession: ObservableObject {
             case .contextChanged: return "The project, frame or layer changed. Cancel this preview and select the image again for the current editor."
             case .accountChanged: return "The active account changed. Open a new image import session in the current account."
             case .inactive: return "Return to the active Studio editor before adding this image."
-            case .ineligible: return "Finish playback, saving and any active or rejected drawing before adding this image."
+            case .ineligible: return "Apply or cancel any text draft, and finish playback, saving and active or rejected drawing before adding this image."
             case .previewUnavailable: return "The normalized image preview could not be decoded. No image was added."
             }
         }
@@ -81,7 +90,9 @@ final class StudioImageImportSession: ObservableObject {
     private var token: UUID?
     private var request: Task<Void, Never>?
     private var requestID: UUID?
+    private var librarySelection: (StudioImageCatalogue, StudioImageCatalogue.Image)?
     private var imported: StudioImageImportService.ImportedImage?
+    private var importedSequence: [StudioImageImportService.ImportedImage] = []
     private let scratchParent: URL
     private let checkpoint: Checkpoint
     private let importer: StudioImageImportService
@@ -103,8 +114,9 @@ final class StudioImageImportSession: ObservableObject {
     /// Capture before presenting either picker. A returned token authorizes this
     /// selection only, and is neither an image result nor a document mutation.
     @discardableResult
-    func beginPicker(in studio: StudioViewModel, scope: Scope) -> UUID? {
-        guard !isClosed, !isWorking, status != .picking else { return nil }
+    func beginPicker(in studio: StudioViewModel, scope: Scope,
+                     videoMapping: StudioVideoFrameImportService.Mapping = .init(), videoFrameCount: Int = 1) -> UUID? {
+        guard !isClosed, !isWorking, status != .picking, (1...24).contains(videoFrameCount) else { return nil }
         if let capture, capture.accountID != scope.accountID {
             close(); notice = SessionError.accountChanged.localizedDescription; return nil
         }
@@ -117,7 +129,7 @@ final class StudioImageImportSession: ObservableObject {
         self.studio = studio
         capture = Capture(accountID: scope.accountID, projectID: studio.document.id,
             revision: studio.document.revision, frameID: studio.document.activeFrameID,
-            layerID: studio.document.activeLayerID)
+            layerID: studio.document.activeLayerID, frameIndex: studio.document.startTick(ofFrame: studio.currentFrameIndex) + (videoFrameCount > 1 ? studio.currentFrame.durationTicks : 0), fps: studio.fps, videoMapping: videoMapping, videoFrameCount: videoFrameCount)
         let next = UUID(); token = next; status = .picking
         return next
     }
@@ -127,8 +139,21 @@ final class StudioImageImportSession: ObservableObject {
         start(.file(url), token: token, currentScope: currentScope)
     }
     @discardableResult
+    func receiveVideoFrame(_ url: URL, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.videoFrame(url), token: token, currentScope: currentScope)
+    }
+    @discardableResult
     func receivePhoto(_ provider: NSItemProvider, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
         start(.photo(provider), token: token, currentScope: currentScope)
+    }
+    @discardableResult
+    func receiveVideoPhoto(_ provider: NSItemProvider, token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.videoPhoto(provider), token: token, currentScope: currentScope)
+    }
+    @discardableResult
+    func receiveLibraryImage(_ image: StudioImageCatalogue.Image, from catalogue: StudioImageCatalogue,
+                             token: UUID, currentScope: @escaping ScopeProvider) -> Bool {
+        start(.library(catalogue, image), token: token, currentScope: currentScope)
     }
     private func start(_ source: Source, token id: UUID, currentScope: @escaping ScopeProvider) -> Bool {
         guard !isClosed, !isWorking, status == .picking, token == id else { return false }
@@ -149,17 +174,58 @@ final class StudioImageImportSession: ObservableObject {
                 try await self.checkpoint()
                 try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                 let url: URL, name: String?
+                var expectedLibraryBytes: Data?
+                var attribution: [String: String]?
+                var extractedFrames: [StudioVideoFrameImportService.Frame] = []
                 switch source {
                 case .file(let selected): url = selected; name = nil
+                case .videoFrame(let selected):
+                    guard let captured = self.capture else { throw SessionError.contextChanged }
+                    self.progressText = "Extracting the video frame at the Studio playhead…"
+                    extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: selected,
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent)
+                    url = selected; name = nil
                 case .photo(let provider):
                     let handle = try await StudioImagePickerTransfer.load(from: provider, scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
                     owned = handle
                     try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                     url = try handle.url(); name = handle.displayName
+                case .videoPhoto(let provider):
+                    self.progressText = "Transferring the selected video from Photos…"
+                    let handle = try await StudioImagePickerTransfer.load(from: provider, media: .video,
+                        scratchParent: self.scratchParent, cleanupFailure: self.cleanupFailure)
+                    owned = handle
+                    try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
+                    guard let captured = self.capture else { throw SessionError.contextChanged }
+                    url = try handle.url(); name = handle.displayName
+                    self.progressText = "Extracting the video frame at the Studio playhead…"
+                    extractedFrames = try await StudioVideoFrameImportService.shared.extractSequence(from: url,
+                        projectFrameIndex: captured.frameIndex, fps: captured.fps, frameCount: captured.videoFrameCount, mapping: captured.videoMapping, scratchParent: self.scratchParent)
+                case .library(let catalogue, let image):
+                    self.librarySelection = (catalogue, image)
+                    let verification = Task.detached(priority: .userInitiated) {
+                        try Task.checkCancellation()
+                        return try catalogue.checkedPNG(image)
+                    }
+                    expectedLibraryBytes = try await withTaskCancellationHandler {
+                        let bytes = try await verification.value
+                        try Task.checkCancellation(); return bytes
+                    } onCancel: { verification.cancel() }
+                    try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
+                    url = try catalogue.sourceURL(for: image); name = image.title
+                    attribution = try catalogue.attribution(for: image)
                 }
                 self.status = .decoding
-                let result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
-                    await self?.updateProgress(progress, token: id)
+                var result: StudioImageImportService.ImportedImage
+                if let extracted = extractedFrames.first { result = extracted.image }
+                else {
+                    result = try await self.importer.importImage(from: url, name: name, scratchParent: self.scratchParent) { [weak self] progress in
+                        await self?.updateProgress(progress, token: id)
+                    }
+                }
+                if let expectedLibraryBytes {
+                    guard result.originalData == expectedLibraryBytes else { throw StudioImageCatalogue.CatalogueError.invalid }
+                    result.catalogueAttribution = attribution
                 }
                 // A provider URL is never exposed to the UI. Its owned copy stays
                 // alive throughout decode and is cleaned before publishing preview.
@@ -168,12 +234,22 @@ final class StudioImageImportSession: ObservableObject {
                 try self.requireCurrent(id, scope: currentScope(), requireForeground: false)
                 let thumbnail = try Self.thumbnail(result.normalizedPNG)
                 self.imported = result
+                self.importedSequence = extractedFrames.count > 1 ? extractedFrames.map(\.image) : []
+                self.previewFrameCount = max(1, extractedFrames.count)
                 self.preview = Preview(name: result.name, width: result.width, height: result.height,
                     originalWidth: result.originalWidth, originalHeight: result.originalHeight,
                     originalOrientation: result.originalOrientation, originalByteCount: result.originalData.count,
-                    normalizedByteCount: result.normalizedPNG.count, container: result.container)
+                    normalizedByteCount: result.normalizedPNG.count, container: result.container,
+                    catalogueAttribution: result.catalogueAttribution)
                 self.previewImage = thumbnail; self.status = .preview
-                self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
+                if extractedFrames.count > 1 {
+                    self.notice = "Preview of the first of \(extractedFrames.count) decoded frames. Add inserts consecutive frames after the selected frame in one undoable edit. Originals stay intact; no audio is attached."
+                } else if let extracted = extractedFrames.first {
+                    self.notice = String(format: "Preview only: Studio %.3fs → source %.3fs → decoded %.3fs of %.3fs (%.2f×). Add attaches this single reference frame on a separate layer. The movie and its audio are not imported.",
+                        extracted.requestedSeconds, extracted.sourceRequestedSeconds, extracted.actualSeconds, extracted.durationSeconds, extracted.mapping.speed)
+                } else {
+                    self.notice = "Preview only. Add to current frame attaches the image on a new layer in one undoable edit."
+                }
             } catch {
                 var failure = error
                 if let handle = owned {
@@ -218,14 +294,28 @@ final class StudioImageImportSession: ObservableObject {
         do {
             try requireCurrent(id, scope: currentScope, requireForeground: true)
             guard let studio else { throw SessionError.unavailable }
-            let assetID = try studio.attachImportedImage(imported,
-                expectedProjectID: captured.projectID, expectedRevision: captured.revision,
-                frameID: captured.frameID, layerID: captured.layerID,
-                checkCancellation: { try self.requireCurrent(id, scope: currentScope, requireForeground: true) })
+            if let (catalogue, image) = librarySelection { try catalogue.requireAvailable(image) }
+            let assetID: String, resultFrameID: String
+            let count = importedSequence.count
+            if count > 1 {
+                let frames = try studio.attachImportedImageSequence(importedSequence,
+                    expectedProjectID: captured.projectID, expectedRevision: captured.revision,
+                    frameID: captured.frameID, layerID: captured.layerID,
+                    checkCancellation: { try self.requireCurrent(id, scope: currentScope, requireForeground: true) })
+                assetID = "image-" + imported.id.uuidString
+                resultFrameID = frames[0]
+            } else {
+                assetID = try studio.attachImportedImage(imported,
+                    expectedProjectID: captured.projectID, expectedRevision: captured.revision,
+                    frameID: captured.frameID, layerID: captured.layerID,
+                    checkCancellation: { try self.requireCurrent(id, scope: currentScope, requireForeground: true) })
+                resultFrameID = captured.frameID
+            }
             appliedImage = AppliedImage(assetID: assetID, projectID: captured.projectID,
-                revision: studio.document.revision, frameID: captured.frameID, name: imported.name)
-            self.imported = nil
-            status = .applied; notice = "Added \(imported.name) on a new image layer in one undoable edit."
+                revision: studio.document.revision, frameID: resultFrameID, name: imported.name)
+            self.imported = nil; importedSequence = []
+            status = .applied
+            notice = count > 1 ? "Added \(count) reference frames in one undoable edit." : "Added \(imported.name) on a new image layer in one undoable edit."
             return true
         } catch { fail(error); return false }
     }
@@ -277,7 +367,7 @@ final class StudioImageImportSession: ObservableObject {
     }
     private static func requireEligible(_ studio: StudioViewModel) throws {
         guard !studio.isSaving, !studio.isPlaying, studio.activeStrokeID == nil,
-              studio.pendingBrushStroke == nil else { throw SessionError.ineligible }
+              studio.pendingBrushStroke == nil, studio.textDraft == nil else { throw SessionError.ineligible }
     }
     private func updateProgress(_ progress: StudioImageImportService.Progress, token id: UUID) {
         guard token == id, !isClosed else { return }
@@ -310,7 +400,7 @@ final class StudioImageImportSession: ObservableObject {
         }
         return false
     }
-    private func clearPreview() { imported = nil; preview = nil; previewImage = nil }
+    private func clearPreview() { librarySelection = nil; imported = nil; importedSequence = []; previewFrameCount = 1; preview = nil; previewImage = nil }
     private static func thumbnail(_ png: Data) throws -> CGImage {
         guard let source = CGImageSourceCreateWithData(png as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               CGImageSourceGetCount(source) == 1,

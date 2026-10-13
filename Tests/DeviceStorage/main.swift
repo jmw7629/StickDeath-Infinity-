@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // Compile the complete production DeviceStorageManager and Models sources.
 // Fixtures only: no alternative persistence implementation or real Documents.
@@ -20,6 +21,25 @@ private final class CommitFailureStore: DeviceStorageManager {
     override func commitCurrentRevision(_ data: Data, to pointer: URL) throws {
         if failCommit { throw CocoaError(.fileWriteOutOfSpace) }
         try super.commitCurrentRevision(data, to: pointer)
+    }
+}
+
+private final class RevisionSpaceFailureStore: DeviceStorageManager {
+    enum Moment: CaseIterable { case beforeWrite, partialWrite, beforeSync, afterSync }
+    var failingStage: RevisionWriteStage?
+    var moment = Moment.beforeWrite
+    var evidence: URL?
+    override func writeRevisionFile(_ data: Data, to url: URL, stage: RevisionWriteStage) throws {
+        if failingStage == stage && (moment == .beforeWrite || moment == .partialWrite) {
+            if moment == .partialWrite { try Data(data.prefix(max(1, data.count / 2))).write(to: url, options: .withoutOverwriting); evidence = url }
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        try super.writeRevisionFile(data, to: url, stage: stage)
+    }
+    override func synchronizeRevisionFile(_ url: URL, stage: RevisionWriteStage) throws {
+        if failingStage == stage && moment == .beforeSync { evidence = url; throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
+        try super.synchronizeRevisionFile(url, stage: stage)
+        if failingStage == stage && moment == .afterSync { evidence = url; throw NSError(domain: NSPOSIXErrorDomain, code: 28) }
     }
 }
 
@@ -53,6 +73,105 @@ private final class CommitFailureStore: DeviceStorageManager {
         func test(_ name: String, _ body: () throws -> Void) {
             do { try body(); passed += 1; print("PASS \(name)") }
             catch { failed += 1; print("FAIL \(name): \(error)") }
+        }
+
+        test("additional managed image sources survive cold storage and portable backup without extra frames") {
+            let (store, root) = try fixture()
+            var value = project()
+            let firstID = UUID(), secondID = UUID()
+            func record(_ id: UUID, _ bytes: Data) -> StoredAnimationFrame {
+                .init(imageData: bytes, layerData: nil, sourceImage: .init(id: id, name: "Original",
+                    container: "png", originalData: bytes, originalWidth: 4, originalHeight: 4,
+                    originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4))
+            }
+            value.frames[0] = record(firstID, red)
+            value.additionalImageAssets = ["image-" + secondID.uuidString: record(secondID, blue)]
+            try store.saveAnimation(value)
+            let restarted = DeviceStorageManager(documentsDirectory: root)
+            guard let loaded = try restarted.loadAnimation(id: value.id) else { throw TestFailure(message: "Cold project missing") }
+            try require(loaded.frames == value.frames && loaded.metadata.frameCount == 1 && loaded.frames.count == 1,
+                        "Additional source changed historical frame mapping")
+            try require(loaded.additionalImageAssets == value.additionalImageAssets, "Additional original/normalized bytes changed")
+            let backup = try restarted.portableBundle(for: loaded)
+            let restored = try restarted.projectFromPortableBundle(backup)
+            try require(restored.frames == value.frames && restored.additionalImageAssets == value.additionalImageAssets,
+                        "Portable backup dropped or changed independently owned sources")
+            try require(try encoded(restored) == encoded(loaded), "Portable metadata changed")
+        }
+        test("invalid additional image identity and bounds preserve the selected saved revision") {
+            let (store, _) = try fixture(); var original = project()
+            let id = UUID()
+            let source = StoredImageSource(id: id, name: "Original", container: "png", originalData: red,
+                originalWidth: 4, originalHeight: 4, originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4)
+            let record = StoredAnimationFrame(imageData: red, layerData: nil, sourceImage: source)
+            original.frames[0] = record
+            try store.saveAnimation(original)
+            var invalid = original
+            invalid.additionalImageAssets = ["image-" + UUID().uuidString: record]
+            try rejects { try store.saveAnimation(invalid) }
+            invalid.additionalImageAssets = ["image-" + id.uuidString: .init(imageData: blue, layerData: nil, sourceImage: source)]
+            try rejects { try store.saveAnimation(invalid) }
+            invalid.additionalImageAssets = ["image-" + id.uuidString: .init(imageData: red, layerData: [], sourceImage: source)]
+            try rejects { try store.saveAnimation(invalid) }
+            var huge = record; huge.imageData = Data(repeating: 1, count: 32 * 1024 * 1024 + 1)
+            invalid.additionalImageAssets = ["image-" + id.uuidString: huge]
+            try rejects { try store.preflightAnimation(invalid) }
+            var largeRecords: [String: StoredAnimationFrame] = [:]
+            for _ in 0..<2 {
+                let extraID = UUID()
+                let extraSource = StoredImageSource(id: extraID, name: "Bounded source", container: "png", originalData: blue,
+                    originalWidth: 4, originalHeight: 4, originalOrientation: 1, normalizedWidth: 4, normalizedHeight: 4)
+                largeRecords["image-" + extraID.uuidString] = .init(imageData: Data(repeating: 1, count: 20 * 1024 * 1024),
+                    layerData: nil, sourceImage: extraSource)
+            }
+            invalid.additionalImageAssets = largeRecords
+            try rejects { try store.preflightAnimation(invalid) } // Aggregate, not per-asset limit.
+            guard let loaded = try store.loadAnimation(id: original.id) else { throw TestFailure(message: "Original disappeared") }
+            try require(try encoded(loaded) == encoded(original), "Rejected additional source changed prior saved project")
+        }
+        test("legacy project decoding preserves absent additional-source collection and opaque records") {
+            let legacy = project()
+            let data = try encoded(legacy)
+            try require(!String(decoding: data, as: UTF8.self).contains("additionalImageAssets"), "Nil collection changed legacy encoding")
+            let decoded = try JSONDecoder().decode(AnimationProject.self, from: data)
+            try require(decoded.additionalImageAssets == nil && decoded.frames == legacy.frames,
+                        "Legacy decode adopted or replaced source records")
+        }
+        test("portable bundle preserves complete project bytes without writing either store") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let (other, target) = try fixture(); defer { try? FileManager.default.removeItem(at: target) }
+            var original = project(frames: [red, blue])
+            original.editableDocumentData = Data("opaque editable fixture".utf8)
+            original.audioTracks = [AudioTrack(id: UUID(), name: "Owned tone", format: "wav", audioData: tone, startTime: 0, duration: 0.01)]
+            let portableData = try store.portableBundle(for: original)
+            var prefixed = Data([0, 1, 2]); prefixed.append(portableData)
+            let recovered = try other.projectFromPortableBundle(prefixed.dropFirst(3))
+            try require(try encoded(original) == encoded(recovered), "Portable roundtrip changed project content")
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path) && !FileManager.default.fileExists(atPath: other.animationsDir.path), "Encoding or decoding wrote a project")
+        }
+        test("portable bundle rejects corruption truncation extension and unsupported headers") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let original = try store.portableBundle(for: project())
+            var corrupt = original; corrupt[corrupt.count - 1] ^= 1
+            var wrongVersion = original; wrongVersion[14] = 50
+            var extra = original; extra.append(0)
+            var hugeLength = original
+            for index in 16..<24 { hugeLength[index] = 255 }
+            for invalid in [Data(), Data(original.prefix(24)), Data(original.dropLast()), corrupt, wrongVersion, extra, hugeLength] {
+                try rejects { _ = try store.projectFromPortableBundle(invalid) }
+            }
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path), "Rejected bundle modified storage")
+        }
+        test("portable bundle cancellation never writes storage or returns partial output") {
+            let (store, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+            let original = try store.portableBundle(for: project())
+            for stop in 1...3 {
+                var count = 0
+                try rejects { _ = try store.portableBundle(for: project()) { count += 1; if count == stop { throw CancellationError() } } }
+                count = 0
+                try rejects { _ = try store.projectFromPortableBundle(original) { count += 1; if count == stop { throw CancellationError() } } }
+            }
+            try require(!FileManager.default.fileExists(atPath: store.animationsDir.path), "Cancelled bundle operation modified storage")
         }
 
         test("complete production snapshot preserves layers audio IDs metadata and opaque editable bytes") {
@@ -108,7 +227,7 @@ private final class CommitFailureStore: DeviceStorageManager {
             try rejects { _ = try store.loadAnimation(id: bad.id) }
             try rejects { try store.saveAnimation(project(id: bad.id)) }
             let listing = try store.listAnimationsReportingFailures()
-            try require(listing.animations.isEmpty && listing.failures.map(\.id) == [bad.id], "Mismatch silently listed as available")
+            try require(listing.animations.isEmpty && listing.failures.compactMap(\.id) == [bad.id], "Mismatch silently listed as available")
             try require(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".sdi").path), "Collision adopted")
         }
         test("duplicate normalized legacy frame numbers fail without mutation") {
@@ -144,6 +263,38 @@ private final class CommitFailureStore: DeviceStorageManager {
             store.failCommit = false
             try store.saveAnimation(project(id: p.id, frames: [blue]))
             try require(try store.loadAnimation(id: p.id)!.frames[0].imageData == blue, "Retry did not commit")
+        }
+        test("payload and lineage ENOSPC stages preserve published bytes and unselected evidence through retry") {
+            for stage in [DeviceStorageManager.RevisionWriteStage.payload, .lineageReceipt] {
+                for moment in RevisionSpaceFailureStore.Moment.allCases {
+                    let (_, root) = try fixture(); defer { try? FileManager.default.removeItem(at: root) }
+                    let store = RevisionSpaceFailureStore(documentsDirectory: root)
+                    var original = project(); original.editableDocumentData = Data("original editable bytes".utf8)
+                    original.audioTracks = [AudioTrack(id: UUID(), name: "Original tone", format: "wav", audioData: tone, startTime: 0, duration: 0.01)]
+                    try store.saveAnimation(original)
+                    let storage = store.animationsDir.appendingPathComponent(original.id.uuidString + "/.sdi")
+                    let pointer = storage.appendingPathComponent("current.json"), pointerBytes = try Data(contentsOf: pointer)
+                    var ownedBefore: [URL: Data] = [:]
+                    let enumerator = FileManager.default.enumerator(at: storage, includingPropertiesForKeys: [.isRegularFileKey])!
+                    for case let url as URL in enumerator where try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
+                        ownedBefore[url] = try Data(contentsOf: url)
+                    }
+                    var updated = original; updated.frames = [StoredAnimationFrame(imageData: blue)]
+                    updated.editableDocumentData = Data("new editable bytes".utf8)
+                    store.failingStage = stage; store.moment = moment
+                    var actualFailure: NSError?
+                    do { try store.saveAnimation(updated) } catch { actualFailure = error as NSError }
+                    try require(actualFailure != nil && ((actualFailure!.domain == NSCocoaErrorDomain && actualFailure!.code == CocoaError.Code.fileWriteOutOfSpace.rawValue) || (actualFailure!.domain == NSPOSIXErrorDomain && actualFailure!.code == 28)), "Wrong or missing injected disk-full error")
+                    try require(try Data(contentsOf: pointer) == pointerBytes, "Failure published partial selector")
+                    try require(try encoded(store.loadAnimation(id: original.id)!) == encoded(original), "Disk-full save changed selected media/document")
+                    for (url, bytes) in ownedBefore { try require(try Data(contentsOf: url) == bytes, "Existing owned artifact changed") }
+                    let failedBytes = try store.evidence.map { try Data(contentsOf: $0) }
+                    store.failingStage = nil
+                    try store.saveAnimation(updated)
+                    try require(try encoded(store.loadAnimation(id: original.id)!) == encoded(updated), "Retry failed to publish full document/media")
+                    if let url = store.evidence, let failedBytes { try require(try Data(contentsOf: url) == failedBytes, "Retry deleted or adopted unselected failure evidence") }
+                }
+            }
         }
         test("interrupted first save can retry without deleting staged evidence") {
             let (_, root) = try fixture(); let store = CommitFailureStore(documentsDirectory: root); let p = project()
@@ -195,7 +346,7 @@ private final class CommitFailureStore: DeviceStorageManager {
             try FileManager.default.moveItem(at: pointer, to: root.appendingPathComponent("preserved-pointer"))
             try rejects { _ = try store.loadAnimation(id: p.id) }
             let listing = try store.listAnimationsReportingFailures()
-            try require(listing.animations.isEmpty && listing.failures.map(\.id) == [p.id], "Missing selector was concealed by stale legacy metadata")
+            try require(listing.animations.isEmpty && listing.failures.compactMap(\.id) == [p.id], "Missing selector was concealed by stale legacy metadata")
             try require(try Data(contentsOf: dir.appendingPathComponent("frame_0.png")) == red, "Legacy recovery evidence changed")
             try require(try FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent(".sdi/revisions").path).count == 1, "Committed revision evidence changed")
         }
@@ -279,6 +430,155 @@ private final class CommitFailureStore: DeviceStorageManager {
             let saved = try store.saveMedia(data: tone, type: .audio, filename: "tone.wav")
             try rejects { _ = try store.saveMedia(data: red, type: .audio, filename: "tone.wav") }
             try require(try Data(contentsOf: saved) == tone, "Existing media overwritten")
+        }
+        test("new-project save refuses an existing project identity") {
+            let (store, _) = try fixture(); let original = project(); try store.saveNewAnimation(original)
+            var replacement = original; replacement.metadata.title = "Overwrite"
+            try rejects { try store.saveNewAnimation(replacement) }
+            try require(try store.loadAnimation(id: original.id)?.metadata.title == "Fixture", "New project overwrote existing identity")
+        }
+        test("recoverable removal preserves the complete bundle and restores across store restart") {
+            let (store, root) = try fixture(); let original = project()
+            try store.saveAnimation(original)
+            let directory = store.animationsDir.appendingPathComponent(original.id.uuidString)
+            let opaque = directory.appendingPathComponent("historical-original.bin")
+            try tone.write(to: opaque)
+            try store.recoverableDeleteAnimation(id: original.id)
+            try require(try store.loadAnimation(id: original.id) == nil, "Removed project still active")
+            let restarted = DeviceStorageManager(documentsDirectory: root)
+            try require(try restarted.listRecoverableAnimations().animations.map(\.id) == [original.id], "Recovery did not survive restart")
+            try restarted.restoreAnimation(id: original.id)
+            try require(try restarted.loadAnimation(id: original.id)?.frames.first?.imageData == red, "Restored pixels changed")
+            try require(try Data(contentsOf: opaque) == tone, "Historical bytes were not retained")
+            try require(try restarted.listRecoverableAnimations().animations.isEmpty, "Restored project still in recovery")
+        }
+        test("restore and repeated removal collisions preserve both project copies") {
+            let (store, _) = try fixture(); let original = project()
+            try store.saveAnimation(original); try store.recoverableDeleteAnimation(id: original.id)
+            var conflicting = original; conflicting.metadata.title = "Collision"
+            try store.saveAnimation(conflicting)
+            try rejects { try store.restoreAnimation(id: original.id) }
+            try rejects { try store.recoverableDeleteAnimation(id: original.id) }
+            try require(try store.loadAnimation(id: original.id)?.metadata.title == "Collision", "Active collision overwritten")
+            try require(try store.listRecoverableAnimations().animations.first?.title == "Fixture", "Recovery collision overwritten")
+        }
+        test("unrecognized recovery directory is not adopted or overwritten") {
+            let (store, root) = try fixture(); let original = project(); try store.saveAnimation(original)
+            let recovery = root.appendingPathComponent(".sdi-recently-deleted")
+            try FileManager.default.createDirectory(at: recovery, withIntermediateDirectories: true)
+            try red.write(to: recovery.appendingPathComponent("owner-file"))
+            try rejects { try store.recoverableDeleteAnimation(id: original.id) }
+            try require(try store.loadAnimation(id: original.id) != nil, "Failed removal moved original")
+            try require(try Data(contentsOf: recovery.appendingPathComponent("owner-file")) == red, "Unknown recovery content overwritten")
+        }
+        test("selected payload must match its lineage receipt digest") {
+            let (store, _) = try fixture(); let p = project()
+            try store.saveAnimation(p); try store.saveAnimation(project(id: p.id, frames: [blue]))
+            let storage = store.animationsDir.appendingPathComponent(p.id.uuidString + "/.sdi")
+            let pointer = try JSONSerialization.jsonObject(with: Data(contentsOf: storage.appendingPathComponent("current.json"))) as! [String: Any]
+            let selected = storage.appendingPathComponent("revisions/" + (pointer["revision"] as! String) + ".json")
+            var bytes = try Data(contentsOf: selected)
+            // Same length, one flipped byte inside the JSON: a plain decode might still succeed.
+            let index = bytes.count / 2; bytes[index] = bytes[index] == UInt8(ascii: "a") ? UInt8(ascii: "b") : UInt8(ascii: "a")
+            try bytes.write(to: selected)
+            var surfaced: Error?
+            do { _ = try store.loadAnimation(id: p.id) } catch { surfaced = error }
+            try require((surfaced as? AnimationStorageError) == .payloadIntegrity, "Digest mismatch not detected: \(String(describing: surfaced))")
+            let listing = try store.listAnimationsReportingFailures()
+            try require(listing.unreadableProjectIDs == [p.id] && listing.failures[0].message.contains("original preserved"), "Integrity failure not surfaced to the library")
+            try require(try Data(contentsOf: selected) == bytes, "Failed read altered evidence")
+        }
+        test("previous revision is readable through verified lineage without changing the selector") {
+            let (store, _) = try fixture(); let p = project()
+            try require(try store.loadPreviousRevision(id: p.id) == nil, "Unsaved project reported an ancestor")
+            try store.saveAnimation(p)
+            try require(try store.loadPreviousRevision(id: p.id) == nil, "First revision has no ancestor")
+            var second = project(id: p.id, frames: [blue]); second.metadata.title = "Second"
+            try store.saveAnimation(second)
+            let pointer = store.animationsDir.appendingPathComponent(p.id.uuidString + "/.sdi/current.json")
+            let before = try Data(contentsOf: pointer)
+            let previous = try store.loadPreviousRevision(id: p.id)
+            try require(try previous.map { try encoded($0) } == encoded(p), "Ancestor content differs from the first save")
+            try require(try Data(contentsOf: pointer) == before, "Reading history changed the selector")
+            try require(try store.loadAnimation(id: p.id)?.metadata.title == "Second", "Current revision changed")
+        }
+        test("non-identity folders are reported as failures and hidden staging is skipped") {
+            let (store, _) = try fixture(); let p = project(); try store.saveAnimation(p)
+            try FileManager.default.createDirectory(at: store.animationsDir.appendingPathComponent("Old Export"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: store.animationsDir.appendingPathComponent(".sdi-initializing-stale"), withIntermediateDirectories: true)
+            let listing = try store.listAnimationsReportingFailures()
+            try require(listing.animations.map(\.id) == [p.id], "Valid project missing")
+            try require(listing.failures.count == 1 && listing.failures[0].id == nil && listing.failures[0].entryName == "Old Export", "Unrecognized folder not reported: \(listing.failures.map(\.entryName))")
+            try require((listing.failures[0].error as? AnimationStorageError) == .unrecognizedEntry, "Wrong failure kind")
+            try require(listing.unreadableProjectIDs.isEmpty, "Non-identity entry invented a project id")
+            try require(FileManager.default.fileExists(atPath: store.animationsDir.appendingPathComponent("Old Export").path), "Listing removed an unrecognized folder")
+        }
+        test("legacy migration writes a manifest of byte-identical originals and rollback restores the legacy reader") {
+            let (store, root) = try fixture(); let p = project()
+            let original = ["frame_0.png": red, "audio_0.wav": tone, "notes.txt": Data("kept".utf8)]
+            let dir = try legacy(store, p, files: original)
+            try require(try store.migrationManifest(id: p.id) == nil, "Manifest existed before migration")
+            try store.saveAnimation(project(id: p.id, frames: [blue]))
+            guard let manifest = try store.migrationManifest(id: p.id) else { throw TestFailure(message: "Manifest not written on first save") }
+            try require(manifest.project == p.id && manifest.protection == DeviceStorageManager.fileProtection, "Manifest identity or protection class wrong")
+            var expected = original; expected["metadata.json"] = try Data(contentsOf: dir.appendingPathComponent("metadata.json"))
+            try require(Set(manifest.originals.map(\.name)) == Set(expected.keys), "Manifest names differ: \(manifest.originals.map(\.name))")
+            for entry in manifest.originals {
+                let bytes = expected[entry.name]!
+                let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+                try require(entry.size == bytes.count && entry.sha256 == digest, "Manifest size/digest wrong for \(entry.name)")
+            }
+            try store.saveAnimation(project(id: p.id, frames: [red, blue]))
+            try require(try store.migrationManifest(id: p.id)?.migratedAt == manifest.migratedAt, "Later saves rewrote the manifest")
+            // Rollback refuses when an original changed, and changes nothing.
+            try Data("changed".utf8).write(to: dir.appendingPathComponent("notes.txt"))
+            try rejects { try store.rollbackMigration(id: p.id) }
+            try require(try store.loadAnimation(id: p.id)?.frames.count == 2, "Refused rollback altered the selected revision")
+            try Data("kept".utf8).write(to: dir.appendingPathComponent("notes.txt"))
+            try store.rollbackMigration(id: p.id)
+            try require(!FileManager.default.fileExists(atPath: dir.appendingPathComponent(".sdi").path), "Revision store still active after rollback")
+            let restored = try store.loadAnimation(id: p.id)!
+            try require(restored.frames.map(\.imageData) == [red] && restored.audioTracks.first?.audioData == tone, "Legacy bundle not readable after rollback")
+            for (name, bytes) in original { try require(try Data(contentsOf: dir.appendingPathComponent(name)) == bytes, "Rollback altered an original") }
+            let rollbacks = root.appendingPathComponent(".sdi-recently-deleted/.migration-rollbacks")
+            let kept = try FileManager.default.contentsOfDirectory(atPath: rollbacks.path)
+            try require(kept.count == 1 && kept[0].hasPrefix(p.id.uuidString), "Revision store was not kept in Recently Deleted")
+            try require(try FileManager.default.contentsOfDirectory(atPath: rollbacks.appendingPathComponent(kept[0] + "/.sdi/revisions").path).count == 2, "Rolled-back revisions were lost")
+            try rejects { try store.rollbackMigration(id: p.id) } // No manifest now: nothing to roll back.
+            try require(try store.listRecoverableAnimations().animations.isEmpty, "Rollback store listed as a recoverable project")
+        }
+        test("storage scan counts unselected revision files as recoverable unsaved data") {
+            // The scan must see only this fixture: a sibling caches root (never
+            // nested in Documents, which the scan rejects) instead of the host's.
+            let (_, root) = try fixture()
+            let caches = root.deletingLastPathComponent().appendingPathComponent(root.lastPathComponent + "-caches", isDirectory: true)
+            try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: caches) }
+            let store = CommitFailureStore(documentsDirectory: root, cachesDirectory: caches); let p = project()
+            try store.saveAnimation(p)
+            var usage = try store.storageScanRequest.scan()
+            try require(usage.recoverableUnsavedData.files == 0 && usage.projects.files > 0, "Committed save counted as unsaved")
+            store.failCommit = true; try rejects { try store.saveAnimation(project(id: p.id, frames: [blue])) }
+            store.failCommit = false
+            usage = try store.storageScanRequest.scan()
+            try require(usage.recoverableUnsavedData.files == 1 && usage.recoverableUnsavedData.bytes > 0, "Interrupted-save leftover not counted: \(usage.recoverableUnsavedData)")
+            let projectFiles = usage.projects.files
+            try store.saveAnimation(project(id: p.id, frames: [blue, red]))
+            usage = try store.storageScanRequest.scan()
+            try require(usage.recoverableUnsavedData.files == 2, "Previous selected revision not counted once unselected: \(usage.recoverableUnsavedData)")
+            try require(usage.projects.files == projectFiles + 1, "Selected payload or receipt miscounted: \(usage.projects)") // new lineage receipt; one selected payload at a time
+            try require(usage.totalFileBytes == usage.projects.bytes + usage.recoverableUnsavedData.bytes, "Total omitted a bucket")
+        }
+        test("storage failures map to fixed path-free messages") {
+            let tmp = FileManager.default.temporaryDirectory.path
+            let messages = [
+                DeviceStorageManager.userMessage(for: CocoaError(.fileWriteOutOfSpace)),
+                DeviceStorageManager.userMessage(for: NSError(domain: NSPOSIXErrorDomain, code: 28)),
+                DeviceStorageManager.userMessage(for: AnimationStorageError.payloadIntegrity),
+                DeviceStorageManager.userMessage(for: NSError(domain: "Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: tmp])),
+            ]
+            try require(messages[0] == messages[1] && messages[0].contains("free space"), "Disk-full mapping differs by error domain")
+            try require(messages.allSatisfy { !$0.contains(tmp) && !$0.contains("/") }, "A message leaked a path: \(messages)")
         }
         print("DEVICE_STORAGE_TESTS=\(failed == 0 ? "PASS" : "FAIL") \(passed)/\(passed + failed)")
         if failed > 0 { exit(1) }
