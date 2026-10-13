@@ -2184,8 +2184,13 @@ private final class NetworkTrap: URLProtocol {
             let before = vm.document, pixels = try erasurePixels(vm.document)
             vm.gridSpacing = 32; vm.gridOpacity = 0.25; vm.gridTint = .red
             let manual = vm.document
-            for _ in 0..<3 { vm.undo() }
-            await vm.flush(); try require(content(vm.document) == content(before), "Manual grid fixture drift")
+            // Editor guides live outside document history: changing them must not add Undo steps.
+            var baseline = before; baseline.gridSettings = .init()
+            try require(vm.document.gridSettings == manual.gridSettings && vm.frames == before.frames
+                && content(manual) != content(baseline), "Manual grid settings did not apply")
+            let defaults = StudioGridSettings()
+            vm.gridSpacing = defaults.spacing; vm.gridOpacity = defaults.opacity; vm.gridTint = defaults.tint
+            await vm.flush(); try require(content(vm.document) == content(baseline), "Manual guide reset fixture drift")
             let session = SpatterStudioEditSession()
             _ = session.submit(SpatterGridInstruction.settingsExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
@@ -2193,10 +2198,10 @@ private final class NetworkTrap: URLProtocol {
                 && !vm.gridEnabled && vm.document.onionSettings == before.onionSettings
                 && vm.showOnionSkin && vm.frames == before.frames && vm.layers == before.layers
                 && (try erasurePixels(vm.document)) == pixels, "Grid configure changed unrelated guides/artwork or diverged from manual")
-            vm.undo(); try require(content(vm.document) == content(before), "One Undo did not restore complete grid settings")
+            vm.undo(); try require(vm.document.gridSettings == manual.gridSettings, "Undo must not revert grid settings")
             vm.redo(); await vm.flush()
             vm.gridEnabled = true; let manualShown = vm.document
-            vm.undo(); await vm.flush()
+            vm.gridEnabled = false; await vm.flush()
             _ = session.submit(SpatterGridInstruction.showExample, in: vm, accountID: nil, currentScope: { guest })
             await session.waitForCompletion()
             try require(session.status == .applied && content(vm.document) == content(manualShown)
@@ -2211,7 +2216,10 @@ private final class NetworkTrap: URLProtocol {
             await session.waitForCompletion()
             try require(session.status == .applied && !vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings
                 && vm.showOnionSkin && vm.document.onionSettings == noOp.onionSettings, "Hide grid lost remembered or onion settings")
-            vm.undo(); vm.redo(); vm.undo(); await vm.flush()
+            vm.undo(); vm.redo(); await vm.flush()
+            try require(!vm.gridEnabled && vm.document.gridSettings == noOp.gridSettings && (try erasurePixels(vm.document)) == pixels,
+                "Artwork Undo/Redo disturbed guide settings")
+            vm.gridEnabled = true; await vm.flush()
             let saved = await vm.save(); try require(saved, "Grid settings save failed")
             let cold = StudioViewModel(storage: store), record = try store.loadAnimation(id: vm.document.id)!
             try require(await cold.openProject(record.metadata), "Grid cold open failed")
