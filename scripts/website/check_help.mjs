@@ -5,6 +5,11 @@
 //
 //   node scripts/website/check_help.mjs          # validate and (re)write help-data.js
 //   node scripts/website/check_help.mjs --check  # validate; fail if help-data.js is stale
+//   node scripts/website/check_help.mjs --sync-guide-revision
+//       # when the Swift guide revision was bumped: rewrite every guideRevision in
+//       # articles.json to the value in SpatterAIViewModel.swift, then validate and
+//       # regenerate help-data.js. The reviewed dates are NOT touched: a revision
+//       # bump is not a content review, so re-read the articles before committing.
 //
 // Rules enforced:
 //   * every article has non-empty `sources` and an ISO `reviewed` date (not in the future)
@@ -23,6 +28,8 @@ const articlesPath = path.join(repo, 'website', 'help', 'articles.json');
 const dataPath = path.join(repo, 'website', 'help', 'help-data.js');
 const guidePath = path.join(repo, 'StickDeathInfinity', 'ViewModels', 'SpatterAIViewModel.swift');
 const checkOnly = process.argv.includes('--check');
+const syncGuide = process.argv.includes('--sync-guide-revision');
+if (checkOnly && syncGuide) { console.error('check_help: --check and --sync-guide-revision are exclusive'); process.exit(1); }
 
 const CATEGORIES = new Set(['create', 'animate', 'keep', 'account']);
 const STATUSES = new Set(['source-implemented', 'verified-on-device', 'unavailable']);
@@ -53,6 +60,14 @@ const guideMatch = guideSource.match(/static let currentGuideVersion = "([^"]+)"
 if (!guideMatch) fail(`currentGuideVersion not found in ${path.relative(repo, guidePath)}`);
 const currentGuideVersion = guideMatch ? guideMatch[1] : null;
 
+if (syncGuide && currentGuideVersion) {
+  const stale = [doc, ...(Array.isArray(doc.articles) ? doc.articles : [])].filter((entry) => entry.guideRevision !== currentGuideVersion);
+  if (stale.length) {
+    for (const entry of stale) entry.guideRevision = currentGuideVersion;
+    fs.writeFileSync(articlesPath, JSON.stringify(doc, null, 2) + '\n');
+    console.log(`check_help: guideRevision synced to ${currentGuideVersion} on ${stale.length} entr${stale.length === 1 ? 'y' : 'ies'} (reviewed dates unchanged; re-read the articles)`);
+  }
+}
 if (doc.schemaVersion !== 1) fail('schemaVersion must be 1');
 if (doc.guideRevision !== currentGuideVersion) fail(`top-level guideRevision ${doc.guideRevision} != ${currentGuideVersion}`);
 if (!Array.isArray(doc.articles) || !doc.articles.length) fail('articles must be a non-empty array');

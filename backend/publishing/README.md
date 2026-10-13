@@ -83,3 +83,25 @@ Consent/account/admin change integration, other destinations, administrative
 reconciliation UI and permanent-retention deletion remain outstanding. No SQL
 was applied and no provider calls or tests ran. YouTube status update semantics:
 https://developers.google.com/youtube/v3/docs/videos/update
+
+## Feed publisher, destination adapters and marketing worker (2026-10-13)
+
+`feed_publisher.FeedPublisher.run_once()` is the host adapter for `feed-publication.sql`:
+removals first (`sdi_feed_removal_claim/finish`, success only when the hosting adapter
+confirms the copy is gone), then one `sdi_feed_publish_claim`; it resolves the registered
+artifact inside owned storage, verifies size and the SHA-256 of the actual bytes against
+the approved digest, measures the duration with the injected probe, copies through the
+injected `HostingAdapter` and calls `sdi_feed_publish_finish`. A lease lost after the copy
+removes the orphaned hosted file. `JobAPI` now carries its RPC prefix and allowlist as
+class attributes so each worker has its own narrow surface.
+
+`destinations.py` holds the social adapters (Discord webhook, Facebook Page, X) and
+`UnavailableDestination` for YouTube community posts, Instagram, TikTok and email, each
+answering `unavailable`, `dry_run` (exact request with credentials redacted, nothing
+sent), `published` (provider id and link) or `failed`. `MarketingWorker` binds them to
+`sdi_marketing_claim/finish`; a dry run is recorded as a failure with a plain reason so a
+draft is never marked published without a provider receipt. Platform terms must be
+confirmed by the owner before any adapter is enabled; the module notes what each needs.
+
+Tests: `backend/tests/test_workers.py` (fake RPC clients, fake hosting, fake transports).
+No upload, post or deployment has run.

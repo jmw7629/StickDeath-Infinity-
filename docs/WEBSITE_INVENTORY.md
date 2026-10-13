@@ -88,9 +88,23 @@ Transfer breakdown: `SpecialElite-Regular.ttf` 166,356 · `help/help-data.js` 36
 4. CLS 0.26: `site.js` hid the stacked compact nav after load, moving the hero ~130px. Compact nav state is now CSS-driven (`.menu` shown and nav hidden at ≤580px by default, `.open` toggled by JS, `<noscript>` style restores the nav) → CLS 0. A metric-matched local fallback face for Special Elite (size-adjust 87.5%, ascent 80.36%, descent 33.93%, from the TTF tables) was added as well; the font swap itself measured 0.003.
 5. Playwright's `isVisible()` reports false for content inside `<noscript>`; the harness measures rendering in-page instead.
 
+## 4b. 2026-10-13 additions (agent E, wave 3)
+
+| Area | Files | Status |
+| --- | --- | --- |
+| Command center shell (#277) | `website/admin.html`, `admin.js`, `admin-config.js` (`null`) | config-gated; GoTrue password + TOTP step-up or provider redirect, memory-only session, read panels over `sdi_*` RPCs, owner emergency stop as the only write; `noindex`; registered in `site_constants.mjs` and the harness |
+| Help checker | `scripts/website/check_help.mjs --sync-guide-revision` | rewrites `guideRevision` from `SpatterAIViewModel.swift` without touching reviewed dates |
+| Harness | `scripts/website/a11y_perf.mjs` | admin page added to the page × viewport matrix; two new checks: unconfigured shell keeps sign-in/console hidden and requests only its own files; no-JS state text |
+| Hosting/rollback | `docs/WEBSITE_HOSTING.md` | procedure only; domain and host remain owner gates |
+
+Measured on 2026-10-13 (Playwright 1.56.1 Chromium, Node 22): `build_site --check` OK (11 pages),
+`check_help --check` OK (20 articles, guide revision `2026-10-12.1`), `a11y_perf` **333/333**
+checks passed; perf at 390×844 Slow-4G CPU×4: 7 requests, 240,269 bytes, LCP 704 ms, CLS 0.
+
 ## 5. Deferred / not verified
 
 - Real iPhone Safari, VoiceOver, WebKit and Firefox: not run (Chromium only in this environment). The gap file's WebKit note from the V59 deployment cannot be reproduced here.
 - Hosting-level checks (HTTPS, caching headers, compression, redirects, 404 routing) depend on the absent hosting configuration.
 - Policy content requires legal review; it was written from source behavior and the owner's scope documents, not reviewed by counsel.
-- Help content is read from source at guide revision `2026-10-09.5`; no topic has device evidence, so none carries `verified-on-device`.
+- Help content is read from source at the current guide revision; no topic has device evidence, so none carries `verified-on-device`.
+- The admin shell's signed-in paths (GoTrue password/TOTP/provider flows, RPC panels) are exercised only by code review and the unconfigured-state checks; they need a configured test project.

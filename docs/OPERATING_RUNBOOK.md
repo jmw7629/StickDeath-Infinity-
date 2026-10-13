@@ -33,6 +33,15 @@ read-only or reversible; deletion of any kind is a separate owner-reviewed step.
 
 Publish only from a labelled source commit; keep the previous version as the rollback and record the authenticated HTTPS checks (metadata, provenance, PNG hashes, root HTML). The site displays native captures and does not execute SwiftUI; say so in every checkpoint.
 
+## Backend candidates, sweeps and workers (2026-10-13)
+
+- Before touching `backend/sql`: `scripts/backend/run_sql_tests.sh` must print `9 passed, 0 failed`; a new candidate goes at the end of the README apply-order block and gets a `tests/NNN_*.sql` file; a new service-role function must be added to the list in `tests/080_rls_review.sql` consciously.
+- Backup rehearsal: `scripts/backend/verify_backup.sh` (local throwaway cluster). For the live project the owner runs the host's restore drill into an isolated database and applies the same three checks: identical row counts, RLS on every table, `anon` executes nothing.
+- Sweeps: `python3 -m backend.ops.sweeps --all` (or `--only name,…`) with `SDI_BACKEND_URL` and `SDI_SERVICE_KEY` from the host secret store; schedule hourly from the host timer, never from a client. It records one `sdi_worker_heartbeat('service-sweeps')`; `sdi_admin_health` flags it stale after 10 minutes.
+- Workers run one job per invocation from the host timer: `FeedPublisher` (hosting adapter injected), `PublishingWorker` (YouTube), `MarketingWorker` (dry-run until the owner enables a destination), `PushBatchWorker` (sink transport until APNs/FCM credentials exist), `EmailWorker` (loopback SMTP sink until the sender domain is verified; `allow_remote` is the owner's switch).
+- Staging volume: the intake root must be a private directory on an encrypted volume; the code enforces ownership and 0600/0700 modes, the host provides the encryption. Record the volume and its key custody in the private access inventory (`docs/LAUNCH_REHEARSAL.md` §D).
+- Design-reference preservation (#269): the owner keeps the recovered reference on the Mac SSD with a private manifest (relative path, SHA-256, byte count, capture date, missing remote dependency notes). Historical screens, pricing and metrics in it are reference only; nothing from it is copied into this public repository.
+
 ## Documentation upkeep
 
 - `docs/KNOWN_LIMITATIONS.md` cites file:line at a named commit; regenerate the grep and update citations with each release candidate.

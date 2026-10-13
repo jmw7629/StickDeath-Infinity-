@@ -1,9 +1,11 @@
-# Billing edge-function contracts (unimplemented candidates)
+# Billing edge-function candidates (pure handlers, tested offline, not deployed)
 
-Nothing in this directory is deployed, and no provider client code exists in the
-repository. This document fixes the contracts that three server-side edge functions
-must satisfy before any purchase path is enabled. The database side is
-`backend/sql/billing.sql`, also an unapplied candidate.
+Nothing in this directory is deployed. `contract.py`, `stripe_checkout.py`,
+`stripe_webhook.py` and `appstore_notifications.py` implement the three handlers as
+pure functions over injected dependencies (JWT verifier, account check, chain verifier,
+webhook secret, SQL executor); the deployment wraps them in its edge-function runtime.
+`backend/tests/test_billing.py` exercises them with fakes. The database side is
+`backend/sql/billing.sql` plus `billing-finance.sql`, also unapplied candidates.
 
 ## Approved offers
 
@@ -87,8 +89,12 @@ must satisfy before any purchase path is enabled. The database side is
 
 ## Verification status
 
-Unimplemented and unverified. Required before activation: provider accounts
-confirmed by the owner, products created in App Store Connect and Stripe (test
-mode), secrets in the server secret store, StoreKit sandbox and Stripe test-mode
-exercises (purchase, pending, cancel, restore, renewal, revocation, refund, replay),
-and the authorization tests in `backend/sql/tests/`. None of this has run.
+Implemented as candidates and tested offline on 2026-10-13: `python3 -m unittest
+discover -s backend/tests -t .` (40 billing tests among 102) and
+`scripts/backend/run_sql_tests.sh` (`050_billing_agents.sql`,
+`070_billing_lifecycle_finance.sql`). Not run against any provider or the live
+project. Required before activation: provider accounts confirmed by the owner, products
+created in App Store Connect and Stripe (test mode), secrets in the server secret store,
+the runtime bindings (ES256 chain verifier, JWT verification, service-role executor),
+StoreKit sandbox and Stripe test-mode exercises (purchase, pending, cancel, restore,
+renewal, revocation, refund, replay). None of that has run.

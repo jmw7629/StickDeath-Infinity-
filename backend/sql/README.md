@@ -267,6 +267,45 @@ sweeps; the removal and feed workers are SQL contracts without a host adapter; t
 Spatter generation and daily-draft flows live in `backend/spatter` and are out of
 scope here. None of this is deployed or verified against the live project.
 
+## October 13 batch: finance, consent, notifications, marketing, RLS review
+
+`billing-finance.sql` (#254/#255/#258): manual and imported finance records with source
+and reconciliation flags, corrections linked to the original entry, a reconciliation
+report that names discrepancies (subscription without charge, charge without
+subscription, refund above charges, errored/unprocessed events, possible duplicates,
+unreconciled manual rows), period summaries that keep payouts (cash movements) apart
+from charges/refunds/fees (recognized records) and expenses, a CSV-ready export without
+member identity, and agent cost against caps. Reads need the finance capability; every
+mutation needs step-up and is audited. Tested by `tests/070_billing_lifecycle_finance.sql`,
+which also drives the full subscription lifecycle through `sdi_billing_apply_event`.
+
+`consent-versions.sql` (#174/#261/#273/#262): owner-published policy versions (terms,
+privacy, publishing, marketing, content with a required `min_age`), member acceptance
+of exactly the current version with the surface recorded, separate publishing and
+marketing withdrawal (publishing withdrawal clears consent on every render so the
+existing triggers cancel or withdraw jobs), and the service check `sdi_consent_verify`
+the intake registrar calls before registering a render.
+
+`notifications.sql` (#290/#276): per-member preferences (product and marketing off by
+default, daily cap), device registrations (five per member, tokens readable by the
+service only), administrator announcements (compose, schedule and cancel with step-up),
+service fan-out that applies audience, preferences, account state and cap and records a
+reason per suppressed delivery, in-app inbox, and email suppression by address hash
+(`unsubscribe` keeps service notices; `bounce`/`complaint` stop everything).
+
+`marketing-workspace.sql` (#274/#283): campaigns, drafts per destination bound to the
+exact approved render (review, version, digest) and a hash of the approved copy, owner
+approval with step-up that requires `release_allowed(..., 'social')` and the creator's
+current marketing consent, invalidation triggers on render change and consent
+withdrawal, per-destination cadence that can only queue already approved drafts, and
+the service claim/finish contract for `backend/publishing/destinations.py`.
+
+`tests/080_rls_review.sql` asserts the authorization invariants for the whole set
+(RLS on every table, no client grants, pinned search paths, invoker wrappers, no anon
+execution, an explicit service-only function list, no secret-shaped columns); see
+`docs/RLS_REVIEW.md`. `scripts/backend/verify_backup.sh` rehearses pg_dump/pg_restore
+of the applied set with a fixture and checks counts, RLS and grants after restore.
+
 ## Local harness
 
 `scripts/backend/run_sql_tests.sh` starts a throwaway PostgreSQL 16 cluster
@@ -285,9 +324,11 @@ of assertion/login helpers. Nothing else is stubbed. Supabase-specific behaviour
 the stubs cannot reproduce (GoTrue session issuance, MFA enrolment, PostgREST
 parameter mapping, storage) remains deferred to the integration phase.
 
-Python unit tests for the intake and publishing adapters use scripted fake transports
-and never open a network connection:
-`python3 -m unittest discover -s backend/tests -t .` from the repository root.
+Python unit tests for the intake, billing, publishing, feed, destination, sweep, mail
+and push modules use scripted fake transports and a local SMTP sink and never open an
+outbound connection: `python3 -m unittest discover -s backend/tests -t .` from the
+repository root. Service sweeps are run by an operator or host timer through
+`python3 -m backend.ops.sweeps --all` (see `docs/OPERATING_RUNBOOK.md`).
 
 ## Apply order (single source of truth; the local harness reads this block)
 
@@ -325,4 +366,8 @@ and never open a network connection:
 31. admin-hardening.sql
 32. support-requests.sql
 33. account-lifecycle.sql
+34. billing-finance.sql
+35. consent-versions.sql
+36. notifications.sql
+37. marketing-workspace.sql
 <!-- /apply-order -->

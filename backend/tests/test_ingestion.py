@@ -234,15 +234,19 @@ class RegistrarTests(unittest.TestCase):
 
     def test_registration_posts_private_preview_and_returns_review(self):
         review = str(uuid.uuid4())
-        opener = FakeOpener([FakeResponse(json.dumps({"review_id": review}).encode())])
+        opener = FakeOpener([FakeResponse(json.dumps({"allowed": True}).encode()), FakeResponse(json.dumps({"review_id": review}).encode())])
         original = install_opener(registration_module, opener)
         try:
             meta = metadata(10, "b" * 64)
-            self.assertEqual(self.registrar()(self.upload, str(uuid.uuid4()), self.path, meta, 1_800_000_000), review)
-            body = json.loads(opener.requests[0].data)
+            owner = str(uuid.uuid4())
+            self.assertEqual(self.registrar()(self.upload, owner, self.path, meta, 1_800_000_000), review)
+            consent = json.loads(opener.requests[0].data)
+            self.assertEqual(opener.requests[0].full_url, "https://backend.example.test/rest/v1/rpc/sdi_consent_verify")
+            self.assertEqual(consent, {"subject": owner, "version": "terms-v1"})
+            body = json.loads(opener.requests[1].data)
             self.assertEqual(body["object_key"], self.upload + ".mp4")
             self.assertTrue(body["preview_url"].startswith("https://intake.example.test/v1/render-previews/"))
-            self.assertEqual(opener.requests[0].full_url, "https://backend.example.test/rest/v1/rpc/sdi_register_upload")
+            self.assertEqual(opener.requests[1].full_url, "https://backend.example.test/rest/v1/rpc/sdi_register_upload")
         finally:
             registration_module.urllib.request.build_opener = original
 
@@ -251,13 +255,27 @@ class RegistrarTests(unittest.TestCase):
             self.registrar()(self.upload, str(uuid.uuid4()), self.path, {**metadata(10, "b" * 64), "consent_version": "terms-v0"}, 1_800_000_000)
         self.assertEqual(stale.exception.status, 409)
         for answer in (FakeResponse(json.dumps({"error": "Creator unavailable."}).encode()), urllib.error.URLError("down")):
-            opener = FakeOpener([answer])
+            opener = FakeOpener([FakeResponse(json.dumps({"allowed": True}).encode()), answer])
             original = install_opener(registration_module, opener)
             try:
                 with self.assertRaises(IntakeError):
                     self.registrar()(self.upload, str(uuid.uuid4()), self.path, metadata(10, "b" * 64), 1_800_000_000)
             finally:
                 registration_module.urllib.request.build_opener = original
+
+    def test_registration_requires_server_verified_consent(self):
+        refused = FakeResponse(json.dumps({"allowed": False, "reason": "Current content policy acceptance and age confirmation required."}).encode())
+        for answer, status in ((refused, 409), (FakeResponse(b"garbage"), 503), (urllib.error.URLError("down"), 503), (FakeResponse(b"{}"), 409)):
+            opener = FakeOpener([answer])
+            original = install_opener(registration_module, opener)
+            try:
+                with self.assertRaises(IntakeError) as refusal:
+                    self.registrar()(self.upload, str(uuid.uuid4()), self.path, metadata(10, "b" * 64), 1_800_000_000)
+                self.assertEqual(refusal.exception.status, status)
+                self.assertEqual(len(opener.requests), 1, "registration must not be attempted without verified consent")
+            finally:
+                registration_module.urllib.request.build_opener = original
+        self.assertIn("age confirmation", str(IntakeError("Current content policy acceptance and age confirmation required.", 409)))
 
     def test_artifact_released_fails_closed(self):
         for answer in (FakeResponse(b"false"), FakeResponse(b"garbage"), urllib.error.URLError("down")):

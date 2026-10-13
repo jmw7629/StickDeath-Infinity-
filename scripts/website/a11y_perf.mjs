@@ -41,7 +41,7 @@ const site = path.join(repo, 'website');
 const jsonIndex = process.argv.indexOf('--json');
 const jsonOut = jsonIndex > -1 ? process.argv[jsonIndex + 1] : null;
 
-const PAGES = ['index.html', '404.html', 'account.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
+const PAGES = ['index.html', '404.html', 'account.html', 'admin.html', 'policies/terms-v1.html', 'policies/privacy-v1.html', 'policies/publishing-v1.html', 'policies/attribution.html'];
 const VIEWPORTS = [{ name: '320x640', width: 320, height: 640 }, { name: '390x844', width: 390, height: 844 }, { name: '1440x900', width: 1440, height: 900 }];
 const BUDGET = { bytes: 250_000, requests: 8, lcpMs: 2500, cls: 0.05 };
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.ttf': 'font/ttf', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml' };
@@ -308,7 +308,20 @@ async function main() {
     const accountStatic = await (async () => { await nojsPage.goto(base + 'account.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'Accounts and billing are not connected' }); })();
     record('noscript guidance visible with JavaScript disabled', noscriptVisible, '', 'index.html@390x844 no-js');
     record('account page states "not connected" without JavaScript', accountStatic, '', 'account.html@390x844 no-js');
+    const adminStatic = await (async () => { await nojsPage.goto(base + 'admin.html', { waitUntil: 'load' }); return nojsPage.evaluate(rendered, { text: 'The command center is not configured' }); })();
+    record('admin shell states "not configured" without JavaScript', adminStatic, '', 'admin.html@390x844 no-js');
     await nojs.close();
+    // Admin shell with JavaScript and the repository's null configuration: sign-in stays hidden, nothing is requested.
+    const adminContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const adminPage = await adminContext.newPage();
+    const adminRequests = [];
+    adminPage.on('request', (request) => adminRequests.push(request.url()));
+    await adminPage.goto(base + 'admin.html', { waitUntil: 'load' });
+    const adminState = await adminPage.evaluate(() => ({ signinHidden: document.getElementById('admin-signin').hidden, consoleHidden: document.getElementById('admin-console').hidden, title: document.getElementById('admin-status-title').textContent }));
+    const sameOrigin = adminRequests.every((url) => url.startsWith(base));
+    record('admin shell keeps sign-in and console hidden with null configuration', adminState.signinHidden && adminState.consoleHidden && adminState.title.includes('not configured'), JSON.stringify(adminState), 'admin.html@390x844');
+    record('admin shell with null configuration requests only its own files', sameOrigin, `${adminRequests.length} requests`, 'admin.html@390x844');
+    await adminContext.close();
     // file:// smoke: the help center must render from the embedded help-data.js without fetch().
     const local = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     const localPage = await local.newPage();

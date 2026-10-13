@@ -29,6 +29,14 @@ The same wording is what Spatter gives in-app (`SpatterAIViewModel.swift:203`).
 - **Project deletion** happens on the device only. Support cannot delete, view or recover a user's local project.
 - **Published renditions**: removal/takedown requests follow the publishing contract in `docs/PRODUCT_SCOPE_2026_09_19.md`; do not promise deletion of copies already shared by third parties.
 
+## Support queue, receipts and billing questions (backend candidates, 2026-10-13)
+
+- When the support candidate is installed, members file requests from the app (`sdi_support_action('create')`, five per day, idempotent) and receive a receipt `SDI-XXXXXXXXXX`; administrators with the users capability and MFA work the queue (`list`, `update_status` with a revision and a note). Quote the receipt back; never quote another member's request.
+- Billing: the plan a member has is whatever the provider's signed events say (`sdi_my_entitlement`: tier, status, provider, paid-through date, cancel-at-period-end). Support cannot grant, extend or refund a plan; cancellations happen in Apple's Subscriptions settings or the Stripe customer portal, refunds with the provider. Say "your access continues until <paid_through>" only when the entitlement shows it.
+- Permissions: publishing and marketing permissions are separate and each can be withdrawn in the app (`sdi_consent_action('withdraw', …)`); withdrawing publishing stops jobs that have not published and queues removal of hosted copies; copies already shared by third parties are not promised gone.
+- Notifications: product and marketing notices are off until the member turns them on; service notices cannot be turned off but stop when the account closes. Email unsubscribe links are one-click; a bounced address stops all email until the member updates it.
+- Account deletion: the server-side candidate (`sdi_account_lifecycle`, seven-day cooling-off, phase one/two worker) exists in source; the shipped build still reports deletion unavailable until the candidate is installed and the native flow is verified. Do not tell a member their account was deleted.
+
 ## Credits and licenses
 
 - The complete third-party inventory is `docs/THIRD_PARTY_NOTICES.md`.

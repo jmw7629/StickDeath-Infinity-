@@ -109,6 +109,45 @@ the app flow (no call site constructs `SubscriptionView()` or
   - A failed purchase shows the error and stays on the screen; it no longer
     advances as if it succeeded. "Start Free →" continues without a purchase.
 
+## Server side (candidates, tested offline 2026-10-13)
+
+The three edge-function handlers are pure Python modules in `backend/billing/`
+(`stripe_checkout.py`, `stripe_webhook.py`, `appstore_notifications.py`, shared
+`contract.py`). Each maps a verified provider payload onto exactly one call of
+`public.sdi_billing_apply_event(...)` through an injected executor; the parameter names
+are cross-checked against the SQL signature by `backend/tests/test_billing.py`
+(40 tests, recording executor, fake chain verifier, HMAC-signed Stripe fixtures).
+
+- Signature before body: Stripe `v1` HMAC with timestamp tolerance; App Store JWS
+  structure, `x5c` chain to a pinned root and ES256 through an injected verifier
+  (fails closed with 503 when none is configured).
+- Idempotency: the provider event id is the unique key; replays answer `duplicate`
+  with 200 so providers stop retrying; older events never move a subscription back.
+- Lifecycle mapping (#258): `active`/`trialing`, `grace` (Apple billing grace with
+  `gracePeriodExpiresDate`), `past_due`, `cancel_at_period_end` (auto-renew off, access
+  kept until `paid_through`), `cancelled`, `expired`, `refunded`, `revoked`; downgrades
+  change the product on the same provider subscription. `backend/sql/tests/070_billing_lifecycle_finance.sql`
+  drives every transition through `sdi_billing_apply_event` and checks `sdi_my_entitlement`
+  after each; `sdi_billing_reconcile()` expires rows only after 16 days past `paid_through`.
+- Money: ledger rows carry provider-reported minor units only (Stripe `amount_paid`,
+  refunds, payouts in live mode; Apple refund amounts from milliunits with the currency's
+  exponent). Test-mode and sandbox events never create ledger rows. Card and contact
+  fields are redacted before the payload is stored.
+- Checkout (#252): the member's JWT is verified by an injected callback, the account must
+  be active, the product must be an approved **monthly** Stripe price id, the return URL
+  must be on the website origin, and the response is the Stripe request to perform
+  server-side plus (after Stripe answers) only the hosted URL. A success redirect proves
+  nothing; entitlement follows the webhook.
+- Finance (#254/#255): `backend/sql/billing-finance.sql` adds `sdi_finance_record`
+  (expense, import, correct, reconcile; finance capability + step-up, audited, duplicate
+  detection) and `sdi_finance_report` (reconciliation with named discrepancies, period
+  summary separating cash movements from recognized records and expenses, CSV-ready
+  export without member identity, agent cost vs caps). Every label says these are
+  records, not an available balance.
+
+Not deployed, not run against a provider. Activation needs the owner gates below plus the
+edge-function runtime (verifier, secret store, executor binding) and sandbox exercises.
+
 ## Owner-gated (not done, not claimed)
 
 1. Create the two monthly auto-renewable subscriptions in App Store Connect at
@@ -117,8 +156,8 @@ the app flow (no call site constructs `SubscriptionView()` or
    configuration.
 2. Decide annual amounts and entitlements, if any. Nothing annual ships until
    then.
-3. Publish the feature-to-tier entitlement policy and quotas; then implement
-   server-side reconciliation and replace the throwing stub.
+3. Publish the feature-to-tier entitlement policy and quotas; then bind the native
+   client to `sdi_my_entitlement` and replace the throwing stub.
 4. Verify the existing Stripe account before any reuse. Stripe has no
    client-side role in the current contract; any server-side use (web
    payments) must be verified separately and must not be a new paid service.

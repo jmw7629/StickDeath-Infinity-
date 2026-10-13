@@ -17,6 +17,7 @@ export const PAGES = [
   { file: 'index.html', indexable: true, canonicalPath: '' },
   { file: '404.html', indexable: false, reason: 'error page' },
   { file: 'account.html', indexable: false, reason: 'account page (config-gated shell)' },
+  { file: 'admin.html', indexable: false, reason: 'command center shell (config-gated; server-authorized)' },
   { file: 'policies/terms-v1.html', indexable: false, reason: 'draft awaiting legal review' },
   { file: 'policies/privacy-v1.html', indexable: false, reason: 'draft awaiting legal review' },
   { file: 'policies/publishing-v1.html', indexable: false, reason: 'draft awaiting legal review' },

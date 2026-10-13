@@ -59,7 +59,10 @@ The current backend design is the set of SQL candidates in `backend/sql/` (insta
 | Render review and publishing | `admin-approval.sql`, `review-rights.sql`, `publishing-jobs.sql`, `publishing-withdrawal.sql`, `publishing-admin.sql`, `creator-reviews.sql`, `upload-*.sql`, `preview-renewal.sql` | `sdi_creator_review`, `sdi_publish_action`, `sdi_review_action` |
 | Challenges and Calendar | `challenges.sql` | `sdi_challenge_action`, `sdi_calendar_range` |
 | Achievements | `achievements.sql` | `sdi_achievement_catalog` |
-| Billing and entitlements | `billing.sql` | `sdi_my_entitlement` (read-only) |
+| Billing and entitlements | `billing.sql`, `billing-finance.sql` | `sdi_my_entitlement` (read-only); finance: `sdi_finance_admin`, `sdi_finance_report`, `sdi_finance_record` |
+| Consent registry | `consent-versions.sql` | `sdi_consent_action`; service `sdi_consent_verify` |
+| Notifications and email preferences | `notifications.sql` | `sdi_notify_action`, `sdi_announce_admin`; service `sdi_announcement_claim/finish`, `sdi_email_recipients`, `sdi_email_suppress` |
+| Marketing workspace | `marketing-workspace.sql` | `sdi_marketing_action`; service `sdi_marketing_claim/finish`, `sdi_marketing_cadence_due` |
 | Administration | `admin-users.sql`, `admin-permissions.sql`, `admin-overview.sql`, `admin-hardening.sql`, `agent-controls.sql` | `sdi_users_action`, `sdi_admin_permissions`, `sdi_admin_health`, `sdi_agent_admin` |
 | Account lifecycle and support | `account-lifecycle.sql`, `support-requests.sql` | `sdi_account_lifecycle`, `sdi_member_notices`, `sdi_support_action` |
 
@@ -77,9 +80,9 @@ Rendered MP4s for review do not go through client-writable storage: they enter t
 
 | Function | Purpose | Status |
 |----------|---------|--------|
-| `stripe-checkout` | Server-created Checkout/Portal sessions for approved products | Not implemented; contract in `backend/billing/README.md` |
-| `stripe-webhook` | Verified Stripe events → `sdi_billing_apply_event` | Not implemented; contract in `backend/billing/README.md` |
-| `appstore-notifications` | Verified App Store Server Notifications → `sdi_billing_apply_event` | Not implemented; contract in `backend/billing/README.md` |
+| `stripe-checkout` | Server-created Checkout/Portal sessions for approved monthly products | Handler candidate `backend/billing/stripe_checkout.py`, tested offline; not deployed |
+| `stripe-webhook` | Verified Stripe events → `sdi_billing_apply_event` | Handler candidate `backend/billing/stripe_webhook.py`, tested offline; not deployed |
+| `appstore-notifications` | Verified App Store Server Notifications → `sdi_billing_apply_event` | Handler candidate `backend/billing/appstore_notifications.py`, tested offline; not deployed |
 | Spatter generation proxy | Server-side adapter so no provider credential reaches a client | Not implemented; provider-neutral by policy |
 
 No realtime channel is part of the design: Watch Together polls a server-stamped session row; room edits replay versioned commands.
@@ -110,7 +113,7 @@ Daily generation, if enabled, produces **private drafts** that require the owner
 
 ### 5.1 Feed (Candidate)
 
-Approved renders become visible feed posts only through the service-role feed publication path after `release_allowed(review, version, digest, 'feed')` succeeds. Likes (no self-likes), follows, blocks and categorized reports are idempotent; suspended creators are excluded from listings. File export of a post requires the creator's explicit export permission (default off).
+Approved renders become visible feed posts only through the service-role feed publication path after `release_allowed(review, version, digest, 'feed')` succeeds; the host adapter is `backend/publishing/feed_publisher.py` (verifies the bytes' digest before copying, removals first). Likes (no self-likes), follows, blocks and categorized reports are idempotent; suspended creators are excluded from listings. File export of a post requires the creator's explicit export permission (default off). Paging is offset-based with a 40-page cap; cursor paging remains open (#220).
 
 ### 5.2 Challenges (Candidate)
 
@@ -118,7 +121,7 @@ Moderators schedule challenges; members enter one approved rendition each, vote 
 
 ### 5.3 Render Intake and Publishing (Verified Source Exists, Not Deployed)
 
-`backend/ingestion` is a private resumable MP4 intake (chunk checksums, quotas, bounded media validation, idempotent review registration, expiring private preview links). `backend/publishing` is a one-job worker that uploads private, verifies processing and ownership, releases only on a renewed approval lease, and can withdraw to private. Owner YouTube OAuth lives only in the server secret store. Offline unit tests with fake transports: `python3 -m unittest discover -s backend/tests -t .`.
+`backend/ingestion` is a private resumable MP4 intake (chunk checksums, quotas, bounded media validation, server-verified consent through `sdi_consent_verify`, idempotent review registration, expiring private preview links). `backend/publishing` is a one-job worker that uploads private, verifies processing and ownership, releases only on a renewed approval lease, and can withdraw to private; `destinations.py` adds honest social adapters (unavailable / dry-run / published / failed) driven by the marketing workspace. Owner YouTube OAuth lives only in the server secret store. Offline unit tests with fake transports: `python3 -m unittest discover -s backend/tests -t .` (102 tests on 2026-10-13).
 
 ### 5.4 Studio Projects
 
@@ -152,7 +155,7 @@ Tabs for video approvals, users, content, moderation, publishing and overview ca
 
 ### 7.2 Web Command Center
 
-A static web admin shell calling the same RPCs is planned (#277). No web admin surface in this repository is operational.
+`website/admin.html` is a static, config-gated shell over the same RPCs (`admin-config.js` is `null` in the repository, so the page reports "not configured" and sends nothing). When configured it signs in through GoTrue (password + TOTP step-up, or provider redirect), keeps the session in page memory only, shows `sdi_admin_permissions('mine')` and loads each area's RPC on demand, printing `forbidden` / `step_up_required` answers verbatim; the only write is the owner's emergency stop. Not deployed; the website harness checks its unconfigured state.
 
 ---
 
@@ -161,6 +164,8 @@ A static web admin shell calling the same RPCs is planned (#277). No web admin s
 - Members export their own server records (`sdi_account_lifecycle('export')`, three per day). On-device projects are not server-side and are not part of the export.
 - Deletion requests have a seven-day cooling-off period; the service worker then suspends, withdraws publishing consent, unapproves media and queues removals, closes rooms and finally purges server rows once hosted copies and intake renders are gone. Provider subscriptions must be cancelled through the store or portal.
 - Support requests are authenticated, rate-limited, receipted and retained for a bounded period; administrators with the users capability work the queue. This is customer support, not messaging.
+- Consent is versioned (`consent-versions.sql`): members accept the current terms, privacy, publishing, marketing and content-policy versions; publishing and marketing permissions are separate and separately withdrawable; the content policy carries the owner's `min_age` and the member's attestation (`docs/CONTENT_POLICY.md`).
+- Notifications and email (`notifications.sql`, `backend/notifications`, `backend/mail`): service notices always, product and marketing only after opt-in with a daily cap; email suppression by address hash; deliveries go to a sink in development. No push or SMTP credentials exist in the repository.
 - Temporary render media has bounded retention (seven days under review, thirty days after approval) and is deleted only after verified publication or documented expiry. The service never deletes a member's only original.
 
 ---
@@ -171,7 +176,18 @@ The following were described in earlier revisions of this document and remain on
 
 ---
 
-## 10. Security Note
+## 10. Evidence by epic (2026-10-13, source and local checks only)
+
+| Epic | Evidence in this repository | Not done / gated |
+|------|-----------------------------|------------------|
+| #32 Consented publishing | `release_allowed` gate, YouTube worker, feed publisher, destination adapters, consent registry with per-render binding and withdrawal (`020`, `090` SQL tests; `test_publishing.py`, `test_workers.py`) | provider accounts, OAuth client, any live upload |
+| #117 Social wall and challenges (backend half) | feed integrity and publication, challenges, achievements, moderation and appeals (`010`, `020`, `040` SQL tests) | cursor paging, native wiring, runtime verification |
+| #120 Admin command center | server roles, MFA, step-up, rate limits, denial audit, health, agent console backend, finance ops, announcements, web shell (`060`, `070`, `090` SQL tests; website harness) | owner provisioning run, deployment, native/web runtime checks |
+| #121 Subscriptions | two monthly offers only, annual owner-gated, three handler candidates, lifecycle and reconciliation, finance ledger and report (`test_billing.py`; `050`, `070` SQL tests) | App Store Connect / Stripe configuration, sandbox exercises, entitlement policy |
+| #122 Authorization, privacy, moderation | RLS review test over the whole set, consent registry, content policy, account export/deletion worker contract, backup/restore rehearsal (`080`, `060` SQL tests; `verify_backup.sh`) | legacy table inventory, legal review, live backup drill |
+| #268 Website and business operations | help centre checker, discovery files, policy drafts, account and admin shells, support intake SQL, notifications/email candidates, marketing workspace, runbooks and rehearsal checklist (`check_help`, `build_site --check`, `a11y_perf` 333 checks) | hosting, domain, SMTP sender, real-device and WebKit checks |
+
+## 11. Security Note
 
 This report intentionally omits:
 - Private network topology and infrastructure details

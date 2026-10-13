@@ -42,6 +42,11 @@ Procedure: re-publish the retained prior version named in the current checkpoint
 - Backend settings are injected at build time (`SPATTER_BACKEND_URL`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SDI_UPLOAD_SERVICE_URL`, …, `Info.plist`). Rolling back the app does not roll back server schema or data; coordinate with the owner before changing either.
 - No automated deletion exists in the rollback path. Server-side retention and deletion remain documented owner decisions (`docs/PRODUCT_SCOPE_2026_09_19.md`).
 
+## 5b. Backend candidates and website (2026-10-13)
+
+- Each `backend/sql/*.sql` candidate is one transaction; the set is installed in README order and never partially. Rolling a candidate back is a restore of the verified backup taken before installation (`scripts/backend/verify_backup.sh` is the rehearsal; the host's restore drill is the real one), with sweeps and workers paused first (`sdi_agent_admin('emergency_stop')` and the host timers). Provider events that arrive during the window are replayed afterwards; they are idempotent.
+- Website rollback is a redeploy of the previous commit's `website/` bytes (`docs/WEBSITE_HOSTING.md` §Procedure, step 5); keep the previous deployment for 30 days.
+
 ## 6. Evidence after rollback
 
 Record passed, failed and not-run checks separately for the rollback itself, with the exact head and run ids. Preserve the failed release evidence; a rollback does not erase the defect report.

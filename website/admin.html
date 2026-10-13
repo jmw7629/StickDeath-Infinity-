@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="description" content="StickDeath Infinity command center shell. Server-authorized administrator views; reports an honest not-configured state until the owner connects the backend.">
+<meta name="theme-color" content="#101011"><title>Command center — StickDeath Infinity</title>
+<meta name="sdi:canonical-base" content="https://stickdeath-infinity.invalid/">
+<link rel="icon" href="assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="styles.css">
+<script src="admin-config.js" defer></script><script src="admin.js" defer></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="header"><a class="brand" href="index.html" aria-label="StickDeath Infinity home"><img src="assets/mark.svg" width="36" height="36" alt=""><span>STICKDEATH<span class="brand-sub">INFINITY</span></span></a>
+<nav aria-label="Main navigation"><a href="index.html#studio">Studio</a><a href="index.html#help">Help</a><a href="account.html">Account</a><a href="admin.html" aria-current="page">Command center</a></nav></header>
+<main id="main" tabindex="-1" class="wrap policy">
+<p class="eyebrow">COMMAND CENTER</p>
+<h1>Administration,<br>authorized by the <em>server.</em></h1>
+<p>This page is a static shell over the same <code>sdi_*</code> RPCs the native Admin uses. Nothing here grants access: every call is checked server-side for an enabled administrator role, MFA, a live session, the capability for that area and a recent re-authentication for sensitive changes. Without <code>admin-config.js</code> it reports the state below and sends no request anywhere.</p>
+<noscript><p class="note">JavaScript is off. The command center needs it to call the backend; with it off this page only states that nothing is configured.</p></noscript>
+<div class="status-card" id="admin-status" aria-live="polite">
+<h2 id="admin-status-title">The command center is not configured.</h2>
+<p id="admin-status-detail">No backend origin is set, so there is no sign-in and no data. This page keeps no cookies, no local storage and sends no request until the owner configures it.</p>
+</div>
+
+<section id="admin-signin" hidden>
+<h2>Sign in</h2>
+<p class="quiet">Administrator accounts are provisioned server-side with MFA. A matching email or handle grants nothing.</p>
+<form id="admin-password-form" class="support" novalidate>
+<label for="admin-email">Email</label>
+<input id="admin-email" name="email" type="email" autocomplete="username" maxlength="320" required>
+<label for="admin-password">Password</label>
+<input id="admin-password" name="password" type="password" autocomplete="current-password" maxlength="256" required>
+<div class="actions"><button class="button" type="submit">Sign in</button></div>
+</form>
+<div id="admin-providers" class="actions" hidden></div>
+<form id="admin-mfa-form" class="support" novalidate hidden>
+<label for="admin-code">Authenticator code</label>
+<input id="admin-code" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required>
+<div class="actions"><button class="button" type="submit">Verify</button><button class="button" type="button" id="admin-mfa-cancel">Cancel</button></div>
+</form>
+</section>
+
+<section id="admin-console" hidden>
+<h2>Console</h2>
+<p id="admin-identity" class="quiet"></p>
+<div class="actions"><button class="button" type="button" id="admin-signout">Sign out</button><button class="button" type="button" id="admin-refresh">Refresh permissions</button></div>
+<div id="admin-panels"></div>
+<h2>Emergency stop</h2>
+<p class="quiet">Stops every automated agent (owner only, recent MFA required). Drafts are kept; nothing is deleted.</p>
+<form id="admin-stop-form" class="support" novalidate>
+<label for="admin-stop-reason">Reason</label>
+<input id="admin-stop-reason" name="reason" maxlength="2000" required>
+<div class="actions"><button class="button" type="submit" data-enabled="true">Engage stop</button><button class="button" type="submit" data-enabled="false">Clear stop</button></div>
+<p id="admin-stop-result" class="quiet" aria-live="polite"></p>
+</form>
+</section>
+
+<h2>What this shell does and does not do</h2>
+<ul>
+<li>Reads: health and queues, approvals, users, moderation, publishing, support, finance records, agents, announcements, marketing, consent versions, through the existing RPC contracts. Each panel shows the server's answer, including <code>forbidden</code> or <code>step_up_required</code>, verbatim.</li>
+<li>Writes: only the emergency stop in this version; other mutations stay in the native Admin until their forms are added with the same reason and revision checks.</li>
+<li>Sessions live in page memory only; reloading signs you out. Tokens are never written to storage.</li>
+<li>No secrets: the configuration holds the backend origin and the publishable key only. Service keys, provider credentials and host details never reach this page.</li>
+</ul>
+<p class="quiet">Owner gate: backend project, administrator provisioning (<code>sdi_provision_owner</code>, service role, no password in source) and MFA enrolment remain open items (#246, #277). Status read from source on October 13, 2026.</p>
+</main>
+<footer class="wrap"><a class="brand" href="index.html">STICKDEATH INFINITY</a><p>Companion website source</p><div><a href="account.html">Account</a><a href="policies/privacy-v1.html">Privacy (draft)</a><a href="policies/terms-v1.html">Terms (draft)</a></div></footer>
+</body></html>

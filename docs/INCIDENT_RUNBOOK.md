@@ -24,6 +24,10 @@ part of any step here.
 - **Unapproved publication**: cancel the job in the admin command center, record the render digest, and follow the publishing contract's takedown handling (`docs/PRODUCT_SCOPE_2026_09_19.md`). Do not promise third-party copies are gone.
 - **Bad release build**: follow `docs/ROLLBACK.md` (revert PR with CI, previous simulator archive, TestFlight owner decision).
 - **Review site serving wrong bytes**: republish the retained rollback version and re-run the authenticated HTTPS checks (#126 pattern).
+- **Runaway or wrong automation**: engage the emergency stop (`sdi_agent_admin('emergency_stop', payload=>'{"enabled":true}', reason=>…)` from the native Admin or `website/admin.html`); running agent runs are marked stopped, new runs and heartbeats are refused, drafts are kept. Clear it only with a reason after the cause is known.
+- **Billing event failures**: `sdi_finance_report('reconciliation')` lists `event_error` and `event_unprocessed` rows; replay the provider's events (Stripe event list since the last processed id; App Store transaction history) through the same handlers; duplicates are answered `duplicate` and never double-apply. Never edit `subscriptions` by hand; never issue a refund as a test.
+- **Marketing post that should not have gone out**: cancel the draft (idempotent); if `marketing_finish` recorded "Posted before cancellation was observed", remove it at the provider by hand and record the provider's confirmation in the draft's audit reason. Withdraw the creator's marketing consent if the creator asked; approved drafts for their renders are invalidated automatically.
+- **Suspected member-data exposure in logs**: provider payloads are redacted before storage; worker errors carry class names only; `sdi_email_recipients` output and push tokens exist only in worker memory. Treat any log that contains an address or token as an incident and rotate the worker's service key.
 
 ## 3. Diagnose without weakening gates
 

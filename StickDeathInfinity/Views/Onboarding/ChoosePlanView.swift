@@ -36,9 +36,11 @@ struct ChoosePlanView: View {
         PlanInfo(tier: .creator, name: "Creator",
                  features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
                  color: Color(hex: "#DC2626"), popular: false),
+        // No plan is marked "POPULAR": there is no verified purchase data behind
+        // such a claim, so the badge stays off until the owner has real numbers.
         PlanInfo(tier: .pro, name: "Pro",
                  features: Self.studioFeatures + ["Monthly, cancel anytime", "Extras pending owner configuration"],
-                 color: Color(hex: "#DC2626"), popular: true),
+                 color: Color(hex: "#DC2626"), popular: false),
     ]
 
     var body: some View {

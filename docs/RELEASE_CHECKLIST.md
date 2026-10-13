@@ -81,6 +81,15 @@ The manifest is referenced by the app target in `StickDeathInfinity.xcodeproj/pr
 - [ ] No reference-corpus material (recovered SWFs, original sounds, extracted artwork) is in the bundle or repository.
 - [ ] Any new bundled asset has its license file, source URL and SHA-256 recorded in the relevant catalogue.
 
+## 7b. Backend and website gates (local, exact head)
+
+- [ ] `scripts/backend/run_sql_tests.sh` → all `backend/sql/tests` pass on the exact head (9 files on 2026-10-13).
+- [ ] `python3 -m unittest discover -s backend/tests -t .` → all pass (102 on 2026-10-13).
+- [ ] `scripts/backend/verify_backup.sh` → `BACKUP RESTORE REHEARSAL PASSED`.
+- [ ] `node scripts/website/check_help.mjs --check`, `node scripts/website/build_site.mjs --check`, `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers node scripts/website/a11y_perf.mjs` → all green; results recorded in `docs/WEBSITE_INVENTORY.md`.
+- [ ] CI candidates `docs/ci-candidates/backend-candidates.yml` and `website-verify.yml` promoted by the coordinator or run manually with the same commands; unrun gates are listed as deferred, never as passed.
+- [ ] `admin-config.js` and `account-config.js` are `null` in the release commit; any configured copy lives only in the deployment.
+
 ## 8. Owner approvals (never automated)
 
 - [ ] Owner has reviewed the exact release build on a device or the CI simulator app (`docs/NATIVE_SIMULATOR_REVIEW.md`).
