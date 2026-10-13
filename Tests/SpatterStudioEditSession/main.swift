@@ -1821,9 +1821,9 @@ private final class NetworkTrap: URLProtocol {
             }
             doc.frames = [
                 AnimationFrame(id: "f1", elements: [line("a", 10, 40), line("limb1", 0, 10, layerID: stick)]),
-                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 20, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
+                AnimationFrame(id: "f2", elements: [line("b", 10, 40), line("limb2", 0, 10, layerID: stick)]),   // frozen vs f1 (same geometry, no hold)
                 AnimationFrame(id: "f3", elements: []),                                                          // blank
-                AnimationFrame(id: "f4", elements: [line("c", 10, 500)]),                                        // out of canvas
+                AnimationFrame(id: "f4", elements: [line("c", 10, 500), line("limb3", 0, 20, layerID: stick)]),  // out of canvas; limb twice as long
                 AnimationFrame(id: "f5", elements: [line("d", 10, 40)], holdTicks: 4),
                 AnimationFrame(id: "f6", elements: [line("e", 10, 40)])                                           // deliberate hold before it
             ]
