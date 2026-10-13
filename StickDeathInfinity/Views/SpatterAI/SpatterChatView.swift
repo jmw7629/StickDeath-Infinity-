@@ -93,7 +93,7 @@ struct SpatterChatView: View {
                     Button {
                         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
                         let submitted = input
-                        if spatterVM.submit(submitted, context: .messages) { input = "" }
+                        if spatterVM.submit(submitted, context: .companion) { input = "" }
                     } label: {
                         Image(systemName: "arrow.up.circle.fill")
                             .font(.system(size: 32))

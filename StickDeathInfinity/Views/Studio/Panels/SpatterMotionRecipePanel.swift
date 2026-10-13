@@ -17,6 +17,7 @@ struct SpatterMotionRecipePanel: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var session = SpatterStudioEditSession()
     @State private var draft = ""
+    @State private var planPreview: String?
     @State private var isVisible = false
     @State private var isForeground = true
     @FocusState private var draftFocused: Bool
@@ -62,7 +63,57 @@ struct SpatterMotionRecipePanel: View {
               let image = vm.currentImageMoveCapture(), image.placement.layerID == vm.activeLayerID else { return nil }
         return image
     }
+    /// Kinds added on October 13 are classified by the shared router.
+    private var routedKind: SpatterInstructionRouter.Kind? {
+        guard let kind = SpatterInstructionRouter.classify(draft) else { return nil }
+        switch kind {
+        case .batch, .multiClauseBrief, .tween, .frameClipboard, .projectSettings, .brushStroke: return kind
+        default: return nil
+        }
+    }
+    private var routedTitle: String? {
+        switch routedKind {
+        case .batch?: return "Apply a batch of instructions"
+        case .multiClauseBrief?: return "Build a scene from a brief"
+        case .tween?: return "Tween between two frames"
+        case .frameClipboard?: return "Copy or paste a frame"
+        case .projectSettings?: return "Change project settings"
+        case .brushStroke?: return "Draw a brush stroke"
+        default: return nil
+        }
+    }
+    private var routedDescription: String? {
+        switch routedKind {
+        case .batch?: return "Two to eight complete context-only instructions, one per line, become one typed request: one revision, one Undo step, and nothing is applied if any line fails. Frame numbers refer to the project as captured when Spatter opened."
+        case .multiClauseBrief?: return "One to three stick figures with up to six actions each (walks, runs, jumps, waves, falls, punches, kicks, sits, ducks, throws, explodes) become editable frames on new layers with a storyboard receipt. Poses are generated per tick and held only when the element budget requires it; longer briefs are refused, not flattened. Seeds make the result reproducible."
+        case .tween?: return "Adds 1–24 interpolated frames between two adjacent frames whose drawings match in count and style, with the chosen easing. One Undo removes them."
+        case .frameClipboard?: return "Copy a frame to the frame clipboard and/or paste an editable copy with fresh identities after a frame. A bare paste needs a copied frame; copy alone changes nothing in the document."
+        case .projectSettings?: return "Changes the canvas size (16–4096 px) and/or frame rate (1–60 FPS) through the same Project Settings operation. Artwork coordinates are kept; audio keeps its time in seconds. One Undo restores the previous settings."
+        case .brushStroke?: return "Draws one straight stroke in the chosen brush family on the active frame and layer, with a request-stable seed. The stroke is editable like a hand-drawn one; one Undo removes it."
+        default: return nil
+        }
+    }
+    private var routedGuidance: String? {
+        switch routedKind {
+        case .batch?: return "Each line must be a complete frame, layer, exposure, grid, onion, audio-track, tween, clipboard, project-setting, rename or brush-stroke instruction. Selection, image, text, audio-clip and brief instructions run on their own. Stop playback, then Preview plan or Apply."
+        case .multiClauseBrief?: return "Use: \(SpatterMultiClauseBrief.example) Add actors with semicolons, directions with left to right / right to left, per-clause durations with for N seconds, a total with N seconds and an optional seed N. Falls and explodes must come last for an actor."
+        case .tween?: return "Use Tween 4 in-betweens between frames 1 and 2 with ease-in-out easing. Easings: linear, ease-in, ease-out, ease-in-out, easy-ease. Frames are one-based and must be adjacent with matching drawings."
+        case .frameClipboard?: return "Use Copy frame 1 and paste it after frame 2., Copy frame 1., or Paste frame after active frame. Frame numbers are one-based; the project must have room for one more frame."
+        case .projectSettings?: return "Use Set project size to 640 by 480 pixels., Set project frame rate to 24 FPS., or both with at 24 FPS. Resizing keeps artwork coordinates and can be refused when stored effects depend on the current size."
+        case .brushStroke?: return "Use Draw a round brush line from (10%, 20%) to (90%, 20%) in #000000, size 6 px, opacity 100%. Gradient needs in #RRGGBB to #RRGGBB. Size 1–50 px; the active layer must be visible and not fully or position-locked."
+        default: return nil
+        }
+    }
     private var exampleText: String {
+        switch routedKind {
+        case .batch?: return SpatterInstructionBatch.example
+        case .multiClauseBrief?: return SpatterMultiClauseBrief.example
+        case .tween?: return SpatterTweenInstruction.example
+        case .frameClipboard?: return SpatterFrameClipboardInstruction.copyPasteExample
+        case .projectSettings?: return SpatterProjectSettingsInstruction.bothExample
+        case .brushStroke?: return SpatterBrushStrokeInstruction.example
+        default: break
+        }
         if isSelectionTranslateDraft { return SpatterSelectionTranslateInstruction.example }
         if isSelectionTransformDraft { return SpatterSelectionTransformInstruction.example }
         if isSelectionReflectDraft { return SpatterSelectionReflectInstruction.horizontalExample }
@@ -102,6 +153,7 @@ struct SpatterMotionRecipePanel: View {
         isLayerDuplicateDraft ? SpatterLayerDuplicateInstruction.example : isLayerUpdateDraft ? (draft.trimmingCharacters(in:.whitespacesAndNewlines).lowercased().hasPrefix("rename") ? SpatterLayerUpdateInstruction.renameExample : SpatterLayerUpdateInstruction.opacityExample) : isExposureDraft ? SpatterFrameExposureInstruction.example : isErasureDraft ? SpatterSelectedErasureInstruction.example : isGlowDraft ? SpatterLayerGlowInstruction.example : isRenameDraft ? SpatterProjectRenameInstruction.example : isTwoActorDraft ? SpatterTwoActorBrief.example : isAudioDraft ? SpatterAudioInstruction.Example.volume.instruction : isBriefDraft ? SpatterSceneBrief.example : (isStickDraft ? SpatterStickFigureRecipe.Action.walking.example : example)
     }
     private var editDescription: String {
+        if let routedDescription { return routedDescription }
         if isSelectionDraft { return "Move, scale/rotate or flip the captured drawing selection with the same Move commands. Geometry stays editable, images and mixed artwork are excluded, and one Undo restores the prior placement." }
         if isImageEditDraft { return "Rotate a quarter turn, crop to a source rectangle, or position/size/angle the selected image using the same Move controls. The original file and other instances stay intact. One Undo reverses the edit." }
         if isTextUpdateDraft { return "Replace the selected text box's content and optionally its color. Typography, size, box and position are unchanged. One Undo restores the previous text." }
@@ -126,6 +178,7 @@ struct SpatterMotionRecipePanel: View {
             : "This local recipe appends 2–24 outlined-circle frames on a new layer. It uses your project's current frame rate and leaves the existing frames in place. One Undo reverses the edit."
     }
     private var instructionGuidance: String {
+        if let routedGuidance { return routedGuidance }
         if isSelectionDraft { return "Select 1–1,024 drawings with Move before opening Spatter; deselect images. Use Move selected drawings by (10%, -5%). (canvas percentages, -100 to 100), Scale selected drawings to 150% and rotate 45 degrees. (10–1,000%, -180 to 180 degrees) or Flip selected drawings horizontally. Selected layers must be visible and unlocked; Apply rechecks the exact selection." }
         if isImageEditDraft { return "Select one image with Move before opening Spatter. Deselect drawings and stop playback. Use Rotate selected image clockwise., Crop selected image to (10%, 10%, 80%, 80%). (source percentages: x, y, width, height) or Place selected image at (10%, 20%) with size (40%, 30%) and angle 25 degrees. (canvas percentages; the box must fit). The layer must be visible and unlocked." }
         if isTextUpdateDraft { return "Select exactly one text box with Move before opening Spatter. Use Set selected text to \"Hello\". or add in #RRGGBB for a color. Quoted text is content only (1–2,048 characters); it is never read as another instruction." }
@@ -173,7 +226,7 @@ struct SpatterMotionRecipePanel: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text(isSelectionDraft ? "Transform selected drawings" : isImageEditDraft ? "Edit selected image" : isTextUpdateDraft ? "Edit selected text" : isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion")
+                    Text(routedTitle ?? (isSelectionDraft ? "Transform selected drawings" : isImageEditDraft ? "Edit selected image" : isTextUpdateDraft ? "Edit selected text" : isDuplicateRangeDraft ? "Duplicate frame range" : isReverseDraft ? "Reverse frame range" : isNavigationDraft ? "Select frame or layer" : isGridDraft ? "Edit grid guides" : isOnionDraft ? "Edit onion-skin guides" : isFrameActionDraft ? "Edit active frame" : isLayerOrderDraft ? "Move active layer" : isOrderDraft ? "Order selected artwork" : isImageDraft ? "Flip selected image" : isLayerDuplicateDraft ? "Duplicate active layer" : isLayerUpdateDraft ? "Edit active layer" : isExposureDraft ? "Edit selected frame exposure" : isErasureDraft ? "Erase selected drawings" : isGlowDraft ? "Edit active layer glow" : isRenameDraft ? "Rename current project" : isAudioDraft ? "Edit selected audio" : "Create local motion"))
                         .font(.specialElite(20, relativeTo: .title3))
                     Text(editDescription)
                         .font(.subheadline)
@@ -372,6 +425,34 @@ struct SpatterMotionRecipePanel: View {
                         .font(.caption).foregroundColor(.white.opacity(0.7))
                         .accessibilityIdentifier("spatter.local-edit.guidance")
 
+                    Menu("Use a scene brief") {
+                        Button("One actor: walks, punches, falls") { draft = SpatterMultiClauseBrief.example }
+                        Button("Two actors: runs and kicks; ducks and jumps") { draft = SpatterMultiClauseBrief.twoActorExample }
+                        Button("Walks, then explodes (seeded)") { draft = SpatterMultiClauseBrief.explosionExample }
+                    }
+                    .disabled(session.isWorking || session.isClosed)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("spatter.brief.examples")
+                    Menu("Use a tween, clipboard, settings or brush instruction") {
+                        Button("Tween with easing") { draft = SpatterTweenInstruction.example }
+                        Button("Tween (linear)") { draft = SpatterTweenInstruction.linearExample }
+                        Button("Copy frame and paste after") { draft = SpatterFrameClipboardInstruction.copyPasteExample }
+                        Button("Copy frame") { draft = SpatterFrameClipboardInstruction.copyExample }
+                        Button("Paste frame after active frame") { draft = SpatterFrameClipboardInstruction.pasteExample }
+                        Button("Project size") { draft = SpatterProjectSettingsInstruction.sizeExample }
+                        Button("Project frame rate") { draft = SpatterProjectSettingsInstruction.fpsExample }
+                        Button("Project size and frame rate") { draft = SpatterProjectSettingsInstruction.bothExample }
+                        ForEach(StudioBrushFamily.allCases, id: \.rawValue) { family in
+                            Button("Brush: \(SpatterBrushStrokeInstruction.name(family))") { draft = SpatterBrushStrokeInstruction.example(family) }
+                        }
+                    }
+                    .disabled(session.isWorking || session.isClosed)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("spatter.registry.examples")
+                    Button("Use a batch example (one line per instruction)") { draft = SpatterInstructionBatch.example }
+                        .disabled(session.isWorking || session.isClosed)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("spatter.batch.example")
                     Button("Use two editable actors") { draft = SpatterTwoActorBrief.example }
                         .disabled(session.isWorking || session.isClosed)
                         .frame(minHeight: 44)
@@ -399,8 +480,22 @@ struct SpatterMotionRecipePanel: View {
                         .focused($draftFocused)
                     Text("\(draft.utf8.count) / 1,024 bytes · " + (isFrameActionDraft ? "Active frame" : isOrderDraft ? "Selected artwork" : isImageDraft ? "Selected image" : isLayerDraft ? "Active layer" : isExposureDraft ? "Selected frame · \(vm.fps) FPS" : isErasureDraft ? "Selected drawings" : isGlowDraft ? "Active layer glow" : isRenameDraft ? "Project name" : isAudioDraft ? "Selected audio clip" : "\(vm.fps) FPS"))
                         .font(.caption).foregroundColor(.white.opacity(0.6))
+                    // Plan preview (#205): parses and prepares against the current document
+                    // without mutating anything; refusals appear as text before Apply.
+                    Button("Preview plan") {
+                        draftFocused = false
+                        planPreview = SpatterInstructionPreview.plan(draft, context: vm.commandScreenContext.document)
+                    }
+                    .frame(minHeight: 44)
+                    .disabled(session.isWorking || session.isClosed || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityIdentifier("spatter.plan.preview")
+                    if let planPreview {
+                        Text(planPreview).font(.caption).textSelection(.enabled)
+                            .accessibilityIdentifier("spatter.plan.text")
+                    }
                     Button("Apply local edit") {
                         draftFocused = false
+                        planPreview = nil
                         let submitted = draft
                         let account = authVM.userId
                         session.submit(submitted, in: vm, accountID: account, currentScope: { scope })
@@ -435,6 +530,20 @@ struct SpatterMotionRecipePanel: View {
                             Text("The document changed after this Spatter edit (revision \(vm.document.revision) vs \(edit.receipt.revision)). Use Studio's Undo history to step back through later changes.")
                                 .font(.caption).foregroundColor(.white.opacity(0.7))
                                 .accessibilityIdentifier("spatter.motion.undo-unavailable")
+                        }
+                        // Typed revert (#205): removes exactly the frames/layers this edit created
+                        // while they are still untouched, even after unrelated later edits.
+                        Button("Revert Spatter edit") { session.revertAppliedEdit(in: vm, currentScope: scope) }
+                            .disabled(!session.canRevertAppliedEdit(in: vm, currentScope: scope))
+                            .accessibilityIdentifier("spatter.motion.revert")
+                        Text("Revert removes only the frames and layers this edit created, as a new Undo step, and stays available after unrelated edits as long as those frames and layers are unchanged.")
+                            .font(.caption2).foregroundColor(.white.opacity(0.6))
+                        if let storyboard = session.appliedEdit?.storyboard {
+                            Text("Storyboard: " + storyboard.actors.map { actor in
+                                "actor \(actor.index) \(actor.color) " + actor.clauses.map { "\($0.action) \($0.ticks)t" }.joined(separator: " → ")
+                            }.joined(separator: "; ") + " · \(storyboard.frameCount) frames · hold \(storyboard.poseHoldTicks) · seed \(storyboard.seed)")
+                                .font(.caption).textSelection(.enabled)
+                                .accessibilityIdentifier("spatter.motion.storyboard")
                         }
                         Button("Export this edit as MP4") {
                             guard let request = session.prepareMovieExport(in: vm, currentScope: scope) else { return }

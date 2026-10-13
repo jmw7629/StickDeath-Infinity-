@@ -17,7 +17,7 @@ declare bad text; service_expected text[]:=array[
  'sdi_email_suppress','sdi_feed_publish_claim','sdi_feed_publish_finish','sdi_feed_removal_claim','sdi_feed_removal_finish','sdi_marketing_cadence_due',
  'sdi_marketing_claim','sdi_marketing_finish','sdi_preview_renew','sdi_provision_owner','sdi_publish_claim','sdi_publish_finish','sdi_publish_progress',
  'sdi_publish_removal_claim','sdi_publish_removal_finish','sdi_publish_removal_renew','sdi_publish_renew','sdi_publish_uncertain','sdi_register_upload',
- 'sdi_retire_upload','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize','sdi_worker_heartbeat'];
+ 'sdi_retire_upload','sdi_spatter_draft_claim','sdi_spatter_draft_progress','sdi_support_retention','sdi_upload_preview','sdi_war_expire_proposals','sdi_war_finalize','sdi_worker_heartbeat'];
  service_actual text[]; client_count integer;
 begin
  select string_agg(c.relname,', ') into bad from pg_class c join pg_namespace n on n.oid=c.relnamespace

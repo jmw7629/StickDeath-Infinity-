@@ -49,10 +49,13 @@ private struct Result: Encodable {
     }
     static func run() async throws {
         let arguments = CommandLine.arguments
-        let corpusPath = arguments.count > 1 ? arguments[1] : "Tests/SpatterEval/briefs.v1.json"
+        // v2 (October 13) is the current corpus; v1 stays runnable as the frozen baseline.
+        let corpusPath = arguments.count > 1 ? arguments[1] : "Tests/SpatterEval/briefs.v2.json"
         let data = try Data(contentsOf: URL(fileURLWithPath: corpusPath))
         let corpus = try JSONDecoder().decode(Corpus.self, from: data)
-        try require(corpus.schema == "spatter_eval_briefs" && corpus.version == 1, "Unsupported corpus")
+        try require(corpus.schema == "spatter_eval_briefs" && (1...2).contains(corpus.version), "Unsupported corpus")
+        try require(corpus.version == 1 || corpus.briefs.count >= 60, "Corpus v2 must hold at least 60 briefs")
+        try require(Set(corpus.briefs.map(\.id)).count == corpus.briefs.count, "Brief identifiers must be unique")
         let seed = UInt64(ProcessInfo.processInfo.environment["SPATTER_EVAL_SEED"] ?? "") ?? UInt64(Date().timeIntervalSince1970)
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("sdi-spatter-eval-\(seed)-\(UUID().uuidString)")
@@ -95,7 +98,8 @@ private struct Result: Encodable {
                         let vm = try await fixture(brief.id, kind: "blank")
                         guard let studio = SpatterContext.studio(vm.commandScreenContext) else { throw Failure(message: "Studio context missing") }
                         context = studio
-                    } else { context = .general }
+                    } else if brief.context == "library" { context = .library }
+                    else { context = .general }
                     let answer = SpatterAIViewModel.localGuidance(for: brief.input, context: context)
                     let missing = (brief.expected.mustContain ?? []).filter { !answer.contains($0) }
                     let forbidden = (brief.expected.mustNotContain ?? []).filter { answer.localizedCaseInsensitiveContains($0) }

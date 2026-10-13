@@ -61,7 +61,42 @@ final class SpatterStudioEditSession: ObservableObject {
         var imageCrop: StudioImageCrop? = nil
         var imagePlacement: SpatterImagePlacementInstruction? = nil
         var textUpdate: SpatterTextUpdateInstruction? = nil
+        // October 13 registry extensions, briefs and batches (#204, #205, #206, #214).
+        var storyboard: SpatterStoryboard? = nil
+        var batchSummary: String? = nil
+        var tween: SpatterTweenInstruction? = nil
+        var frameClipboard: SpatterFrameClipboardInstruction? = nil
+        var projectSettings: SpatterProjectSettingsInstruction? = nil
+        var brushStroke: SpatterBrushStrokeInstruction? = nil
+        /// Content of the frames and layers this edit created, captured right after
+        /// apply, so a typed revert can prove they are still untouched later.
+        var createdFrames: [AnimationFrame] = []
+        var createdLayers: [CanvasLayer] = []
         var summary: String {
+            if let batchSummary {
+                return receipt.outcome == .unchanged ? "The batch matched the current project. Nothing changed."
+                    : "Applied \(batchSummary) as one revision and one Undo step. Frame numbers were resolved against the project as captured when Spatter opened."
+            }
+            if let storyboard {
+                return "Built \(storyboard.frameCount) editable frames (\(String(format: "%.2f", storyboard.durationSeconds)) s at \(storyboard.fps) FPS, each pose held \(storyboard.poseHoldTicks) tick\(storyboard.poseHoldTicks == 1 ? "" : "s")) for \(storyboard.actors.count) actor\(storyboard.actors.count == 1 ? "" : "s") on new layers in one Undo step, seed \(storyboard.seed). The storyboard is attached to this receipt; nothing was exported or published."
+            }
+            if let tween {
+                return receipt.outcome == .unchanged ? "No in-betweens were added. Nothing changed."
+                    : "Added \(addedFrameCount) in-betweens between frames \(tween.firstFrame) and \(tween.firstFrame + 1) with \(tween.easing.title) easing in one Undo step. Endpoint frames are unchanged."
+            }
+            if let frameClipboard {
+                if frameClipboard.destination == nil { return "Copied the frame to the frame clipboard. The document did not change; Paste frame after … inserts an editable copy." }
+                return "Pasted \(addedFrameCount) editable frame copy with fresh identities in one Undo step\(frameClipboard.source != nil ? " after copying the source frame" : ""). Audio times are unchanged."
+            }
+            if let projectSettings {
+                if receipt.outcome == .unchanged { return "The project already has these settings. Nothing changed." }
+                let size = projectSettings.width.map { "\($0)×\(projectSettings.height ?? $0) px" }
+                let rate = projectSettings.fps.map { "\($0) FPS" }
+                return "Updated project settings (\([size, rate].compactMap { $0 }.joined(separator: ", "))) in one Undo step. Artwork coordinates are unchanged; audio keeps its time in seconds."
+            }
+            if let brushStroke {
+                return "Drew one \(SpatterBrushStrokeInstruction.name(brushStroke.family)) brush stroke on the active layer in one Undo step. It is an editable stroke with its own brush settings."
+            }
             if let edit = audioTrackInstruction {
                 if receipt.outcome == .unchanged { return "Audio track \(edit.track) already has this setting. Nothing changed." }
                 if let volume = edit.volume { return "Set audio track \(edit.track) volume to \(String(format: "%.6g", volume * 100))% in one Undo step. Clip volumes and original audio are unchanged." }
@@ -367,6 +402,18 @@ final class SpatterStudioEditSession: ObservableObject {
                 var imageCrop: StudioImageCrop?
                 var imagePlacement: SpatterImagePlacementInstruction?
                 var textUpdate: SpatterTextUpdateInstruction?
+                // October 13 registry extensions (#204), batches (#205) and briefs (#206).
+                let isBatch = SpatterInstructionBatch.isBatch(draft)
+                let isTween = SpatterTweenInstruction.isInstruction(draft)
+                let isFrameClipboard = SpatterFrameClipboardInstruction.isInstruction(draft)
+                let isProjectSettings = SpatterProjectSettingsInstruction.isInstruction(draft)
+                let isBrushStroke = SpatterBrushStrokeInstruction.isInstruction(draft)
+                var batchSummary: String?
+                var storyboard: SpatterStoryboard?
+                var tweenInstruction: SpatterTweenInstruction?
+                var frameClipboardInstruction: SpatterFrameClipboardInstruction?
+                var projectSettingsInstruction: SpatterProjectSettingsInstruction?
+                var brushStrokeInstruction: SpatterBrushStrokeInstruction?
                 var exposureInstruction: SpatterFrameExposureInstruction?
                 var reverseInstruction: SpatterFrameReverseInstruction?
                 var duplicateRangeInstruction: SpatterFrameDuplicateRangeInstruction?
@@ -382,7 +429,14 @@ final class SpatterStudioEditSession: ObservableObject {
                 var artworkOrderForward: Bool?
                 var imageReflectionAxis: StudioReflectionAxis?
                 let preparedRequest: StudioCommandRequest
-                if SpatterFrameDuplicateRangeInstruction.isInstruction(draft) {
+                if isBatch {
+                    // Several context-only lines become one typed request: one revision,
+                    // one Undo step, nothing applied if any line fails to prepare.
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before applying a batch of instructions.") }
+                    let batch = try SpatterInstructionBatch.parse(draft)
+                    preparedRequest = try batch.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    batchSummary = batch.summary
+                } else if SpatterFrameDuplicateRangeInstruction.isInstruction(draft) {
                     guard !captured.isPlaying else { throw SpatterFrameDuplicateRangeInstruction.Failure.unsupported }
                     let instruction = try SpatterFrameDuplicateRangeInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
@@ -523,6 +577,26 @@ final class SpatterStudioEditSession: ObservableObject {
                     }
                     preparedRequest = try instruction.prepare(in: document, element: element, requestID: submissionID, checkCancellation: check)
                     textUpdate = instruction
+                } else if isTween {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before tweening frames.") }
+                    let instruction = try SpatterTweenInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    tweenInstruction = instruction
+                } else if isFrameClipboard {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before copying or pasting frames.") }
+                    let instruction = try SpatterFrameClipboardInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    frameClipboardInstruction = instruction
+                } else if isProjectSettings {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before changing project settings.") }
+                    let instruction = try SpatterProjectSettingsInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    projectSettingsInstruction = instruction
+                } else if isBrushStroke {
+                    guard !captured.isPlaying else { throw SessionError.unavailable("Stop playback before drawing with Spatter.") }
+                    let instruction = try SpatterBrushStrokeInstruction.parse(draft)
+                    preparedRequest = try instruction.prepare(in: document, requestID: submissionID, checkCancellation: check)
+                    brushStrokeInstruction = instruction
                 } else if isErasure {
                     preparedRequest = try SpatterSelectedErasureInstruction.parse(draft).prepare(in: document,
                         selectedElementIDs: captured.selectedElementIDs, requestID: submissionID, checkCancellation: check)
@@ -545,11 +619,19 @@ final class SpatterStudioEditSession: ObservableObject {
                     let instruction = try SpatterAudioInstruction.parse(draft)
                     preparedRequest = try instruction.prepare(in: document,
                         selectedClipID: captured.selectedAudioClipID, requestID: submissionID, checkCancellation: check)
-                } else if SpatterTwoActorBrief.isBrief(draft) {
-                    preparedRequest = try SpatterTwoActorBrief.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check).request
-                } else if SpatterSceneBrief.isBrief(draft) {
-                    let brief = try SpatterSceneBrief.parse(draft)
-                    preparedRequest = try brief.prepare(in: document, requestID: submissionID, checkCancellation: check).request
+                } else if let kind = SpatterInstructionRouter.classify(draft), kind == .twoActorBrief || kind == .sceneBrief || kind == .multiClauseBrief {
+                    // The historical brief grammars keep their exact output for the
+                    // briefs they accept; every other brief goes to the general planner.
+                    switch kind {
+                    case .twoActorBrief:
+                        preparedRequest = try SpatterTwoActorBrief.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check).request
+                    case .sceneBrief:
+                        preparedRequest = try SpatterSceneBrief.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check).request
+                    default:
+                        let plan = try SpatterMultiClauseBrief.parse(draft).prepare(in: document, requestID: submissionID, checkCancellation: check)
+                        preparedRequest = plan.prepared.request
+                        storyboard = plan.storyboard
+                    }
                 } else if SpatterStickFigureRecipe.isStickFigureInstruction(draft) {
                     let recipe = try SpatterStickFigureRecipe.parse(draft)
                     preparedRequest = try recipe.prepare(in: document, requestID: submissionID, checkCancellation: check).request
@@ -586,7 +668,11 @@ final class SpatterStudioEditSession: ObservableObject {
                     fps: studio.fps, addedDurationSeconds: Double(addedTicks) / Double(studio.fps),
                     audioTrackInstruction: audioTrackInstruction, cutFrameCount: isFrameCut ? document.frames.filter { old in !studio.frames.contains { $0.id == old.id } }.count : 0, duplicatedDrawingCount: isDrawingDuplicate ? receipt.createdElementIDs.count : 0,
                     selectionTranslate: selectionTranslate, selectionTransform: selectionTransform, selectionReflectAxis: selectionReflectAxis,
-                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate)
+                    imageRotation: imageRotation, imageCrop: imageCrop, imagePlacement: imagePlacement, textUpdate: textUpdate,
+                    storyboard: storyboard, batchSummary: batchSummary, tween: tweenInstruction, frameClipboard: frameClipboardInstruction,
+                    projectSettings: projectSettingsInstruction, brushStroke: brushStrokeInstruction,
+                    createdFrames: studio.document.frames.filter { newIDs.contains($0.id) },
+                    createdLayers: studio.document.layers.filter { Set(receipt.createdLayerIDs).contains($0.id) })
                 self.appliedAccountID = captured.accountID
                 self.appliedEdit = result; self.status = .applied; self.notice = result.summary
             } catch is CancellationError {
@@ -653,6 +739,60 @@ final class SpatterStudioEditSession: ObservableObject {
         exportedEditIDs.insert(edit.receipt.requestID)
         return .init(editRequestID: edit.receipt.requestID, projectID: edit.receipt.projectID,
             revision: edit.receipt.revision, accountID: currentScope.accountID)
+    }
+    /// Typed revert for generative edits (#205): offered as long as every frame
+    /// and layer the edit created still exists unchanged and the created layers
+    /// hold no other artwork, even after unrelated later edits. It removes exactly
+    /// those entities in one new revision (deleteFrameRange + deleteLayer), so the
+    /// user's intervening edits survive and Studio's Undo restores the content.
+    func canRevertAppliedEdit(in studio: StudioViewModel, currentScope: Scope) -> Bool {
+        guard !isClosed, !isWorking, currentScope.isStudioVisible, studio.isEditing,
+              currentScope.accountID == appliedAccountID, let edit = appliedEdit,
+              edit.receipt.outcome == .applied, studio.document.id == edit.receipt.projectID,
+              !studio.isPlaying, !studio.isSaving, studio.textDraft == nil,
+              studio.activeStrokeID == nil, studio.pendingBrushStroke == nil else { return false }
+        return revertCommands(in: studio.document, edit: edit) != nil
+    }
+    private func revertCommands(in document: StudioDocument, edit: AppliedEdit) -> [StudioCommand]? {
+        guard !edit.createdFrames.isEmpty || !edit.createdLayers.isEmpty,
+              edit.receipt.deletedFrameIDs.isEmpty, edit.receipt.deletedLayerIDs.isEmpty, edit.receipt.deletedElementIDs.isEmpty else { return nil }
+        let createdFrameIDs = Set(edit.createdFrames.map(\.id)), createdLayerIDs = Set(edit.createdLayers.map(\.id))
+        // Every created frame must still exist with identical content.
+        for frame in edit.createdFrames where !document.frames.contains(frame) { return nil }
+        for layer in edit.createdLayers {
+            guard document.layers.contains(where: { $0.id == layer.id }) else { return nil }
+            // Artwork the user added to a created layer outside the created frames is kept, so no revert.
+            for frame in document.frames where !createdFrameIDs.contains(frame.id) {
+                if frame.elements.contains(where: { $0.layerID == layer.id }) || frame.rasterInstance(on: layer.id) != nil { return nil }
+            }
+        }
+        // Edits that only created elements on existing frames (e.g. one brush stroke) keep the receipt-revision Undo offer instead.
+        guard document.frames.count - createdFrameIDs.count >= 1, document.layers.count - createdLayerIDs.count >= 1,
+              createdFrameIDs.count <= StudioCommandExecutor.maximumAppendedFrames else { return nil }
+        var commands: [StudioCommand] = []
+        if !createdFrameIDs.isEmpty { commands.append(.deleteFrameRange(.init(frameIDs: edit.createdFrames.map(\.id)))) }
+        for layer in edit.createdLayers { commands.append(.deleteLayer(.id(layer.id))) }
+        guard commands.count <= StudioCommandExecutor.maximumCommands else { return nil }
+        return commands
+    }
+    @discardableResult
+    func revertAppliedEdit(in studio: StudioViewModel, currentScope: Scope) -> Bool {
+        guard let edit = appliedEdit, !isClosed, !isWorking else { return false }
+        guard canRevertAppliedEdit(in: studio, currentScope: currentScope), let commands = revertCommands(in: studio.document, edit: edit) else {
+            notice = "Revert Spatter edit is unavailable: the frames or layers this edit created were changed, removed or reused, or the editor is busy. Use Studio's Undo history instead."
+            return false
+        }
+        do {
+            let receipt = try studio.applyStudioCommands(.init(requestID: UUID(), projectID: edit.receipt.projectID,
+                expectedRevision: studio.document.revision, action: .apply(commands)))
+            guard receipt.outcome == .applied else { throw StudioCommandError.noHistory }
+            appliedEdit = nil; appliedAccountID = nil; status = .idle
+            notice = "Reverted this Spatter edit's \(edit.createdFrames.count) frame\(edit.createdFrames.count == 1 ? "" : "s") and \(edit.createdLayers.count) layer\(edit.createdLayers.count == 1 ? "" : "s") as one new Undo step. Your later edits are preserved; Studio's Undo restores the generated content."
+            return true
+        } catch {
+            notice = error.localizedDescription
+            return false
+        }
     }
     /// Linear history: the applied edit is the top undo entry only while the
     /// document revision still equals the receipt revision. Any later edit, undo
@@ -831,102 +971,5 @@ enum SpatterSHA256 {
     }
     static func hexDigest(of data: Data) -> String {
         digest(of: data).map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-// MARK: - Quality report scaffold (#213)
-
-/// Deterministic measurements over an editable document. These are findings for
-/// a human reviewer, not an automatic pass/fail verdict; owner approval of the
-/// exact render stays required. Audio alignment and decoded MP4 counts are not
-/// measured here (they need the export pipeline) and are reported as unmeasured.
-struct SpatterQualityReport: Equatable {
-    struct Finding: Equatable {
-        enum Kind: String { case blankFrame, frozenFrame, outOfCanvas, limbVariance, timingMismatch }
-        let kind: Kind
-        let frameIndex: Int?
-        let detail: String
-    }
-    let frameCount: Int
-    let fps: Int
-    let actualTicks: Int
-    let requestedTicks: Int?
-    let findings: [Finding]
-    let unmeasured: [String]
-    var blankFrameCount: Int { findings.filter { $0.kind == .blankFrame }.count }
-    var frozenFrameCount: Int { findings.filter { $0.kind == .frozenFrame }.count }
-    var outOfCanvasCount: Int { findings.filter { $0.kind == .outOfCanvas }.count }
-    var durationSeconds: Double { fps > 0 ? Double(actualTicks) / Double(fps) : 0 }
-
-    /// `requestedTicks` is the tick count a brief or recipe asked for, if any.
-    /// `generatedLayerIDs` marks stick-figure layers whose limb lengths should be stable.
-    static func analyze(_ document: StudioDocument, requestedTicks: Int? = nil,
-                        generatedLayerIDs: Set<String> = [], limbVarianceTolerance: Double = 0.15) -> SpatterQualityReport {
-        var findings: [Finding] = []
-        let width = Double(document.width), height = Double(document.height)
-        var actualTicks = 0
-        var previousSignature: [String]?
-        for (index, frame) in document.frames.enumerated() {
-            actualTicks += frame.durationTicks
-            let visibleElements = frame.elements.filter { element in
-                guard let layerID = element.layerID, let layer = document.layers.first(where: { $0.id == layerID }) else { return true }
-                return layer.visible && layer.opacity > 0
-            }
-            let hasImage = frame.rasterAssetID != nil && frame.rasterPlacement != nil
-            if visibleElements.isEmpty && !hasImage {
-                findings.append(.init(kind: .blankFrame, frameIndex: index, detail: "Frame \(index + 1) has no visible drawings or image."))
-            }
-            // A deliberate hold uses holdTicks on one frame; identical consecutive
-            // frames without a hold are an unintended freeze.
-            let signature = visibleElements.map { element in
-                element.id + "|" + element.tool.rawValue + "|" + element.points.map { "\($0.x),\($0.y)" }.joined(separator: ";")
-                    + "|" + (element.translation.map { "\($0.x),\($0.y)" } ?? "") + "|" + (element.transform.map { "\($0.a),\($0.b),\($0.c),\($0.d),\($0.tx),\($0.ty)" } ?? "")
-            }
-            let geometry = visibleElements.map { element in
-                element.tool.rawValue + "|" + element.points.map { "\($0.x),\($0.y)" }.joined(separator: ";")
-                    + "|" + (element.translation.map { "\($0.x),\($0.y)" } ?? "") + "|" + (element.transform.map { "\($0.a),\($0.b),\($0.c),\($0.d),\($0.tx),\($0.ty)" } ?? "")
-            }
-            if let previous = previousSignature, !geometry.isEmpty, previous == geometry, frame.holdTicks == nil,
-               document.frames[index - 1].holdTicks == nil {
-                findings.append(.init(kind: .frozenFrame, frameIndex: index, detail: "Frame \(index + 1) repeats frame \(index) exactly without a frame hold."))
-            }
-            previousSignature = geometry
-            _ = signature
-            for element in visibleElements {
-                let offsetX = element.translation?.x ?? 0, offsetY = element.translation?.y ?? 0
-                if element.points.contains(where: { point in
-                    let x = Double(point.x) + Double(offsetX), y = Double(point.y) + Double(offsetY)
-                    return !x.isFinite || !y.isFinite || x < -0.5 || y < -0.5 || x > width + 0.5 || y > height + 0.5
-                }) {
-                    findings.append(.init(kind: .outOfCanvas, frameIndex: index, detail: "Frame \(index + 1) element \(element.id.prefix(8)) has points outside the \(document.width)×\(document.height) canvas."))
-                }
-            }
-        }
-        // Limb-length variance: for generated stick layers, every line element on
-        // the layer should keep a stable length across frames (per ordinal position).
-        for layerID in generatedLayerIDs.sorted() {
-            var lengthsByPosition: [Int: [Double]] = [:]
-            for frame in document.frames {
-                let lines = frame.elements.filter { $0.layerID == layerID && $0.tool == .line && $0.points.count == 2 }
-                for (position, line) in lines.enumerated() {
-                    let dx = Double(line.points[1].x - line.points[0].x), dy = Double(line.points[1].y - line.points[0].y)
-                    lengthsByPosition[position, default: []].append((dx * dx + dy * dy).squareRoot())
-                }
-            }
-            for (position, lengths) in lengthsByPosition.sorted(by: { $0.key < $1.key }) where lengths.count > 1 {
-                let mean = lengths.reduce(0, +) / Double(lengths.count)
-                guard mean > 0 else { continue }
-                let maxDeviation = lengths.map { abs($0 - mean) / mean }.max() ?? 0
-                if maxDeviation > limbVarianceTolerance {
-                    findings.append(.init(kind: .limbVariance, frameIndex: nil,
-                        detail: "Layer \(layerID.prefix(8)) limb \(position + 1) length varies \(Int((maxDeviation * 100).rounded()))% from its mean across frames."))
-                }
-            }
-        }
-        if let requestedTicks, requestedTicks != actualTicks {
-            findings.append(.init(kind: .timingMismatch, frameIndex: nil, detail: "Requested \(requestedTicks) ticks but the document holds \(actualTicks) ticks at \(document.fps) FPS."))
-        }
-        return .init(frameCount: document.frames.count, fps: document.fps, actualTicks: actualTicks, requestedTicks: requestedTicks,
-                     findings: findings, unmeasured: ["decodedMovieFrameCount", "decodedMovieDuration", "audioOffsetSeconds"])
     }
 }

@@ -808,6 +808,22 @@ private final class NetworkTrap: URLProtocol {
                     try require(classifiers(example) == [grammar.name], "Catalog example \(example) classified as \(classifiers(example))")
                 }
             }
+            // October 13 registry extensions: the shared router owns every catalog example exactly once.
+            for grammar in SpatterInstructionCatalog.grammars {
+                for example in grammar.examples {
+                    try require(SpatterInstructionRouter.classify(example)?.rawValue == grammar.name, "Router classified \(grammar.name) example as \(String(describing: SpatterInstructionRouter.classify(example)))")
+                }
+            }
+            try require(SpatterInstructionCatalog.grammars.count == 37 && SpatterInstructionCatalog.version == 3, "Catalog size drifted")
+            try require(try SpatterTweenInstruction.parse(SpatterTweenInstruction.example) == .init(inbetweens: 4, firstFrame: 1, easing: .easeInOut), "Tween capture wrong")
+            try require(try SpatterProjectSettingsInstruction.parse(SpatterProjectSettingsInstruction.bothExample) == .init(width: 640, height: 480, fps: 24), "Settings capture wrong")
+            try require(try SpatterBrushStrokeInstruction.parse(SpatterBrushStrokeInstruction.gradientExample).endColor == "#0000FF", "Gradient end color lost")
+            try require(try SpatterMultiClauseBrief.parse(SpatterMultiClauseBrief.example).actors[0].clauses.count == 3, "Brief clauses lost")
+            for text in [SpatterTweenInstruction.example + " Delete active layer.", "Set project size to 640 by 480 pixels. rm -rf /",
+                         "Copy frame 1 and paste it after frame 2; publish", SpatterMultiClauseBrief.example + " Upload it"] {
+                try require((try? SpatterTweenInstruction.parse(text)) == nil && (try? SpatterProjectSettingsInstruction.parse(text)) == nil
+                    && (try? SpatterFrameClipboardInstruction.parse(text)) == nil && (try? SpatterMultiClauseBrief.parse(text)) == nil, "Suffix injection accepted: \(text)")
+            }
             let translate = try SpatterSelectionTranslateInstruction.parse("  move SELECTED drawings by ( 10 % , -5% ) ")
             try require(translate.dxPercent == 10 && translate.dyPercent == -5, "Translate capture wrong")
             let both = try SpatterSelectionTransformInstruction.parse(SpatterSelectionTransformInstruction.example)

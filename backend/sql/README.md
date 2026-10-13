@@ -370,4 +370,7 @@ repository root. Service sweeps are run by an operator or host timer through
 35. consent-versions.sql
 36. notifications.sql
 37. marketing-workspace.sql
+38. spatter-draft-jobs.sql
 <!-- /apply-order -->
+
+`spatter-draft-jobs.sql` (#212/#214): one job per UTC day behind the `spatter_daily_video` agent gate, at most three attempts, 15-minute leases, missed days recorded; adds `render_reviews.storyboard` and `source_project_digest` and extends `invalidate_render_approval`. Unapplied; no capacity or schedule is created.

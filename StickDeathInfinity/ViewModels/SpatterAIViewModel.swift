@@ -217,7 +217,9 @@ final class SpatterAIViewModel: ObservableObject {
 
     /// Current implemented behavior takes precedence over historical brain packs.
     /// These are instructions for the user, never execution receipts.
-    static let currentGuideVersion = "2026-10-12.1"
+    static let currentGuideVersion = "2026-10-13.1"
+    /// Price points the owner approved; nothing here reads a live store or entitlement.
+    static let pricingGuide = "The planned subscription plans are USD 4.99 per month and USD 9.99 per month. Annual pricing is not configured and cannot be offered until the owner records it explicitly. I cannot see live store prices, trials, taxes or your current entitlement; the store sheet that processes the purchase shows what actually applies, and nothing is charged from this conversation."
     /// Verified sign-in and account facts. Nothing here grants account access.
     static let accountGuide = "Sign in with Apple, Google, GitHub or Microsoft through the sign-in screen; the app restores a saved session on launch and shows Loading until that check finishes. Guest use keeps projects and local Spatter preferences on this device under a separate guest scope, and signing in later does not merge or upload them. Admin roles come from server-authorized metadata, never from the app. In-app account deletion is not available yet: the screen does not offer a delete button and I cannot delete, merge, rename or inspect accounts, change email or reset passwords from this conversation. Editable projects stay on your device; the server keeps only identity, access, vote, consent, billing and job metadata. Do not paste passwords, verification codes or card numbers here."
     /// Rooms as implemented today: invitation codes, mutual agreement, no chat or calls.
@@ -286,12 +288,14 @@ final class SpatterAIViewModel: ObservableObject {
     Spatter's separate Studio edit panel executes only the complete local instruction grammars listed below (catalog v\(SpatterInstructionCatalog.version)).
     Choose a complete example and Apply; chat advice never executes an edit. Each applied edit is one Undo step with a factual receipt.
     \(SpatterInstructionCatalog.capabilityLines.joined(separator: "\n"))
+    Scene briefs plan one to three stick figures with eleven actions, per-clause durations and deterministic seeds into editable frames on new layers with a storyboard receipt; longer briefs hold poses or are refused, never flattened. Batches apply up to eight context-only instructions as one revision and one Undo step. Preview plan shows the typed commands before Apply. Revert Spatter edit removes only the frames and layers an edit created while they are unchanged, even after unrelated edits.
     Audio fade curve shapes (linear, equal-power, S-curve, exponential, logarithmic) are set in the Audio panel; the Spatter fade grammar sets linear fade durations only.
     The Export panel renders MP4, GIF, PNG sequence or spritesheet. Actual success requires a completed real output file.
     After a saved Spatter edit, Export this edit as MP4 hands the exact saved revision to the real exporter and reports its byte count, duration, frame count and SHA-256.
     Open-ended AI video generation and automatic publishing are not available yet.
     \(accountGuide)
     \(roomsGuide)
+    \(pricingGuide)
     User messaging, text chat and calling by phone or video are removed. Every generated public video needs owner approval of its exact render.
     """
 
@@ -326,7 +330,13 @@ final class SpatterAIViewModel: ObservableObject {
             return "Export creates a file on your device; it does not publish it. Official-channel uploads and marketing need separate creator permissions, asset rights and moderation. Every Spatter-generated public video also needs Joe's approval of the exact render. Connected automatic publishing is not available yet."
         }
         if mentions("refund", "billing", "subscription", "charge", "charged", "payment", "stripe") {
-            return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent."
+            return "I can explain the app, but I cannot inspect your billing account, issue refunds, change subscriptions or confirm a payment. Live billing and configured entitlements are not verified here. Do not share passwords, card details or verification codes in this conversation. Use the support or subscription-management route shown by the store or service that actually processed your purchase; I cannot claim a support ticket was sent.\n\n" + pricingGuide
+        }
+        // "plan" and "tier" alone describe animation planning; pair them with a money word.
+        if mentions("price", "prices", "pricing", "subscribe", "subscriptions") ||
+            (mentions("plan", "plans", "tier", "tiers", "premium", "annual", "yearly") &&
+             mentions("cost", "costs", "pay", "paid", "month", "monthly", "year", "yearly", "annual", "usd", "dollar", "dollars", "much", "fee", "fees")) {
+            return pricingGuide
         }
         return nil
     }
@@ -501,7 +511,8 @@ final class SpatterAIViewModel: ObservableObject {
     }
 
     static func localGuidance(for query: String, context: SpatterContext) -> String {
-        let project = context.studio.map { "Project snapshot: \($0.name), \($0.frameCount) frames at \($0.fps) FPS.\n\n" } ?? ""
+        let project = context.studio.map { "Project snapshot: \($0.name), \($0.frameCount) frames at \($0.fps) FPS.\n\n" }
+            ?? (context.currentScreen == "library" ? "Project library: no project is open, so no document context is shared.\n\n" : "")
         if let guide = authorityGuide(for: query) ?? persistenceGuide(for: query) ?? studioTroubleshooting(for: query, context: context) ?? currentGuide(for: query, context: context) ?? drawingGuide(for: query) ?? canvasGuide(for: query, context: context) { return "💀 Current Studio guide (\(currentGuideVersion))\n\n" + project + guide + "\n\nGuidance only; no project changes were made." }
         let stopWords: Set<String> = ["a", "an", "the", "i", "my", "me", "to", "how", "do", "does", "can", "you", "please", "is", "and", "of", "for", "with", "in", "it", "what"]
         // Bound synchronous local ranking even for an adversarial maximum-size prompt.
@@ -621,7 +632,12 @@ struct SpatterContext: Equatable {
     let studio: StudioSnapshot?
     var currentTool: String? { studio?.tool }
     var scope: String { currentScreen + ":" + (studio?.projectID.uuidString ?? "no-project") }
-    static let messages = SpatterContext(currentScreen: "messages", studio: nil)
+    /// The companion chat outside Studio. The retired "messages" screen name is
+    /// kept only as an alias so older call sites compile; no screen by that name exists.
+    static let companion = SpatterContext(currentScreen: "companion", studio: nil)
+    static let messages = companion
+    /// The project library: no project is open, so no document context is shared.
+    static let library = SpatterContext(currentScreen: "library", studio: nil)
     static let general = SpatterContext(currentScreen: "general", studio: nil)
     private init(currentScreen: String, studio: StudioSnapshot?) { self.currentScreen = currentScreen; self.studio = studio }
 
