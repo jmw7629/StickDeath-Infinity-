@@ -226,7 +226,8 @@ struct StudioMovieExportControls: View {
                               let request = session.beginSharing(scope: scope) else { return }
                         reviewExport = SDIRenderUploadExport(request: request, account: account,
                             title: String(vm.document.name.prefix(100)),
-                            revision: "Studio project \(output.manifest.projectID.uuidString), revision \(output.manifest.documentRevision)")
+                            revision: "Studio project \(output.manifest.projectID.uuidString), revision \(output.manifest.documentRevision)",
+                            manifest: output.manifest)
                     } label: {
                         Label("Submit this MP4 for review", systemImage: "checkmark.shield")
                             .font(.specialElite(12))
