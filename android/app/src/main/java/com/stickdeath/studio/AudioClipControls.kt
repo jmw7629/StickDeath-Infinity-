@@ -15,7 +15,7 @@ import androidx.compose.ui.semantics.contentDescription
     var libraryOpen by remember(doc.id) { mutableStateOf(false) }
     TextButton({ vm.stopAudioPreview(); libraryOpen = !libraryOpen }, enabled = enabled) { Text(if (libraryOpen) "Close sound library" else "Browse sound library") }
     if (libraryOpen) BundledSoundControls(vm, doc, enabled)
-    Text("Import audio you have rights to use: PCM WAV or device-supported AAC/M4A, MP3, FLAC, Vorbis or Opus. Mono/stereo, 8–48 kHz, up to 60 s; both the file and decoded PCM must fit 4 MiB. Project limit: 16 clips / 8 MiB. Audio is copied into the local project backup.")
+    Text("Import audio you have rights to use: PCM WAV or device-supported AAC/M4A, MP3, FLAC, Vorbis or Opus. Mono/stereo, 8–48 kHz, up to ${AudioLimits.MAX_CLIP_SECONDS.toInt()} s as on iOS; both the file and decoded PCM must fit 4 MiB, so long clips need mono or a lower sample rate (about ${AudioLimits.secondsFittingSource(48_000, 2).toInt()} s at 48 kHz stereo). Project limit: 16 clips / 8 MiB. Audio is copied into the local project backup.")
     Button(onImport, enabled = enabled && !vm.importingAudio && doc.audioClips.size < 16) { Text("Import audio from Files") }
     if (vm.importingAudio) {
         Text(vm.audioImportStage ?: "Preparing audio…")

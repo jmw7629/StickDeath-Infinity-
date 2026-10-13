@@ -189,6 +189,107 @@ class SwiftProjectImportTest {
             assertEquals(listOf(LayerBlend.Multiply, LayerBlend.Screen), historical.layers.map { it.blend })
         }
     }
+    /** Shared golden fixture (Tests/SDIFixtures): schema 35 lock modes, label, PhotoCraft blends, hold,
+     * pressure brush, legacy line and the mixer import, persist as Android-local v26 and reopen. */
+    @Test fun testSchema35GoldenFixtureImportsAndPersistsAsV26() {
+        val bytes = fixture("swift-schema35-studio.sdi")
+        if (android.os.Build.VERSION.SDK_INT < 29) { rejects(bytes); return } // multiply/linear-dodge need BlendMode
+        val document = SwiftProjectImport.decode(bytes)
+        assertEquals(listOf(LayerLockMode.Position, LayerLockMode.Alpha), document.layers.map { it.lockMode })
+        assertEquals(LayerLabel.Red, document.layers[0].label); assertNull(document.layers[1].label)
+        assertEquals(listOf(LayerBlend.Multiply, LayerBlend.LinearDodge), document.layers.map { it.blend })
+        assertFalse(document.layers[0].locked)
+        assertEquals(listOf(1, 3), document.frames.map { it.hold })
+        val line = document.frames[0].strokes.first { it.id == "stroke-line" }
+        assertEquals(Tool.Line, line.tool); assertFalse(line.swiftLegacyPath); assertEquals(2, line.points.size); assertEquals(0.5f, line.opacity, 0f)
+        assertEquals(8f, document.frames[0].strokes.first { it.id == "stroke-pencil" }.width, 0.0001f)
+        val brush = document.frames[1].strokes.single()
+        assertEquals(listOf(0.2, 0.6, 1.0), brush.swiftRoundBrush!!.pressures)
+        assertEquals(listOf(AudioTrackMix(pan = -0.25f), AudioTrackMix(volume = 0.7f, soloed = true), AudioTrackMix(pan = 0.5f), AudioTrackMix(muted = true)), document.audioTracks)
+        val store = ProjectStore(instrumentation.targetContext)
+        val encoded = JSONObject(String(store.encode(document), Charsets.UTF_8))
+        assertEquals(26, encoded.getInt("version"))
+        assertEquals("position", encoded.getJSONArray("layers").getJSONObject(0).getString("lockMode"))
+        assertEquals("#FC5D5B", encoded.getJSONArray("layers").getJSONObject(0).getString("colorLabel"))
+        assertFalse(encoded.getJSONArray("layers").getJSONObject(1).has("colorLabel"))
+        val owned = mutableListOf<String>()
+        try {
+            val imported = store.importProject(store.encode(document).inputStream()).also { owned.add(it.id) }
+            val reopened = store.load(imported.id)
+            assertEquals(document.layers.map { Triple(it.lockMode, it.label, it.blend) }, reopened.layers.map { Triple(it.lockMode, it.label, it.blend) })
+            assertEquals(document.audioTracks, reopened.audioTracks)
+            // Lock modes and labels claim v26; a v25 envelope carrying them is rejected with the original preserved.
+            val forged = JSONObject(String(store.encode(document), Charsets.UTF_8)).put("version", 25)
+            try { store.importProject(forged.toString().toByteArray(Charsets.UTF_8).inputStream()).also { owned.add(it.id) }; fail("v25 envelope with lock modes was accepted") }
+            catch (_: IllegalArgumentException) { }
+        } finally { owned.forEach { cleanup(it) } }
+    }
+    @Test fun testSchema35NegativeFixturesRejectWithOriginalPreserved() {
+        listOf("swift-schema35-text.sdi", "swift-schema36-future.sdi", "swift-schema35-glow.sdi",
+            "swift-schema35-unknown-label.sdi", "swift-schema35-audio-clip.sdi").forEach { name ->
+            val bytes = fixture(name)
+            rejects(bytes)
+            assertTrue(name, bytes.contentEquals(fixture(name)))
+        }
+    }
+    /** Android → iOS export re-imports through the production importer with identical content. */
+    @Test fun testExportRoundTripsThroughTheProductionImporter() {
+        val bytes = fixture("swift-schema35-studio.sdi")
+        if (android.os.Build.VERSION.SDK_INT < 29) return
+        val document = SwiftProjectImport.decode(bytes)
+        assertEquals(emptyList<String>(), SwiftProjectExport.unsupportedReasons(document))
+        val exported = SwiftProjectExport.encode(document)
+        assertTrue(SwiftProjectImport.recognizes(exported))
+        val again = SwiftProjectImport.decode(exported)
+        assertEquals(document.layers, again.layers)
+        assertEquals(document.audioTracks, again.audioTracks)
+        assertEquals(document.frames.map { it.hold }, again.frames.map { it.hold })
+        assertEquals(document.name, again.name); assertEquals(document.id, again.id)
+        document.frames.zip(again.frames).forEach { (before, after) ->
+            assertEquals(before.strokes.map { it.id }, after.strokes.map { it.id })
+            before.strokes.zip(after.strokes).forEach { (x, y) ->
+                assertEquals(x.tool, y.tool); assertEquals(x.points, y.points); assertEquals(x.color, y.color)
+                assertEquals(x.width, y.width, 0.001f); assertEquals(x.opacity, y.opacity, 0f)
+                assertEquals(x.swiftLegacyPath, y.swiftLegacyPath); assertEquals(x.swiftLegacyButtCap, y.swiftLegacyButtCap)
+                assertEquals(x.swiftRoundBrush?.pressures, y.swiftRoundBrush?.pressures)
+                assertEquals(x.swiftRoundBrush?.smoothing, y.swiftRoundBrush?.smoothing)
+            }
+        }
+        // Android-only content refuses the export instead of being flattened.
+        val soft = Stroke(layerID = document.layers[0].id, points = listOf(Point(5f, 5f), Point(9f, 9f)), color = -1, width = 4f, tool = Tool.SoftEraser)
+        val withSoft = document.copy(frames = listOf(document.frames[0].copy(strokes = document.frames[0].strokes + soft)) + document.frames.drop(1))
+        try { SwiftProjectExport.encode(withSoft); fail("Soft eraser export was accepted") } catch (_: SwiftProjectExport.Unsupported) { }
+    }
+    /** v26-only content (marker/crayon, soft eraser, alpha-preserving paint, crop/turns) persists and reopens;
+     * documents without it still write v25. */
+    @Test fun testV26ContentPersistsAndPlainDocumentsStayV25() {
+        val base = Document.create("v26 content", 64, 64, 12)
+        val store = ProjectStore(instrumentation.targetContext)
+        assertEquals(25, JSONObject(String(store.encode(base), Charsets.UTF_8)).getInt("version"))
+        val layer = base.layer.copy(lockMode = LayerLockMode.Alpha, label = LayerLabel.Violet)
+        val marks = listOf(
+            Stroke(layerID = layer.id, points = listOf(Point(4f, 4f), Point(30f, 30f)), color = -16777216, width = 6f, tool = Tool.Pencil, brush = BrushFamily.Marker),
+            Stroke(layerID = layer.id, points = listOf(Point(10f, 4f), Point(30f, 40f)), color = -16777216, width = 6f, tool = Tool.Pencil, brush = BrushFamily.Crayon, nibAngle = 12f),
+            Stroke(layerID = layer.id, points = listOf(Point(5f, 5f), Point(20f, 20f)), color = -1, width = 8f, tool = Tool.SoftEraser, opacity = 0.5f),
+            Stroke(layerID = layer.id, points = listOf(Point(6f, 6f), Point(22f, 18f)), color = -16777216, width = 3f, tool = Tool.Pencil, preservesLayerAlpha = true))
+        val document = base.copy(layers = listOf(layer), frames = listOf(base.frame.copy(strokes = marks)))
+        assertEquals(26, JSONObject(String(store.encode(document), Charsets.UTF_8)).getInt("version"))
+        val owned = mutableListOf<String>()
+        try {
+            val imported = store.importProject(store.encode(document).inputStream()).also { owned.add(it.id) }
+            val reopened = store.load(imported.id)
+            assertEquals(LayerLockMode.Alpha, reopened.layer.lockMode); assertEquals(LayerLabel.Violet, reopened.layer.label)
+            assertEquals(marks.map { Triple(it.tool, it.brush, it.preservesLayerAlpha) }, reopened.frame.strokes.map { Triple(it.tool, it.brush, it.preservesLayerAlpha) })
+            assertEquals(0.5f, reopened.frame.strokes[2].opacity, 0f)
+            // Exports render soft eraser and alpha-preserving marks through the shared renderer without throwing.
+            val bitmap = android.graphics.Bitmap.createBitmap(64, 64, android.graphics.Bitmap.Config.ARGB_8888)
+            try { FrameRenderer.draw(android.graphics.Canvas(bitmap), reopened, reopened.frame) } finally { bitmap.recycle() }
+            // An older envelope cannot carry v26 tools: the version claim is checked against content.
+            val forged = JSONObject(String(store.encode(document), Charsets.UTF_8)).put("version", 25)
+            try { store.importProject(forged.toString().toByteArray(Charsets.UTF_8).inputStream()).also { owned.add(it.id) }; fail("v25 envelope with v26 tools was accepted") }
+            catch (_: IllegalArgumentException) { }
+        } finally { owned.forEach { cleanup(it) } }
+    }
     private fun constantWav(frames: Int, value: Int, rate: Int = 8000): AudioSource {
         val pcm = frames * 2
         val buffer = ByteBuffer.allocate(44 + pcm).order(ByteOrder.LITTLE_ENDIAN)

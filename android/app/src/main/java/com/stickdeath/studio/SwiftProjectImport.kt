@@ -12,7 +12,10 @@ import java.util.UUID
  * entire import before ProjectStore saves anything; it is never flattened or silently discarded.
  */
 internal object SwiftProjectImport {
-    private val magic = "SDIPROJECT000001\n".toByteArray(Charsets.US_ASCII)
+    /** Highest iOS `StudioDocument.supportedSchemaVersions` bound this importer understands. Schema 35
+     * only adds the bundled text face, and text elements are still rejected as unsupported content. */
+    const val SUPPORTED_SCHEMA = 35
+    internal val magic = "SDIPROJECT000001\n".toByteArray(Charsets.US_ASCII)
     fun recognizes(bytes: ByteArray): Boolean = bytes.size >= magic.size && magic.indices.all { bytes[it] == magic[it] }
     private fun unsupported(): Nothing = throw IllegalArgumentException(
         "This Swift project uses artwork or settings not yet supported by Android project transfer. Open it in iOS; the original is unchanged.")
@@ -48,7 +51,7 @@ internal object SwiftProjectImport {
             "audioClips", "mutedAudioTracks", "audioTrackVolumes", "audioTrackPans", "soloedAudioTracks",
             "gridEnabled", "gridSettings", "onionEnabled", "onionSettings", "createdAt", "modifiedAt", "revision")
         val schemaVersion = source.getInt("schemaVersion")
-        require(schemaVersion in 1..34) { "Unsupported Swift document version." }
+        require(schemaVersion in 1..SUPPORTED_SCHEMA) { "Unsupported Swift document version." }
         source.emptyArray("audioClips")
         val tracks = audioTracks(source, schemaVersion)
         // Guide settings have differing limits/defaults. Do not silently replace a configured guide.
@@ -69,14 +72,18 @@ internal object SwiftProjectImport {
             val layer = layersJSON.getJSONObject(index)
             layer.only("id", "name", "visible", "locked", "opacity", "lockMode", "blendMode", "glowEnabled", "glowColor", "glowRadius", "glowStrength", "colorLabel")
             if (layer.optBoolean("glowEnabled") ||
-                layer.optString("lockMode", "free") !in listOf("free", "full") ||
-                listOf("glowColor", "glowRadius", "glowStrength", "colorLabel").any { !layer.isNull(it) }) unsupported()
+                listOf("glowColor", "glowRadius", "glowStrength").any { !layer.isNull(it) }) unsupported()
+            // iOS: `locked` forces lockMode "full" (CanvasLayer.init(from:)); otherwise the raw value decides.
+            val lockMode = if (layer.optBoolean("locked")) LayerLockMode.Full
+                else LayerLockMode.fromSwift(layer.optString("lockMode", "free")) ?: unsupported()
+            // Only the eleven PhotoCraft swatches are labels; any other populated hex rejects.
+            val label = if (layer.isNull("colorLabel")) null else LayerLabel.fromHex(layer.getString("colorLabel")) ?: unsupported()
             // iOS draws unknown legacy blend strings as Normal; project transfer rejects them instead of guessing.
             val blend = LayerBlend.fromSwift(layer.optString("blendMode", "normal")) ?: unsupported()
             require(!blend.isExtended || schemaVersion >= 34) { "This layer blend mode needs Swift project version 34; original preserved." }
             require(FrameRenderer.supports(blend)) { FrameRenderer.unavailableReason(blend) ?: "Unsupported blend: ${blend.label}" }
             Layer(layer.getString("id"), layer.getString("name"), layer.optBoolean("visible", true),
-                layer.optBoolean("locked") || layer.optString("lockMode") == "full", layer.optDouble("opacity", 1.0).toFloat(), blend)
+                lockMode, layer.optDouble("opacity", 1.0).toFloat(), blend, label)
         }
         var pointCount = 0; var strokeCount = 0
         val allIDs = mutableSetOf<String>()
@@ -91,9 +98,12 @@ internal object SwiftProjectImport {
                 if (!element.isNull("fillColor")) unsupported()
                 val tool = when (element.getString("tool")) {
                     "pen", "pencil", "brush" -> Tool.Pencil
+                    // Historical descriptor-free line: two endpoints, straight segment (the Android→iOS export writes these).
+                    "line" -> Tool.Line
                     else -> unsupported()
                 }
                 val descriptor = if (element.isNull("brush")) null else element.getJSONObject("brush")
+                if (tool == Tool.Line && (descriptor != null || element.getJSONArray("points").length() != 2)) unsupported()
                 val strokeID = element.getString("id")
                 require(allIDs.add(strokeID)) { "Duplicate Swift artwork identity." }
                 val points = element.getJSONArray("points")
@@ -106,7 +116,7 @@ internal object SwiftProjectImport {
                     // Historical renderer uses constant width for descriptor-free strokes.
                     Point(point.getDouble("x").toFloat(), point.getDouble("y").toFloat())
                 }, (0xff000000L or hex.substring(1).toLong(16)).toInt(), element.getDouble("width").toFloat(), tool,
-                    opacity = element.getDouble("opacity").toFloat(), swiftLegacyPath = descriptor == null, swiftLegacyButtCap = descriptor == null && element.getString("tool") == "pencil",
+                    opacity = element.getDouble("opacity").toFloat(), swiftLegacyPath = descriptor == null && tool == Tool.Pencil, swiftLegacyButtCap = descriptor == null && element.getString("tool") == "pencil",
                     swiftRoundBrush = descriptor?.let { SwiftRoundBrush(it.toString(), (0 until points.length()).map { p ->
                         val point = points.getJSONObject(p)
                         if (point.isNull("pressure")) 1.0 else point.getDouble("pressure")

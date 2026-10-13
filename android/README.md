@@ -374,3 +374,34 @@ enum-name reading, out-of-range pan, unsorted/invalid solos, unknown and Linear 
 and the mixer's solo/balance output. None of this has been compiled or run here: the
 container has no Android SDK, emulator or device. Verification is deferred to the CI
 compile/unit-test job and a later emulator run of the instrumented tests.
+
+### Schema-35 parity batch (October 13; compilation and tests deferred to CI)
+
+Android-local **v26** adds, and persists only when used (plain projects still write v25): layer
+`lockMode` (free/full/position/alpha, iOS rules: position accepts new marks only, alpha accepts
+pencil paint rendered `SRC_ATOP` so it never widens coverage, erasing/fills/images/transforms need
+free), PhotoCraft layer `colorLabel` swatches, `SoftEraser` (four stacked destination-out passes,
+`SoftEraser.passes`), `Marker`/`Crayon` brush families, `preservesLayerAlpha`, and image
+`imageCrop`/`imageQuarterTurns` (`ImageGeometry`; the quad shrinks to the kept region, turns use an
+upright box). A `RulerConstraint` (horizontal, vertical, 45°, lock-first-direction) applies to
+pencil/eraser gestures. Audio clips and trims are capped at 300 s like iOS; the 4 MiB per-source /
+8 MiB per-project PCM budgets still bound practical length and the import copy says so.
+
+Exports now use the iOS `StudioExportFilename` base, write `StudioExportService.Manifest` keys into
+ZIP `manifest.json` (`ExportManifests`), offer a transparent-background option for PNG/sequence/
+spritesheet, keep the MP4/GIF manifest (`StudioMovieExportService.Manifest` / `StudioGIFEncoder.Receipt`
+keys) for a separate "Save manifest of last render" action, and can write an iOS `.sdi` for the
+supported subset (`SwiftProjectExport`: Round pencil/line strokes incl. retained round-brush
+descriptors with pressure, layers with lock mode/label/blend, holds, four-track mixer); anything else
+refuses with listed reasons. `SwiftProjectImport` accepts schema 1–35, lock modes, labels and legacy
+lines; shared fixtures are in `Tests/SDIFixtures` (verified here with Python).
+
+Offline scaffolds: `BackendContract` (26 member RPCs cross-checked against `backend/sql` by a JVM
+test), `SessionState`/`AndroidIdentity` (honest "Not connected" account panel; no INTERNET permission),
+`SpatterCommandBridge` (the 31 iOS instruction sentences applied as one Undo step; no assistant
+service), `NotificationPreferences` (local model; no FCM, no POST_NOTIFICATIONS) and
+`LocalCrashReporter` (redacted local reports, five files / 30 days, never uploaded; installed by
+`StudioApplication`). JVM tests under `app/src/test` cover each pure class; `app/src/androidTest`
+gained golden/negative fixture imports, v26 persistence and the export round trip. None of the Kotlin
+has compiled or run in the implementation container (no Android SDK); verification is DEFERRED to the
+CI compile/unit-test job and an emulator/device run.

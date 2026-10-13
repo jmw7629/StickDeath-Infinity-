@@ -119,7 +119,7 @@ class AudioSource private constructor(private val bytes: ByteArray, val rate: In
             }
             require(at == bytes.size && rate > 0 && offset >= 0 && size > 0 && size % (channels*(bits/8)) == 0) { "Invalid PCM WAV structure." }
             val frames = size / (channels*(bits/8))
-            require(frames > 0 && frames.toDouble()/rate <= 60.0) { "Use nonempty audio up to 60 seconds." }
+            require(frames > 0 && frames.toDouble()/rate <= AudioLimits.MAX_CLIP_SECONDS) { AudioLimits.durationMessage() }
             if (bits == 24) {
                 val pcmBytes = frames * channels * 2
                 val output = java.nio.ByteBuffer.allocate(44 + pcmBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
@@ -171,8 +171,9 @@ data class AudioClip(val id: String = newID(), val name: String, val source: Aud
     fun validate() {
         java.util.UUID.fromString(id)
         require(name.isNotBlank() && name.length <= 80 && track in 1..4)
-        require(start.isFinite() && start in 0.0..3600.0 && sourceOffset.isFinite() && sourceOffset >= 0 &&
+        require(start.isFinite() && start in 0.0..AudioLimits.MAX_TIMELINE_START_SECONDS && sourceOffset.isFinite() && sourceOffset >= 0 &&
             duration.isFinite() && duration + 1e-12 >= 1.0 / source.rate && sourceOffset + duration <= source.duration + 0.000001) { "Trim must remain inside the source (minimum one source sample)." }
+        require(duration <= AudioLimits.MAX_CLIP_SECONDS + 0.000001 && sourceOffset <= AudioLimits.MAX_CLIP_SECONDS) { "Clips and source trims are capped at ${AudioLimits.MAX_CLIP_SECONDS.toInt()} seconds, as on iOS." }
         require(volume.isFinite() && volume in 0f..1f)
         assetCredit?.validate()
         fade?.validate(source.duration)

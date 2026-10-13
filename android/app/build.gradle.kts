@@ -22,6 +22,8 @@ android {
     // Reuse the licensed native catalogue; no duplicate asset checkout.
     sourceSets.getByName("main").assets.srcDir("../../StickDeathInfinity/Resources/StudioSounds")
     sourceSets.getByName("main").assets.srcDir(generatedStudioAssets)
+    // Shared iOS/Android `.sdi` golden fixtures (Tests/SDIFixtures) feed the instrumented import tests.
+    sourceSets.getByName("androidTest").assets.srcDir("../../Tests/SDIFixtures/assets")
     androidResources { noCompress += listOf("wav", "m4a") }
     buildFeatures { compose = true }
     compileOptions {
@@ -33,6 +35,9 @@ android {
 dependencies {
     // Plain JVM unit tests (app/src/test) cover the pure mixing/blend-name math; no Android runtime needed.
     testImplementation("junit:junit:4.13.2")
+    // The mockable android.jar stubs org.json; the real library lets JVM tests exercise the retained
+    // Swift brush descriptor (SwiftRoundBrush) that the .sdi export round-trips.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("junit:junit:4.13.2")
     implementation("androidx.core:core-ktx:1.15.0")

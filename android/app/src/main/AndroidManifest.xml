@@ -1,5 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application android:label="StickDeath Studio" android:theme="@style/AppTheme"
+    <!-- No INTERNET permission: identity, feed, Rooms, War Room, billing, push and Spatter cloud
+         assistance stay honestly unavailable until the owner configures providers (BackendContract). -->
+    <application android:name=".StudioApplication" android:label="StickDeath Studio" android:theme="@style/AppTheme"
         android:allowBackup="false" android:supportsRtl="true">
         <provider android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.exports" android:exported="false"
