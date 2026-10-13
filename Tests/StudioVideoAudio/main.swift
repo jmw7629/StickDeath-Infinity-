@@ -3,6 +3,33 @@ import AVFoundation
 import Darwin
 
 private struct Failure: Error { let message: String }
+// Report the actual difference before the strict comparison fails. A second
+// AVFoundation decode is a different boundary from attachment/persistence;
+// equal lengths alone cannot distinguish header drift, quantization or damage.
+private func describePCMComparison(_ actual: Data, _ expected: Data) {
+    guard actual != expected else { return }
+    guard actual.count == expected.count, actual.count >= 44,
+          (actual.count - 44).isMultiple(of: 2) else {
+        print("MOVIE_AUDIO PCM comparison incompatible lengths=\(actual.count)/\(expected.count)")
+        return
+    }
+    var changed = 0, maximumDelta = 0, squaredDelta = 0.0
+    var firstChangedSample: Int?
+    for offset in stride(from: 44, to: actual.count, by: 2) {
+        let lhs = Int(Int16(bitPattern: UInt16(actual[offset]) | UInt16(actual[offset + 1]) << 8))
+        let rhs = Int(Int16(bitPattern: UInt16(expected[offset]) | UInt16(expected[offset + 1]) << 8))
+        let delta = abs(lhs - rhs)
+        if delta != 0 {
+            changed += 1
+            if firstChangedSample == nil { firstChangedSample = (offset - 44) / 2 }
+        }
+        maximumDelta = max(maximumDelta, delta)
+        squaredDelta += Double(delta) * Double(delta)
+    }
+    let samples = (actual.count - 44) / 2
+    let rms = samples == 0 ? 0 : sqrt(squaredDelta / Double(samples))
+    print("MOVIE_AUDIO PCM headerMatches=\(actual.prefix(44) == expected.prefix(44)) changedSamples=\(changed)/\(samples) firstChangedSample=\(firstChangedSample ?? -1) maximumDeltaLSB=\(maximumDelta) rmsDeltaLSB=\(rms)")
+}
 private func require(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
     if try !condition() { throw Failure(message: message) }
 }
@@ -180,6 +207,7 @@ private actor PreparedAudioReceipt {
         guard let preparedBytes = await preparedReceipt.snapshot() else { throw Failure(message: "Missing prepared-audio receipt") }
         print("MOVIE_AUDIO attachment matches handoff=\(bytes == preparedBytes) separate decode matches=\(bytes == fast.audio.originalData) byteCounts=\(bytes.count)/\(preparedBytes.count)/\(fast.audio.originalData.count)")
         try require(bytes == preparedBytes, "Attachment changed the actual prepared movie PCM")
+        describePCMComparison(bytes, fast.audio.originalData)
         try require(bytes == fast.audio.originalData, "Prepared import changed selected movie PCM")
         try requireAsync(await vm.save(), "Movie project save failed")
         let saved = try storage.loadAnimation(id: projectID)!
